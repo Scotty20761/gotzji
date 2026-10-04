@@ -4,13 +4,21 @@
 import http from 'node:http';
 import { readFileSync } from 'node:fs';
 import { ExecutionCore } from './core.js';
-import { acquireHostOwnership,hostBuildIdentity,hostConfigurationIdentity,publishHostReady } from './phase-r-host-identity.mjs';
+import { acquireHostOwnership,hostBuildIdentity,hostConfigurationIdentity,publishHostReady,readHostReadyRecord } from './phase-r-host-identity.mjs';
 const config=JSON.parse(readFileSync(process.argv[2],'utf8'));
 const ownership=acquireHostOwnership(config.directory,config.daemonSecret);
 if(!ownership) process.exit(0);
 process.once('exit',()=>ownership.release());
 const registration={executable:config.executable,libraryRoot:config.libraryRoot,sourceFile:config.sourceFile,recipe:'code-check',expectedContent:'export function add(a, b) { return a + b; }\n',validationMs:config.validationMs,...(config.testDriver?{testDriver:config.testDriver}:{})};
-const core=await ExecutionCore.open(config.directory,{grace:registration});core.startSupervisor();
+const sourceHash=hostBuildIdentity(),configurationHash=hostConfigurationIdentity(config);let core,controlOnly=false;
+try{core=await ExecutionCore.open(config.directory,{grace:registration});}
+catch(error){
+ if(!['CORE_VERSION_OR_POLICY_CHANGED','CODE_SOURCE_NOT_REGISTERED','GRACE_DEPENDENCIES_CHANGED'].includes(error?.code))throw error;
+ const previous=readHostReadyRecord(config.directory,config.daemonSecret);
+ if(!previous||previous.sourceHash!==sourceHash||previous.configurationHash!==configurationHash)throw error;
+ core=await ExecutionCore.openForControl(config.directory);controlOnly=true;
+}
+if(!controlOnly)core.startSupervisor();
 const server=http.createServer(async(req,res)=>{
  res.setHeader('Connection','close');res.setHeader('Content-Type','application/json');
  if(req.headers.authorization!==`Bearer ${config.daemonSecret}`){res.writeHead(403).end('{}');return;}
@@ -35,5 +43,5 @@ const server=http.createServer(async(req,res)=>{
  }catch(error){const code=typeof error?.code==='string'&&/^[A-Z_]{1,80}$/.test(error.code)?error.code:'REQUEST_DENIED';res.end(JSON.stringify({ok:false,error:{code,...(error?.reason?{reason:error.reason}:{})}}));}
 });
 server.listen(0,'127.0.0.1',()=>{
- publishHostReady(config.directory,config.daemonSecret,ownership,{port:server.address().port,sourceHash:hostBuildIdentity(),configurationHash:hostConfigurationIdentity(config)});
+ publishHostReady(config.directory,config.daemonSecret,ownership,{port:server.address().port,sourceHash,configurationHash});
 });

@@ -46,13 +46,12 @@ export function hostBuildIdentity(){
  const entries=[...localRuntimeFiles.map((name)=>new URL('./'+name,import.meta.url)),...nativeRuntimeEntries.map((name)=>resolveLnwjjud(name,new URL(import.meta.url)))];
  return hashJavaScriptClosure(entries);
 }
-function fileIdentity(filename){const resolved=realpathSync(filename);return {path:resolved,sha256:digest(readFileSync(resolved))};}
 export function hostConfigurationIdentity(config){
  const database=new DatabaseSync(path.join(config.directory,'core.sqlite'),{readOnly:true});let policy;try{policy=String(database.prepare('SELECT policy FROM gotzji_meta').get()?.policy??'');}finally{database.close();}
  if(!policy) throw new Error('HOST_POLICY_UNAVAILABLE');
  const recipe=config.recipe??'source-snapshot';
  const documents=['CLAUDE.md','AGENTS.md','references/agent-knowledge-workflow.md','KNOWLEDGE_INDEX.md',...(recipe==='code-check'?['.claude/skills/karpathy-guidelines/SKILL.md','.claude/skills/debug-mantra/SKILL.md']:[])];
- return digest(JSON.stringify({directory:realpathSync(config.directory),policy,recipe,validationMs:config.validationMs??25,expectedHash:digest(config.expectedContent??''),executable:fileIdentity(config.executable),source:fileIdentity(config.sourceFile),documents:documents.map((name)=>fileIdentity(path.join(config.libraryRoot,name))),testDriver:config.testDriver?fileIdentity(config.testDriver):null}));
+ return digest(JSON.stringify({directory:path.resolve(config.directory),policy,recipe,validationMs:config.validationMs??25,expectedHash:digest(config.expectedContent??''),executable:path.resolve(config.executable),libraryRoot:path.resolve(config.libraryRoot),sourceFile:path.resolve(config.sourceFile),documents,testDriver:config.testDriver?path.resolve(config.testDriver):null}));
 }
 function alive(pid){try{process.kill(pid,0);return true;}catch(e){return e.code==='ESRCH'?false:undefined;}}
 function envelope(file,key){
@@ -101,12 +100,17 @@ export function publishHostReady(directory,key,ownership,value){
  }catch(error){try{unlinkSync(temporary);}catch{ /* candidate was already removed */ }throw error;}
 }
 export function readHostReady(directory,key,expectedBuild,expectedConfiguration){
- const ready=envelope(path.join(directory,'daemon-ready.json'),key);if(!ready) return null;
- const value=ready.value;
+ const value=readHostReadyRecord(directory,key);if(!value) return null;
  if(!Number.isSafeInteger(value?.pid)||!Number.isSafeInteger(value?.port)||value.port<1||value.port>65535||typeof value?.sourceHash!=='string'||typeof value?.configurationHash!=='string') throw new Error('HOST_IDENTITY_INVALID');
  const state=alive(value.pid);if(state===false) return null;if(state!==true) throw new Error('HOST_RECONCILIATION_REQUIRED');
  if(value.sourceHash!==expectedBuild||value.configurationHash!==expectedConfiguration) throw new Error('HOST_BUILD_CHANGED');
  if(typeof value.ownerNonce!=='string') throw new Error('HOST_IDENTITY_INVALID');
  const owner=ownerRow(directory);if(owner?.pid!==value.pid||owner?.nonce!==value.ownerNonce) throw new Error('HOST_RECONCILIATION_REQUIRED');
+ return value;
+}
+export function readHostReadyRecord(directory,key){
+ const ready=envelope(path.join(directory,'daemon-ready.json'),key);if(!ready) return null;
+ const value=ready.value;
+ if(!Number.isSafeInteger(value?.pid)||!Number.isSafeInteger(value?.port)||value.port<1||value.port>65535||typeof value?.sourceHash!=='string'||typeof value?.configurationHash!=='string'||typeof value?.ownerNonce!=='string') throw new Error('HOST_IDENTITY_INVALID');
  return value;
 }
