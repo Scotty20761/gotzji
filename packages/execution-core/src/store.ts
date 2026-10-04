@@ -45,6 +45,7 @@ export class CoreStore {
     try {
       if (anchored && !this.database.connection.prepare("SELECT 1 FROM sqlite_master WHERE name='gotzji_meta'").get()) throw new CoreError('CORE_DATABASE_REPLACED');
       this.database.applyMigration({ id: 'gotzji_001_control', sql: SQL });
+      this.database.applyMigration({ id: 'gotzji_002_recipe_operations', sql: 'CREATE TABLE gotzji_recipe_operations (job_id TEXT NOT NULL, operation_id TEXT NOT NULL, digest TEXT NOT NULL, phase TEXT NOT NULL, receipt TEXT, PRIMARY KEY(job_id,operation_id));' });
       this.database.connection.prepare('INSERT INTO gotzji_meta SELECT 1, ?, ? WHERE NOT EXISTS (SELECT 1 FROM gotzji_meta)').run(policy, authority);
       const meta = this.database.connection.prepare('SELECT version,policy,authority_id FROM gotzji_meta').get();
       if (meta?.version !== 1 || meta.policy !== policy || meta.authority_id !== authority) throw new CoreError('CORE_VERSION_OR_POLICY_CHANGED');

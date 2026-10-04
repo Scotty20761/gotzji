@@ -5,6 +5,8 @@ import { createHmac } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { brokerCall } from './grace-broker.mjs';
+import { launchGrace } from './grace-runtime.mjs';
 
 const configPath = process.argv[2];
 const mode = process.argv[3] ?? 'worker';
@@ -28,6 +30,7 @@ if (mode !== 'worker') {
   let state = 'ready';
   let child;
   let stopping = false;
+  let runtimeApproved = false;
   const persist = (name, payload) => {
     const body = JSON.stringify(payload);
     const record = JSON.stringify({ body, mac: createHmac('sha256', config.token).update(body).digest('hex') });
@@ -36,8 +39,25 @@ if (mode !== 'worker') {
   };
   const snapshot = () => ({ epoch: config.epoch, pid: process.pid, state, descendants });
   const server = http.createServer(async (req, res) => {
+    // Each control/bridge request is bounded. Do not make proved cancellation
+    // wait for a client keep-alive socket to expire before this worker exits.
+    res.setHeader('Connection','close');
     if (req.headers.authorization !== `Bearer ${config.token}`) { res.writeHead(403).end(); return; }
     const url = new URL(req.url, 'http://127.0.0.1');
+    if (req.method === 'POST' && ['/broker', '/register-broker'].includes(url.pathname) && config.grace) {
+      try {
+        let body = ''; for await (const chunk of req) { body += chunk; if (body.length > 100000) throw new Error('TOO_LARGE'); }
+        const value = JSON.parse(body);
+        if (url.pathname === '/register-broker') {
+          if (!Number.isInteger(value.pid) || value.pid < 1) throw new Error('INVALID_PROCESS');
+          descendants.push(value.pid); persist('observation.json', snapshot()); res.end('{}');
+        } else {
+          const result = brokerCall(config, value.name, value.arguments, runtimeApproved && !stopping);
+          res.setHeader('Content-Type','application/json'); res.end(JSON.stringify(result));
+        }
+      } catch { res.writeHead(403).end('{}'); }
+      return;
+    }
     if (req.method === 'GET' && url.pathname === '/status') {
       res.setHeader('Content-Type', 'application/json');
       res.end(JSON.stringify({ ...snapshot(), nonce: url.searchParams.get('nonce') }));
@@ -55,6 +75,15 @@ if (mode !== 'worker') {
       } else if (config.operation === 'fixture.hold') {
         child = spawn(process.execPath, [fileURLToPath(import.meta.url), configPath, 'child'], { stdio: ['ignore', 'ignore', 'ignore', 'ipc'], windowsHide: true });
         child.on('message', (m) => { if (Number.isInteger(m.pid)) { descendants.push(m.pid); persist('observation.json', snapshot()); } });
+      } else if (config.operation === 'grace.read-save-check' && config.grace) {
+        try {
+          const ready = JSON.parse(JSON.parse(readFileSync(path.join(directory,'ready.json'),'utf8')).body);
+          child = launchGrace(configPath, config, ready, {
+            register: (pid) => { descendants.push(pid); persist('observation.json', snapshot()); },
+            approve: (value) => { runtimeApproved = value; }, persist,
+            finish: (receipt) => { state = receipt ? 'done' : 'failed'; persist('observation.json', snapshot()); },
+          });
+        } catch { state = 'failed'; }
       } else { state = 'failed'; }
       res.end(JSON.stringify(snapshot()));
       return;
@@ -62,7 +91,7 @@ if (mode !== 'worker') {
     if (req.method === 'POST' && url.pathname === '/cancel' && !stopping) {
       stopping = true;
       if (child) {
-        await new Promise((resolve) => { if (child.exitCode !== null) resolve(); else { child.once('exit', resolve); child.send('stop'); } });
+        await new Promise((resolve) => { if (child.exitCode !== null) resolve(); else { child.once('exit', resolve); if (config.grace) child.kill(); else child.send('stop'); } });
       }
       state = 'cancelled';
       persist('stopped.json', snapshot());

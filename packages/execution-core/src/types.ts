@@ -1,4 +1,4 @@
-export type QualificationOperation = 'fixture.write' | 'fixture.hold';
+export type QualificationOperation = 'fixture.write' | 'fixture.hold' | 'grace.read-save-check';
 export interface RequestInput {
   readonly requestId: string;
   readonly operation: QualificationOperation;

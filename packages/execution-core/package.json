@@ -22,7 +22,8 @@
     "build": "tsc --outDir dist && node scripts/copy-worker.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --fileParallelism=false",
-    "qualify": "node dist/qualification.js"
+    "qualify": "node dist/qualification.js",
+    "qualify:grace": "node dist/grace-qualification.js"
   },
   "license": "MIT"
 }

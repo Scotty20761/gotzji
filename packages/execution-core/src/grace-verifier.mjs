@@ -1,0 +1,10 @@
+import { readFileSync, realpathSync, lstatSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import path from 'node:path';
+const root = realpathSync(process.argv[2]);
+const target = path.join(root, 'result.txt');
+if (lstatSync(target).isSymbolicLink() || realpathSync(target) !== target) process.exit(2);
+const bytes = readFileSync(target);
+const sha256 = createHash('sha256').update(bytes).digest('hex');
+if (sha256 !== process.argv[3]) process.exit(3);
+process.stdout.write(JSON.stringify({ sha256, bytes: bytes.length }) + '\n');

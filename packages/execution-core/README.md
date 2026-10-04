@@ -2,7 +2,8 @@
 
 This is the isolated phase-0 foundation of the owner-selected lnwjud fork,
 based on v5.7.3 / `cbc4b90d5ab80f52c24a31a7620515bf993e890d`.
-It is not an installed Desktop product, a ChatGPT connector or a production Grace executor.
+It is not an installed Desktop product or a ChatGPT connector. The bounded Grace
+read/save/check integration described below is separate from full workflow acceptance.
 Upstream MIT notices and the existing app are preserved. Workspace package versions
 remain aligned with upstream; foundation schema/policy revision is 1.
 
@@ -48,7 +49,7 @@ durable identity observations. Reopening the host can verify the same epoch. Can
 is cooperative and verifies actual parent/child/grandchild exit; unknown ownership or
 stopping retains the writer. No user-owned process is terminated by the host.
 
-Only `fixture.write` and `fixture.hold` are registered. The first writes a fixed
+Without a host Grace registration, only `fixture.write` and `fixture.hold` are registered. The first writes a fixed
 per-job `result.txt` using exclusive creation; the host independently checks all bytes.
 The second runs an owned child/grandchild tree for lifecycle qualification. Inputs
 are bounded to 65,536 UTF-8 bytes, overflow is rejected explicitly, and native
@@ -63,8 +64,8 @@ reverse authority and app wiring remains a later integration gate.
 
 ## Remaining qualification
 
-The real Grace broker, canonical named-role policies and workflow/skill first-call
-proof belong to the next vertical slice. Normal spokes keep read/query grants;
+The bounded Grace broker now exists; canonical named-role policies and workflow/skill first-call
+proof remain separate gates. Normal spokes keep read/query grants;
 Grace controls every real operation and performs saves/checks. Real adapter enrollment,
 Desktop identities, dedicated lnwjud Library `/mcp` listener, tunnel recovery,
 Plus/Pro calls, Office/CAD/browser actions, Windows restart, 1–2 hour endurance and
@@ -72,3 +73,35 @@ owner installation remain separate gates. Do not relabel fixture adapters as tho
 
 Product-task curation is explicit-only. This package captures operational evidence,
 not whole ChatGPT transcripts, and never invokes a completion/startup curator.
+
+## Bounded Grace read/save/check integration
+
+Host-only `GraceRegistration` selects the existing Claude executable, canonical
+Library pre-work sources and one public source file. `prepareSourceSnapshot` adds
+the `grace.read-save-check` recipe to the same native engine/authority. The model
+cannot select source/destination paths, roles, executable/argv, batch calls or arbitrary
+commands. Grace reads the prepared canonical rules/agents/workflow/index first, reads
+the source, saves its byte-exact snapshot by source hash, and runs a fixed Node verifier.
+
+The task-private MCP stdio bridge reaches the owned authenticated worker. Every broker
+call validates current native lease/session/generation/user intent, held writer, source/
+policy fingerprints and prerequisite receipts. Invalid arguments reserve no effect.
+The unique sub-operation ledger reconciles save/check retries. Actual runtime tool/auth,
+tool-use/exit evidence and command receipts are verified before backend completion.
+No model completion Boolean or caller receipt can satisfy this path.
+
+```powershell
+corepack pnpm@10.15.0 --filter @gotzji/execution-core build
+corepack pnpm@10.15.0 --filter @gotzji/execution-core qualify:grace
+```
+
+This uses the existing Claude subscription/model, removes paid-API/provider overrides,
+requires runtime `apiKeySource=none`, disables worker hooks/auto-memory and exposes only
+four task-bound tools. Operational logs/config stay private below
+`%LOCALAPPDATA%/gotzji/execution-core/grace-slice/`. No tunnel, connector, OS task/service,
+normal domain workflow or owner installation is created. `grace-test-driver.mjs` is an
+explicit no-model test driver and is never a fallback for a failed actual Claude call.
+
+Policy/code/source changes refuse old authority rather than silently migrating earlier
+qualification jobs. Actual Plus/Pro use, dedicated adapters/listeners, named-spoke return/
+save, skill invocation, Office/CAD/browser, restart and endurance still need their own proof.
