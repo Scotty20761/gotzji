@@ -1,0 +1,28 @@
+{
+  "name": "@gotzji/execution-core",
+  "version": "5.7.3",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "import": {
+        "development": "./src/index.ts",
+        "default": "./dist/index.js"
+      }
+    }
+  },
+  "dependencies": {
+    "@lnwjud/application": "workspace:*",
+    "@lnwjud/domain": "workspace:*",
+    "@lnwjud/storage": "workspace:*",
+    "@lnwjud/workspace": "workspace:*"
+  },
+  "scripts": {
+    "build": "tsc --outDir dist && node scripts/copy-worker.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --fileParallelism=false",
+    "qualify": "node dist/qualification.js"
+  },
+  "license": "MIT"
+}

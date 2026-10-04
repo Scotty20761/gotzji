@@ -255,6 +255,21 @@ importers:
 
   packages/domain: {}
 
+  packages/execution-core:
+    dependencies:
+      '@lnwjud/application':
+        specifier: workspace:*
+        version: link:../application
+      '@lnwjud/domain':
+        specifier: workspace:*
+        version: link:../domain
+      '@lnwjud/storage':
+        specifier: workspace:*
+        version: link:../storage
+      '@lnwjud/workspace':
+        specifier: workspace:*
+        version: link:../workspace
+
   packages/extensions:
     dependencies:
       '@lnwjud/domain':
