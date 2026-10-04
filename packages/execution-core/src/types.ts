@@ -16,6 +16,7 @@ export interface JobView {
   readonly operation: QualificationOperation;
   readonly evidenceDigest: string | null;
   readonly curation: 'explicit-only';
+  readonly blockerCode?: string;
 }
 /** Adapter-private, never part of model-visible output. */
 export interface TaskBinding { readonly jobId: string; readonly handle: string }

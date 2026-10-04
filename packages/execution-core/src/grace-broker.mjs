@@ -4,13 +4,14 @@ import { existsSync, readFileSync, writeFileSync, realpathSync, lstatSync } from
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+import { verifyFingerprint } from './fingerprints.mjs';
 export const SERVER = 'gotzji_task';
 export const TOOL_NAMES = ['read_policy', 'read_source', 'save_result', 'check_result'];
 export const FULL_TOOLS = TOOL_NAMES.map((name) => `mcp__${SERVER}__${name}`);
 export function digest(bytes) { return createHash('sha256').update(bytes).digest('hex'); }
 export function assertProfile(profile) {
   for (const entry of [{ path: profile.executable, hash: profile.executableHash }, { path: profile.sourceFile, hash: profile.sourceHash }, ...Object.values(profile.documents), ...(profile.testDriver ? [{ path: profile.testDriver, hash: profile.testDriverHash }] : [])]) {
-    if (realpathSync(entry.path) !== entry.path || digest(readFileSync(entry.path)) !== entry.hash) throw new Error('DEPENDENCIES_CHANGED');
+    try { verifyFingerprint(entry.path, entry.hash); } catch { throw new Error('DEPENDENCIES_CHANGED'); }
   }
 }
 export function tools() {
@@ -66,8 +67,14 @@ export function brokerCall(config, name, args, runtimeApproved) {
     let result;
     if (name === 'read_policy') {
       const source = config.grace.documents[args.document];
-      result = { document: args.document, sha256: source.hash, content: readFileSync(source.path, 'utf8') };
-    } else if (name === 'read_source') result = { sha256: config.grace.sourceHash, content: readFileSync(config.grace.sourceFile, 'utf8') };
+      const bytes = readFileSync(source.path);
+      if (digest(bytes) !== source.hash) throw new Error('DEPENDENCIES_CHANGED');
+      result = { document: args.document, sha256: source.hash, content: bytes.toString('utf8') };
+    } else if (name === 'read_source') {
+      const bytes = readFileSync(config.grace.sourceFile);
+      if (digest(bytes) !== config.grace.sourceHash) throw new Error('DEPENDENCIES_CHANGED');
+      result = { sha256: config.grace.sourceHash, content: bytes.toString('utf8') };
+    }
     else {
       const target = path.join(config.effectRoot, 'result.txt');
       if (realpathSync(config.effectRoot) !== config.effectRoot) throw new Error('EFFECT_ROOT_CHANGED');
@@ -75,8 +82,10 @@ export function brokerCall(config, name, args, runtimeApproved) {
         if (args.sourceHash !== config.grace.sourceHash) throw new Error('PAYLOAD_DENIED');
         const duplicate = existsSync(target);
         if (duplicate && (lstatSync(target).isSymbolicLink() || digest(readFileSync(target)) !== config.grace.sourceHash)) throw new Error('EFFECT_UNKNOWN');
+        const bytes = readFileSync(config.grace.sourceFile);
+        if (digest(bytes) !== config.grace.sourceHash) throw new Error('DEPENDENCIES_CHANGED');
         database.prepare('UPDATE gotzji_recipe_operations SET phase=? WHERE job_id=? AND operation_id=?').run('started', config.jobId, id);
-        if (!duplicate) writeFileSync(target, readFileSync(config.grace.sourceFile), { flag: 'wx', mode: 0o600 });
+        if (!duplicate) writeFileSync(target, bytes, { flag: 'wx', mode: 0o600 });
         result = { sha256: digest(readFileSync(target)), duplicate };
       } else {
         if (!existsSync(target) || lstatSync(target).isSymbolicLink() || digest(readFileSync(target)) !== config.grace.sourceHash) throw new Error('EFFECT_UNKNOWN');

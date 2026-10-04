@@ -2,6 +2,7 @@ import { readFileSync, realpathSync } from 'node:fs';
 import path from 'node:path';
 import { hash } from './store.js';
 import { CoreError } from './types.js';
+import { verifyFingerprint } from './fingerprints.mjs';
 /** Host-selected registration. This configuration is never accepted in model arguments. */
 export interface GraceRegistration {
   readonly executable: string;
@@ -39,6 +40,6 @@ export function graceProfile(registration: GraceRegistration): GraceProfile {
 }
 export function assertGraceProfile(profile: GraceProfile): void {
   for (const entry of [{ path: profile.executable, hash: profile.executableHash }, { path: profile.sourceFile, hash: profile.sourceHash }, ...Object.values(profile.documents), ...(profile.testDriver && profile.testDriverHash ? [{ path: profile.testDriver, hash: profile.testDriverHash }] : [])]) {
-    if (realpathSync(entry.path) !== entry.path || hash(readFileSync(entry.path)) !== entry.hash) throw new CoreError('GRACE_DEPENDENCIES_CHANGED');
+    try { verifyFingerprint(entry.path, entry.hash); } catch { throw new CoreError('GRACE_DEPENDENCIES_CHANGED'); }
   }
 }

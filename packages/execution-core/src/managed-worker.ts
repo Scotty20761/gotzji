@@ -9,7 +9,7 @@ import type { GraceProfile } from './grace-profile.js';
 
 export const WORKER_FILE = fileURLToPath(new URL('./fixture-worker.mjs', import.meta.url));
 export function workerFingerprint(): string {
-  return hash(['fixture-worker','grace-broker','grace-runtime','grace-stdio','grace-verifier'].map((name) => hash(readFileSync(new URL(`./${name}.mjs`, import.meta.url)))).join(':'));
+  return hash(['fixture-worker','grace-broker','grace-runtime','grace-stdio','grace-verifier','fingerprints'].map((name) => hash(readFileSync(new URL(`./${name}.mjs`, import.meta.url)))).join(':'));
 }
 export function alive(pid: number): boolean | 'unknown' {
   try { process.kill(pid, 0); return true; }

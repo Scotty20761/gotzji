@@ -14,6 +14,7 @@ import { assertGraceProfile, graceProfile, type GraceProfile, type GraceRegistra
 import { CoreError, type JobView, type Preparation, type RequestInput, type TaskBinding } from './types.js';
 
 const WORKSPACE = 'gotzji-qualification-library';
+const MUTATION_QUEUES = new Map<string, Promise<unknown>>();
 function unwrap<T>(result: Result<T>): T { if (!result.ok) throw new CoreError(result.error.code); return result.value; }
 
 /** Foundation host. Only fixed qualification recipes are executable in this version. */
@@ -25,25 +26,28 @@ export class ExecutionCore {
   readonly #policy: string;
   readonly #now: () => Date;
   readonly #grace: GraceProfile | null;
-  readonly #locks = new Map<string, Promise<unknown>>();
+  readonly #controlOnly: boolean;
   #timer: ReturnType<typeof setInterval> | undefined;
   #closed = false;
 
-  private constructor(root: string, now: () => Date, grace: GraceRegistration | undefined) {
+  private constructor(root: string, now: () => Date, grace: GraceRegistration | undefined, controlOnly: boolean) {
     mkdirSync(root, { recursive: true, mode: 0o700 });
     this.#root = realpathSync(root);
     this.#now = now;
-    this.#grace = grace ? graceProfile(grace) : null;
-    this.#policy = this.policyFingerprint();
+    this.#controlOnly = controlOnly;
+    this.#grace = !controlOnly && grace ? graceProfile(grace) : null;
+    this.#policy = controlOnly ? CoreStore.existingPolicy(path.join(this.#root,'core.sqlite')) : this.policyFingerprint();
     this.#store = new CoreStore(path.join(this.#root, 'core.sqlite'), this.#policy);
     this.#goals = new SqliteGoalRepository(this.#store.database);
     const workspaces = new SqliteWorkspaceRepository(this.#store.database);
     const fence = new GoalMutationFenceService(this.#goals, {
       now,
-      taskStateReader: { read: async (_workspaceId, task): Promise<'running' | 'absent' | 'unknown'> => {
+      taskStateReader: { read: async (_workspaceId, task): Promise<'running' | 'terminal' | 'absent' | 'unknown'> => {
         const epoch = typeof task === 'string' ? task : task.taskId;
         const row = this.#store.database.connection.prepare('SELECT * FROM gotzji_workers WHERE epoch=?').get(epoch) as unknown as WorkerRow | undefined;
-        return row ? observeWorker(row) : 'unknown';
+        if (row) return observeWorker(row);
+        const retired = this.#store.database.connection.prepare('SELECT reason FROM gotzji_worker_history WHERE epoch=?').get(epoch);
+        return retired && ['stopped','not_launched'].includes(String(retired.reason)) ? 'terminal' : 'unknown';
       } },
     });
     this.#service = new GoalContinuationService(workspaces, this.#goals, {
@@ -58,11 +62,11 @@ export class ExecutionCore {
       })) },
     });
   }
-  public static async open(root: string, options: { now?: () => Date; grace?: GraceRegistration } = {}): Promise<ExecutionCore> {
-    const core = new ExecutionCore(root, options.now ?? ((): Date => new Date()), options.grace);
+  public static async open(root: string, options: { now?: () => Date; grace?: GraceRegistration; controlOnly?: boolean } = {}): Promise<ExecutionCore> {
+    const core = new ExecutionCore(root, options.now ?? ((): Date => new Date()), options.grace, options.controlOnly === true);
     const workersPath = path.join(core.#root, 'workers');
     if (existsSync(workersPath)) for (const entry of readdirSync(workersPath)) {
-      if (existsSync(path.join(workersPath, entry, 'config.json')) && !core.#store.database.connection.prepare('SELECT 1 FROM gotzji_workers WHERE epoch=?').get(entry)) {
+      if (existsSync(path.join(workersPath, entry, 'config.json')) && !core.#store.database.connection.prepare('SELECT 1 FROM gotzji_workers WHERE epoch=? UNION ALL SELECT 1 FROM gotzji_worker_history WHERE epoch=?').get(entry,entry)) {
         core.close(); throw new CoreError('ORPHAN_WORKER_RECONCILIATION_REQUIRED');
       }
     }
@@ -70,15 +74,17 @@ export class ExecutionCore {
     if (!await workspaces.get(WORKSPACE)) await workspaces.insert({ id: WORKSPACE, displayName: 'Gotzji qualification', rootPath: core.#root, realRootPath: core.#root, createdAt: core.#now().toISOString() });
     return core;
   }
+  public static async openForControl(root: string): Promise<ExecutionCore> { return ExecutionCore.open(root,{controlOnly:true}); }
   /** Host-management API; never exposed in the adapter/model tool catalog. */
   public enrollAdapter(adapterId: string, owner: string): string {
+    this.assertEffects();
     if (!/^[a-z0-9-]{1,64}$/.test(adapterId) || !/^[a-z0-9-]{1,64}$/.test(owner)) throw new CoreError('INVALID_ENROLLMENT');
     const credential = secret();
     this.#store.database.connection.prepare('INSERT INTO gotzji_adapters VALUES (?,?,?,?)').run(adapterId, owner, hash(credential), this.#policy);
     return credential;
   }
   public prepare(credential: string, input: RequestInput): Preparation {
-    const adapter = this.authorize(credential);
+    const adapter = this.authorize(credential, true);
     const normalized = this.validateInput(input);
     const digest = hash(JSON.stringify({ input: normalized, policy: this.#policy }));
     const id = randomUUID();
@@ -86,11 +92,12 @@ export class ExecutionCore {
     return { preparationId: id, digest };
   }
   public prepareSourceSnapshot(credential: string, requestId: string): Preparation {
+    this.authorize(credential, true);
     if (!this.#grace) throw new CoreError('GRACE_NOT_REGISTERED');
     return this.prepare(credential, { requestId, operation: 'grace.read-save-check', text: readFileSync(this.#grace.sourceFile, 'utf8') });
   }
   public async submit(credential: string, preparationId: string): Promise<JobView> {
-    const adapter = this.authorize(credential);
+    const adapter = this.authorize(credential, true);
     const preparation = this.#store.database.connection.prepare('SELECT * FROM gotzji_preparations WHERE id=?').get(preparationId);
     if (!preparation || preparation.adapter !== adapter.id || preparation.policy !== this.#policy) throw new CoreError('PREPARATION_DENIED');
     const input = this.validateInput(JSON.parse(String(preparation.input)) as RequestInput);
@@ -113,11 +120,19 @@ export class ExecutionCore {
   public async get(credential: string, binding: TaskBinding): Promise<JobView> { return this.view(this.bound(credential, binding)); }
   public async result(credential: string, binding: TaskBinding): Promise<JobView> { return this.get(credential, binding); }
   public async resume(credential: string, binding: TaskBinding): Promise<JobView> {
-    const claim = this.bound(credential, binding);
+    const claim = this.bound(credential, binding, true);
     return this.serial(claim.id, async (): Promise<JobView> => {
+      this.assertEffects();
+      await this.resumeClaim(claim);
+      this.#store.clearDiagnostic(claim.id);
+      return this.view(claim);
+    });
+  }
+  private async resumeClaim(claim: ClaimRow): Promise<JobView> {
       const goal = await this.ensureGoal(claim);
-      if (goal.status !== 'active') { await this.cleanupTerminal(claim); return this.view(claim); }
-      let worker = this.#store.worker(claim.id);
+      if (goal.status !== 'active') { await this.cleanupTerminal(claim); this.#store.clearDiagnostic(claim.id); return this.view(claim); }
+      const worker = this.#store.worker(claim.id);
+      if (!worker && this.#store.writer(claim.id)) await this.reconcileUnlaunchedWriter(claim);
       if (worker) {
         const observation = await observeWorker(worker);
         if (observation === 'unknown') throw new CoreError('WORKER_RECONCILIATION_REQUIRED');
@@ -136,18 +151,25 @@ export class ExecutionCore {
         this.#store.database.connection.prepare('DELETE FROM gotzji_workers WHERE job_id=?').run(claim.id);
         this.releaseWriter(claim.id, worker.epoch);
       }
+      return this.launchClaim(claim);
+  }
+  private async launchClaim(claim: ClaimRow, recovered?: WorkerRow): Promise<JobView> {
       const epoch = randomUUID();
-      const writer = this.#store.database.connection.prepare('INSERT OR IGNORE INTO gotzji_writers VALUES (?,?,?)').run(this.#root, claim.id, epoch);
-      if (Number(writer.changes) !== 1) throw new CoreError('LIBRARY_WRITER_HELD');
+      if (!recovered) {
+        const writer = this.#store.database.connection.prepare('INSERT OR IGNORE INTO gotzji_writers VALUES (?,?,?)').run(this.#root, claim.id, epoch);
+        if (Number(writer.changes) !== 1) throw new CoreError('LIBRARY_WRITER_HELD');
+      }
+      try {
       const directory = path.join(this.#root, 'workers', epoch);
       mkdirSync(directory, { recursive: true, mode: 0o700 });
       const effectRoot = this.effectRoot(claim.id);
       mkdirSync(effectRoot, { recursive: true, mode: 0o700 });
-      const session = `worker-${epoch}`;
-      const acquired = unwrap(await this.#service.runGoal(this.actor(claim, session), { workspaceId: WORKSPACE, goalKey: claim.goal_key, leaseSeconds: 300 }));
+      const session = recovered?.session ?? `worker-${epoch}`;
+      const acquired = recovered ? { acquired:true,leaseToken:recovered.lease,leaseGeneration:recovered.generation,userIntentRevision:(await this.snapshot(claim)).userIntentRevision } : unwrap(await this.#service.runGoal(this.actor(claim, session), { workspaceId: WORKSPACE, goalKey: claim.goal_key, leaseSeconds: 300 }));
       if (!acquired.acquired || !acquired.leaseToken) throw new CoreError('LEASE_NOT_ACQUIRED');
+      if (recovered) this.resetForReplay(claim, recovered, epoch);
       this.#store.database.connection.prepare('INSERT INTO gotzji_workers VALUES (?,?,?,?,?,?,?,?,?)').run(claim.id, epoch, session, acquired.leaseToken, acquired.leaseGeneration, directory, secret(), 'reserved', this.#now().getTime());
-      worker = this.requireWorker(claim.id);
+      const worker = this.requireWorker(claim.id);
       await this.checkpoint(claim, worker, 'queued');
       const input = this.#store.input(claim);
       this.#store.database.connection.prepare('INSERT OR IGNORE INTO gotzji_operations VALUES (?,?,?,NULL)').run(claim.id, this.operationDigest(claim), 'reserved');
@@ -157,33 +179,47 @@ export class ExecutionCore {
       this.#store.database.connection.prepare('UPDATE gotzji_workers SET launch_state=? WHERE job_id=?').run('ready', claim.id);
       await this.startReserved(claim, worker);
       return this.view(claim);
-    });
+      } catch (error) { await this.compensateUnlaunched(claim, epoch); throw error; }
   }
   public async cancel(credential: string, binding: TaskBinding): Promise<JobView> {
     const claim = this.bound(credential, binding);
     return this.serial(claim.id, async (): Promise<JobView> => {
       const goal = await this.ensureGoal(claim);
-      if (goal.status !== 'active') { await this.cleanupTerminal(claim); return this.view(claim); }
+      if (goal.status !== 'active') { await this.cleanupTerminal(claim); this.#store.clearDiagnostic(claim.id); return this.view(claim); }
       this.#store.database.connection.prepare('UPDATE gotzji_operations SET phase=? WHERE job_id=? AND phase != ?').run('revoked', claim.id, 'verified');
       unwrap(await this.#service.cancelGoal(this.actor(claim, 'cancel'), { goalId: goal.goalId, expectedRevision: goal.revision, summary: 'Owner requested cancellation', evidence: [] }));
       await this.cleanupTerminal(claim);
+      this.#store.clearDiagnostic(claim.id);
       return this.view(claim);
     });
   }
   /** Host supervisor tick: no caller credentials, receipt booleans or executables accepted. */
   public async tick(): Promise<void> {
-    this.assertOpen();
+    this.assertAuthority();
     const claims = this.#store.database.connection.prepare('SELECT * FROM gotzji_claims WHERE goal_id IS NOT NULL').all() as unknown as ClaimRow[];
-    for (const claim of claims) await this.serial(claim.id, async (): Promise<void> => {
-      const worker = this.#store.worker(claim.id);
-      if (!worker) return;
-      const goal = await this.snapshot(claim);
-      if (goal.status !== 'active') { await this.cleanupTerminal(claim); return; }
-      await this.reconcile(claim, worker);
-    });
+    let failure: unknown;
+    for (const claim of claims) {
+      try {
+        await this.serial(claim.id, async (): Promise<void> => {
+          const goal = await this.snapshot(claim);
+          if (goal.status !== 'active') {
+            if (this.#store.writer(claim.id)) await this.cleanupTerminal(claim);
+          } else {
+            const worker = this.#store.worker(claim.id);
+            if (worker) { this.assertEffects(); await this.reconcile(claim, worker); }
+            else if (this.#store.writer(claim.id)) await this.reconcileUnlaunchedWriter(claim);
+          }
+          this.#store.clearDiagnostic(claim.id);
+        });
+      } catch (error) {
+        this.#store.diagnose(claim.id,error instanceof CoreError ? error.code : 'SUPERVISION_FAILED',this.#now().toISOString());
+        failure ??= error;
+      }
+    }
+    if (failure) throw failure;
   }
   public startSupervisor(): void {
-    this.assertOpen();
+    this.assertEffects();
     if (this.#timer) return;
     this.#timer = setInterval(() => { void this.tick().catch(() => { /* Persisted in-flight ownership stays held on uncertainty. */ }); }, 1000);
     this.#timer.unref();
@@ -191,18 +227,23 @@ export class ExecutionCore {
   /** Detach the host only. Durable workers keep running and can be adopted by a reopened host. */
   public close(): void { if (this.#timer) clearInterval(this.#timer); this.#closed = true; this.#store.close(); }
 
-  private assertOpen(): void {
+  private assertAuthority(): void {
     if (this.#closed) throw new CoreError('CORE_CLOSED');
     this.#store.assertUsable();
-    if (this.#grace) assertGraceProfile(this.#grace);
-    if (realpathSync(this.#root) !== this.#root || this.#policy !== this.policyFingerprint()) throw new CoreError('CORE_DEPENDENCIES_CHANGED');
+    if (realpathSync(this.#root) !== this.#root) throw new CoreError('CORE_DEPENDENCIES_CHANGED');
     const meta = this.#store.database.connection.prepare('SELECT version,policy FROM gotzji_meta').get();
     if (meta?.version !== 1 || meta.policy !== this.#policy) throw new CoreError('CORE_VERSION_OR_POLICY_CHANGED');
   }
-  private policyFingerprint(): string { return hash(JSON.stringify({ version: 2, root: this.#root, worker: workerFingerprint(), grace: this.#grace, recipes: ['fixture.write','fixture.hold',...(this.#grace ? ['grace.read-save-check'] : [])], curation: 'explicit-only' })); }
-  private authorize(credential: string): AdapterRow { this.assertOpen(); return this.#store.adapter(credential, this.#policy); }
-  private bound(credential: string, binding: TaskBinding): ClaimRow {
-    const adapter = this.authorize(credential);
+  private assertEffects(): void {
+    this.assertAuthority();
+    if (this.#controlOnly) throw new CoreError('CONTROL_ONLY');
+    if (this.#grace) assertGraceProfile(this.#grace);
+    if (this.#policy !== this.policyFingerprint()) throw new CoreError('CORE_DEPENDENCIES_CHANGED');
+  }
+  private policyFingerprint(): string { return hash(JSON.stringify({ version: 3, root: this.#root, worker: workerFingerprint(), grace: this.#grace, recipes: ['fixture.write','fixture.hold',...(this.#grace ? ['grace.read-save-check'] : [])], curation: 'explicit-only' })); }
+  private authorize(credential: string, effects = false): AdapterRow { if (effects) this.assertEffects(); else this.assertAuthority(); return this.#store.adapter(credential, this.#policy); }
+  private bound(credential: string, binding: TaskBinding, effects = false): ClaimRow {
+    const adapter = this.authorize(credential,effects);
     const row = this.#store.database.connection.prepare('SELECT * FROM gotzji_bindings WHERE handle_hash=? AND adapter=? AND job_id=? AND policy=?').get(hash(binding.handle), adapter.id, binding.jobId, this.#policy);
     const claim = this.#store.claim(binding.jobId);
     if (!row || claim.owner !== adapter.owner) throw new CoreError('TASK_AUTHORITY_DENIED');
@@ -226,21 +267,25 @@ export class ExecutionCore {
     return goal;
   }
   private async view(claim: ClaimRow): Promise<JobView> {
-    this.assertOpen();
+    this.assertAuthority();
     const goal = await this.snapshot(claim);
     const operation = this.#store.operation(claim.id);
     const held = !!this.#store.database.connection.prepare('SELECT 1 FROM gotzji_writers WHERE job_id=?').get(claim.id);
     let status: JobView['status'] = goal.status === 'active' ? 'queued' : goal.status;
     if (goal.status === 'active' && this.#store.worker(claim.id)) status = operation?.phase === 'verified' ? 'verifying' : 'running';
     if (operation?.phase === 'uncertain' || (goal.status !== 'active' && held)) status = 'blocked';
-    const result: JobView = { jobId: claim.id, status, revision: goal.revision, operation: this.#store.input(claim).operation, evidenceDigest: operation?.receipt ? hash(operation.receipt) : null, curation: 'explicit-only' };
+    const diagnostic = this.#store.database.connection.prepare('SELECT code FROM gotzji_diagnostics WHERE job_id=?').get(claim.id);
+    const worker = this.#store.worker(claim.id);
+    const expired = goal.status === 'active' && worker && (!goal.leaseExpiresAt || Date.parse(goal.leaseExpiresAt) <= this.#now().getTime());
+    if (diagnostic || expired) status = 'blocked';
+    const result: JobView = { jobId: claim.id, status, revision: goal.revision, operation: this.#store.input(claim).operation, evidenceDigest: operation?.receipt ? hash(operation.receipt) : null, curation: 'explicit-only', ...(diagnostic ? {blockerCode:String(diagnostic.code)} : expired ? {blockerCode:'LEASE_RECOVERY_REQUIRED'} : {}) };
     return result;
   }
   private effectRoot(jobId: string): string { return path.join(this.#root, 'effects', jobId); }
   private operationDigest(claim: ClaimRow): string { return hash(JSON.stringify({ job: claim.id, intent: claim.digest, policy: this.#policy, recipe: this.#store.input(claim) })); }
   private requireWorker(jobId: string): WorkerRow { const worker = this.#store.worker(jobId); if (!worker) throw new CoreError('WORKER_NOT_FOUND'); return worker; }
   private async validateWorker(claim: ClaimRow, worker: WorkerRow): Promise<void> {
-    this.assertOpen();
+    this.assertEffects();
     const current = this.requireWorker(claim.id);
     const writer = this.#store.database.connection.prepare('SELECT * FROM gotzji_writers WHERE root=?').get(this.#root);
     if (current.epoch !== worker.epoch || writer?.job_id !== claim.id || writer.epoch !== worker.epoch) throw new CoreError('WORKER_FENCE_INVALID');
@@ -301,6 +346,10 @@ export class ExecutionCore {
       await this.complete(claim, this.requireWorker(claim.id));
       return;
     }
+    const goal = await this.snapshot(claim);
+    if (!goal.leaseExpiresAt || !Number.isFinite(Date.parse(goal.leaseExpiresAt)) || Date.parse(goal.leaseExpiresAt) <= this.#now().getTime()) {
+      await this.recoverExpired(claim, worker); return;
+    }
     const observation = await callWorker(worker, 'status');
     if (observation.state === 'ready') {
       if (this.#store.operation(claim.id)?.phase === 'reserved') await this.startReserved(claim, worker);
@@ -337,18 +386,101 @@ export class ExecutionCore {
   }
   private async cleanupTerminal(claim: ClaimRow): Promise<void> {
     const worker = this.#store.worker(claim.id);
-    if (!worker) return;
+    if (!this.#store.writer(claim.id)) return;
+    if (!worker) { await this.reconcileUnlaunchedWriter(claim); return; }
+    if (this.unlaunched(worker.epoch)) { await this.compensateUnlaunched(claim,worker.epoch); return; }
     if (!await stopWorker(worker)) throw new CoreError('CLEANUP_RECONCILIATION_REQUIRED');
     const input = this.#store.input(claim);
     if (input.operation !== 'fixture.hold' && existsSync(path.join(this.effectRoot(claim.id), 'result.txt'))) this.verifyEffect(claim, false);
     this.releaseWriter(claim.id, worker.epoch);
   }
+  private unlaunched(epoch: string): boolean {
+    const directory = path.join(this.#root,'workers',epoch);
+    if (existsSync(directory) && realpathSync(directory) !== directory) return false;
+    for (const name of ['config.json','ready.json','observation.json']) {
+      try { lstatSync(path.join(directory,name)); return false; }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return false; }
+    }
+    // The only launch adapter writes config before spawn; mutations are held
+    // under the job guard, so absent durable launch files prove no dispatch.
+    return true;
+  }
+  private async reconcileUnlaunchedWriter(claim: ClaimRow): Promise<void> {
+    const writer = this.#store.writer(claim.id);
+    if (!writer) return;
+    if (!this.unlaunched(writer.epoch)) throw new CoreError('WORKER_RECONCILIATION_REQUIRED');
+    this.releaseWriter(claim.id,writer.epoch);
+  }
+  private async compensateUnlaunched(claim: ClaimRow, epoch: string): Promise<void> {
+    if (!this.unlaunched(epoch)) return;
+    const worker = this.#store.worker(claim.id);
+    if (worker && worker.epoch !== epoch) return;
+    if (worker) {
+      this.#store.archiveWorker(worker,'not_launched',this.#now().toISOString());
+      const goal = await this.snapshot(claim);
+      if (goal.status === 'active' && goal.leaseExpiresAt && Date.parse(goal.leaseExpiresAt) > this.#now().getTime()) {
+        unwrap(await this.#service.checkpointGoal(this.actor(claim,worker.session), {goalId:goal.goalId,leaseToken:worker.lease,expectedRevision:goal.revision,currentPhase:'queued',summary:'Unlaunched worker reservation reconciled',stepUpdates:[],nextAction:'Retry controlled admission',blockers:[],evidence:[],trackedTasks:[],releaseLease:true}));
+      }
+      this.#store.database.connection.prepare('DELETE FROM gotzji_workers WHERE job_id=? AND epoch=?').run(claim.id,epoch);
+    }
+    this.releaseWriter(claim.id,epoch);
+  }
+  private resetForReplay(claim: ClaimRow, worker: WorkerRow, epoch: string): void {
+    this.#store.archiveWorker(worker,'stopped',this.#now().toISOString());
+    const database = this.#store.database.connection;
+    database.exec('BEGIN IMMEDIATE;');
+    try {
+      const changed = database.prepare('UPDATE gotzji_writers SET epoch=? WHERE job_id=? AND epoch=?').run(epoch,claim.id,worker.epoch);
+      if (Number(changed.changes) !== 1) throw new CoreError('WORKER_FENCE_INVALID');
+      database.prepare('DELETE FROM gotzji_workers WHERE job_id=? AND epoch=?').run(claim.id,worker.epoch);
+      database.prepare('UPDATE gotzji_operations SET phase=?,receipt=NULL WHERE job_id=?').run('reserved',claim.id);
+      database.prepare('DELETE FROM gotzji_recipe_operations WHERE job_id=?').run(claim.id);
+      database.exec('COMMIT;');
+    } catch (error) { database.exec('ROLLBACK;'); throw error; }
+  }
+  private async recoverExpired(claim: ClaimRow, worker: WorkerRow): Promise<void> {
+    this.assertEffects();
+    this.#store.diagnose(claim.id,'LEASE_RECOVERY_REQUIRED',this.#now().toISOString());
+    const config = JSON.parse(readFileSync(path.join(worker.directory,'config.json'),'utf8')) as {intentRevision:number};
+    const goal = await this.snapshot(claim);
+    if (goal.userIntentRevision !== config.intentRevision) throw new CoreError('INTENT_RECONCILIATION_REQUIRED');
+    if (!await stopWorker(worker)) throw new CoreError('CLEANUP_RECONCILIATION_REQUIRED');
+    const operation = this.#store.operation(claim.id);
+    if (!operation || operation.digest !== this.operationDigest(claim) || operation.phase === 'revoked' || operation.phase === 'uncertain') throw new CoreError('EFFECT_RECONCILIATION_REQUIRED');
+    const input = this.#store.input(claim);
+    const filename = path.join(this.effectRoot(claim.id),'result.txt');
+    let complete = false;
+    if (existsSync(filename)) {
+      this.verifyEffect(claim,false); // Unknown bytes keep the held writer.
+      if (input.operation === 'fixture.write') complete = true;
+      else if (input.operation === 'grace.read-save-check') {
+        try { this.verifyGraceExecution(claim); complete = true; }
+        catch (error) {
+          if (!(error instanceof CoreError) || !['GRACE_RUNTIME_EVIDENCE_REQUIRED','GRACE_OPERATION_EVIDENCE_REQUIRED'].includes(error.code)) throw error;
+        }
+      }
+    }
+    if (!['fixture.hold','fixture.write','grace.read-save-check'].includes(input.operation)) throw new CoreError('EFFECT_RECONCILIATION_REQUIRED');
+    // Only these reviewed recipes have a proved bounded effect set. The
+    // snapshot save is exclusive/idempotent; its verifier is read-only.
+    this.#store.archiveWorker(worker,'stopped',this.#now().toISOString());
+    await this.reacquire(claim,worker);
+    const recovered = this.requireWorker(claim.id);
+    if (complete) await this.complete(claim,recovered);
+    else await this.launchClaim(claim,recovered);
+    this.#store.clearDiagnostic(claim.id);
+  }
   private releaseWriter(jobId: string, epoch: string): void { this.#store.database.connection.prepare('DELETE FROM gotzji_writers WHERE job_id=? AND epoch=?').run(jobId, epoch); }
   private markUncertain(jobId: string): void { this.#store.database.connection.prepare('UPDATE gotzji_operations SET phase=? WHERE job_id=?').run('uncertain', jobId); }
   private async serial<T>(jobId: string, action: () => Promise<T>): Promise<T> {
-    const previous = this.#locks.get(jobId) ?? Promise.resolve();
-    const next = previous.catch(() => undefined).then(action);
-    this.#locks.set(jobId, next);
-    try { return await next; } finally { if (this.#locks.get(jobId) === next) this.#locks.delete(jobId); }
+    const key = `${this.#root}\0${jobId}`;
+    const previous = MUTATION_QUEUES.get(key) ?? Promise.resolve();
+    const next = previous.catch(() => undefined).then(async (): Promise<T> => {
+      const guard = await this.#store.acquireGuard(jobId);
+      try { return await action(); }
+      finally { this.#store.releaseGuard(jobId,guard); }
+    });
+    MUTATION_QUEUES.set(key,next);
+    try { return await next; } finally { if (MUTATION_QUEUES.get(key) === next) MUTATION_QUEUES.delete(key); }
   }
 }

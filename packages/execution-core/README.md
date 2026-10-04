@@ -5,7 +5,8 @@ based on v5.7.3 / `cbc4b90d5ab80f52c24a31a7620515bf993e890d`.
 It is not an installed Desktop product or a ChatGPT connector. The bounded Grace
 read/save/check integration described below is separate from full workflow acceptance.
 Upstream MIT notices and the existing app are preserved. Workspace package versions
-remain aligned with upstream; foundation schema/policy revision is 1.
+remain aligned with upstream. Native authority schema is revision 1; lifecycle
+migration and execution policy are now revision 3.
 
 ## Run
 
@@ -105,3 +106,30 @@ explicit no-model test driver and is never a fallback for a failed actual Claude
 Policy/code/source changes refuse old authority rather than silently migrating earlier
 qualification jobs. Actual Plus/Pro use, dedicated adapters/listeners, named-spoke return/
 save, skill invocation, Office/CAD/browser, restart and endurance still need their own proof.
+
+## Lifecycle control and inspected recovery
+
+Status and task-owned cancellation check stored enrollment/task authority independently
+of changing source dependencies. Preparation/submission/resume still require current
+effect policy. `ExecutionCore.openForControl(existingRoot)` explicitly opens a compatible
+anchored authority for status/selection/cancel only, including older policy stores;
+it cannot enroll, submit or resume work and never promotes old probe jobs to runnable jobs.
+
+Job mutations serialize through a shared host queue and private SQLite process/nonce
+admission guards across processes. Live/unknown/reused guard PIDs are not reclaimed by
+timeout. A proved-dead owner may release only its admission guard; worker/effect writer
+ownership is reconciled separately. No-launch failures compensate the exact reservation
+only when durable launch manifests are absent; unknown dispatch keeps ownership held.
+
+An expired live worker is stopped with owned-process proof before native lease recovery.
+An already verified file result completes without rewriting. Only the three reviewed
+bounded recipes can restart after inspecting their effect set and unchanged intent/policy;
+prior worker/operation/broker receipts remain in private history. Unknown effects or
+termination stay blocked. Public `blockerCode` makes retained failures visible.
+
+The supervisor isolates errors per job, continues other renewals and reports an aggregate
+failure after processing. Settled terminal jobs with no retained writer are not repeatedly
+reconciled. Verified fingerprint checks cache full successful hashes against file identity,
+size and birth/mtime/ctime; any change rehashes, including when only mtime is restored.
+Read/save receipts additionally hash the actual bytes used. Original suite timeouts are
+unchanged. These lifecycle repairs are not real Windows reboot or 1–2h endurance acceptance.
