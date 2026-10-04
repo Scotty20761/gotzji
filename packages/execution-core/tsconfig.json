@@ -1,7 +1,7 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {"composite": true, "declaration": true, "rootDir": "src", "outDir": "dist"},
-  "references": [{"path": "../application"}, {"path": "../domain"}, {"path": "../storage"}, {"path": "../workspace"}],
+  "references": [{"path": "../application"}, {"path": "../domain"}, {"path": "../storage"}, {"path": "../workspace"}, {"path": "../mcp-server"}],
   "include": ["src/**/*.ts"],
   "exclude": ["src/**/*.test.ts"]
 }

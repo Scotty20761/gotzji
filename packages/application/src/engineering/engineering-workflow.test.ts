@@ -49,6 +49,18 @@ describe('engineering workflow routing', () => {
     expect(classifyEngineeringTaskKind('Fix the bug locally; do not push or release')).toBe('bugfix');
   });
 
+  it('keeps comma-separated delivery prohibitions and readiness descriptions local', () => {
+    expect(inferDeliveryScope('Do not commit, push, release, or deploy.')).toBe('local');
+    expect(inferDeliveryScope('The changes are uncommitted and must remain local.')).toBe('local');
+    expect(inferDeliveryScope('Validate production-build readiness locally.')).toBe('local');
+    expect(classifyEngineeringTaskKind('Do not commit, push, release, or deploy. Fix the parser only.')).toBe('bugfix');
+  });
+
+  it('distinguishes genuine affirmative delivery from English and Thai list prohibitions', () => {
+    expect(inferDeliveryScope('Commit the fix, push it, and deploy to production.')).toBe('deploy');
+    expect(inferDeliveryScope('ห้าม commit, push, release หรือ deploy ให้แก้และทดสอบในเครื่องเท่านั้น')).toBe('local');
+  });
+
   it('records CodeGraph-first project instructions without claiming availability', () => {
     const planned = planEngineeringWorkflow('Refactor the auth service', assessment('When .codegraph exists, use CodeGraph first.', true));
     expect(planned.selectedCodeIntelligence).toBe('codegraph');

@@ -126,19 +126,20 @@ export function classifyEngineeringRisk(
 
 export function inferDeliveryScope(objective: string): EngineeringDeliveryScope {
   const value = affirmativeDeliveryText(objective.trim().toLowerCase());
-  if (/(deploy|production|ขึ้น prod|ขึ้น production)/i.test(value)) return 'deploy';
-  if (/(release|publish|tag|รีลีส|ปล่อยเวอร์ชัน)/i.test(value)) return 'release';
-  if (/(merge|รวม pr)/i.test(value)) return 'merge';
-  if (/(pull request|\bpr\b)/i.test(value)) return 'pull_request';
-  if (/(push|ส่งขึ้น git)/i.test(value)) return 'push';
-  if (/(commit|คอมมิต)/i.test(value)) return 'commit';
+  if (/(\bdeploy\b|ขึ้น prod|ขึ้น production)/i.test(value)) return 'deploy';
+  if (/(\brelease\b|\bpublish\b|\btag\b|รีลีส|ปล่อยเวอร์ชัน)/i.test(value)) return 'release';
+  if (/(\bmerge\b|รวม pr)/i.test(value)) return 'merge';
+  if (/(\bpull request\b|\bpr\b)/i.test(value)) return 'pull_request';
+  if (/(\bpush\b|ส่งขึ้น git)/i.test(value)) return 'push';
+  if (/(\bcommit\b|คอมมิต)/i.test(value)) return 'commit';
   return 'local';
 }
 
 function affirmativeDeliveryText(value: string): string {
   // Delivery words inside a prohibition are not authorization. Treat the
-  // remainder of that clause conservatively until the next clear separator.
-  return value.replace(/(?:\b(?:do not|don't|dont|never|without|no)\b|ไม่ต้อง|ห้าม|อย่า)[^;,.]*/gi, ' ');
+  // remainder of that clause conservatively until the next sentence or
+  // semicolon. Commas often separate one prohibited delivery list.
+  return value.replace(/(?:\b(?:do not|don't|dont|never|without|no)\b|ไม่ต้อง|ห้าม|อย่า)[^;.\n!?]*/gi, ' ');
 }
 
 function workflowFor(taskKind: EngineeringTaskKind, riskTier: EngineeringRiskTier): readonly EngineeringWorkflowStep[] {

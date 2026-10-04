@@ -9,7 +9,7 @@ import type { GraceProfile } from './grace-profile.js';
 
 export const WORKER_FILE = fileURLToPath(new URL('./fixture-worker.mjs', import.meta.url));
 export function workerFingerprint(): string {
-  return hash(['fixture-worker','grace-broker','grace-runtime','grace-stdio','grace-verifier','fingerprints'].map((name) => hash(readFileSync(new URL(`./${name}.mjs`, import.meta.url)))).join(':'));
+  return hash(['fixture-worker','grace-broker','grace-runtime','grace-stdio','grace-verifier','fingerprints','phase-r-runner','phase-r-validator','phase-r-host-identity'].map((name) => hash(readFileSync(new URL(`./${name}.mjs`, import.meta.url)))).join(':'));
 }
 export function alive(pid: number): boolean | 'unknown' {
   try { process.kill(pid, 0); return true; }
@@ -50,7 +50,7 @@ export async function observeWorker(worker: WorkerRow): Promise<'running' | 'abs
       // enrollment during a hold/spawn also retains ownership for inspection.
       const config = JSON.parse(readFileSync(path.join(worker.directory, 'config.json'), 'utf8')) as { operation: string };
       if (config.operation === 'fixture.hold' && observation?.state === 'running' && !stopped && observation.descendants.length !== 2) return 'unknown';
-      if (config.operation === 'grace.read-save-check' && observation?.state === 'running' && !stopped && observation.descendants.length < 1) return 'unknown';
+      if (config.operation.startsWith('grace.') && observation?.state === 'running' && !stopped && observation.descendants.length < 1) return 'unknown';
       const descendants = stopped?.descendants ?? observation?.descendants ?? [];
       return descendants.every((pid) => alive(pid) === false) ? 'absent' : 'unknown';
     } catch { return 'unknown'; }
@@ -68,7 +68,7 @@ export async function stopWorker(worker: WorkerRow): Promise<boolean> {
   }
   return false;
 }
-export async function launchWorker(worker: WorkerRow, effectRoot: string, operation: string, text: string, binding: { jobId: string; owner: string; policy: string; database: string; intentRevision: number; grace: GraceProfile | null }): Promise<void> {
+export async function launchWorker(worker: WorkerRow, effectRoot: string, operation: string, text: string, binding: { jobId: string; owner: string; policy: string; database: string; intentRevision: number; authorizationDigest?: string; grace: GraceProfile | null }): Promise<void> {
   if (realpathSync(effectRoot) !== effectRoot) throw new CoreError('EFFECT_ROOT_CHANGED');
   const config = path.join(worker.directory, 'config.json');
   writeFileSync(config, JSON.stringify({ ...binding, epoch: worker.epoch, token: worker.token, effectRoot, operation, text, generation: worker.generation, session: worker.session, lease: worker.lease }), { mode: 0o600, flag: 'wx' });

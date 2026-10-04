@@ -46,6 +46,20 @@ describe('engineering_prepare_task', () => {
     expect(tool.parse({ workspaceId: 'workspace-1', objective: '' })).toMatchObject({ ok: false });
     expect(tool.parse({ workspaceId: 'workspace-1', objective: 'Fix bug', unknown: true })).toMatchObject({ ok: false });
   });
+
+  it('returns bounded schema diagnostics without echoing rejected input', () => {
+    const [tool] = engineeringTools({ actor, contextEconomy: {} as never, services: {} });
+    const rejected = tool.parse({ workspaceId: 'workspace-1', objective: 123, secret: 'credential-value' });
+    expect(rejected).toMatchObject({
+      ok: false,
+      error: {
+        code: 'INVALID_INPUT',
+        message: 'Tool input is invalid',
+        details: { fieldPath: 'objective', reason: 'invalid_type' },
+      },
+    });
+    expect(JSON.stringify(rejected)).not.toContain('credential-value');
+  });
 });
 
 describe('engineering_start_task', () => {

@@ -43,6 +43,41 @@ export interface EngineeringGateEvidence {
   readonly artifact?: string;
 }
 
+export const ENGINEERING_GATE_EVIDENCE_FAILURE_REASONS = [
+  'missing_run_id',
+  'missing_command',
+  'runtime_provider_unavailable',
+  'run_not_found',
+  'run_observation_unavailable',
+  'run_not_terminal',
+  'run_nonzero_exit',
+  'run_exit_code_mismatch',
+  'command_fingerprint_mismatch',
+  'source_state_mismatch',
+  'artifact_mismatch',
+  'ci_mismatch',
+  'job_binding_mismatch',
+  'host_runtime_rejected',
+] as const;
+
+export type EngineeringGateEvidenceFailureReason = typeof ENGINEERING_GATE_EVIDENCE_FAILURE_REASONS[number];
+
+export type EngineeringGateEvidenceVerificationResult =
+  | { readonly verified: true }
+  | { readonly verified: false; readonly reason: EngineeringGateEvidenceFailureReason };
+
+export interface EngineeringGateEvidenceBinding {
+  readonly goalId: string;
+  readonly ownerClientId: string;
+  readonly userIntentRevision: number;
+}
+
+const ENGINEERING_GATE_EVIDENCE_FAILURE_REASON_SET = new Set<string>(ENGINEERING_GATE_EVIDENCE_FAILURE_REASONS);
+
+export function isEngineeringGateEvidenceFailureReason(value: unknown): value is EngineeringGateEvidenceFailureReason {
+  return typeof value === 'string' && ENGINEERING_GATE_EVIDENCE_FAILURE_REASON_SET.has(value);
+}
+
 export interface EngineeringGateDefinition {
   readonly id: string;
   readonly title: string;

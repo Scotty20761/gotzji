@@ -19,11 +19,12 @@ for await (const line of createInterface({ input: process.stdin })) {
     let result;
     if (request.method === 'initialize') result = { protocolVersion: request.params?.protocolVersion ?? '2025-11-25', capabilities: { tools: {} }, serverInfo: { name: SERVER, version: '5.7.3' } };
     else if (request.method === 'ping') result = {};
-    else if (request.method === 'tools/list') result = { tools: tools() };
+    else if (request.method === 'tools/list') result = { tools: tools(config) };
     else if (request.method === 'tools/call') {
       const response = await fetch(endpoint + '/broker', { method: 'POST', headers, body: JSON.stringify({ name: request.params?.name, arguments: request.params?.arguments }), signal: AbortSignal.timeout(15000) });
-      if (!response.ok) throw new Error('BROKER_DENIED');
       const value = await response.json();
+      if (!response.ok) {result={isError:true,content:[{type:'text',text:value.error?.code??'BROKER_DENIED'}]};}
+      else
       result = { content: [{ type: 'text', text: JSON.stringify(value) }], structuredContent: value };
     } else throw new Error('METHOD_DENIED');
     process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, result }) + '\n');

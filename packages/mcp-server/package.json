@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./engineering-evidence-verifier": {"types":"./src/engineering-evidence-verifier.ts","import":{"development":"./src/engineering-evidence-verifier.ts","default":"./dist/engineering-evidence-verifier.js"}},
     ".": {
       "types": "./src/index.ts",
       "import": {

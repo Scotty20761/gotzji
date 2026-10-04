@@ -1,7 +1,13 @@
 import { realpath, stat } from 'node:fs/promises';
 import { isAbsolute, relative, resolve } from 'node:path';
 import type { EngineeringGateEvidenceVerifier } from '@lnwjud/application';
-import type { EngineeringGateEvidence, Result } from '@lnwjud/domain';
+import type {
+  EngineeringGateEvidence,
+  EngineeringGateEvidenceBinding,
+  EngineeringGateEvidenceFailureReason,
+  EngineeringGateEvidenceVerificationResult,
+  Result,
+} from '@lnwjud/domain';
 import { engineeringCommandFingerprint, formatEngineeringCommand } from '@lnwjud/shared';
 
 interface EngineeringEvidenceStatusProvider {
@@ -82,6 +88,7 @@ export interface RuntimeEngineeringEvidenceVerifierOptions {
   readonly shell?: EngineeringEvidenceStatusProvider;
   readonly sourceState?: (workspaceId: string) => Promise<EngineeringSourceState | undefined>;
   readonly artifactVerifier?: EngineeringArtifactVerifier;
+  readonly requireGoalBinding?: boolean;
 }
 
 /**
@@ -93,12 +100,14 @@ export class RuntimeEngineeringEvidenceVerifier implements EngineeringGateEviden
   private readonly providers: readonly EngineeringEvidenceStatusProvider[];
   private readonly sourceState: RuntimeEngineeringEvidenceVerifierOptions['sourceState'];
   private readonly artifactVerifier: RuntimeEngineeringEvidenceVerifierOptions['artifactVerifier'];
+  private readonly requireGoalBinding: boolean;
 
   public constructor(options: RuntimeEngineeringEvidenceVerifierOptions) {
     this.providers = [options.process, options.shell]
       .filter((provider): provider is EngineeringEvidenceStatusProvider => provider !== undefined);
     this.sourceState = options.sourceState;
     this.artifactVerifier = options.artifactVerifier;
+    this.requireGoalBinding = options.requireGoalBinding ?? false;
   }
 
   public async verify(
@@ -106,25 +115,49 @@ export class RuntimeEngineeringEvidenceVerifier implements EngineeringGateEviden
     evidence: EngineeringGateEvidence,
     gateId: string,
     requiredPlatforms: readonly ('win32' | 'darwin' | 'linux')[] = [],
+    expectedBinding?: EngineeringGateEvidenceBinding,
   ): Promise<boolean> {
+    return (await this.verifyDetailed(workspaceId, evidence, gateId, requiredPlatforms, expectedBinding)).verified;
+  }
+
+  public async verifyDetailed(
+    workspaceId: string,
+    evidence: EngineeringGateEvidence,
+    gateId: string,
+    requiredPlatforms: readonly ('win32' | 'darwin' | 'linux')[] = [],
+    expectedBinding?: EngineeringGateEvidenceBinding,
+  ): Promise<EngineeringGateEvidenceVerificationResult> {
     const runId = evidence.runId;
     const command = evidence.command;
-    if (runId === undefined || command === undefined || this.providers.length === 0) return false;
+    if (runId === undefined) return verificationFailure('missing_run_id');
+    if (command === undefined) return verificationFailure('missing_command');
+    if (this.providers.length === 0) return verificationFailure('runtime_provider_unavailable');
     if ((gateId === 'exact_sha_ci' || gateId === 'package' || gateId === 'cross_platform')
-      && !(await this.matchesCurrentTrackedSource(workspaceId, evidence))) return false;
+      && !(await this.matchesCurrentTrackedSource(workspaceId, evidence))) return verificationFailure('source_state_mismatch');
     const results = await Promise.all(this.providers.map(async (provider) => {
       try {
         const result = await provider.statusForGoalLiveness(workspaceId, runId);
-        if (!successfulObservation(result, command, evidence.exitCode)) return false;
-        if (gateId === 'exact_sha_ci') return exactShaCiObservation(result, evidence);
-        if (gateId === 'package') return packageObservation(workspaceId, result, evidence, this.artifactVerifier);
-        if (gateId === 'cross_platform') return crossPlatformObservation(result, evidence, requiredPlatforms);
-        return true;
+        const observed = detailedSuccessfulObservation(result, command, evidence.exitCode);
+        if (!observed.verified) return observed;
+        if (this.requireGoalBinding && !matchesExpectedGoalBinding(result, expectedBinding)) {
+          return verificationFailure('job_binding_mismatch');
+        }
+        if (gateId === 'exact_sha_ci') return exactShaCiObservation(result, evidence)
+          ? verificationSuccess()
+          : verificationFailure('ci_mismatch');
+        if (gateId === 'package') return await packageObservation(workspaceId, result, evidence, this.artifactVerifier)
+          ? verificationSuccess()
+          : verificationFailure('artifact_mismatch');
+        if (gateId === 'cross_platform') return crossPlatformObservation(result, evidence, requiredPlatforms)
+          ? verificationSuccess()
+          : verificationFailure('ci_mismatch');
+        return verificationSuccess();
       } catch {
-        return false;
+        return verificationFailure('run_observation_unavailable');
       }
     }));
-    return results.some(Boolean);
+    if (results.some((result) => result.verified)) return verificationSuccess();
+    return selectVerificationFailure(results);
   }
 
   private async matchesCurrentTrackedSource(workspaceId: string, evidence: EngineeringGateEvidence): Promise<boolean> {
@@ -141,15 +174,35 @@ export class RuntimeEngineeringEvidenceVerifier implements EngineeringGateEviden
   }
 }
 
-function successfulObservation(result: Result<unknown>, claimedCommand: string, expectedExitCode: number | undefined): boolean {
-  if (!result.ok || !isRecord(result.value) || typeof result.value.state !== 'string') return false;
-  if (result.value.state !== 'completed' && result.value.state !== 'exited') return false;
+function matchesExpectedGoalBinding(
+  result: Result<unknown>,
+  expected: EngineeringGateEvidenceBinding | undefined,
+): boolean {
+  return expected !== undefined
+    && result.ok
+    && isRecord(result.value)
+    && result.value.goal_id === expected.goalId
+    && result.value.owner_client_id === expected.ownerClientId
+    && result.value.user_intent_revision === expected.userIntentRevision;
+}
+
+function detailedSuccessfulObservation(
+  result: Result<unknown>,
+  claimedCommand: string,
+  expectedExitCode: number | undefined,
+): EngineeringGateEvidenceVerificationResult {
+  if (!result.ok) return verificationFailure(result.error.code === 'PROCESS_NOT_FOUND' ? 'run_not_found' : 'run_observation_unavailable');
+  if (!isRecord(result.value) || typeof result.value.state !== 'string') return verificationFailure('run_observation_unavailable');
   const actualExitCode = typeof result.value.exit_code === 'number'
     ? result.value.exit_code
     : typeof result.value.exitCode === 'number'
       ? result.value.exitCode
       : undefined;
-  if (actualExitCode !== 0) return false;
+  if (result.value.state !== 'completed' && result.value.state !== 'exited') {
+    return verificationFailure(actualExitCode !== undefined && actualExitCode !== 0 ? 'run_nonzero_exit' : 'run_not_terminal');
+  }
+  if (actualExitCode === undefined) return verificationFailure('run_observation_unavailable');
+  if (actualExitCode !== 0) return verificationFailure('run_nonzero_exit');
   const actualCommand = typeof result.value.executable === 'string' && Array.isArray(result.value.args) && result.value.args.every((arg) => typeof arg === 'string')
     ? formatEngineeringCommand(result.value.executable, result.value.args as string[])
     : typeof result.value.executable === 'string' && Array.isArray(result.value.arguments) && result.value.arguments.every((arg) => typeof arg === 'string')
@@ -157,8 +210,35 @@ function successfulObservation(result: Result<unknown>, claimedCommand: string, 
       : undefined;
   const matches = actualCommand === claimedCommand
     || result.value.command_fingerprint === engineeringCommandFingerprint(claimedCommand);
-  if (!matches) return false;
-  return expectedExitCode === undefined || expectedExitCode === actualExitCode;
+  if (!matches) return verificationFailure('command_fingerprint_mismatch');
+  if (expectedExitCode !== undefined && expectedExitCode !== actualExitCode) return verificationFailure('run_exit_code_mismatch');
+  return verificationSuccess();
+}
+
+function verificationSuccess(): EngineeringGateEvidenceVerificationResult {
+  return { verified: true };
+}
+
+function verificationFailure(reason: EngineeringGateEvidenceFailureReason): EngineeringGateEvidenceVerificationResult {
+  return { verified: false, reason };
+}
+
+function selectVerificationFailure(
+  results: readonly EngineeringGateEvidenceVerificationResult[],
+): EngineeringGateEvidenceVerificationResult {
+  const reasons = results.flatMap((result) => result.verified ? [] : [result.reason]);
+  const priority: readonly EngineeringGateEvidenceFailureReason[] = [
+    'run_nonzero_exit',
+    'run_not_terminal',
+    'command_fingerprint_mismatch',
+    'run_exit_code_mismatch',
+    'artifact_mismatch',
+    'ci_mismatch',
+    'job_binding_mismatch',
+    'run_not_found',
+    'run_observation_unavailable',
+  ];
+  return verificationFailure(priority.find((reason) => reasons.includes(reason)) ?? 'run_observation_unavailable');
 }
 
 function exactShaCiObservation(result: Result<unknown>, evidence: EngineeringGateEvidence): boolean {

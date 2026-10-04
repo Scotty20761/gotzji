@@ -66,6 +66,7 @@ export class CoreStore {
         CREATE TABLE gotzji_operation_history (epoch TEXT PRIMARY KEY, job_id TEXT NOT NULL, operation_json TEXT);
         CREATE TABLE gotzji_recipe_history (epoch TEXT NOT NULL, job_id TEXT NOT NULL, operation_id TEXT NOT NULL, record_json TEXT NOT NULL, PRIMARY KEY(epoch,operation_id));
       ` });
+      this.database.applyMigration({ id: 'gotzji_004_authorized_jobs', sql: 'CREATE TABLE gotzji_authorized_jobs (job_id TEXT PRIMARY KEY, owner TEXT NOT NULL, intent_digest TEXT NOT NULL, boundary TEXT NOT NULL, policy TEXT NOT NULL, authorization_digest TEXT NOT NULL, intent_revision INTEGER NOT NULL);' });
       this.database.connection.prepare('INSERT INTO gotzji_meta SELECT 1, ?, ? WHERE NOT EXISTS (SELECT 1 FROM gotzji_meta)').run(policy, authority);
       const meta = this.database.connection.prepare('SELECT version,policy,authority_id FROM gotzji_meta').get();
       if (meta?.version !== 1 || meta.policy !== policy || meta.authority_id !== authority) throw new CoreError('CORE_VERSION_OR_POLICY_CHANGED');

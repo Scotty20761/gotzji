@@ -197,6 +197,20 @@ export interface ToolConfig<T extends z.ZodType> {
 
 const defaultStructuredOutputSchema = z.object({}).catchall(z.unknown());
 
+const SCHEMA_REJECTION_REASONS: Readonly<Record<string, string>> = {
+  invalid_type: 'invalid_type',
+  too_big: 'value_too_large',
+  too_small: 'value_too_small',
+  invalid_format: 'invalid_format',
+  not_multiple_of: 'invalid_multiple',
+  unrecognized_keys: 'unexpected_field',
+  invalid_union: 'invalid_union',
+  invalid_key: 'invalid_key',
+  invalid_element: 'invalid_element',
+  invalid_value: 'invalid_value',
+  custom: 'constraint_failed',
+};
+
 export function defineTool<T extends z.ZodType>(config: ToolConfig<T>): McpToolDefinition {
   return {
     name: config.name,
@@ -213,7 +227,18 @@ export function defineTool<T extends z.ZodType>(config: ToolConfig<T>): McpToolD
     execution: { taskSupport: config.execution?.taskSupport ?? 'forbidden' },
     parse(input: unknown): Result<unknown> {
       const parsed = config.inputSchema.safeParse(input);
-      return parsed.success ? ok(parsed.data) : err({ code: 'INVALID_INPUT', message: 'Tool input is invalid', recoverable: false });
+      if (parsed.success) return ok(parsed.data);
+      const issue = parsed.error.issues[0];
+      const fieldPath = safeSchemaFieldPath(issue?.path ?? []);
+      return err({
+        code: 'INVALID_INPUT',
+        message: 'Tool input is invalid',
+        recoverable: false,
+        details: {
+          reason: issue === undefined ? 'schema_rejected' : (SCHEMA_REJECTION_REASONS[issue.code] ?? 'schema_rejected'),
+          ...(fieldPath === undefined ? {} : { fieldPath }),
+        },
+      });
     },
     execute(
       input: unknown,
@@ -224,6 +249,22 @@ export function defineTool<T extends z.ZodType>(config: ToolConfig<T>): McpToolD
       return config.handler(input as z.infer<T>, signal, authorization, internal);
     },
   };
+}
+
+function safeSchemaFieldPath(path: readonly PropertyKey[]): string | undefined {
+  if (path.length === 0 || path.length > 16) return undefined;
+  let fieldPath = '';
+  for (const segment of path) {
+    if (typeof segment === 'number' && Number.isSafeInteger(segment) && segment >= 0) {
+      fieldPath += `[${segment}]`;
+    } else if (typeof segment === 'string' && /^[A-Za-z_][A-Za-z0-9_-]{0,63}$/.test(segment)) {
+      fieldPath += fieldPath.length === 0 ? segment : `.${segment}`;
+    } else {
+      return undefined;
+    }
+    if (fieldPath.length > 160) return undefined;
+  }
+  return fieldPath;
 }
 
 export function missingService<T>(): Result<T> {

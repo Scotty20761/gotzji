@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { ok, type AutomationMilestoneDefinition } from '@lnwjud/domain';
+import { ok, type AutomationMilestoneDefinition, type Result } from '@lnwjud/domain';
 import { SqliteAutomationRepository } from '../../storage/src/automation-repository.js';
 import { SqliteDatabase } from '../../storage/src/database.js';
 import { SqliteGoalRepository } from '../../storage/src/goal-repository.js';
@@ -7,7 +7,7 @@ import { SqliteWorkspaceRepository } from '../../storage/src/workspace-repositor
 import { AutomationService, type AutomationDispatchPort, type MutateAutomationRunRequest } from './automation-service.js';
 import type { AutomationVerificationPort } from './automation-verifier.js';
 import type { FileActor } from './file-service.js';
-import { GoalContinuationService } from './goal-continuation-service.js';
+import { GoalContinuationService, type EngineeringGateEvidenceVerifier } from './goal-continuation-service.js';
 
 const actor: FileActor = { clientId: 'client-a', clientName: 'Client A', sessionId: 'session-a' };
 const now = '2026-09-20T10:00:00.000Z';
@@ -129,6 +129,52 @@ describe('AutomationService durable goal integration', () => {
   });
 });
 
+describe('GoalContinuationService Engineering gate diagnostics', () => {
+  it('exposes only the typed gate and verifier reason while retaining generic Error secrecy', async () => {
+    const verifyDetailed = vi.fn(async () => ({ verified: false as const, reason: 'run_not_terminal' as const }));
+    const rejected = await engineeringGateDiagnostic({
+      verify: vi.fn(async () => false),
+      verifyDetailed,
+    }, 'typed-gate-diagnostic');
+    expect(rejected).toMatchObject({
+      ok: false,
+      error: {
+        code: 'INVALID_INPUT',
+        message: 'Engineering gate update was rejected',
+        details: { gateId: 'diff', reason: 'run_not_terminal' },
+      },
+    });
+    expect(JSON.stringify(rejected)).not.toContain('host-secret-output');
+    expect(verifyDetailed).toHaveBeenCalledWith(
+      'workspace-gate',
+      expect.objectContaining({ runId: 'run-1' }),
+      'diff',
+      undefined,
+      expect.objectContaining({ goalId: expect.any(String), ownerClientId: actor.clientId, userIntentRevision: 0 }),
+    );
+  });
+
+  it('supports legacy boolean verifiers and keeps arbitrary verifier errors redacted', async () => {
+    const legacy = await engineeringGateDiagnostic({ verify: vi.fn(async () => false) }, 'legacy-gate-diagnostic');
+    expect(legacy).toMatchObject({
+      ok: false,
+      error: { details: { gateId: 'diff', reason: 'host_runtime_rejected' } },
+    });
+
+    const secret = 'token=verifier-secret C:\\private\\workspace';
+    const thrown = await engineeringGateDiagnostic({
+      verify: vi.fn(async () => false),
+      verifyDetailed: vi.fn(async () => { throw new Error(secret); }),
+    }, 'throwing-gate-diagnostic');
+    expect(thrown).toMatchObject({
+      ok: false,
+      error: { code: 'INVALID_INPUT', message: 'Durable goal input is invalid' },
+    });
+    expect(thrown).not.toMatchObject({ error: { details: expect.anything() } });
+    expect(JSON.stringify(thrown)).not.toContain(secret);
+  });
+});
+
 async function fixture(input: {
   readonly milestones: readonly ReturnType<typeof milestone>[];
   readonly taskCancellation?: { cancelForGoal: (...args: never[]) => Promise<readonly never[]> };
@@ -206,4 +252,39 @@ function milestone(id: string, goalStepId: string, role: 'blocking_job' | 'suppo
     },
     verification: [{ id: `${id}-exit`, kind: 'command_exit', expectedExitCode: 0 }],
   } as const;
+}
+
+async function engineeringGateDiagnostic(verifier: EngineeringGateEvidenceVerifier, goalKey: string): Promise<Result<unknown>> {
+  const database = new SqliteDatabase(':memory:');
+  const workspaces = new SqliteWorkspaceRepository(database);
+  await workspaces.insert({
+    id: 'workspace-gate', displayName: 'Workspace Gate', rootPath: 'C:\\workspace-gate', realRootPath: 'C:\\workspace-gate', createdAt: now,
+  });
+  const goals = new GoalContinuationService(workspaces, new SqliteGoalRepository(database), {
+    now: (): Date => new Date(now), engineeringEvidenceVerifier: verifier,
+  });
+  try {
+    const started = await goals.runGoal(actor, {
+      workspaceId: 'workspace-gate', goalKey, objective: 'Fix local behavior.', leaseSeconds: 600,
+      engineering: {
+        schemaVersion: 1, primaryTaskKind: 'bugfix', riskTier: 'medium', policyDigest: 'digest', deliveryScope: 'local',
+        gates: [{ id: 'diff', title: 'Diff', applicability: 'required', status: 'pending', reason: 'Inspect diff.', basedOnUserIntentRevision: 0 }],
+      },
+    });
+    if (!started.ok || started.value.leaseToken === undefined) throw new Error('failed to start diagnostic goal');
+    return await goals.checkpointGoal(actor, {
+      goalId: started.value.goalId, leaseToken: started.value.leaseToken, expectedRevision: 0, expectedUserIntentRevision: 0,
+      currentPhase: 'validate', summary: 'Validate.', stepUpdates: [], nextAction: 'Wait.', blockers: [], evidence: [],
+      resumeContext: {
+        changedFiles: [], commands: [{ command: 'pnpm test', status: 'passed', exitCode: 0, result: 'host-secret-output' }],
+        decisions: [], failedAttempts: [], pendingValidation: [], resumePrerequisites: [], stateFacts: [], artifacts: [],
+      },
+      engineeringGateUpdates: [{
+        gateId: 'diff', status: 'passed',
+        evidence: { source: 'host_observed', observedAt: now, workspaceId: 'workspace-gate', command: 'pnpm test', runId: 'run-1', exitCode: 0 },
+      }],
+    });
+  } finally {
+    database.close();
+  }
 }

@@ -77,6 +77,63 @@ describe('RuntimeEngineeringEvidenceVerifier', () => {
     await expect(verifier.verify('workspace-1', base, 'focused_validation')).resolves.toBe(false);
   });
 
+  it('returns allowlisted diagnostic reasons without exposing host output', async () => {
+    const secretOutput = 'token=host-secret C:\\private\\workspace';
+    const shell = { statusForGoalLiveness: vi.fn(async (_workspaceId: string, taskId: string) => (
+      taskId === 'missing'
+        ? err(appError('PROCESS_NOT_FOUND', secretOutput))
+        : ok(taskId === 'running'
+          ? { state: 'running', stdout: secretOutput }
+          : taskId === 'failed'
+            ? { state: 'completed', exit_code: 7, stdout: secretOutput }
+            : { state: 'completed', exit_code: 0, executable: 'echo', arguments: ['wrong'], stdout: secretOutput })
+    )) };
+    const verifier = new RuntimeEngineeringEvidenceVerifier({ shell });
+    const base = { source: 'host_observed' as const, observedAt: '2026-09-28T00:00:00Z', workspaceId: 'workspace-1', command: 'pnpm test' };
+
+    await expect(verifier.verifyDetailed('workspace-1', base, 'focused_validation'))
+      .resolves.toEqual({ verified: false, reason: 'missing_run_id' });
+    await expect(verifier.verifyDetailed('workspace-1', { ...base, runId: 'missing' }, 'focused_validation'))
+      .resolves.toEqual({ verified: false, reason: 'run_not_found' });
+    await expect(verifier.verifyDetailed('workspace-1', { ...base, runId: 'running' }, 'focused_validation'))
+      .resolves.toEqual({ verified: false, reason: 'run_not_terminal' });
+    await expect(verifier.verifyDetailed('workspace-1', { ...base, runId: 'failed', exitCode: 7 }, 'focused_validation'))
+      .resolves.toEqual({ verified: false, reason: 'run_nonzero_exit' });
+    const mismatch = await verifier.verifyDetailed('workspace-1', { ...base, runId: 'wrong', exitCode: 0 }, 'focused_validation');
+    expect(mismatch).toEqual({ verified: false, reason: 'command_fingerprint_mismatch' });
+    expect(JSON.stringify(mismatch)).not.toContain(secretOutput);
+  });
+
+  it('optionally binds a successful run receipt to the canonical goal owner and intent revision', async () => {
+    const command = 'pnpm test';
+    const shell = { statusForGoalLiveness: vi.fn(async () => ok({
+      state: 'completed', exit_code: 0, command_fingerprint: engineeringCommandFingerprint(command),
+      goal_id: 'goal-1', owner_client_id: 'client-1', user_intent_revision: 4,
+    })) };
+    const strict = new RuntimeEngineeringEvidenceVerifier({ shell, requireGoalBinding: true });
+    const legacy = new RuntimeEngineeringEvidenceVerifier({ shell });
+    const evidence = {
+      source: 'host_observed' as const, observedAt: '2026-09-28T00:00:00Z', workspaceId: 'workspace-1',
+      command, runId: 'run-1', exitCode: 0,
+    };
+    const expected = { goalId: 'goal-1', ownerClientId: 'client-1', userIntentRevision: 4 };
+
+    await expect(strict.verifyDetailed('workspace-1', evidence, 'focused_validation', [], expected))
+      .resolves.toEqual({ verified: true });
+    for (const mismatched of [
+      { ...expected, goalId: 'goal-2' },
+      { ...expected, ownerClientId: 'client-2' },
+      { ...expected, userIntentRevision: 5 },
+    ]) {
+      await expect(strict.verifyDetailed('workspace-1', evidence, 'focused_validation', [], mismatched))
+        .resolves.toEqual({ verified: false, reason: 'job_binding_mismatch' });
+      await expect(strict.verify('workspace-1', evidence, 'focused_validation', [], mismatched)).resolves.toBe(false);
+    }
+    await expect(strict.verifyDetailed('workspace-1', evidence, 'focused_validation'))
+      .resolves.toEqual({ verified: false, reason: 'job_binding_mismatch' });
+    await expect(legacy.verify('workspace-1', evidence, 'focused_validation')).resolves.toBe(true);
+  });
+
   it('rejects an unrelated successful command and an observation without command identity', async () => {
     const shell = { statusForGoalLiveness: vi.fn(async (_workspaceId: string, taskId: string) => ok(
       taskId === 'unidentified'
@@ -145,6 +202,14 @@ describe('RuntimeEngineeringEvidenceVerifier', () => {
       source: 'host_observed', observedAt: '2026-09-29T00:00:00Z', workspaceId: 'workspace-1',
       command: nonCanonicalCiCommand, runId: 'noncanonical-ci-proof', exitCode: 0, commit, conclusion: 'success',
     }, 'exact_sha_ci')).resolves.toBe(false);
+    await expect(verifier.verifyDetailed('workspace-1', {
+      source: 'host_observed', observedAt: '2026-09-29T00:00:00Z', workspaceId: 'workspace-1',
+      command: packageCommand, runId: 'package-proof', exitCode: 0, commit,
+    }, 'package')).resolves.toEqual({ verified: false, reason: 'artifact_mismatch' });
+    await expect(verifier.verifyDetailed('workspace-1', {
+      source: 'host_observed', observedAt: '2026-09-29T00:00:00Z', workspaceId: 'workspace-1',
+      command: nonCanonicalCiCommand, runId: 'noncanonical-ci-proof', exitCode: 0, commit, conclusion: 'success',
+    }, 'exact_sha_ci')).resolves.toEqual({ verified: false, reason: 'ci_mismatch' });
   });
 
   it('accepts a fresh generic package artifact from the exact durable shell receipt and rejects stale or missing artifacts', async () => {
@@ -261,5 +326,7 @@ describe('RuntimeEngineeringEvidenceVerifier', () => {
     await expect(mismatched.verify('workspace-1', packageEvidence, 'package')).resolves.toBe(false);
     await expect(dirty.verify('workspace-1', ciEvidence, 'exact_sha_ci')).resolves.toBe(false);
     await expect(dirty.verify('workspace-1', packageEvidence, 'package')).resolves.toBe(false);
+    await expect(mismatched.verifyDetailed('workspace-1', ciEvidence, 'exact_sha_ci'))
+      .resolves.toEqual({ verified: false, reason: 'source_state_mismatch' });
   });
 });

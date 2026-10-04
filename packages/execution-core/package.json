@@ -15,11 +15,13 @@
   "dependencies": {
     "@lnwjud/application": "workspace:*",
     "@lnwjud/domain": "workspace:*",
+    "@lnwjud/mcp-server": "workspace:*",
     "@lnwjud/storage": "workspace:*",
     "@lnwjud/workspace": "workspace:*"
   },
   "scripts": {
     "build": "tsc --outDir dist && node scripts/copy-worker.mjs",
+    "pretest": "tsc --outDir dist && node scripts/copy-worker.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --fileParallelism=false",
     "qualify": "node dist/qualification.js",

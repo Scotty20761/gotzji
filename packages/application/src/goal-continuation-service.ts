@@ -3,6 +3,7 @@ import {
   GoalStateError,
   appError,
   err,
+  isEngineeringGateEvidenceFailureReason,
   mayMarkEngineeringGateNotApplicable,
   ok,
   type GoalCheckpointRecord,
@@ -16,6 +17,9 @@ import {
   type GoalIterationPolicy,
   type EngineeringGoalMetadata,
   type EngineeringGateEvidence,
+  type EngineeringGateEvidenceBinding,
+  type EngineeringGateEvidenceFailureReason,
+  type EngineeringGateEvidenceVerificationResult,
   type EngineeringGateStatus,
   type EngineeringReviewFinding,
   type GoalLeaseRecoveryEvidence,
@@ -356,7 +360,41 @@ export interface EngineeringGateEvidenceVerifier {
     evidence: EngineeringGateEvidence,
     gateId: string,
     requiredPlatforms?: readonly ('win32' | 'darwin' | 'linux')[],
+    expectedBinding?: EngineeringGateEvidenceBinding,
   ): Promise<boolean>;
+  verifyDetailed?(
+    workspaceId: string,
+    evidence: EngineeringGateEvidence,
+    gateId: string,
+    requiredPlatforms?: readonly ('win32' | 'darwin' | 'linux')[],
+    expectedBinding?: EngineeringGateEvidenceBinding,
+  ): Promise<EngineeringGateEvidenceVerificationResult>;
+}
+
+type EngineeringGateUpdateFailureReason =
+  | EngineeringGateEvidenceFailureReason
+  | 'engineering_metadata_missing'
+  | 'too_many_gate_updates'
+  | 'invalid_gate_id'
+  | 'duplicate_gate_update'
+  | 'unknown_gate'
+  | 'required_gate_not_applicable'
+  | 'declared_command_mismatch'
+  | 'missing_not_applicable_reason'
+  | 'missing_passed_evidence'
+  | 'evidence_workspace_mismatch'
+  | 'missing_host_command_or_run'
+  | 'checkpoint_command_missing'
+  | 'checkpoint_exit_code_mismatch';
+
+class EngineeringGateUpdateError extends Error {
+  public constructor(
+    public readonly reason: EngineeringGateUpdateFailureReason,
+    public readonly gateId?: string,
+  ) {
+    super('Engineering gate update was rejected');
+    this.name = 'EngineeringGateUpdateError';
+  }
 }
 
 export interface GoalContinuationServiceOptions {
@@ -537,7 +575,15 @@ export class GoalContinuationService {
       if (request.engineering !== undefined && (request.engineeringGateUpdates !== undefined || request.engineeringReviewFindings !== undefined)) throw new Error('engineering metadata cannot be supplied with Engineering Harness updates');
       let engineering = request.engineeringGateUpdates === undefined
         ? request.engineering
-        : await applyEngineeringGateUpdates(current.engineering, request.engineeringGateUpdates, current.workspaceId, current.userIntentRevision, resumeContext, this.engineeringEvidenceVerifier);
+        : await applyEngineeringGateUpdates(
+          current.engineering,
+          request.engineeringGateUpdates,
+          current.workspaceId,
+          current.userIntentRevision,
+          resumeContext,
+          this.engineeringEvidenceVerifier,
+          { goalId: current.id, ownerClientId: current.ownerClientId, userIntentRevision: current.userIntentRevision },
+        );
       if (request.engineeringReviewFindings !== undefined) {
         const baseEngineering = engineering ?? current.engineering;
         if (baseEngineering === undefined) throw new Error('engineeringReviewFindings require an Engineering Harness goal');
@@ -1041,6 +1087,16 @@ export class GoalContinuationService {
   }
 
   private mapError(error: unknown): Result<never> {
+    if (error instanceof EngineeringGateUpdateError) {
+      const gateId = safeDiagnosticGateId(error.gateId);
+      return err({
+        ...appError('INVALID_INPUT', 'Engineering gate update was rejected'),
+        details: {
+          reason: error.reason,
+          ...(gateId === undefined ? {} : { gateId }),
+        },
+      });
+    }
     if (error instanceof GoalStateError) {
       switch (error.reason) {
         case 'owner_mismatch': return err(appError('PERMISSION_DENIED', 'Goal belongs to another client'));
@@ -1190,41 +1246,59 @@ async function applyEngineeringGateUpdates(
   userIntentRevision: number,
   resumeContext: GoalCheckpointResumeContext | undefined,
   evidenceVerifier: EngineeringGateEvidenceVerifier | undefined,
+  expectedBinding: EngineeringGateEvidenceBinding,
 ): Promise<EngineeringGoalMetadata> {
-  if (engineering === undefined) throw new Error('engineeringGateUpdates require an Engineering Harness goal');
-  if (updates.length > 100) throw new Error('engineeringGateUpdates are invalid');
+  if (engineering === undefined) throw new EngineeringGateUpdateError('engineering_metadata_missing');
+  if (updates.length > 100) throw new EngineeringGateUpdateError('too_many_gate_updates');
   const byId = new Map(engineering.gates.map((gate) => [gate.id, gate] as const));
   const seen = new Set<string>();
   for (const update of updates) {
-    const gateId = requiredBounded(update.gateId, 'engineering gate id', 128);
-    if (seen.has(gateId)) throw new Error('engineering gate updates must be unique');
-    seen.add(gateId);
+    let gateId: string;
+    try {
+      gateId = requiredBounded(update.gateId, 'engineering gate id', 128);
+    } catch {
+      throw new EngineeringGateUpdateError('invalid_gate_id');
+    }
     const current = byId.get(gateId);
-    if (current === undefined) throw new Error(`engineering gate is unknown: ${gateId}`);
+    if (seen.has(gateId)) throw new EngineeringGateUpdateError('duplicate_gate_update', current?.id);
+    seen.add(gateId);
+    if (current === undefined) throw new EngineeringGateUpdateError('unknown_gate');
     if (update.status === 'not_applicable' && !mayMarkEngineeringGateNotApplicable(current)) {
-      throw new Error(`required engineering gate cannot be marked not_applicable: ${gateId}`);
+      throw new EngineeringGateUpdateError('required_gate_not_applicable', current.id);
     }
     if (update.status === 'passed' && current.checkCommand !== undefined && update.evidence?.command !== current.checkCommand) {
-      throw new Error(`engineering gate requires its declared check command: ${gateId}`);
+      throw new EngineeringGateUpdateError('declared_command_mismatch', current.id);
     }
-    if (update.status === 'not_applicable' && update.reason?.trim() === '') throw new Error('not_applicable engineering gate requires a reason');
-    if (update.status === 'not_applicable' && update.reason === undefined) throw new Error('not_applicable engineering gate requires a reason');
-    if (update.status === 'passed' && update.evidence === undefined) throw new Error('passed engineering gate requires observed evidence');
+    if (update.status === 'not_applicable' && (update.reason === undefined || update.reason.trim() === '')) {
+      throw new EngineeringGateUpdateError('missing_not_applicable_reason', current.id);
+    }
+    if (update.status === 'passed' && update.evidence === undefined) {
+      throw new EngineeringGateUpdateError('missing_passed_evidence', current.id);
+    }
     if (update.evidence !== undefined) {
-      if (update.evidence.workspaceId !== workspaceId) throw new Error('engineering gate evidence workspace does not match the goal');
+      if (update.evidence.workspaceId !== workspaceId) throw new EngineeringGateUpdateError('evidence_workspace_mismatch', current.id);
       if (update.evidence.source === 'host_observed') {
         if (update.status === 'passed' && (update.evidence.command === undefined || update.evidence.runId === undefined)) {
-          throw new Error('host-observed passed engineering evidence requires a command and host runId');
+          throw new EngineeringGateUpdateError('missing_host_command_or_run', current.id);
         }
         if (update.evidence.command !== undefined) {
           const observed = resumeContext?.commands.find((entry) => entry.command === update.evidence?.command && entry.status === 'passed');
-          if (observed === undefined) throw new Error('host-observed command evidence is not present in the checkpoint resumeContext');
-          if (update.evidence.exitCode !== undefined && observed.exitCode !== update.evidence.exitCode) throw new Error('engineering gate evidence exit code does not match the observed command');
+          if (observed === undefined) throw new EngineeringGateUpdateError('checkpoint_command_missing', current.id);
+          if (update.evidence.exitCode !== undefined && observed.exitCode !== update.evidence.exitCode) {
+            throw new EngineeringGateUpdateError('checkpoint_exit_code_mismatch', current.id);
+          }
         }
         if (update.status === 'passed') {
-          if (evidenceVerifier === undefined || !(await evidenceVerifier.verify(workspaceId, update.evidence, gateId, current.requiredPlatforms))) {
-            throw new Error('host-observed engineering evidence could not be verified against the host task runtime');
-          }
+          if (evidenceVerifier === undefined) throw new EngineeringGateUpdateError('runtime_provider_unavailable', current.id);
+          const verification = await verifyEngineeringGateEvidence(
+            evidenceVerifier,
+            workspaceId,
+            update.evidence,
+            gateId,
+            current.requiredPlatforms,
+            expectedBinding,
+          );
+          if (!verification.verified) throw new EngineeringGateUpdateError(verification.reason, current.id);
         }
       }
     }
@@ -1241,6 +1315,29 @@ async function applyEngineeringGateUpdates(
     });
   }
   return { ...engineering, gates: engineering.gates.map((gate) => byId.get(gate.id) ?? gate) };
+}
+
+async function verifyEngineeringGateEvidence(
+  verifier: EngineeringGateEvidenceVerifier,
+  workspaceId: string,
+  evidence: EngineeringGateEvidence,
+  gateId: string,
+  requiredPlatforms: readonly ('win32' | 'darwin' | 'linux')[] | undefined,
+  expectedBinding: EngineeringGateEvidenceBinding,
+): Promise<EngineeringGateEvidenceVerificationResult> {
+  if (verifier.verifyDetailed !== undefined) {
+    const result = await verifier.verifyDetailed(workspaceId, evidence, gateId, requiredPlatforms, expectedBinding);
+    if (result.verified) return result;
+    if (!isEngineeringGateEvidenceFailureReason(result.reason)) throw new Error('Engineering evidence verifier returned an invalid diagnostic');
+    return result;
+  }
+  return await verifier.verify(workspaceId, evidence, gateId, requiredPlatforms, expectedBinding)
+    ? { verified: true }
+    : { verified: false, reason: 'host_runtime_rejected' };
+}
+
+function safeDiagnosticGateId(value: string | undefined): string | undefined {
+  return value !== undefined && /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/.test(value) ? value : undefined;
 }
 
 function staleEngineeringGates(engineering: EngineeringGoalMetadata | undefined, gateIds: readonly string[], nextUserIntentRevision: number): EngineeringGoalMetadata | undefined {

@@ -7,6 +7,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { brokerCall } from './grace-broker.mjs';
 import { launchGrace } from './grace-runtime.mjs';
+import { validationManager } from './phase-r-runner.mjs';
 
 const configPath = process.argv[2];
 const mode = process.argv[3] ?? 'worker';
@@ -38,6 +39,11 @@ if (mode !== 'worker') {
     renameSync(path.join(directory, name + '.tmp'), path.join(directory, name));
   };
   const snapshot = () => ({ epoch: config.epoch, pid: process.pid, state, descendants });
+  let graceFinished=false;
+  const validator=validationManager(config,directory,{
+    persist,register:(pid)=>{descendants.push(pid);persist('observation.json',snapshot());},
+    finished:(receipt)=>{if(!stopping&&graceFinished){state=receipt.state==='completed'?'done':'failed';persist('observation.json',snapshot());}}
+  });
   const server = http.createServer(async (req, res) => {
     // Each control/bridge request is bounded. Do not make proved cancellation
     // wait for a client keep-alive socket to expire before this worker exits.
@@ -52,10 +58,10 @@ if (mode !== 'worker') {
           if (!Number.isInteger(value.pid) || value.pid < 1) throw new Error('INVALID_PROCESS');
           descendants.push(value.pid); persist('observation.json', snapshot()); res.end('{}');
         } else {
-          const result = brokerCall(config, value.name, value.arguments, runtimeApproved && !stopping);
+          const result = await brokerCall(config, value.name, value.arguments, runtimeApproved && !stopping, validator);
           res.setHeader('Content-Type','application/json'); res.end(JSON.stringify(result));
         }
-      } catch { res.writeHead(403).end('{}'); }
+      } catch (error) { const known=['RUNTIME_OR_TOOL_DENIED','ARGUMENTS_DENIED','PAYLOAD_DENIED','POLICY_DENIED','DELIVERY_AUTHORITY_DENIED','LIVE_AUTHORITY_DENIED','PREWORK_REQUIRED','SOURCE_READ_REQUIRED','SAVE_REQUIRED','REPRO_REQUIRED','EFFECT_UNKNOWN','DEPENDENCIES_CHANGED','OPERATION_DIGEST_CONFLICT','REPRO_NOT_VERIFIED','RUN_NOT_FOUND'];const reason=known.includes(error?.message)?error.message:'BROKER_DENIED';res.writeHead(403,{'Content-Type':'application/json'}).end(JSON.stringify({error:{code:reason}})); }
       return;
     }
     if (req.method === 'GET' && url.pathname === '/status') {
@@ -75,13 +81,20 @@ if (mode !== 'worker') {
       } else if (config.operation === 'fixture.hold') {
         child = spawn(process.execPath, [fileURLToPath(import.meta.url), configPath, 'child'], { stdio: ['ignore', 'ignore', 'ignore', 'ipc'], windowsHide: true });
         child.on('message', (m) => { if (Number.isInteger(m.pid)) { descendants.push(m.pid); persist('observation.json', snapshot()); } });
-      } else if (config.operation === 'grace.read-save-check' && config.grace) {
+      } else if (config.operation.startsWith('grace.') && config.grace) {
         try {
           const ready = JSON.parse(JSON.parse(readFileSync(path.join(directory,'ready.json'),'utf8')).body);
           child = launchGrace(configPath, config, ready, {
             register: (pid) => { descendants.push(pid); persist('observation.json', snapshot()); },
             approve: (value) => { runtimeApproved = value; }, persist,
-            finish: (receipt) => { state = receipt ? 'done' : 'failed'; persist('observation.json', snapshot()); },
+            finish: (receipt) => {
+              graceFinished=!!receipt;
+              if(config.grace.recipe==='code-check'){
+                const run=validator.status();state=!receipt||!run?'failed':run.state==='completed'?'done':run.state==='failed'?'failed':'running';
+                if(!receipt) void validator.stop();
+              } else state=receipt?'done':'failed';
+              persist('observation.json',snapshot());
+            },
           });
         } catch { state = 'failed'; }
       } else { state = 'failed'; }
@@ -90,6 +103,7 @@ if (mode !== 'worker') {
     }
     if (req.method === 'POST' && url.pathname === '/cancel' && !stopping) {
       stopping = true;
+      await validator.stop();
       if (child) {
         await new Promise((resolve) => { if (child.exitCode !== null) resolve(); else { child.once('exit', resolve); if (config.grace) child.kill(); else child.send('stop'); } });
       }

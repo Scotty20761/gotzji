@@ -1,0 +1,16 @@
+import { mkdirSync,writeFileSync } from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
+import { randomUUID,randomBytes } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
+import { ExecutionCore } from './core.js';
+const directory=path.join(process.env.LOCALAPPDATA??os.tmpdir(),'gotzji','phase-r',randomUUID());mkdirSync(directory,{recursive:true,mode:0o700});
+const sourceFile=path.join(directory,'source.mjs');writeFileSync(sourceFile,'export function add(a, b) { return a - b; }\n',{flag:'wx',mode:0o600});
+const test=process.argv.includes('--test-driver');
+const executable=test?process.execPath:path.join(process.env.USERPROFILE??os.homedir(),'.local','bin','claude.exe');
+const testDriver=fileURLToPath(new URL('./grace-test-driver.mjs',import.meta.url));
+const registration={executable,libraryRoot:'E:/Investment Library',sourceFile,recipe:'code-check' as const,expectedContent:'export function add(a, b) { return a + b; }\n',validationMs:process.argv.includes('--long')?310000:25,...(test?{testDriver}:{})};
+const core=await ExecutionCore.open(directory,{grace:registration});
+const credential=core.enrollAdapter('gotzji-personal','qualification-owner');core.close();
+const configPath=path.join(directory,'host.json');writeFileSync(configPath,JSON.stringify({...registration,directory,credential,daemonSecret:randomBytes(32).toString('hex')}),{flag:'wx',mode:0o600});
+process.stdout.write(JSON.stringify({coverage:test?'explicit-no-model-bootstrap':'actual-Claude-bootstrap',configPath,serverName:'gotzji',transport:'stdio',command:process.execPath,args:[fileURLToPath(new URL('./phase-r-frontend.mjs',import.meta.url)),configPath]})+'\n');

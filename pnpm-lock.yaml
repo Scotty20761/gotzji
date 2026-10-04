@@ -263,6 +263,9 @@ importers:
       '@lnwjud/domain':
         specifier: workspace:*
         version: link:../domain
+      '@lnwjud/mcp-server':
+        specifier: workspace:*
+        version: link:../mcp-server
       '@lnwjud/storage':
         specifier: workspace:*
         version: link:../storage
