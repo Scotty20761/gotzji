@@ -62,9 +62,13 @@ if (!startupControlOnly) {
   const corepackScript = [
     path.join(path.dirname(process.execPath), 'node_modules', 'corepack', 'dist', 'corepack.js'),
     path.join(process.env.ProgramFiles ?? 'C:\\Program Files', 'nodejs', 'node_modules', 'corepack', 'dist', 'corepack.js'),
-  ].find((candidate) => {
-    try { return existsSync(candidate) && lstatSync(candidate).isFile() && !lstatSync(candidate).isSymbolicLink() && realpathSync(candidate) === path.resolve(candidate); } catch { return false; }
-  });
+  ].map((candidate) => {
+    try {
+      const resolved = realpathSync(candidate);
+      const info = lstatSync(resolved);
+      return info.isFile() && !info.isSymbolicLink() ? resolved : undefined;
+    } catch { return undefined; }
+  }).find((candidate) => candidate !== undefined);
   if (corepackScript) for (const scriptName of ['build', 'test', 'lint', 'typecheck']) core.registerReviewedCommand(credential, {
     recipeId: `pnpm-${scriptName}`, displayName: `Run the selected project's reviewed pnpm ${scriptName} script`, executable: process.execPath,
     args: [projectScript, corepackScript, '${projectRoot}/package.json', scriptName], dependencies: [projectScript, corepackScript, '${projectRoot}/package.json'], timeoutMs: scriptName === 'test' ? 7_200_000 : 1_800_000,

@@ -1,4 +1,4 @@
-import { mkdtemp, rm, mkdir, writeFile, readFile } from 'node:fs/promises';
+import { rm, mkdir, writeFile, readFile, realpath } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, expect, it } from 'vitest';
@@ -13,16 +13,17 @@ import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:chil
 import { once } from 'node:events';
 import type { GraceRegistration } from './grace-profile.js';
 import { acquireHostOwnership, hashJavaScriptClosure } from './phase-r-host-identity.mjs';
+import { canonicalTemporaryDirectory } from './test-fixtures.js';
 const fixtures: { root: string; core: ExecutionCore }[] = [];
 afterEach(async () => {
   for (const {root,core} of fixtures.splice(0)) {
     core.close();
-    if (!path.resolve(root).startsWith(path.join(os.tmpdir(),'gotzji-phase-r-'))) throw new Error('Unexpected fixture root');
+    if (!path.resolve(root).startsWith(path.join(await realpath(os.tmpdir()),'gotzji-phase-r-'))) throw new Error('Unexpected fixture root');
     await rm(root,{recursive:true,force:true});
   }
 });
 async function codeFixture(validationMs=25,now?:()=>Date):Promise<{root:string;core:ExecutionCore;credential:string;registration:GraceRegistration}>{
- const root=await mkdtemp(path.join(os.tmpdir(),'gotzji-phase-r-'));
+ const root=await canonicalTemporaryDirectory('gotzji-phase-r-');
  const libraryRoot=path.join(root,'library');
  for(const file of ['CLAUDE.md','AGENTS.md','KNOWLEDGE_INDEX.md','references/agent-knowledge-workflow.md','.claude/skills/karpathy-guidelines/SKILL.md','.claude/skills/debug-mantra/SKILL.md']){await mkdir(path.dirname(path.join(libraryRoot,file)),{recursive:true});await writeFile(path.join(libraryRoot,file),'# Fixed unit-test policy. No alternate tools.\n');}
  const sourceFile=path.join(root,'source.mjs');await writeFile(sourceFile,'export function add(a, b) { return a - b; }\n');
@@ -66,7 +67,7 @@ it('observer closure and retry preserve the live command and exactly one effect/
  }finally{if(reopened){await reopened.cancel(f.credential,binding);reopened.close();}else{await f.core.cancel(f.credential,binding);}}
 },10000);
 it('returns the host-authorized delivery boundary with the canonical selected job', async () => {
-  const root=await mkdtemp(path.join(os.tmpdir(),'gotzji-phase-r-'));
+  const root=await canonicalTemporaryDirectory('gotzji-phase-r-');
   const core=await ExecutionCore.open(root); fixtures.push({root,core});
   const credential=core.enrollAdapter('gotzji','owner');
   const prepared=core.prepare(credential,{requestId:'local-job',operation:'fixture.write',text:'approved local output'});
@@ -160,7 +161,7 @@ it('keeps a real nonzero validator result blocked instead of replaying it as an 
 },15000);
 
 it('admits concurrent and rejoined frontends while data drift blocks only new effects',async()=>{
- const root=await mkdtemp(path.join(os.tmpdir(),'gotzji-phase-r-host-'));const directory=path.join(root,'core');let daemonPid:number|undefined;let workerDirectory='';const frontends:ChildProcessWithoutNullStreams[]=[];
+ const root=await canonicalTemporaryDirectory('gotzji-phase-r-host-');const directory=path.join(root,'core');let daemonPid:number|undefined;let workerDirectory='';const frontends:ChildProcessWithoutNullStreams[]=[];
  try{
   const libraryRoot=path.join(root,'library');for(const file of ['CLAUDE.md','AGENTS.md','KNOWLEDGE_INDEX.md','references/agent-knowledge-workflow.md','.claude/skills/karpathy-guidelines/SKILL.md','.claude/skills/debug-mantra/SKILL.md']){await mkdir(path.dirname(path.join(libraryRoot,file)),{recursive:true});await writeFile(path.join(libraryRoot,file),'# Fixed host admission policy.\n');}
   const sourceFile=path.join(root,'source.mjs');await writeFile(sourceFile,'export function add(a, b) { return a - b; }\n');
@@ -204,7 +205,7 @@ it('admits concurrent and rejoined frontends while data drift blocks only new ef
 },30000);
 
 it('serializes competing stale-owner reclaimers and treats an incomplete legacy owner as transient contention',async()=>{
- const root=await mkdtemp(path.join(os.tmpdir(),'gotzji-phase-r-host-'));const database=new DatabaseSync(path.join(root,'core.sqlite'));database.exec("CREATE TABLE gotzji_host_owners (name TEXT PRIMARY KEY, pid INTEGER NOT NULL, nonce TEXT NOT NULL); INSERT INTO gotzji_host_owners VALUES ('daemon',2147483647,'dead-owner');");database.close();
+ const root=await canonicalTemporaryDirectory('gotzji-phase-r-host-');const database=new DatabaseSync(path.join(root,'core.sqlite'));database.exec("CREATE TABLE gotzji_host_owners (name TEXT PRIMARY KEY, pid INTEGER NOT NULL, nonce TEXT NOT NULL); INSERT INTO gotzji_host_owners VALUES ('daemon',2147483647,'dead-owner');");database.close();
  const key=randomBytes(32).toString('hex'),barrier=path.join(root,'start');const helper=pathToFileURL(fileURLToPath(new URL('../dist/phase-r-host-identity.mjs',import.meta.url))).href;
  const probe="import{existsSync}from'node:fs';const{acquireHostOwnership}=await import(process.argv[1]);const [root,key,barrier]=process.argv.slice(2);process.stdout.write('waiting\\n');while(!existsSync(barrier))await new Promise(r=>setTimeout(r,5));const owner=acquireHostOwnership(root,key);process.stdout.write((owner?'acquired':'denied')+'\\n');if(owner){await new Promise(r=>setTimeout(r,1000));owner.release();}";
  const children=[0,1].map(()=>spawn(process.execPath,['--input-type=module','-e',probe,helper,root,key,barrier],{stdio:['pipe','pipe','pipe'],windowsHide:true}));
@@ -216,5 +217,5 @@ it('serializes competing stale-owner reclaimers and treats an incomplete legacy 
 },15000);
 
 it('changes the host closure identity when a loaded dependency byte changes',async()=>{
- const root=await mkdtemp(path.join(os.tmpdir(),'gotzji-phase-r-host-'));try{const entry=path.join(root,'entry.mjs'),dependency=path.join(root,'dependency.mjs');await writeFile(entry,"export { value } from './dependency.mjs';\n");await writeFile(dependency,'export const value = 1;\n');const before=hashJavaScriptClosure([pathToFileURL(entry)]);await writeFile(dependency,'export const value = 2;\n');expect(hashJavaScriptClosure([pathToFileURL(entry)])).not.toBe(before);}finally{await rm(root,{recursive:true,force:true});}
+ const root=await canonicalTemporaryDirectory('gotzji-phase-r-host-');try{const entry=path.join(root,'entry.mjs'),dependency=path.join(root,'dependency.mjs');await writeFile(entry,"export { value } from './dependency.mjs';\n");await writeFile(dependency,'export const value = 1;\n');const before=hashJavaScriptClosure([pathToFileURL(entry)]);await writeFile(dependency,'export const value = 2;\n');expect(hashJavaScriptClosure([pathToFileURL(entry)])).not.toBe(before);}finally{await rm(root,{recursive:true,force:true});}
 });

@@ -1,16 +1,16 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { rmSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
-import os from 'node:os';
 import path from 'node:path';
 import { processIdentities, type ProcessIdentity } from './process-identity.mjs';
 import { acquireProductHostOwnership } from './product-host-ownership.mjs';
+import { canonicalTemporaryDirectorySync } from './test-fixtures.js';
 
 const directories: string[] = [];
 const secret = 'a'.repeat(64);
 const current = (suffix: string): ProcessIdentity => ({ birth: `birth-${suffix}`, executable: path.resolve(`node-${suffix}.exe`) });
 const reader = (identity: ProcessIdentity | null | 'unknown') => async (pids: readonly number[]): Promise<Record<number, ProcessIdentity | null | 'unknown'>> => Object.fromEntries(pids.map((pid) => [pid, identity]));
-function directory(): string { const value = mkdtempSync(path.join(os.tmpdir(), 'gotzji-product-owner-')); directories.push(value); return value; }
+function directory(): string { const value = canonicalTemporaryDirectorySync('gotzji-product-owner-'); directories.push(value); return value; }
 function legacyRow(root: string, pid: number): void {
   const database = new DatabaseSync(path.join(root, 'core.sqlite'));
   try { database.exec('CREATE TABLE gotzji_host_owners (name TEXT PRIMARY KEY, pid INTEGER NOT NULL, nonce TEXT NOT NULL)'); database.prepare('INSERT INTO gotzji_host_owners VALUES (?,?,?)').run('daemon', pid, 'legacy-nonce'); }

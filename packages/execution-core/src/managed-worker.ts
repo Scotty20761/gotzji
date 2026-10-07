@@ -38,14 +38,21 @@ export async function ownedProcessAlive(pid: number, expected: ProcessIdentity |
 }
 async function stoppedOwnership(worker: WorkerRow, observation: WorkerObservation): Promise<boolean> {
   const ready = signed<Ready>(worker, 'ready.json');
-  if (!ready || await ownedProcessAlive(observation.pid, ready.identity ?? observation.identities?.[observation.pid]) !== false) return false;
-  for (const pid of observation.descendants) {
-    // An actual owned ChildProcess close/IPC close observation is tied to this
-    // signed epoch. Another process may legitimately reuse its numeric PID.
-    if (observation.closedDescendants?.includes(pid)) continue;
-    if (await ownedProcessAlive(pid, observation.identities?.[pid]) !== false) return false;
-  }
-  return true;
+  if (!ready) return false;
+  const entries = [
+    { pid: observation.pid, expected: ready.identity ?? observation.identities?.[observation.pid] },
+    ...observation.descendants
+      .filter((pid) => !observation.closedDescendants?.includes(pid))
+      .map((pid) => ({ pid, expected: observation.identities?.[pid] })),
+  ];
+  const live = entries.filter((entry) => alive(entry.pid) !== false);
+  if (!live.length) return true;
+  const identities = await processIdentities(live.map((entry) => entry.pid));
+  return live.every(({ pid, expected }) => {
+    if (!expected) return false;
+    const observed = identities[pid];
+    return observed === null || (observed !== 'unknown' && observed !== undefined && !sameProcessIdentity(expected, observed));
+  });
 }
 export async function verifyStoppedWorker(worker: WorkerRow): Promise<boolean> {
   const observation = signed<WorkerObservation>(worker, 'stopped.json');

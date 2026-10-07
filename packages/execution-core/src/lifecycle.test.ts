@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, writeFile, rm, stat, utimes } from 'node:fs/promises';
+import { mkdir, writeFile, rm, stat, utimes, realpath } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
@@ -11,11 +11,12 @@ import { callWorker, stopWorker, alive } from './managed-worker.js';
 import type { WorkerRow } from './store.js';
 import type { GraceRegistration } from './grace-profile.js';
 import type { TaskBinding } from './types.js';
+import { canonicalTemporaryDirectory } from './test-fixtures.js';
 const { verifyFingerprint } = await import('./fingerprints.mjs');
 const roots: string[] = [];
 const cores: ExecutionCore[] = [];
 async function fixture(grace = false, options: {now?:()=>Date} = {}): Promise<{root:string;core:ExecutionCore;credential:string;sourceFile:string;registration?:GraceRegistration}> {
-  const root=await mkdtemp(path.join(os.tmpdir(),'gotzji-lifecycle-')); roots.push(root);
+  const root=await canonicalTemporaryDirectory('gotzji-lifecycle-'); roots.push(root);
   const sourceFile=path.join(root,'source.md'); await writeFile(sourceFile,'Original source\n');
   let registration: GraceRegistration | undefined;
   if (grace) {
@@ -37,7 +38,7 @@ afterEach(async()=>{
     const database=db(root); const workers=database.prepare('SELECT * FROM gotzji_workers').all() as unknown as WorkerRow[]; database.close();
     for(const value of workers) await stopWorker(value);
     for(const core of cores.splice(0)) { try{core.close();}catch{/* detached */} }
-    const absolute=path.resolve(root); if(path.dirname(absolute)!==path.resolve(os.tmpdir())||!path.basename(absolute).startsWith('gotzji-lifecycle-')) throw new Error('Invalid fixture cleanup');
+    const absolute=path.resolve(root); if(path.dirname(absolute)!==await realpath(os.tmpdir())||!path.basename(absolute).startsWith('gotzji-lifecycle-')) throw new Error('Invalid fixture cleanup');
     await rm(absolute,{recursive:true,force:true});
   }
 });

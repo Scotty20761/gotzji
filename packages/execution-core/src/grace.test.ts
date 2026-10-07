@@ -1,19 +1,19 @@
-import { mkdtemp, mkdir, writeFile, readFile, rm, stat } from 'node:fs/promises';
+import { mkdir, writeFile, readFile, rm, stat } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
-import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { ExecutionCore } from './core.js';
 import { callWorker, stopWorker } from './managed-worker.js';
 import type { GraceRegistration } from './grace-profile.js';
 import type { WorkerRow } from './store.js';
+import { canonicalTemporaryDirectory } from './test-fixtures.js';
 const { brokerCall } = await import('./grace-broker.mjs');
 const { approvedStartup } = await import('./grace-runtime.mjs');
 interface Fixture { root: string; core: ExecutionCore; credential: string; profile: GraceRegistration; jobId: string; handle: string; worker: WorkerRow; config: Record<string, unknown> }
 const fixtures: Fixture[] = [];
 async function fixture(): Promise<Fixture> {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'gotzji-grace-'));
+  const root = await canonicalTemporaryDirectory('gotzji-grace-');
   const library = path.join(root,'library'); await mkdir(path.join(library,'references'), { recursive:true });
   for (const file of ['CLAUDE.md','AGENTS.md','references/agent-knowledge-workflow.md','KNOWLEDGE_INDEX.md']) await writeFile(path.join(library,file), `Prepared policy ${file}\n`);
   const sourceFile = path.join(root,'public-source.md'); await writeFile(sourceFile, 'Original source\r\nภาษาไทย\r\n');

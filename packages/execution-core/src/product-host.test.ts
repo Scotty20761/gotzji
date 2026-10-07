@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import os from 'node:os';
 import path from 'node:path';
 import { cleanupProductHostStartup, completeProductHostStartup, ensureGotzjiProductHost, observeProductHostAuthorityPersistence, productRuntimeIdentity, readProductConfiguration, windowsProductSecretProtector, writeProductConfiguration, type ProductHostConfiguration } from './product-host.js';
 import { ensureProductControlDocuments } from './product-control-policy.js';
 import { productGraceProfile } from './grace-profile.js';
+import { canonicalTemporaryDirectorySync } from './test-fixtures.js';
 
 describe('private product enrollment storage', () => {
   it('publishes no supervisor or endpoint until the durable authority seal succeeds', async () => {
@@ -41,7 +41,7 @@ describe('private product enrollment storage', () => {
     expect(events).toEqual(['listener', 'core', 'ownership']);
   });
   it('retains a redacted startup-exit incident and excludes inherited Node hooks from the daemon', async () => {
-    const directory = mkdtempSync(path.join(os.tmpdir(), 'gotzji-startup-failure-'));
+    const directory = canonicalTemporaryDirectorySync('gotzji-startup-failure-');
     const entry = path.join(directory, 'intentional-startup-failure.mjs');
     writeFileSync(entry, "import{readFileSync}from'node:fs';import path from'node:path';const c=JSON.parse(JSON.parse(readFileSync(path.join(process.argv[2],'product-host.sealed.json'),'utf8')).payload);process.stderr.write('password='+c.daemonSecret+'\\nuri=http://127.0.0.1/mcp/'+c.mcpPathSecret+'\\ncredential='+c.credential+'\\nNODE_OPTIONS='+(process.env.NODE_OPTIONS??'absent')+'\\n');process.exit(1);");
     const protector = { protect: async (value: string): Promise<string> => value, unprotect: async (value: string): Promise<string> => value };
@@ -57,7 +57,7 @@ describe('private product enrollment storage', () => {
     expect(incident).toContain('NODE_OPTIONS=absent'); expect(incident).toContain('REDACTED');
   });
   it('shares concurrent app bootstrap and publishes one complete native snapshot before daemon launch', async () => {
-    const directory = mkdtempSync(path.join(os.tmpdir(), 'gotzji-concurrent-host-'));
+    const directory = canonicalTemporaryDirectorySync('gotzji-concurrent-host-');
     const script = path.join(directory, 'office.ps1'); writeFileSync(script, 'owned native provider');
     const sealed: ProductHostConfiguration[] = [];
     const protector = { protect: async (value: string): Promise<string> => { await new Promise((resolve) => setTimeout(resolve, 15)); sealed.push(JSON.parse(value) as ProductHostConfiguration); return value; }, unprotect: async (value: string): Promise<string> => value };
@@ -70,7 +70,7 @@ describe('private product enrollment storage', () => {
     expect((await readProductConfiguration(directory, protector)).native?.scriptPath).toBe(script);
   });
   it('rejects public-style provider overrides and test runners in sealed product config', async () => {
-    const directory = mkdtempSync(path.join(os.tmpdir(), 'gotzji-config-proof-'));
+    const directory = canonicalTemporaryDirectorySync('gotzji-config-proof-');
     const config: ProductHostConfiguration = { schemaVersion: 1, directory, ownerId: 'owner', daemonSecret: 'a'.repeat(64), mcpPathSecret: 'b'.repeat(64), executable: path.join(directory, 'claude.exe'), libraryRoot: directory };
     const protector = { protect: async (value: string): Promise<string> => value, unprotect: async (value: string): Promise<string> => value };
     for (const forged of [{ ...config, testRunnerModule: 'caller.mjs' }, { ...config, native: { scriptPath: path.join(directory, 'office.ps1'), scriptSha256: 'c'.repeat(64), testRunnerModule: 'caller.mjs' } }]) {
@@ -78,7 +78,7 @@ describe('private product enrollment storage', () => {
     }
   });
   it('requires complete exact packaged inventory and rejects missing, empty or extra runtime files', () => {
-    const directory = mkdtempSync(path.join(os.tmpdir(), 'gotzji-runtime-proof-'));
+    const directory = canonicalTemporaryDirectorySync('gotzji-runtime-proof-');
     const entry = path.join(directory, 'product-server.mjs');
     expect(() => productRuntimeIdentity(entry, { requireManifest: true })).toThrow('PRODUCT_RUNTIME_MANIFEST_REQUIRED');
     const filename = path.join(directory, 'product-runtime-manifest.json');
@@ -94,7 +94,7 @@ describe('private product enrollment storage', () => {
     expect(() => productRuntimeIdentity(entry, { requireManifest: true })).toThrow('PRODUCT_RUNTIME_INVENTORY_INVALID');
   });
   it('provides a fresh generic product profile without hardcoded user Library files', () => {
-    const directory = mkdtempSync(path.join(os.tmpdir(), 'gotzji-control-policy-'));
+    const directory = canonicalTemporaryDirectorySync('gotzji-control-policy-');
     ensureProductControlDocuments(directory);
     const profile = productGraceProfile({ executable: process.execPath, libraryRoot: directory });
     expect(profile.recipe).toBe('product');
@@ -103,7 +103,7 @@ describe('private product enrollment storage', () => {
     ensureProductControlDocuments(directory);
   });
   it.runIf(process.platform === 'win32')('uses actual CurrentUser DPAPI and atomically retains owner/Unicode config without plaintext secrets', async () => {
-    const directory = mkdtempSync(path.join(os.tmpdir(), 'gotzji-dpapi-'));
+    const directory = canonicalTemporaryDirectorySync('gotzji-dpapi-');
     const config: ProductHostConfiguration = { schemaVersion: 1, directory, ownerId: 'test-owner', daemonSecret: 'a'.repeat(64), mcpPathSecret: 'b'.repeat(64), executable: path.join(directory, 'claude.exe'), libraryRoot: path.join(directory, 'งานทดสอบ') };
     const protector = windowsProductSecretProtector();
     await writeProductConfiguration(config, protector, true);

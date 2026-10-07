@@ -1047,7 +1047,7 @@ export class ExecutionCore {
     if (existsSync(directory) && realpathSync(directory) !== directory) return false;
     for (const name of ['config.json','ready.json','observation.json']) {
       try { lstatSync(path.join(directory,name)); return false; }
-      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return false; }
+      catch (error) { if (!['ENOENT','ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) return false; }
     }
     // The only launch adapter writes config before spawn; mutations are held
     // under the job guard, so absent durable launch files prove no dispatch.

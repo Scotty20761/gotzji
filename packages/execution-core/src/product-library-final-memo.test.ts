@@ -1,8 +1,8 @@
 import { createHash } from 'node:crypto';
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
-import os from 'node:os';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { canonicalTemporaryDirectory } from './test-fixtures.js';
 
 const {
   assembleAuditedMemo, assertFinalMemoBaseline, assertNavigationSnapshot, finalMemoPreflight, parseIndieAtoms,
@@ -16,7 +16,7 @@ interface PreparedFixture {
   library:{ast:{workflowId:string;workflowVersion:number};finalMemo:{ticker:string;period:string;targetRelativePath:string;cardRelativePath:string;filingRelativePaths:string[];earningsRelativePaths:string[]}};
 }
 async function fixture():Promise<PreparedFixture>{
-  const root=await mkdtemp(path.join(os.tmpdir(),'gotzji-final-memo-'));roots.push(root);
+  const root=await canonicalTemporaryDirectory('gotzji-final-memo-');roots.push(root);
   for(const directory of ['team-outputs/memos','knowledge-base/atoms','indexes/tickers','knowledge-base']) await mkdir(path.join(root,directory),{recursive:true});
   for(const [name,content] of Object.entries({
     'pipeline.md':'## Active Pipeline\n| Ticker | Stage | Owner | Last Update | Next Action | Notes |\n|---|---|---|---|---|---|\n| TEST | 📇 Card ✅ | Pumpkin | 2026-10-01 | Memo | |\n',

@@ -1,6 +1,5 @@
-import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
+import { mkdir, writeFile, readFile, rm } from 'node:fs/promises';
 import path from 'node:path';
-import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -10,11 +9,12 @@ import { callWorker, stopWorker, signed } from './managed-worker.js';
 import { processIdentities, sameProcessIdentity } from './process-identity.mjs';
 import type { ProductNativeInput } from './product-native.js';
 import type { TaskBinding } from './types.js';
+import { canonicalTemporaryDirectory } from './test-fixtures.js';
 
 interface Fixture { root: string; core: ExecutionCore; credential: string }
 const fixtures: Fixture[] = [];
 async function fixture(): Promise<Fixture> {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'gotzji-native-core-'));
+  const root = await canonicalTemporaryDirectory('gotzji-native-core-');
   const libraryRoot = path.join(root, 'library'); await mkdir(path.join(libraryRoot, 'references'), { recursive: true });
   for (const file of ['CLAUDE.md','AGENTS.md','KNOWLEDGE_INDEX.md','references/agent-knowledge-workflow.md']) await writeFile(path.join(libraryRoot, file), 'Explicit no-model core fixture policy\n');
   const scriptPath = path.join(root, 'fixture-provider.ps1'); await writeFile(scriptPath, 'test-only provider; never execute as PowerShell');

@@ -1,6 +1,5 @@
-import { mkdtemp, mkdir, readFile, writeFile, rm } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, rm } from 'node:fs/promises';
 import path from 'node:path';
-import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -10,13 +9,14 @@ import { stopWorker, callWorker } from './managed-worker.js';
 import type { TaskBinding, ProductOperationInput } from './types.js';
 import type { ProductGraceRegistration } from './grace-profile.js';
 import { filesystem } from './product-projects.js';
+import { canonicalTemporaryDirectory } from './test-fixtures.js';
 const { productBrokerCall } = await import('./product-broker.mjs');
 const { childEnvironment, sanitizedStream } = await import('./product-security.mjs');
 
 interface Fixture { root: string; core: ExecutionCore; credential: string; bindings: TaskBinding[]; profile: ProductGraceRegistration }
 const fixtures: Fixture[] = [];
 async function fixture(options: { now?: () => Date; quotaReset?: number; delayedProductMs?: number } = {}): Promise<Fixture> {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'gotzji-product-'));
+  const root = await canonicalTemporaryDirectory('gotzji-product-');
   const library = path.join(root, 'library');
   await mkdir(path.join(library, 'references'), { recursive: true });
   for (const filename of ['CLAUDE.md','AGENTS.md','references/agent-knowledge-workflow.md','KNOWLEDGE_INDEX.md']) await writeFile(path.join(library, filename), `Prepared policy ${filename}\n`);

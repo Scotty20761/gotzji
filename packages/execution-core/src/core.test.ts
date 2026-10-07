@@ -1,22 +1,22 @@
-import { mkdtemp, readFile, writeFile, rm, stat, rename } from 'node:fs/promises';
+import { readFile, writeFile, rm, stat, rename } from 'node:fs/promises';
 import path from 'node:path';
-import os from 'node:os';
 import { DatabaseSync } from 'node:sqlite';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { afterEach, describe, expect, it } from 'vitest';
 import { ExecutionCore } from './core.js';
-import { alive, callWorker, signed, stopWorker, ownedProcessAlive } from './managed-worker.js';
+import { alive, callWorker, signed, stopWorker, ownedProcessAlive, verifyStoppedWorker } from './managed-worker.js';
 import { processIdentities } from './process-identity.mjs';
 import { createHmac } from 'node:crypto';
 import { type WorkerRow } from './store.js';
 import type { TaskBinding, QualificationOperation } from './types.js';
+import { canonicalTemporaryDirectory } from './test-fixtures.js';
 
 interface Fixture { root: string; core: ExecutionCore; gotzji: string; lnwjud: string; foreign: string; bindings: TaskBinding[] }
 const fixtures: Fixture[] = [];
 const cores: ExecutionCore[] = [];
 const unrelated: ChildProcess[] = [];
 async function fixture(options: { now?: () => Date } = {}): Promise<Fixture> {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'gotzji-core-'));
+  const root = await canonicalTemporaryDirectory('gotzji-core-');
   const core = await ExecutionCore.open(root, options);
   cores.push(core);
   const value = { root, core, gotzji: core.enrollAdapter('gotzji', 'owner-one'), lnwjud: core.enrollAdapter('lnwjud-library', 'owner-one'), foreign: core.enrollAdapter('foreign', 'owner-two'), bindings: [] };
@@ -59,6 +59,7 @@ describe('neutral execution authority — real SQLite, files and owned processes
     await f.core.resume(f.gotzji, binding); await f.core.tick();
     const w = worker(f, binding);
     const child = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], { windowsHide: true, stdio: 'ignore' }); unrelated.push(child);
+    await new Promise<void>((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); });
     const pid = child.pid!; const identity = (await processIdentities([pid]))[pid];
     expect(identity && typeof identity === 'object').toBe(true);
     if (!identity || typeof identity !== 'object') throw new Error('Actual process birth probe unavailable');
@@ -69,6 +70,9 @@ describe('neutral execution authority — real SQLite, files and owned processes
       const body = JSON.stringify(transform(JSON.parse(record.body) as Record<string, unknown>));
       await writeFile(filename, JSON.stringify({ body, mac: createHmac('sha256', w.token).update(body).digest('hex') }));
     };
+    await rewrite('ready.json', (value) => ({ ...value, pid, identity: undefined }));
+    await rewrite('stopped.json', (value) => ({ ...value, pid, identities: {}, descendants: [], closedDescendants: [] }));
+    expect(await verifyStoppedWorker(w)).toBe(false);
     // Model the old signed record after OS PID reuse. The current process has
     // real independently observed birth/executable data and is not our worker.
     await rewrite('ready.json', (value) => ({ ...value, pid, identity: previousIdentity }));
