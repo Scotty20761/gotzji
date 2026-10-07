@@ -32,6 +32,12 @@ export function productRunner(config, directory, callbacks) {
     timedOut ||= timingOut;
     cancelled ||= !timingOut;
     if (child && child.exitCode === null) {
+      // Subscribe before signaling so a fast POSIX exit cannot be missed and
+      // converted into a false five-second termination wait.
+      const closed = new Promise((resolve) => {
+        if (child.exitCode !== null || child.signalCode !== null) resolve();
+        else child.once('close', resolve);
+      });
       // The spawned ChildProcess still owns this live PID. Windows tree stop is
       // scoped to that owned child, never to a process name or another job.
       if (process.platform === 'win32') {
@@ -39,7 +45,7 @@ export function productRunner(config, directory, callbacks) {
         if (stopped.status !== 0) { receipt = { ...receipt, state: 'uncertain', reason: 'TERMINATION_UNCONFIRMED' }; persist(); return false; }
       }
       else child.kill('SIGTERM');
-      await Promise.race([new Promise((resolve) => child.once('close', resolve)), new Promise((resolve) => setTimeout(resolve, 5000))]);
+      await Promise.race([closed, new Promise((resolve) => setTimeout(resolve, 5000))]);
       if (child.exitCode === null && child.signalCode === null) {
         receipt = { ...receipt, state: 'uncertain', reason: 'TERMINATION_UNCONFIRMED' }; persist();
         return false;
