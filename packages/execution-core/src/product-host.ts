@@ -142,6 +142,16 @@ export async function writeProductConfiguration(config: ProductHostConfiguration
 }
 
 const hostStartups = new Map<string, Promise<ProductHostDescriptor>>();
+/** Keep background recovery and the signed endpoint behind the durable authority seal. */
+export async function completeProductHostStartup(
+  authorityPersistence: Promise<void> | undefined,
+  startSupervisor: () => void,
+  publishEndpoint: () => void,
+): Promise<void> {
+  if (authorityPersistence) await authorityPersistence;
+  startSupervisor();
+  publishEndpoint();
+}
 /** Concurrent app projections share one provisioning/launch attempt per root. */
 export function ensureGotzjiProductHost(options: ProductHostOptions): Promise<ProductHostDescriptor> {
   const directory = path.resolve(options.directory ?? path.join(process.env.LOCALAPPDATA ?? options.dataPath, 'gotzji', 'runtime'));

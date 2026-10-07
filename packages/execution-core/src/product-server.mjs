@@ -5,7 +5,7 @@ import { createHmac, randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { ExecutionCore } from './core.js';
 import { CoreError } from './types.js';
-import { productConfigurationIdentity, productRuntimeIdentity, readProductConfiguration, writeProductConfiguration } from './product-host.js';
+import { completeProductHostStartup, productConfigurationIdentity, productRuntimeIdentity, readProductConfiguration, writeProductConfiguration } from './product-host.js';
 import { startProductHttp } from './product-http.js';
 import { GotzjiConnectionService } from './product-connection.js';
 import { ProductBrowserService, productBrowserPrerequisite } from './product-browser-service.js';
@@ -46,7 +46,14 @@ catch (error) {
 }
 if (!startupControlOnly) core.ensureAdapterEnrollment('gotzji-product', config.ownerId, config.credential);
 else core.list(config.credential); // Verify the retained owner credential before exposing controls.
-if (!startupControlOnly) { config = { ...config, authority: core.authority() }; await writeProductConfiguration(config); }
+let authorityPersistence;
+if (!startupControlOnly) {
+  config = { ...config, authority: core.authority() };
+  // CurrentUser DPAPI starts a separate Windows process. Let the independent
+  // catalog/listener setup proceed while it seals the upgrade anchor, but do
+  // not publish readiness until the durable write has succeeded.
+  authorityPersistence = writeProductConfiguration(config);
+}
 const credential = config.credential;
 // Fixed server-owned recipe; caller/project IPC cannot enroll executables or args.
 if (!startupControlOnly) core.registerReviewedCommand(credential, { recipeId: 'node-check', displayName: 'Check selected project source.js syntax', executable: process.execPath, args: ['--check', '${projectRoot}/source.js'], dependencies: ['${projectRoot}/source.js'], timeoutMs: 120000 });
@@ -74,7 +81,6 @@ const controls = new Set(['health', 'list', 'inspectQueue', 'status', 'logs', 'r
 let connection;
 const browser = config.browser && !startupControlOnly ? new ProductBrowserService({ directory, ownerId: config.ownerId, credential, core, ...config.browser, prerequisite: productBrowserPrerequisite(path.join(path.dirname(entry), 'product-browser-broker.mjs')) }) : undefined;
 const libraryChannel = new ProductLibraryChannel({ directory, ownerId: config.ownerId, primaryCredential: credential, core, version: runtimeVersion, allowWork: allowCurrentWork, ...(config.tunnel ? { tunnel: config.tunnel } : {}) });
-if (!startupControlOnly) core.startSupervisor();
 const binding = (input) => {
   if (typeof input.jobId !== 'string' || !input.jobId) throw new CoreError('JOB_ID_REQUIRED');
   return core.select(credential, input.jobId);
@@ -117,7 +123,9 @@ const listener = await startProductHttp({ token: config.daemonSecret, mcpPathSec
 } });
 if (config.tunnel) connection = new GotzjiConnectionService({ directory, ownerId: config.ownerId, ...config.tunnel, mcpTarget: () => `http://127.0.0.1:${listener.port}/mcp/${config.mcpPathSecret}` });
 const body = JSON.stringify({ port: listener.port, pid: process.pid, identity: { birth: ownership.birth, executable: ownership.executable }, ownerId: config.ownerId, buildIdentity, configurationIdentity });
-writeFileSync(path.join(directory, 'product-endpoint.json'), JSON.stringify({ body, mac: createHmac('sha256', config.daemonSecret).update(body).digest('hex') }), { mode: 0o600 });
+await completeProductHostStartup(authorityPersistence, () => { if (!startupControlOnly) core.startSupervisor(); }, () => {
+  writeFileSync(path.join(directory, 'product-endpoint.json'), JSON.stringify({ body, mac: createHmac('sha256', config.daemonSecret).update(body).digest('hex') }), { mode: 0o600 });
+});
 if (connection && !startupControlOnly) void connection.restore();
 if (browser) void browser.restore().catch(() => { /* Unknown native ownership remains unavailable; no ambient adoption. */ });
 void libraryChannel.restore().catch(() => { /* Retained channel authority is inspected; no stock-profile fallback. */ });
