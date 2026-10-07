@@ -1,10 +1,11 @@
 # Native platform support contract
 
-Status: v4.62.2 cross-platform release-candidate contract. Windows remains a supported
-release target; macOS and Linux packages are built and verified on their target
-hosts under the same exact-commit CI release sequence. This document is the
-source of truth for what is shipped, dependency-gated, preview, or deliberately
-removed on a host platform.
+Status: gotzji v1.0 source and qualification contract. Windows x64 is the current
+distribution target, with one private official-unsigned candidate that remains
+unpublished. macOS and Linux currently receive portable source-contract checks
+only; no native gotzji package on those platforms is qualified or published.
+Historical v4.62.2 cross-platform coverage is retained as the implementation
+baseline and future qualification map, not as a statement of current artifacts.
 
 ## Decision rules
 
@@ -29,23 +30,24 @@ removed on a host platform.
 
 | Host | Architecture | Tier | Release baseline | Desktop/session gate |
 | --- | --- | --- | --- | --- |
-| Windows 10/11 | x64 | supported | v4.62.2 Setup and Portable | Interactive Windows desktop |
-| macOS 13+ | arm64 | supported target | DMG/ZIP built on macOS 15; exact artifact gated on macOS 26; ad-hoc community or Developer ID policy | Accessibility/Screen Recording as needed |
-| macOS 13+ | x64 | supported target | DMG/ZIP built on macOS 15 Intel; exact artifact gated on macOS 26 Intel; ad-hoc community or Developer ID policy | Accessibility/Screen Recording as needed |
-| Ubuntu 24.04 LTS | x64 | supported target | Target-native AppImage and DEB | GNOME Wayland and X11 smoke |
-| Linux | arm64 | preview | Target-native artifact/runtime parity required | Wayland/X11 session-specific gates |
+| Windows 10/11 | x64 | current candidate target | gotzji v1.0.0 private Setup and Portable; official unsigned and unpublished | Interactive Windows desktop |
+| macOS 13+ | arm64 | source contract only | Native DMG/ZIP qualification deferred; no current gotzji artifact | Accessibility/Screen Recording as needed |
+| macOS 13+ | x64 | source contract only | Native DMG/ZIP qualification deferred; no current gotzji artifact | Accessibility/Screen Recording as needed |
+| Ubuntu 24.04 LTS | x64 | source contract only | Native AppImage/DEB qualification deferred; no current gotzji artifact | GNOME Wayland and X11 smoke remain future acceptance gates |
+| Linux | arm64 | preview source contract | Target-native artifact/runtime qualification deferred | Wayland/X11 session-specific gates |
 | Other OS/architectures | any | unsupported | No release artifact | Fail closed with `unsupported_platform` |
 
-Linux acceptance starts with Ubuntu 24.04 LTS, GNOME Wayland, and X11. KDE
-Wayland is a smoke target. Headless Linux is supported only for portable MCP
-and explicitly dependency-gated capabilities; it is not evidence of desktop UI
-support.
+Future Linux package acceptance starts with Ubuntu 24.04 LTS, GNOME Wayland,
+and X11; KDE Wayland remains a future smoke target. Current Linux CI evidence is
+source-contract evidence only. Headless source support for portable MCP and
+dependency-gated capabilities is not evidence of a qualified desktop package.
 
 ## Capability disposition matrix
 
 The capability names below are the complete local capability set in
-`packages/capabilities/src/index.ts`. The platform column is a disposition, not
-an assertion that every optional dependency is installed on every machine.
+`packages/capabilities/src/index.ts`. The platform column describes source
+composition and provider disposition. It is not an assertion that an optional
+dependency is installed or that a native package is currently distributed.
 
 | Tool/capability | Windows | macOS | Linux | Notes |
 | --- | --- | --- | --- | --- |
@@ -100,11 +102,11 @@ executable bit, or fails `--version`.
 | Linux x64 | Official Linux asset + hash + executable smoke | dependency_gated; no system fallback |
 | Linux arm64 | Official arm64 asset + hash + package smoke | preview until production target-native evidence is complete |
 
-The `main` CI workflow uploads one SHA-scoped evidence bundle for Windows and
-one for each macOS/Linux architecture. The tag-triggered Release workflow
-downloads all five bundles for the exact tagged commit, verifies each bundle in
-artifact-only mode, merges the macOS update feed, and publishes the release set
-without rebuilding on the tag runner.
+The inherited CI workflow retains the topology for producing SHA-scoped Windows,
+macOS, and Linux evidence bundles. For gotzji v1, only the private Windows x64
+candidate has been built and verified; the multi-platform tag publication path
+is not authorized. Each deferred target must first produce target-host package,
+signature, startup, permission, and recovery evidence for the exact source SHA.
 
 Secure Tunnel continues to target the running Desktop loopback HTTP MCP. The
 packaged direct-stdio launcher is a separate local transport and must not be

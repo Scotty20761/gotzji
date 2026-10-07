@@ -18,6 +18,8 @@ The Git history retains the upstream v5.7.3 baseline. The current source is the 
 
 Use Node.js 24 and Corepack pnpm 10.15.0. Work on `dev`; `main` is reserved for verified merges.
 
+Windows x64 is the current distribution target. Portable source checks for macOS and Linux are tracked in the [platform support contract](docs/architecture/PLATFORM_SUPPORT.md); they do not claim native package release availability.
+
 ```powershell
 corepack pnpm@10.15.0 install
 corepack pnpm@10.15.0 --filter @gotzji/execution-core build
