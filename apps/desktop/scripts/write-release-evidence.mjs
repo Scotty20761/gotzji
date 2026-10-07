@@ -125,6 +125,7 @@ function inspectWindowsAuthenticode(artifacts) {
   const targets = executableArtifacts.map((entry) => path.join(installerDirectory, entry.name));
   const command = [
     "$ErrorActionPreference = 'Stop'",
+    'Import-Module Microsoft.PowerShell.Security -ErrorAction Stop',
     '$targets = ConvertFrom-Json -InputObject $env:LNWJUD_AUTHENTICODE_TARGETS',
     '$results = @($targets | ForEach-Object {',
     '  $signature = Get-AuthenticodeSignature -LiteralPath $_',
@@ -146,7 +147,14 @@ function inspectWindowsAuthenticode(artifacts) {
   const raw = execFileSync('powershell', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', command], {
     encoding: 'utf8',
     windowsHide: true,
-    env: { ...process.env, LNWJUD_AUTHENTICODE_TARGETS: JSON.stringify(targets) },
+    env: {
+      ...process.env,
+      // Windows PowerShell 5 can load incompatible PowerShell 7 type data
+      // when a parent process contributes both module trees. Use its own
+      // built-in modules for deterministic Authenticode inspection.
+      PSModulePath: path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'Modules'),
+      LNWJUD_AUTHENTICODE_TARGETS: JSON.stringify(targets),
+    },
   }).trim();
   const parsed = JSON.parse(raw);
   const observed = Array.isArray(parsed) ? parsed : [parsed];
