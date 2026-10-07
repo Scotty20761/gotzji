@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
-import { completeProductHostStartup, ensureGotzjiProductHost, productRuntimeIdentity, readProductConfiguration, windowsProductSecretProtector, writeProductConfiguration, type ProductHostConfiguration } from './product-host.js';
+import { completeProductHostStartup, ensureGotzjiProductHost, observeProductHostAuthorityPersistence, productRuntimeIdentity, readProductConfiguration, windowsProductSecretProtector, writeProductConfiguration, type ProductHostConfiguration } from './product-host.js';
 import { ensureProductControlDocuments } from './product-control-policy.js';
 import { productGraceProfile } from './grace-profile.js';
 
@@ -11,16 +11,17 @@ describe('private product enrollment storage', () => {
   it('publishes no supervisor or endpoint until the durable authority seal succeeds', async () => {
     let resolveSeal!: () => void; let rejectSeal!: (error: Error) => void;
     const events: string[] = [];
-    const sealed = new Promise<void>((resolve, reject) => { resolveSeal = resolve; rejectSeal = reject; });
+    const sealed = observeProductHostAuthorityPersistence(new Promise<void>((resolve, reject) => { resolveSeal = resolve; rejectSeal = reject; }));
     const startup = completeProductHostStartup(sealed, () => events.push('supervisor'), () => events.push('endpoint'));
     await Promise.resolve(); expect(events).toEqual([]);
     resolveSeal(); await startup; expect(events).toEqual(['supervisor', 'endpoint']);
 
     const denied: string[] = [];
-    const failedSeal = new Promise<void>((_resolve, reject) => { rejectSeal = reject; });
-    const failed = completeProductHostStartup(failedSeal, () => denied.push('supervisor'), () => denied.push('endpoint'));
+    const failedSeal = observeProductHostAuthorityPersistence(new Promise<void>((_resolve, reject) => { rejectSeal = reject; }));
     rejectSeal(new Error('seal failed'));
-    await expect(failed).rejects.toThrow('seal failed'); expect(denied).toEqual([]);
+    await Promise.resolve();
+    const failed = completeProductHostStartup(failedSeal, () => denied.push('supervisor'), () => denied.push('endpoint'), () => denied.push('cleanup'));
+    await expect(failed).rejects.toThrow('seal failed'); expect(denied).toEqual(['cleanup']);
   });
   it('retains a redacted startup-exit incident and excludes inherited Node hooks from the daemon', async () => {
     const directory = mkdtempSync(path.join(os.tmpdir(), 'gotzji-startup-failure-'));

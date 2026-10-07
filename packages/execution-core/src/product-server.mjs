@@ -5,7 +5,7 @@ import { createHmac, randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { ExecutionCore } from './core.js';
 import { CoreError } from './types.js';
-import { completeProductHostStartup, productConfigurationIdentity, productRuntimeIdentity, readProductConfiguration, writeProductConfiguration } from './product-host.js';
+import { completeProductHostStartup, observeProductHostAuthorityPersistence, productConfigurationIdentity, productRuntimeIdentity, readProductConfiguration, writeProductConfiguration } from './product-host.js';
 import { startProductHttp } from './product-http.js';
 import { GotzjiConnectionService } from './product-connection.js';
 import { ProductBrowserService, productBrowserPrerequisite } from './product-browser-service.js';
@@ -52,7 +52,7 @@ if (!startupControlOnly) {
   // CurrentUser DPAPI starts a separate Windows process. Let the independent
   // catalog/listener setup proceed while it seals the upgrade anchor, but do
   // not publish readiness until the durable write has succeeded.
-  authorityPersistence = writeProductConfiguration(config);
+  authorityPersistence = observeProductHostAuthorityPersistence(writeProductConfiguration(config));
 }
 const credential = config.credential;
 // Fixed server-owned recipe; caller/project IPC cannot enroll executables or args.
@@ -125,7 +125,7 @@ if (config.tunnel) connection = new GotzjiConnectionService({ directory, ownerId
 const body = JSON.stringify({ port: listener.port, pid: process.pid, identity: { birth: ownership.birth, executable: ownership.executable }, ownerId: config.ownerId, buildIdentity, configurationIdentity });
 await completeProductHostStartup(authorityPersistence, () => { if (!startupControlOnly) core.startSupervisor(); }, () => {
   writeFileSync(path.join(directory, 'product-endpoint.json'), JSON.stringify({ body, mac: createHmac('sha256', config.daemonSecret).update(body).digest('hex') }), { mode: 0o600 });
-});
+}, async () => { await listener.close(); core.close(); ownership.release(); });
 if (connection && !startupControlOnly) void connection.restore();
 if (browser) void browser.restore().catch(() => { /* Unknown native ownership remains unavailable; no ambient adoption. */ });
 void libraryChannel.restore().catch(() => { /* Retained channel authority is inspected; no stock-profile fallback. */ });

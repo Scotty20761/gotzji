@@ -142,13 +142,23 @@ export async function writeProductConfiguration(config: ProductHostConfiguration
 }
 
 const hostStartups = new Map<string, Promise<ProductHostDescriptor>>();
+export type ProductHostAuthorityPersistence = Promise<{ readonly error?: unknown }>;
+/** Observe the seal immediately so an early DPAPI failure cannot escape as an unhandled rejection. */
+export function observeProductHostAuthorityPersistence(persistence: Promise<void>): ProductHostAuthorityPersistence {
+  return persistence.then(() => ({}), (error: unknown) => ({ error }));
+}
 /** Keep background recovery and the signed endpoint behind the durable authority seal. */
 export async function completeProductHostStartup(
-  authorityPersistence: Promise<void> | undefined,
+  authorityPersistence: ProductHostAuthorityPersistence | undefined,
   startSupervisor: () => void,
   publishEndpoint: () => void,
+  cleanupFailure: () => void | Promise<void> = () => undefined,
 ): Promise<void> {
-  if (authorityPersistence) await authorityPersistence;
+  const authority = authorityPersistence ? await authorityPersistence : undefined;
+  if (authority && 'error' in authority) {
+    try { await cleanupFailure(); } catch { /* Preserve the original authority-seal failure. */ }
+    throw authority.error;
+  }
   startSupervisor();
   publishEndpoint();
 }
