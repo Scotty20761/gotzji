@@ -4,7 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { _electron, expect, test, type ElectronApplication } from '@playwright/test';
-import { processIdentities, sameProcessIdentity, UNPACKAGED_E2E_PROCESS_BIRTH } from '../../../packages/execution-core/src/process-identity.mjs';
+import { UNPACKAGED_E2E_PROCESS_BIRTH } from '../../../packages/execution-core/src/process-identity.mjs';
+import { alive } from '../../../packages/execution-core/src/managed-worker.js';
 import { electronExecutablePath, terminateProcessTree } from './electron-runtime.js';
 
 const desktopRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -92,9 +93,6 @@ async function stopOwnedTestHost(dataRoot: string, expectedExecutable: string): 
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
     throw error;
   }
-  const observed = (await processIdentities([endpoint.pid]))[endpoint.pid];
-  if (observed == null) return false;
-  if (observed === 'unknown') throw new Error('Gotzji E2E host ownership changed');
   const shutdownUrl = `http://127.0.0.1:${endpoint.port}/rpc`;
   const denied = await fetch(shutdownUrl, { method: 'POST', headers: { Authorization: 'Bearer invalid-e2e-token', 'Content-Type': 'application/json', 'x-gotzji-build': endpoint.buildIdentity }, body: JSON.stringify({ method: 'testOnlyE2eShutdown', input: { nonce: randomBytes(32).toString('hex') } }), signal: AbortSignal.timeout(1_000), redirect: 'error' });
   const deniedBody = await denied.json() as { error?: string };
@@ -103,9 +101,8 @@ async function stopOwnedTestHost(dataRoot: string, expectedExecutable: string): 
   const shutdown = await fetch(shutdownUrl, { method: 'POST', headers: { Authorization: `Bearer ${daemonSecret}`, 'Content-Type': 'application/json', 'x-gotzji-build': endpoint.buildIdentity }, body: JSON.stringify({ method: 'testOnlyE2eShutdown', input: { nonce } }), signal: AbortSignal.timeout(1_000), redirect: 'error' });
   const receipt = await shutdown.json() as { ok?: boolean; value?: { accepted?: boolean; nonce?: string } };
   if (!shutdown.ok || !receipt.ok || receipt.value?.accepted !== true || receipt.value.nonce !== nonce) throw new Error('Gotzji E2E authenticated self-shutdown failed');
-  await expect.poll(async () => {
-    const current = (await processIdentities([endpoint.pid]))[endpoint.pid];
-    return current === undefined || current !== 'unknown' && !sameProcessIdentity(observed, current);
-  }, { timeout: 10_000, intervals: [50, 100, 250] }).toBe(true);
+  // `alive` uses signal 0 only. It never terminates the PID; reuse or an
+  // unverifiable probe stays non-false and therefore fails this cleanup proof.
+  await expect.poll(() => alive(endpoint.pid), { timeout: 10_000, intervals: [50, 100, 250] }).toBe(false);
   return true;
 }
