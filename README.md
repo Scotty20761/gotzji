@@ -4,7 +4,7 @@ An open-source Windows MCP app for ChatGPT, with Grace controlling typed operati
 
 ## Current source version: v1.0.0
 
-The Git history retains the upstream v5.7.3 baseline. The current source is the **gotzji v1.0.0** release-preparation version, but no official gotzji installer release has been published. Source/test, installed app, actual ChatGPT and provider acceptance are separate records.
+The Git history retains the upstream v5.7.3 baseline. The current source is the **gotzji v1.0.0** release-preparation version. No official gotzji installer release has been published. Source/test, installed app, actual ChatGPT and provider acceptance are separate records.
 
 ## Product design
 
