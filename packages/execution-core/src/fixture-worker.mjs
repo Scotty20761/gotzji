@@ -1,8 +1,8 @@
 /* global process, setInterval, URL */
 // Model input selects only a sealed host-prepared operation, never a raw executable or shell.
 import http from 'node:http';
-import { readFileSync, writeFileSync, renameSync } from 'node:fs';
-import { createHmac } from 'node:crypto';
+import { readFileSync, writeFileSync, unlinkSync } from 'node:fs';
+import { createHmac, randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -14,6 +14,7 @@ import { processIdentities } from './process-identity.mjs';
 import { productNativeManager } from './product-native-manager.mjs';
 import { productLibraryManager } from './product-library-manager.mjs';
 import { productBrowserManager } from './product-browser-manager.mjs';
+import { replaceFileSync } from './product-security.mjs';
 
 const configPath = process.argv[2];
 const mode = process.argv[3] ?? 'worker';
@@ -48,8 +49,10 @@ if (mode !== 'worker') {
   const persist = (name, payload) => {
     const body = JSON.stringify(payload);
     const record = JSON.stringify({ body, mac: createHmac('sha256', config.token).update(body).digest('hex') });
-    writeFileSync(path.join(directory, name + '.tmp'), record, { mode: 0o600 });
-    renameSync(path.join(directory, name + '.tmp'), path.join(directory, name));
+    const temporary = path.join(directory, `.${name}-${randomUUID()}.tmp`);
+    writeFileSync(temporary, record, { flag: 'wx', mode: 0o600 });
+    try { replaceFileSync(temporary, path.join(directory, name)); }
+    catch (error) { try { unlinkSync(temporary); } catch { /* preserve the original write failure */ } throw error; }
   };
   const snapshot = () => ({ epoch: config.epoch, pid: process.pid, state, descendants, identities, closedDescendants });
   function register(pid, ownedChild) {
