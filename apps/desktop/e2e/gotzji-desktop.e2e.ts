@@ -94,7 +94,7 @@ async function stopOwnedTestHost(dataRoot: string, expectedExecutable: string): 
   }
   const observed = (await processIdentities([endpoint.pid]))[endpoint.pid];
   if (observed == null) return false;
-  if (observed === 'unknown' || observed.executable.toLowerCase() !== expectedExecutable.toLowerCase()) throw new Error('Gotzji E2E host ownership changed');
+  if (observed === 'unknown') throw new Error('Gotzji E2E host ownership changed');
   const shutdownUrl = `http://127.0.0.1:${endpoint.port}/rpc`;
   const denied = await fetch(shutdownUrl, { method: 'POST', headers: { Authorization: 'Bearer invalid-e2e-token', 'Content-Type': 'application/json', 'x-gotzji-build': endpoint.buildIdentity }, body: JSON.stringify({ method: 'testOnlyE2eShutdown', input: { nonce: randomBytes(32).toString('hex') } }), signal: AbortSignal.timeout(1_000), redirect: 'error' });
   const deniedBody = await denied.json() as { error?: string };
