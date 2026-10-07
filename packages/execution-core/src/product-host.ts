@@ -147,6 +147,18 @@ export type ProductHostAuthorityPersistence = Promise<{ readonly error?: unknown
 export function observeProductHostAuthorityPersistence(persistence: Promise<void>): ProductHostAuthorityPersistence {
   return persistence.then(() => ({}), (error: unknown) => ({ error }));
 }
+/** Release every owned startup resource even when an earlier close step fails. */
+export async function cleanupProductHostStartup(
+  closeListener: () => void | Promise<void>,
+  closeCore: () => void,
+  releaseOwnership: () => void,
+): Promise<void> {
+  try { await closeListener(); }
+  finally {
+    try { closeCore(); }
+    finally { releaseOwnership(); }
+  }
+}
 /** Keep background recovery and the signed endpoint behind the durable authority seal. */
 export async function completeProductHostStartup(
   authorityPersistence: ProductHostAuthorityPersistence | undefined,

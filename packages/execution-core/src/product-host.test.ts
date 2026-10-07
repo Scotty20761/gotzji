@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
-import { completeProductHostStartup, ensureGotzjiProductHost, observeProductHostAuthorityPersistence, productRuntimeIdentity, readProductConfiguration, windowsProductSecretProtector, writeProductConfiguration, type ProductHostConfiguration } from './product-host.js';
+import { cleanupProductHostStartup, completeProductHostStartup, ensureGotzjiProductHost, observeProductHostAuthorityPersistence, productRuntimeIdentity, readProductConfiguration, windowsProductSecretProtector, writeProductConfiguration, type ProductHostConfiguration } from './product-host.js';
 import { ensureProductControlDocuments } from './product-control-policy.js';
 import { productGraceProfile } from './grace-profile.js';
 
@@ -22,6 +22,23 @@ describe('private product enrollment storage', () => {
     await Promise.resolve();
     const failed = completeProductHostStartup(failedSeal, () => denied.push('supervisor'), () => denied.push('endpoint'), () => denied.push('cleanup'));
     await expect(failed).rejects.toThrow('seal failed'); expect(denied).toEqual(['cleanup']);
+  });
+  it('releases core and ownership when listener cleanup fails', async () => {
+    const events: string[] = [];
+    await expect(cleanupProductHostStartup(
+      () => { events.push('listener'); throw new Error('listener close failed'); },
+      () => events.push('core'),
+      () => events.push('ownership'),
+    )).rejects.toThrow('listener close failed');
+    expect(events).toEqual(['listener', 'core', 'ownership']);
+
+    events.length = 0;
+    await expect(cleanupProductHostStartup(
+      () => events.push('listener'),
+      () => { events.push('core'); throw new Error('core close failed'); },
+      () => events.push('ownership'),
+    )).rejects.toThrow('core close failed');
+    expect(events).toEqual(['listener', 'core', 'ownership']);
   });
   it('retains a redacted startup-exit incident and excludes inherited Node hooks from the daemon', async () => {
     const directory = mkdtempSync(path.join(os.tmpdir(), 'gotzji-startup-failure-'));
