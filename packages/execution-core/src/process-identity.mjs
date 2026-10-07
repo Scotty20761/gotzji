@@ -28,7 +28,16 @@ export async function processIdentities(values) {
       if (!match) return [pid, 'unknown'];
       const started = new Date(match[1]);
       if (Number.isNaN(started.getTime())) return [pid, 'unknown'];
-      return [pid, { birth: started.toISOString(), executable: realpathSync(match[2].trim()) }];
+      let executable = match[2].trim();
+      if (!path.isAbsolute(executable)) {
+        if (pid === process.pid) executable = process.execPath;
+        else {
+          const files = await exec('/usr/sbin/lsof', ['-a', '-p', String(pid), '-d', 'txt', '-Fn'], { env: childEnvironment(), timeout: 5000, maxBuffer: 32768 });
+          executable = files.stdout.split(/\r?\n/u).find((entry) => entry.startsWith('n/'))?.slice(1) ?? '';
+        }
+      }
+      if (!path.isAbsolute(executable)) return [pid, 'unknown'];
+      return [pid, { birth: started.toISOString(), executable: realpathSync(executable) }];
     } catch {
       try { process.kill(pid, 0); return [pid, 'unknown']; }
       catch (probe) { return [pid, probe.code === 'ESRCH' ? null : 'unknown']; }

@@ -1,11 +1,16 @@
 import { describe, expect, it } from 'vitest';
-import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
-import { cleanupProductHostStartup, completeProductHostStartup, ensureGotzjiProductHost, observeProductHostAuthorityPersistence, productRuntimeIdentity, readProductConfiguration, windowsProductSecretProtector, writeProductConfiguration, type ProductHostConfiguration } from './product-host.js';
+import { promisify } from 'node:util';
+import { fileURLToPath } from 'node:url';
+import { cleanupProductHostStartup, completeProductHostStartup, ensureGotzjiProductHost, observeProductHostAuthorityPersistence, productRuntimeIdentity, productRuntimeRequiresManifest, readProductConfiguration, windowsProductSecretProtector, writeProductConfiguration, type ProductHostConfiguration } from './product-host.js';
 import { ensureProductControlDocuments } from './product-control-policy.js';
 import { productGraceProfile } from './grace-profile.js';
 import { canonicalTemporaryDirectorySync } from './test-fixtures.js';
+
+const execFileAsync = promisify(execFile);
 
 describe('private product enrollment storage', () => {
   it('publishes no supervisor or endpoint until the durable authority seal succeeds', async () => {
@@ -75,6 +80,41 @@ describe('private product enrollment storage', () => {
     const protector = { protect: async (value: string): Promise<string> => value, unprotect: async (value: string): Promise<string> => value };
     for (const forged of [{ ...config, testRunnerModule: 'caller.mjs' }, { ...config, native: { scriptPath: path.join(directory, 'office.ps1'), scriptSha256: 'c'.repeat(64), testRunnerModule: 'caller.mjs' } }]) {
       await expect(writeProductConfiguration(forged as ProductHostConfiguration, protector)).rejects.toThrow('PRODUCT_CONFIGURATION_INVALID');
+    }
+  });
+  it('rejects the unpackaged E2E secret fixture in packaged startup', async () => {
+    const directory = canonicalTemporaryDirectorySync('gotzji-packaged-secret-proof-');
+    await expect(ensureGotzjiProductHost({ directory, dataPath: directory, resourcesPath: directory, packaged: true, testOnlyInsecureSecretProtector: true }))
+      .rejects.toMatchObject({ code: 'PRODUCT_TEST_SECRET_PROVIDER_DENIED' });
+    await expect(ensureGotzjiProductHost({ directory, dataPath: directory, resourcesPath: directory, packaged: true, secretProtector: { protect: async (value) => value, unprotect: async (value) => value } }))
+      .rejects.toMatchObject({ code: 'PRODUCT_TEST_SECRET_PROVIDER_DENIED' });
+  });
+  it('classifies an installed gotzji-core child as packaged without trusting its argv', () => {
+    const root = canonicalTemporaryDirectorySync('gotzji-runtime-classification-');
+    expect(productRuntimeRequiresManifest(path.join(root, 'gotzji-core', 'product-server.mjs'), [])).toBe(true);
+    expect(productRuntimeRequiresManifest(path.join(root, 'dist', 'product-server.mjs'), [])).toBe(false);
+    expect(productRuntimeRequiresManifest(path.join(root, 'dist', 'product-server.mjs'), ['--packaged'])).toBe(true);
+  });
+  it.runIf(process.platform === 'win32')('rejects missing or malformed installed runtime manifests before reading config or opening authority', async () => {
+    const compiled = fileURLToPath(new URL('../dist', import.meta.url));
+    for (const manifest of ['missing','malformed'] as const) {
+      const root = canonicalTemporaryDirectorySync(`gotzji-installed-order-${manifest}-`);
+      try {
+        const runtime = path.join(root, 'gotzji-core');
+        const state = path.join(root, 'state');
+        cpSync(compiled, runtime, { recursive: true });
+        rmSync(path.join(runtime, 'product-runtime'), { recursive: true, force: true });
+        const manifestPath = path.join(runtime, 'product-runtime-manifest.json');
+        if (manifest === 'malformed') writeFileSync(manifestPath, '{}\n');
+        mkdirSync(state);
+        const config: ProductHostConfiguration = { schemaVersion: 1, directory: state, ownerId: 'installed-order-proof', daemonSecret: 'a'.repeat(64), mcpPathSecret: 'b'.repeat(64), executable: process.execPath, libraryRoot: path.join(state, 'workspace'), credential: 'c'.repeat(64) };
+        await writeProductConfiguration(config, windowsProductSecretProtector(), true);
+        const sealed = readFileSync(path.join(state, 'product-host.sealed.json'));
+        await expect(execFileAsync(process.execPath, [path.join(runtime, 'product-server.mjs'), state], { windowsHide: true, timeout: 5000, env: { SystemRoot: process.env.SystemRoot, PATH: process.env.PATH, ELECTRON_RUN_AS_NODE: '1' } }))
+          .rejects.toBeDefined();
+        expect(readFileSync(path.join(state, 'product-host.sealed.json'))).toEqual(sealed);
+        for (const name of ['core.sqlite','authority.json','daemon-owner.json','product-endpoint.json','product-ownership-incident.json']) expect(existsSync(path.join(state, name))).toBe(false);
+      } finally { rmSync(root, { recursive: true, force: true }); }
     }
   });
   it('requires complete exact packaged inventory and rejects missing, empty or extra runtime files', () => {

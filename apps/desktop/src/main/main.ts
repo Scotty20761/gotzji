@@ -2600,6 +2600,7 @@ function bootstrapGotzjiDesktop(): void {
       dataPath: path.join(productRoot, 'runtime'), directory: path.join(productRoot, 'runtime'), resourcesPath: process.resourcesPath, packaged: app.isPackaged,
       ...(developmentHostEntry ? { hostEntryPath: developmentHostEntry } : {}),
       ...(developmentTestProvider ? { executable: developmentTestProvider } : {}),
+      ...(developmentTestProvider ? { testOnlyInsecureSecretProtector: true } : {}),
     }));
     registerIpcHandlers(() => mainWindow, defaultDesktopServices, { governedGotzji: true });
     registerGotzjiIpcHandlers(ipcMain, client, (event) => assertTrustedSender(event, mainWindow), {

@@ -18,7 +18,9 @@ describe('server-owned project script runner', () => {
       scripts: { lint: `node -e "require('node:fs').writeFileSync('lint.receipt','verified')"` },
     }));
     const runner = fileURLToPath(new URL('./product-project-script.mjs', import.meta.url));
-    const corepack = await realpath(path.join(path.dirname(process.execPath), 'node_modules', 'corepack', 'dist', 'corepack.js'));
+    const corepack = await realpath(process.platform === 'win32'
+      ? path.join(path.dirname(process.execPath), 'node_modules', 'corepack', 'dist', 'corepack.js')
+      : path.join(path.dirname(process.execPath), 'corepack'));
     await expect(execFileAsync(process.execPath, [runner, corepack, path.join(root, 'package.json'), 'lint'], { windowsHide: true })).resolves.toMatchObject({ stderr: '' });
     expect(await readFile(path.join(root, 'lint.receipt'), 'utf8')).toBe('verified');
     await expect(execFileAsync(process.execPath, [runner, corepack, path.join(root, 'package.json'), 'publish'], { windowsHide: true })).rejects.toMatchObject({ stderr: expect.stringContaining('PROJECT_SCRIPT_ARGUMENT_DENIED') });

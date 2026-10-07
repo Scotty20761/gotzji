@@ -1,4 +1,4 @@
-import { rm, mkdir, writeFile, readFile, realpath } from 'node:fs/promises';
+import { access, rm, mkdir, writeFile, readFile, realpath } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, expect, it } from 'vitest';
@@ -56,15 +56,16 @@ it('observer closure and retry preserve the live command and exactly one effect/
  const f=await codeFixture(1200);const p=f.core.prepareCodeChange(f.credential,'same-code');const job=await f.core.submit(f.credential,p.preparationId);const binding=f.core.select(f.credential,job.jobId);
  await f.core.resume(f.credential,binding);
  let reopened:ExecutionCore|undefined;
+ let originalClosed=false;
  try{
   await waitFor(async()=>{const view=await f.core.get(f.credential,binding);return !!view.progress&&view.progress.state==='running'&&view.progress.checks>=0;});
-  f.core.close();reopened=await ExecutionCore.open(path.join(f.root,'core'),{grace:f.registration});
+  f.core.close();originalClosed=true;reopened=await ExecutionCore.open(path.join(f.root,'core'),{grace:f.registration});
   const again=reopened.prepareCodeChange(f.credential,'same-code');expect((await reopened.submit(f.credential,again.preparationId)).jobId).toBe(job.jobId);
   await reopened.resume(f.credential,binding);
   await waitFor(async()=>{await reopened!.tick();return (await reopened!.get(f.credential,binding)).status==='completed';});
   const db=new DatabaseSync(path.join(f.root,'core','core.sqlite'));try{expect(db.prepare('SELECT COUNT(*) n FROM gotzji_workers WHERE job_id=?').get(job.jobId)?.n).toBe(1);expect(db.prepare('SELECT COUNT(*) n FROM gotzji_claims').get()?.n).toBe(1);}finally{db.close();}
   const logs=reopened.logs(f.credential,binding,0,80);expect(Buffer.byteLength(logs.text)).toBeLessThanOrEqual(80);expect(logs.nextCursor).toBeGreaterThan(0);
- }finally{if(reopened){await reopened.cancel(f.credential,binding);reopened.close();}else{await f.core.cancel(f.credential,binding);}}
+ }finally{if(reopened){await reopened.cancel(f.credential,binding);reopened.close();}else if(!originalClosed){await f.core.cancel(f.credential,binding);}}
 },10000);
 it('returns the host-authorized delivery boundary with the canonical selected job', async () => {
   const root=await canonicalTemporaryDirectory('gotzji-phase-r-');
@@ -139,6 +140,7 @@ it('replays only the read-only validation path after an expired partial code run
  await f.core.resume(f.credential,binding);
  await waitFor(async()=>((await f.core.get(f.credential,binding)).progress?.state==='running'));
  const db=new DatabaseSync(path.join(f.root,'core','core.sqlite'));let old:WorkerRow;try{old=db.prepare('SELECT * FROM gotzji_workers WHERE job_id=?').get(job.jobId) as unknown as WorkerRow;}finally{db.close();}
+ await waitFor(async()=>{try{await access(path.join(old.directory,'grace-runtime.json'));return true;}catch{return false;}});
  clock+=301000;await f.core.tick();
  await waitFor(async()=>{await f.core.tick();return (await f.core.get(f.credential,binding)).status==='completed';});
  const after=new DatabaseSync(path.join(f.root,'core','core.sqlite'));try{expect(after.prepare('SELECT reason FROM gotzji_worker_history WHERE epoch=?').get(old.epoch)?.reason).toBe('stopped');expect(after.prepare('SELECT epoch FROM gotzji_workers WHERE job_id=?').get(job.jobId)?.epoch).not.toBe(old.epoch);}finally{after.close();}

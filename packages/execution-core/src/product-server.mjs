@@ -5,7 +5,7 @@ import { createHmac, randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { ExecutionCore } from './core.js';
 import { CoreError } from './types.js';
-import { cleanupProductHostStartup, completeProductHostStartup, observeProductHostAuthorityPersistence, productConfigurationIdentity, productRuntimeIdentity, readProductConfiguration, writeProductConfiguration } from './product-host.js';
+import { cleanupProductHostStartup, completeProductHostStartup, observeProductHostAuthorityPersistence, productConfigurationIdentity, productRuntimeIdentity, productRuntimeRequiresManifest, readProductConfiguration, testOnlyProductSecretProtector, writeProductConfiguration } from './product-host.js';
 import { startProductHttp } from './product-http.js';
 import { GotzjiConnectionService } from './product-connection.js';
 import { ProductBrowserService, productBrowserPrerequisite } from './product-browser-service.js';
@@ -13,7 +13,15 @@ import { ProductLibraryChannel } from './product-library-channel.js';
 import { acquireProductHostOwnership } from './product-host-ownership.mjs';
 
 const directory = path.resolve(process.argv[2]);
-let config = await readProductConfiguration(directory);
+const entry = fileURLToPath(import.meta.url);
+const packagedRuntime = productRuntimeRequiresManifest(entry, process.argv);
+const testSecretFixture = process.argv.includes('--test-only-insecure-secret-protector');
+if (packagedRuntime && testSecretFixture) throw new CoreError('PRODUCT_TEST_SECRET_PROVIDER_DENIED');
+const runtimeOptions = { requireManifest: packagedRuntime };
+const buildIdentity = productRuntimeIdentity(entry, runtimeOptions);
+const manifestPath = path.join(path.dirname(entry), 'product-runtime-manifest.json');
+const testSecretProtector = testSecretFixture ? testOnlyProductSecretProtector() : undefined;
+let config = await readProductConfiguration(directory, testSecretProtector);
 const ownership = await acquireProductHostOwnership(directory, config.daemonSecret);
 if (ownership.status !== 'acquired') {
   const incident = { schemaVersion: 1, product: 'gotzji', phase: 'ownership-denied', status: ownership.status, reason: ownership.reason, recordedAt: new Date().toISOString() };
@@ -24,7 +32,7 @@ if (ownership.status !== 'acquired') {
 process.once('exit', () => ownership.release());
 if (!config.credential) {
   config = { ...config, credential: randomBytes(32).toString('hex') };
-  await writeProductConfiguration(config);
+  await writeProductConfiguration(config, testSecretProtector);
 }
 const product = { executable: config.executable, libraryRoot: config.libraryRoot };
 const nativeOptions = config.native ? { ...config.native, operations: ['excel.range.read', 'excel.range.write', 'word.paragraph.read', 'word.paragraph.write', 'powerpoint.shape.read', 'powerpoint.shape.write', ...(config.native.cad ? ['cad.entity.inspect', 'cad.entity.move'] : [])] } : undefined;
@@ -52,7 +60,7 @@ if (!startupControlOnly) {
   // CurrentUser DPAPI starts a separate Windows process. Let the independent
   // catalog/listener setup proceed while it seals the upgrade anchor, but do
   // not publish readiness until the durable write has succeeded.
-  authorityPersistence = observeProductHostAuthorityPersistence(writeProductConfiguration(config));
+  authorityPersistence = observeProductHostAuthorityPersistence(writeProductConfiguration(config, testSecretProtector));
 }
 const credential = config.credential;
 // Fixed server-owned recipe; caller/project IPC cannot enroll executables or args.
@@ -60,6 +68,7 @@ if (!startupControlOnly) core.registerReviewedCommand(credential, { recipeId: 'n
 if (!startupControlOnly) {
   const projectScript = fileURLToPath(new URL('./product-project-script.mjs', import.meta.url));
   const corepackScript = [
+    ...(process.platform === 'win32' ? [] : [path.join(path.dirname(process.execPath), 'corepack')]),
     path.join(path.dirname(process.execPath), 'node_modules', 'corepack', 'dist', 'corepack.js'),
     path.join(process.env.ProgramFiles ?? 'C:\\Program Files', 'nodejs', 'node_modules', 'corepack', 'dist', 'corepack.js'),
   ].map((candidate) => {
@@ -74,11 +83,7 @@ if (!startupControlOnly) {
     args: [projectScript, corepackScript, '${projectRoot}/package.json', scriptName], dependencies: [projectScript, corepackScript, '${projectRoot}/package.json'], timeoutMs: scriptName === 'test' ? 7_200_000 : 1_800_000,
   });
 }
-const entry = fileURLToPath(import.meta.url);
-const runtimeOptions = { requireManifest: process.argv.includes('--packaged') };
-const buildIdentity = productRuntimeIdentity(entry, runtimeOptions);
 const configurationIdentity = productConfigurationIdentity(config);
-const manifestPath = path.join(path.dirname(entry), 'product-runtime-manifest.json');
 const runtimeVersion = existsSync(manifestPath) ? JSON.parse(readFileSync(manifestPath, 'utf8')).version : 'development';
 const allowCurrentWork = () => { try { return !startupControlOnly && productRuntimeIdentity(entry, runtimeOptions) === buildIdentity; } catch { return false; } };
 const controls = new Set(['health', 'list', 'inspectQueue', 'status', 'logs', 'result', 'cancel', 'connectionStatus', 'stopConnection', 'browserSession', 'stopBrowserSession', 'libraryChannelStatus', 'stopLibraryConnection']);

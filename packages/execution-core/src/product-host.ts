@@ -37,6 +37,7 @@ export interface ProductHostOptions {
   readonly libraryRoot?: string;
   readonly hostEntryPath?: string;
   readonly secretProtector?: ProductSecretProtector;
+  readonly testOnlyInsecureSecretProtector?: boolean;
   readonly startupBudgetMs?: number;
   readonly nativeScriptPath?: string;
   readonly cadScriptPath?: string;
@@ -78,6 +79,11 @@ export function productRuntimeIdentity(entry: string, options: { requireManifest
   return digest.digest('hex');
 }
 
+export function productRuntimeRequiresManifest(entry: string, argv: readonly string[]): boolean {
+  const directory = path.dirname(entry);
+  return argv.includes('--packaged') || path.basename(directory) === 'gotzji-core' || existsSync(path.join(directory, 'product-runtime-manifest.json'));
+}
+
 const MAX_SECRET_BYTES = 64 * 1024;
 /** Uses CurrentUser DPAPI without placing plaintext on a command line. */
 export function windowsProductSecretProtector(): ProductSecretProtector {
@@ -101,6 +107,14 @@ export function windowsProductSecretProtector(): ProductSecretProtector {
     child.stdin.end(value, 'utf8');
   });
   return { protect: (value) => transform(value, true), unprotect: (value) => transform(value, false) };
+}
+
+/** Explicit unpackaged E2E fixture only; never use for owner credentials. */
+export function testOnlyProductSecretProtector(): ProductSecretProtector {
+  return {
+    protect: async (value: string): Promise<string> => Buffer.from(value, 'utf8').toString('base64'),
+    unprotect: async (value: string): Promise<string> => Buffer.from(value, 'base64').toString('utf8'),
+  };
 }
 
 function validateConfiguration(value: unknown, directory: string): ProductHostConfiguration {
@@ -184,7 +198,8 @@ export function ensureGotzjiProductHost(options: ProductHostOptions): Promise<Pr
 /** Boot the independent host; window/client lifetime never owns its jobs. */
 async function bootGotzjiProductHost(options: ProductHostOptions, directory: string): Promise<ProductHostDescriptor> {
   mkdirSync(directory, { recursive: true, mode: 0o700 });
-  const protector = options.secretProtector ?? windowsProductSecretProtector();
+  if (options.packaged && (options.testOnlyInsecureSecretProtector || options.secretProtector)) throw new CoreError('PRODUCT_TEST_SECRET_PROVIDER_DENIED');
+  const protector = options.testOnlyInsecureSecretProtector ? testOnlyProductSecretProtector() : options.secretProtector ?? windowsProductSecretProtector();
   const filename = path.join(directory, 'product-host.sealed.json');
   if (!existsSync(filename)) {
     const libraryRoot = path.resolve(options.libraryRoot ?? path.join(directory, 'workspace'));
@@ -279,7 +294,7 @@ async function bootGotzjiProductHost(options: ProductHostOptions, directory: str
     for (const secret of [config.daemonSecret, config.mcpPathSecret, config.credential].filter((value): value is string => !!value)) line = line.replaceAll(secret, '[REDACTED]');
     stderr = (stderr + line).slice(-16384);
   });
-  const child = spawn(process.execPath, [entry, directory, ...(options.packaged ? ['--packaged'] : [])], { detached: true, windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'], env: { ...childEnvironment(), ELECTRON_RUN_AS_NODE: '1' } });
+  const child = spawn(process.execPath, [entry, directory, ...(options.packaged ? ['--packaged'] : []), ...(options.testOnlyInsecureSecretProtector ? ['--test-only-insecure-secret-protector'] : [])], { detached: true, windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'], env: { ...childEnvironment(), ELECTRON_RUN_AS_NODE: '1' } });
   child.stderr.on('data', (data: Buffer) => stream.write(data));
   child.stderr.once('end', () => { stream.end(); if (!settledReady) saveIncident('stderr-closed-before-ready'); });
   (child.stderr as typeof child.stderr & { unref?: () => void }).unref?.();
