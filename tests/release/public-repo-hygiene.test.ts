@@ -159,10 +159,16 @@ describe('public repository hygiene', () => {
 
   it('documents permission boundaries of the owned product', async () => {
     const readme = await readFile(path.join(repositoryRoot, 'FULL_README.md'), 'utf8');
-    expect(readme).not.toMatch(/^\| (?:\d+ \| `)?workspace_list`? \|/m);
-    expect(readme).toContain('| gotzji_status | READ |');
-    expect(readme).toContain('| gotzji_cancel | CONTROL |');
-    expect(readme).toContain('Project/recipe/connection enrollment stays in the local app');
+    const compatibilityMarker = '<!-- BEGIN GENERATED README TOOL REGISTRY -->';
+    const compatibilityStart = readme.indexOf(compatibilityMarker);
+    expect(compatibilityStart).toBeGreaterThan(0);
+    const productDocumentation = readme.slice(0, compatibilityStart);
+    expect(productDocumentation).not.toMatch(/^\| (?:\d+ \| `)?workspace_list`? \|/m);
+    expect(productDocumentation).toContain('| gotzji_status | READ |');
+    expect(productDocumentation).toContain('| gotzji_cancel | CONTROL |');
+    expect(productDocumentation).toContain('Project/recipe/connection enrollment stays in the local app');
+    expect(productDocumentation).toContain('not the public gotzji MCP surface');
+    expect(readme.slice(compatibilityStart)).toMatch(/^\| 1 \| `workspace_list` \|/m);
   });
   it('keeps release documentation canonical instead of preserving stale candidate instructions', async () => {
     const readme = await readFile(path.join(repositoryRoot, 'README.md'), 'utf8');
