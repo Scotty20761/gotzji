@@ -6,6 +6,7 @@ import path from 'node:path';
 import { childEnvironment } from './product-security.mjs';
 const exec = promisify(execFile);
 let windowsCurrentIdentity;
+export const UNPACKAGED_E2E_PROCESS_BIRTH = 'gotzji-unpackaged-e2e-fixture';
 export function sameProcessIdentity(expected, actual) {
   return !!expected && !!actual && typeof actual === 'object' && expected.birth === actual.birth && expected.executable === actual.executable;
 }

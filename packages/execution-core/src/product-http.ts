@@ -20,7 +20,7 @@ export const PRODUCT_MCP_TOOLS = [
   { name: 'gotzji_resume', method: 'resume', readOnly: false, description: 'Inspect and resume a selected admitted job without submitting it again.' },
   { name: 'gotzji_cancel', method: 'cancel', readOnly: false, description: 'Cancel only the explicitly selected owner job and inspect its termination result.' },
 ] as const;
-const ALLOWED_APP_METHODS = new Set(['health', 'registerProject', 'listProjects', 'catalog', 'prepareOperation', 'submit', 'list', 'inspectQueue', 'reprioritize', 'status', 'logs', 'result', 'cancel', 'resume', 'connectionStatus', 'configureConnection', 'startConnection', 'stopConnection', 'startBrowserSession', 'browserSession', 'stopBrowserSession', 'authorizeLibraryDelivery', 'enrollLibraryChannel', 'libraryChannelStatus', 'configureLibraryConnection', 'startLibraryConnection', 'stopLibraryConnection']);
+const ALLOWED_APP_METHODS = new Set(['health', 'registerProject', 'listProjects', 'catalog', 'prepareOperation', 'submit', 'list', 'inspectQueue', 'reprioritize', 'status', 'logs', 'result', 'cancel', 'resume', 'connectionStatus', 'configureConnection', 'startConnection', 'stopConnection', 'startBrowserSession', 'browserSession', 'stopBrowserSession', 'authorizeLibraryDelivery', 'enrollLibraryChannel', 'libraryChannelStatus', 'configureLibraryConnection', 'startLibraryConnection', 'stopLibraryConnection', 'testOnlyE2eShutdown']);
 type Schema = Record<string, unknown>;
 const text = { type: 'string', minLength: 1 };
 const priority = { type: 'integer', minimum: 0, maximum: 3 };
@@ -40,6 +40,7 @@ const fields: Record<string, Schema> = {
 };
 /** One advertised schema is enforced on both app and MCP before core dispatch. */
 export function productControlSchema(method: string): Schema {
+  if (method === 'testOnlyE2eShutdown') return objectSchema({ nonce: { type: 'string', pattern: '^[a-f0-9]{64}$' } }, ['nonce']);
   if (method === 'startBrowserSession') return objectSchema({ projectId: text, startUrl: text, allowedOrigins: { type: 'array', minItems: 1, maxItems: 8, uniqueItems: true, items: text } }, ['projectId', 'startUrl']);
   if (['browserSession', 'stopBrowserSession'].includes(method)) return objectSchema({ projectId: text }, ['projectId']);
   if (method === 'authorizeLibraryDelivery') return objectSchema({ projectId: text, jobId: text, scope: { type: 'string', enum: ['commit', 'push', 'deploy', 'user-delivery'] } }, ['projectId', 'jobId', 'scope']);

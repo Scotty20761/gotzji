@@ -1,4 +1,4 @@
-/* global process, URL */
+/* global process, URL, setImmediate */
 import path from 'node:path';
 import { existsSync, lstatSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { createHmac, randomBytes } from 'node:crypto';
@@ -11,6 +11,7 @@ import { GotzjiConnectionService } from './product-connection.js';
 import { ProductBrowserService, productBrowserPrerequisite } from './product-browser-service.js';
 import { ProductLibraryChannel } from './product-library-channel.js';
 import { acquireProductHostOwnership } from './product-host-ownership.mjs';
+import { UNPACKAGED_E2E_PROCESS_BIRTH } from './process-identity.mjs';
 
 const directory = path.resolve(process.argv[2]);
 const entry = fileURLToPath(import.meta.url);
@@ -22,7 +23,7 @@ const buildIdentity = productRuntimeIdentity(entry, runtimeOptions);
 const manifestPath = path.join(path.dirname(entry), 'product-runtime-manifest.json');
 const testSecretProtector = testSecretFixture ? testOnlyProductSecretProtector() : undefined;
 let config = await readProductConfiguration(directory, testSecretProtector);
-const testIdentityReader = testSecretFixture ? async (pids) => Object.fromEntries(pids.map((pid) => [pid, pid === process.pid ? { birth: 'gotzji-unpackaged-e2e-fixture', executable: realpathSync(process.execPath) } : 'unknown'])) : undefined;
+const testIdentityReader = testSecretFixture ? async (pids) => Object.fromEntries(pids.map((pid) => [pid, pid === process.pid ? { birth: UNPACKAGED_E2E_PROCESS_BIRTH, executable: realpathSync(process.execPath) } : 'unknown'])) : undefined;
 const ownership = await acquireProductHostOwnership(directory, config.daemonSecret, testIdentityReader);
 if (ownership.status !== 'acquired') {
   const incident = { schemaVersion: 1, product: 'gotzji', phase: 'ownership-denied', status: ownership.status, reason: ownership.reason, recordedAt: new Date().toISOString() };
@@ -87,7 +88,7 @@ if (!startupControlOnly) {
 const configurationIdentity = productConfigurationIdentity(config);
 const runtimeVersion = existsSync(manifestPath) ? JSON.parse(readFileSync(manifestPath, 'utf8')).version : 'development';
 const allowCurrentWork = () => { try { return !startupControlOnly && productRuntimeIdentity(entry, runtimeOptions) === buildIdentity; } catch { return false; } };
-const controls = new Set(['health', 'list', 'inspectQueue', 'status', 'logs', 'result', 'cancel', 'connectionStatus', 'stopConnection', 'browserSession', 'stopBrowserSession', 'libraryChannelStatus', 'stopLibraryConnection']);
+const controls = new Set(['health', 'list', 'inspectQueue', 'status', 'logs', 'result', 'cancel', 'connectionStatus', 'stopConnection', 'browserSession', 'stopBrowserSession', 'libraryChannelStatus', 'stopLibraryConnection', ...(testSecretFixture ? ['testOnlyE2eShutdown'] : [])]);
 let connection;
 const browser = config.browser && !startupControlOnly ? new ProductBrowserService({ directory, ownerId: config.ownerId, credential, core, ...config.browser, prerequisite: productBrowserPrerequisite(path.join(path.dirname(entry), 'product-browser-broker.mjs')) }) : undefined;
 const libraryChannel = new ProductLibraryChannel({ directory, ownerId: config.ownerId, primaryCredential: credential, core, version: runtimeVersion, allowWork: allowCurrentWork, ...(config.tunnel ? { tunnel: config.tunnel } : {}) });
@@ -115,6 +116,11 @@ const listener = await startProductHttp({ token: config.daemonSecret, mcpPathSec
     case 'startConnection': if (surface !== 'app' || !connection) throw new CoreError('CONNECTION_CONTROL_DENIED'); return connection.start();
     case 'stopConnection': if (surface !== 'app' || !connection) throw new CoreError('CONNECTION_CONTROL_DENIED'); return connection.stop();
     case 'health': return { product: 'gotzji', ownerId: config.ownerId, state: currentBuild ? 'ready' : 'control-only', controller: 'grace', automaticUpdates: false, buildIdentity, configurationIdentity };
+    case 'testOnlyE2eShutdown': {
+      if (!testSecretFixture || surface !== 'app' || typeof input.nonce !== 'string' || !/^[a-f0-9]{64}$/u.test(input.nonce) || Object.keys(input).length !== 1) throw new CoreError('METHOD_DENIED');
+      setImmediate(() => { void cleanupProductHostStartup(() => listener.close(), () => core.close(), () => ownership.release()).finally(() => process.exit(0)); });
+      return { accepted: true, nonce: input.nonce };
+    }
     case 'registerProject': { if (surface !== 'app') throw new CoreError('PROJECT_REGISTRATION_DENIED'); const project = core.registerProject(credential, input); if (project.kind === 'library') core.enrollLibraryRoute(credential, { projectId: project.projectId, route: 'gotzji-library' }); return project; }
     case 'listProjects': return core.listProjects(credential);
     case 'catalog': { const session = browser?.projection(); return core.catalog(credential).map((entry) => entry.name.startsWith('browser.') && session?.state === 'ready' ? { ...entry, browserSession: session } : entry); }
