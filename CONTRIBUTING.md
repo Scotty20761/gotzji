@@ -1,6 +1,6 @@
 # Contributing to lnwjud
 
-Thanks for helping improve lnwjud. The project is a cross-platform local AI-agent runtime and MCP gateway for Windows, macOS, and Linux, so changes should preserve local-first behavior, explicit trust boundaries, platform-specific capability gates, and deterministic release verification.
+Thanks for helping improve gotzji. The current v1 release target is the owner-maintained Windows x64 app and personal MCP plugin. The retained upstream packages still contain cross-platform code, so changes should preserve local-first behavior, explicit trust boundaries, platform-specific capability gates, and deterministic verification without claiming macOS/Linux release support that v1 does not publish.
 
 ## Before you start
 
@@ -11,7 +11,7 @@ Thanks for helping improve lnwjud. The project is a cross-platform local AI-agen
 
 ## Development environment
 
-Day-to-day development may happen on Windows x64, but release verification is cross-platform: native Windows, macOS and Linux CI runners must validate the host-specific runtime/package paths before a public release is considered complete.
+Day-to-day development and the official gotzji v1 release gate run on Windows x64. Retained macOS/Linux source tests remain useful compatibility checks, but their native packages are a later release track and are not required or published by the Windows-only v1 workflow.
 
 Required for source development:
 

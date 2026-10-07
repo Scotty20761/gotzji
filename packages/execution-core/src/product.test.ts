@@ -23,7 +23,8 @@ async function fixture(options: { now?: () => Date; quotaReset?: number; delayed
   let testDriver = fileURLToPath(new URL('./grace-test-driver.mjs', import.meta.url));
   if (options.quotaReset) {
     testDriver = path.join(root, 'quota-driver.mjs');
-    await writeFile(testDriver, `import {readFileSync} from 'node:fs';import {fullTools} from ${JSON.stringify(new URL('./grace-broker.mjs', import.meta.url).href)};const config=JSON.parse(readFileSync(process.argv[2],'utf8'));console.log(JSON.stringify({type:'system',subtype:'init',tools:fullTools(config),apiKeySource:'none',model:'explicit-quota-test-driver'}));console.log(JSON.stringify({type:'rate_limit_event',rate_limit_info:{status:'rejected',rateLimitType:'seven_day',resetsAt:${options.quotaReset}}}));console.log(JSON.stringify({type:'result',subtype:'error_during_execution',is_error:true}));`);
+    const marker = path.join(root, 'quota-observed');
+    await writeFile(testDriver, `import {existsSync,readFileSync,writeFileSync} from 'node:fs';import {fullTools} from ${JSON.stringify(new URL('./grace-broker.mjs', import.meta.url).href)};const marker=${JSON.stringify(marker)};if(existsSync(marker)){await import(${JSON.stringify(new URL('./grace-test-driver.mjs', import.meta.url).href)});}else{writeFileSync(marker,'observed',{flag:'wx'});const config=JSON.parse(readFileSync(process.argv[2],'utf8'));console.log(JSON.stringify({type:'system',subtype:'init',tools:fullTools(config),apiKeySource:'none',model:'explicit-quota-test-driver'}));console.log(JSON.stringify({type:'rate_limit_event',rate_limit_info:{status:'rejected',rateLimitType:'seven_day',resetsAt:${options.quotaReset}}}));console.log(JSON.stringify({type:'result',subtype:'error_during_execution',is_error:true}));}`);
   }
   if(options.delayedProductMs){
     testDriver=path.join(root,'delayed-driver.mjs');
@@ -312,8 +313,8 @@ describe('governed product operations — real native Goal, file and process sea
     expect(await f.core.readOperationResult(f.credential,ordinary)).toMatchObject({output:{content:'ordinary\n'}});
   },20000);
   it('retains the same job on an actual rejected quota event and suppresses further model launches until provider reset', async () => {
-    const now = new Date(); const reset = Math.floor(now.getTime() / 1000) + 3600;
-    const f = await fixture({ quotaReset: reset }); await project(f, 'one');
+    let now = new Date(); const reset = Math.floor(now.getTime() / 1000) + 3600;
+    const f = await fixture({ quotaReset: reset, now: () => now }); await project(f, 'one');
     const binding = await submit(f, { requestId: 'quota-job', projectId: 'one', operation: 'file.read', path: 'source.txt' });
     await f.core.resume(f.credential, binding);
     await until(f, async () => (await f.core.get(f.credential, binding)).blockerCode === 'GRACE_ACCOUNT_LIMIT');
@@ -324,7 +325,14 @@ describe('governed product operations — real native Goal, file and process sea
     expect(db.prepare('SELECT COUNT(*) AS count FROM gotzji_worker_history').get()?.count).toBe(1);
     await f.core.resume(f.credential, binding); await f.core.tick();
     expect(db.prepare('SELECT COUNT(*) AS count FROM gotzji_worker_history').get()?.count).toBe(1);
-    expect(db.prepare('SELECT status FROM goals').get()?.status).toBe('active'); db.close();
+    expect(db.prepare('SELECT status FROM goals').get()?.status).toBe('active');
+    now = new Date((reset + 1) * 1000);
+    await f.core.resume(f.credential, binding);
+    await until(f, async () => (await f.core.get(f.credential, binding)).status === 'completed');
+    expect((await f.core.get(f.credential, binding)).jobId).toBe(binding.jobId);
+    expect(await f.core.readOperationResult(f.credential, binding)).toMatchObject({ output: { content: 'Original\r\nภาษาไทย\r\n' } });
+    expect(db.prepare('SELECT COUNT(*) AS count FROM gotzji_worker_history').get()?.count).toBe(1);
+    expect(db.prepare('SELECT status FROM goals').get()?.status).toBe('completed'); db.close();
   }, 15000);
   it('upgrades an anchored quiescent predecessor store and rolls policy back without rewriting job intent or result', async () => {
     const f = await fixture(); await project(f, 'one');

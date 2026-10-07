@@ -89,6 +89,9 @@ import {
 } from '@lnwjud/ipc-contracts';
 import { parseLogCorrelation } from './log-parser.js';
 
+declare const __GOTZJI_PRODUCT__: boolean | undefined;
+const gotzjiProductEnabled = typeof __GOTZJI_PRODUCT__ === 'boolean' ? __GOTZJI_PRODUCT__ : true;
+
 function invoke(channel: string, payload?: unknown): Promise<unknown> {
   return payload === undefined ? ipcRenderer.invoke(channel) : ipcRenderer.invoke(channel, payload);
 }
@@ -1679,7 +1682,7 @@ const gotzjiApi: GotzjiApi = {
   startupStatus: async () => parseGotzjiStartup(await invoke(gotzjiIpcChannels.startupStatus)),
   setStartup: async (enabled) => parseGotzjiStartup(await invoke(gotzjiIpcChannels.setStartup, enabled)),
 };
-contextBridge.exposeInMainWorld('gotzji', gotzjiApi);
+if (gotzjiProductEnabled) contextBridge.exposeInMainWorld('gotzji', gotzjiApi);
 function parseGotzjiStartup(value: unknown): { available: boolean; enabled: boolean; mode: 'inspect-and-resume'; reason?: string } {
   if (!isRecord(value) || typeof value.available !== 'boolean' || typeof value.enabled !== 'boolean' || value.mode !== 'inspect-and-resume' || value.reason !== undefined && typeof value.reason !== 'string') throw new Error('Invalid gotzji startup state');
   return { available: value.available, enabled: value.enabled, mode: 'inspect-and-resume', ...(typeof value.reason === 'string' ? { reason: value.reason } : {}) };

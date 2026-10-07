@@ -150,8 +150,12 @@ describe('cross-platform desktop packaging', () => {
     expect(desktopPackage.scripts?.['build:main']).not.toContain('stage-main-native-bindings.mjs');
     expect(desktopPackage.scripts?.['test:e2e']).not.toContain('stage-main-native-bindings.mjs');
     expect(desktopPackage.scripts?.build).toContain('--external:unzipper');
+    expect(desktopPackage.scripts?.build).toContain('--define:__GOTZJI_PRODUCT__=true');
     expect(desktopPackage.scripts?.['build:main']).toContain('--external:unzipper');
+    expect(desktopPackage.scripts?.['build:main']).toContain('--define:__GOTZJI_PRODUCT__=true');
     expect(desktopPackage.scripts?.['test:e2e']).toContain('--external:unzipper');
+    expect(desktopPackage.scripts?.['test:e2e']).toContain('--define:__GOTZJI_PRODUCT__=false');
+    expect(desktopPackage.scripts?.['test:e2e']?.match(/--define:__GOTZJI_PRODUCT__=true/g)).toHaveLength(2);
     expect(config).not.toContain('asarUnpack:');
     expect(config).not.toContain('dist/main/*.node');
     expect(desktopPackage.dependencies?.unzipper).toBe('0.12.5');

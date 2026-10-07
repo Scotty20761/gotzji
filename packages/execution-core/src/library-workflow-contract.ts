@@ -56,6 +56,7 @@ export type VerifiedOperationGrant = (request: LibraryOperationGrantRequest) => 
 export interface LibrarySpokeProof {
   readonly kind: 'runtime-spoke-receipt'; readonly actor: 'mammos' | 'facty' | 'indie';
   readonly invocationDigest: string; readonly artifactDigest: string; readonly verdict?: 'PASS' | 'CAVEATS' | 'BLOCK';
+  readonly delegatedBy?: 'grace'; readonly canonicalSpecSha256?: string; readonly policyAdapterSha256?: string;
 }
 export interface LibraryStepReceipt {
   readonly preparationDigest: string; readonly sourceDigest: string; readonly jobId: string;
@@ -137,6 +138,8 @@ export function assertLibraryStepReceipt(preparation: LibraryWorkflowPreparation
   if (step.requiresSpokeProof) {
     const proof = receipt.spokeProof;
     if (!proof || proof.kind !== 'runtime-spoke-receipt' || proof.actor !== step.actor || !SHA256.test(proof.invocationDigest) || !SHA256.test(proof.artifactDigest)) throw new Error('LIBRARY_RUNTIME_SPOKE_PROOF_REQUIRED');
+    if (preparation.ast.workflowId === 'library.final-memo' && preparation.ast.workflowVersion === 2
+      && (proof.delegatedBy !== 'grace' || !SHA256.test(proof.canonicalSpecSha256 ?? '') || !SHA256.test(proof.policyAdapterSha256 ?? ''))) throw new Error('LIBRARY_CANONICAL_SPOKE_PROOF_REQUIRED');
     if (step.actor === 'facty' && !proof.verdict) throw new Error('LIBRARY_FACTY_VERDICT_REQUIRED');
   }
 }

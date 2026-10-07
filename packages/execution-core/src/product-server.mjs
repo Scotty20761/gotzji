@@ -1,6 +1,6 @@
-/* global process */
+/* global process, URL */
 import path from 'node:path';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { createHmac, randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { ExecutionCore } from './core.js';
@@ -50,6 +50,19 @@ if (!startupControlOnly) { config = { ...config, authority: core.authority() }; 
 const credential = config.credential;
 // Fixed server-owned recipe; caller/project IPC cannot enroll executables or args.
 if (!startupControlOnly) core.registerReviewedCommand(credential, { recipeId: 'node-check', displayName: 'Check selected project source.js syntax', executable: process.execPath, args: ['--check', '${projectRoot}/source.js'], dependencies: ['${projectRoot}/source.js'], timeoutMs: 120000 });
+if (!startupControlOnly) {
+  const projectScript = fileURLToPath(new URL('./product-project-script.mjs', import.meta.url));
+  const corepackScript = [
+    path.join(path.dirname(process.execPath), 'node_modules', 'corepack', 'dist', 'corepack.js'),
+    path.join(process.env.ProgramFiles ?? 'C:\\Program Files', 'nodejs', 'node_modules', 'corepack', 'dist', 'corepack.js'),
+  ].find((candidate) => {
+    try { return existsSync(candidate) && lstatSync(candidate).isFile() && !lstatSync(candidate).isSymbolicLink() && realpathSync(candidate) === path.resolve(candidate); } catch { return false; }
+  });
+  if (corepackScript) for (const scriptName of ['build', 'test', 'lint', 'typecheck']) core.registerReviewedCommand(credential, {
+    recipeId: `pnpm-${scriptName}`, displayName: `Run the selected project's reviewed pnpm ${scriptName} script`, executable: process.execPath,
+    args: [projectScript, corepackScript, '${projectRoot}/package.json', scriptName], dependencies: [projectScript, corepackScript, '${projectRoot}/package.json'], timeoutMs: scriptName === 'test' ? 7_200_000 : 1_800_000,
+  });
+}
 const entry = fileURLToPath(import.meta.url);
 const runtimeOptions = { requireManifest: process.argv.includes('--packaged') };
 const buildIdentity = productRuntimeIdentity(entry, runtimeOptions);

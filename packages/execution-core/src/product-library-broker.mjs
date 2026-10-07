@@ -106,6 +106,7 @@ export async function executePreparedLibraryOperation(config, signal, options = 
         ...(step.requiresSpokeProof ? { spokeProof:{ kind:'runtime-spoke-receipt', actor:step.actor,
           invocationDigest:execution?.invocationDigest ?? digestLibraryValue({actor:step.actor,step:step.id,grant:grant.grantDigest}),
           artifactDigest:execution?.artifactDigest ?? artifactDigest,
+          ...(execution?.delegatedBy==='grace'&&execution?.canonicalSpecSha256&&execution?.policyAdapterSha256?{delegatedBy:'grace',canonicalSpecSha256:execution.canonicalSpecSha256,policyAdapterSha256:execution.policyAdapterSha256}:{}),
           ...(step.actor === 'facty' ? { verdict:normalizeVerdict(execution?.verdict) } : {}) } } : {}),
       };
       adapter.verifyStepReceipt(prepared.library, step.id, selectedJob, grant, receipt);
@@ -238,17 +239,33 @@ async function executeBuiltIn(config,prepared,step,completed,signal){
   if(step.effect==='delivery') return runDelivery(config,prepared,step,signal);
   throw typed('LIBRARY_OPERATION_NOT_REGISTERED','none');
 }
+export function prepareCanonicalSpokePolicy(prepared,actor,effectRoot){
+  if(!['mammos','facty','indie'].includes(actor))throw typed('LIBRARY_SPOKE_ROLE_DENIED','none');
+  const descriptor=prepared.library.sourceScope.descriptors.find((entry)=>entry.id===`${actor}-agent`);
+  if(!descriptor)throw typed('LIBRARY_CANONICAL_AGENT_MISSING','none');
+  const sourcePath=path.join(prepared.project.rootPath,descriptor.relativePath);const bytes=readFileSync(sourcePath);
+  if(digest(bytes)!==descriptor.sha256)throw typed('LIBRARY_CANONICAL_AGENT_CHANGED','none');
+  const source=bytes.toString('utf8');const match=/^---\r?\n[\s\S]*?\r?\n---\r?\n([\s\S]+)$/u.exec(source);
+  if(!match?.[1]?.trim())throw typed('LIBRARY_CANONICAL_AGENT_INVALID','none');
+  const policy={ [actor]:{description:`Canonical ${actor} persona under a task-bound gotzji policy`,prompt:match[1],tools:[]} };
+  const content=`${JSON.stringify(policy,null,2)}\n`;const policyPath=path.join(effectRoot,`agent-policy-${actor}.json`);
+  if(existsSync(policyPath)){if(digest(readFileSync(policyPath))!==digest(content))throw typed('LIBRARY_SPOKE_POLICY_CHANGED','unknown');}
+  else writeFileSync(policyPath,content,{flag:'wx',mode:0o600});
+  return{path:policyPath,canonicalSpecSha256:descriptor.sha256,policyAdapterSha256:digest(content)};
+}
 async function invokeSpoke(config,prepared,step,completed,signal){
   const actor=step.actor;const evidence=prepared.library.selectedSources.map((entry)=>`## ${path.relative(prepared.project.rootPath,entry.path)}\n${readFileSync(entry.path,'utf8')}`).join('\n\n');
   const prior=completed.map((receipt)=>`${receipt.stepId}:${receipt.outputDigest}`).join('\n');
+  const policy=prepared.library.ast.workflowId==='library.final-memo'&&prepared.library.ast.workflowVersion===2?prepareCanonicalSpokePolicy(prepared,actor,config.effectRoot):undefined;
   const rolePrompt=prepared.library.ast.workflowId==='library.final-memo'&&prepared.library.ast.workflowVersion===2
     ? actor==='mammos'?mammosPrompt(prepared):actor==='facty'?factyPrompt(prepared,readStepValue(config,'mammos')):indiePrompt(prepared,readStepValue(config,'persist'))
     : `Act as ${actor} for one task-bound Investment Library workflow. Use only the supplied evidence. Return Markdown only. ${actor==='facty'?'Start with VERDICT: PASS, CAVEATS, or BLOCK.':''}`;
   const prompt=`${rolePrompt}\nWorkflow: ${prepared.library.ast.workflowId}\nParameters: ${JSON.stringify(prepared.input.parameters)}\nPrior receipts:\n${prior}\nEvidence:\n${evidence}`;
-  const result=await runCommand(config.grace.executable,['-p',prompt,'--output-format','text','--tools','','--permission-mode','dontAsk','--permission-prompts','none','--settings','{"disableAllHooks":true}','--no-session-persistence'],prepared.project.rootPath,signal,config.grace.executableHash);
+  const args=['-p',prompt,'--output-format','text','--tools','','--permission-mode','dontAsk','--permission-prompts','none','--setting-sources','user','--settings','{"disableAllHooks":true}',...(policy?['--agents',policy.path,'--agent',actor]:[]),'--no-session-persistence'];
+  const result=await runCommand(config.grace.executable,args,prepared.project.rootPath,signal,config.grace.executableHash);
   const content=result.stdout;if(Buffer.byteLength(content,'utf8')>512*1024)throw typed('LIBRARY_SPOKE_OUTPUT_TOO_LARGE','none');const artifactDigest=digest(content);writeFileSync(path.join(config.effectRoot,`${actor}.md`),content,{flag:'wx',mode:0o600});
   const verdict=actor==='facty'?(/^VERDICT:\s*(PASS|CAVEATS|BLOCK)/im.exec(content)?.[1]??'BLOCK'):undefined;
-  return{actor,invocationDigest:digest(prompt),artifactDigest,content,...(actor==='indie'?{atoms:parseIndieAtoms(content)}:{}),...(verdict?{verdict}:{}),exitCode:result.exitCode};
+  return{actor,...(policy?{delegatedBy:'grace',canonicalSpecSha256:policy.canonicalSpecSha256,policyAdapterSha256:policy.policyAdapterSha256}:{}),invocationDigest:digest(prompt),artifactDigest,content,...(actor==='indie'?{atoms:parseIndieAtoms(content)}:{}),...(verdict?{verdict}:{}),exitCode:result.exitCode};
 }
 async function runDelivery(config,prepared,step,signal){
   if(step.deliveryScope==='commit') {

@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -11,6 +11,10 @@ const mainEntry = path.join(desktopRoot, 'dist', 'main', 'main.js');
 
 test('gotzji production entry exposes governed controls and denies inherited work IPC', async () => {
   const dataRoot = await mkdtemp(path.join(os.tmpdir(), 'gotzji-desktop-e2e-'));
+  const relative = path.relative(os.tmpdir(), dataRoot);
+  if (!relative || relative.startsWith('..') || path.isAbsolute(relative) || !path.basename(dataRoot).startsWith('gotzji-desktop-e2e-')) {
+    throw new Error('Unexpected gotzji E2E cleanup root');
+  }
   let app: ElectronApplication | undefined;
   try {
     app = await _electron.launch({
@@ -20,9 +24,7 @@ test('gotzji production entry exposes governed controls and denies inherited wor
       env: { ...process.env, GOTZJI_DATA_PATH: dataRoot },
       timeout: 40_000,
     });
-    console.log('GOTZJI_E2E_PHASE=launched');
     const page = await app.firstWindow();
-    console.log('GOTZJI_E2E_PHASE=window');
     await expect(page.getByRole('heading', { name: 'gotzji', exact: true })).toBeVisible({ timeout: 30_000 });
     await expect(page.getByText('Grace ดูแลงานของคุณ', { exact: true })).toBeVisible();
     const observation = await page.evaluate(async () => {
@@ -32,8 +34,8 @@ test('gotzji production entry exposes governed controls and denies inherited wor
       ]);
       return { result, body: document.body.innerText };
     });
-    console.log(`GOTZJI_E2E_PHASE=host:${observation.result.kind}`);
-    expect(observation.result, observation.body).toMatchObject({
+    const incidents = await Promise.all((await readdir(path.join(dataRoot, 'runtime'))).filter((name) => name.startsWith('product-startup-')).map(async (name) => readFile(path.join(dataRoot, 'runtime', name), 'utf8')));
+    expect(observation.result, `${observation.body}\nSTATUS=${JSON.stringify(observation.result)}\nINCIDENTS=${incidents.join('\n')}`).toMatchObject({
       kind: 'status', value: { product: 'gotzji', state: 'ready', controller: 'grace', automaticUpdates: false },
     });
     await expect(page.evaluate(() => ({
@@ -48,19 +50,13 @@ test('gotzji production entry exposes governed controls and denies inherited wor
     expect(denied).toContain('GRACE_GOVERNED_OPERATION_REQUIRED');
     const browserWindow = await app.browserWindow(page);
     expect(await browserWindow.evaluate((window) => window.webContents.getLastWebPreferences().sandbox)).toBe(true);
-    console.log('GOTZJI_E2E_PHASE=asserted');
   } finally {
-    console.log('GOTZJI_E2E_PHASE=closing-app');
     if (app) await terminateProcessTree(app.process());
-    console.log('GOTZJI_E2E_PHASE=stopping-host');
     await stopOwnedTestHost(dataRoot);
-    console.log('GOTZJI_E2E_PHASE=removing-root');
-    const relative = path.relative(os.tmpdir(), dataRoot);
-    if (!relative || relative.startsWith('..') || path.isAbsolute(relative) || !path.basename(dataRoot).startsWith('gotzji-desktop-e2e-')) {
-      throw new Error('Unexpected gotzji E2E cleanup root');
-    }
-    await rm(dataRoot, { recursive: true, force: true });
-    console.log('GOTZJI_E2E_PHASE=done');
+    await expect.poll(async () => {
+      try { await rm(dataRoot, { recursive: true, force: true }); return true; }
+      catch { return false; }
+    }, { timeout: 10_000, intervals: [50, 100, 250] }).toBe(true);
   }
 });
 
@@ -71,7 +67,7 @@ async function stopOwnedTestHost(dataRoot: string): Promise<void> {
     endpoint = JSON.parse(envelope.body) as typeof endpoint;
   } catch { return; }
   const observed = (await processIdentities([endpoint.pid]))[endpoint.pid];
-  if (observed === undefined) return;
+  if (observed == null) return;
   if (observed === 'unknown' || !sameProcessIdentity(endpoint.identity, observed)) throw new Error('Gotzji E2E host ownership changed');
   process.kill(endpoint.pid, 'SIGTERM');
   await expect.poll(async () => {
