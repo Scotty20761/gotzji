@@ -123,3 +123,21 @@ apps/desktop/build/runtime-tools/
 apps/desktop/build/ecc-runtime/
 apps/desktop/build/vendor/
 .tmp
+
+# gotzji generated qualification and license outputs
+apps/desktop/build/gotzji-browser-provider-qualification-bundle.js
+apps/desktop/build/licenses/
+# Preserve upstream guides without claiming them as gotzji release behavior
+!docs/upstream/
+!docs/upstream/*.md
+
+# Reproducible owned-browser qualification source (no private receipts)
+!apps/desktop/build/gotzji-browser-provider-broker-qualification.mjs
+!apps/desktop/build/gotzji-browser-provider-fixture-server.mjs
+!apps/desktop/build/gotzji-browser-provider-native-qualification.mjs
+!apps/desktop/build/gotzji-browser-provider-qualification-build.mjs
+!apps/desktop/build/gotzji-browser-provider-restore-qualification.mjs
+!apps/desktop/build/gotzji-browser-provider-web-qualification.mjs
+
+# Preserve unowned generated execution-core diagnostic output locally
+packages/execution-core/stdout

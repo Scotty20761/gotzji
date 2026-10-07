@@ -1,4 +1,5 @@
-// Qualification-only recipes. No model input can select an executable, path or shell.
+/* global process, setInterval, URL */
+// Model input selects only a sealed host-prepared operation, never a raw executable or shell.
 import http from 'node:http';
 import { readFileSync, writeFileSync, renameSync } from 'node:fs';
 import { createHmac } from 'node:crypto';
@@ -8,6 +9,11 @@ import { fileURLToPath } from 'node:url';
 import { brokerCall } from './grace-broker.mjs';
 import { launchGrace } from './grace-runtime.mjs';
 import { validationManager } from './phase-r-runner.mjs';
+import { productRunner } from './product-runner.mjs';
+import { processIdentities } from './process-identity.mjs';
+import { productNativeManager } from './product-native-manager.mjs';
+import { productLibraryManager } from './product-library-manager.mjs';
+import { productBrowserManager } from './product-browser-manager.mjs';
 
 const configPath = process.argv[2];
 const mode = process.argv[3] ?? 'worker';
@@ -20,7 +26,10 @@ if (mode !== 'worker') {
   process.send?.({ pid: process.pid });
   process.on('message', async (m) => {
     if (m !== 'stop') return;
-    if (child) { await new Promise((resolve) => { child.once('exit', resolve); child.send('stop'); }); }
+    if (child) {
+      await new Promise((resolve) => { child.once('close', resolve); child.send('stop'); });
+      await new Promise((resolve) => process.send?.({ closedPid: child.pid }, resolve));
+    }
     process.exit(0);
   });
   setInterval(() => {}, 1000);
@@ -28,6 +37,10 @@ if (mode !== 'worker') {
   const config = JSON.parse(readFileSync(configPath, 'utf8'));
   const directory = path.dirname(configPath);
   const descendants = [];
+  const identities = {};
+  const closedDescendants = [];
+  const ownedChildren = new Map();
+  const pendingIdentityProbes = new Set();
   let state = 'ready';
   let child;
   let stopping = false;
@@ -38,10 +51,46 @@ if (mode !== 'worker') {
     writeFileSync(path.join(directory, name + '.tmp'), record, { mode: 0o600 });
     renameSync(path.join(directory, name + '.tmp'), path.join(directory, name));
   };
-  const snapshot = () => ({ epoch: config.epoch, pid: process.pid, state, descendants });
+  const snapshot = () => ({ epoch: config.epoch, pid: process.pid, state, descendants, identities, closedDescendants });
+  function register(pid, ownedChild) {
+    if (!descendants.includes(pid)) descendants.push(pid);
+    const closedIndex = closedDescendants.indexOf(pid); if (closedIndex >= 0) closedDescendants.splice(closedIndex, 1);
+    if (ownedChild) {
+      ownedChildren.set(pid, ownedChild);
+      ownedChild.once('close', () => { if (ownedChildren.get(pid) === ownedChild) { closedDescendants.push(pid); ownedChildren.delete(pid); persist('observation.json', snapshot()); } });
+    }
+    persist('observation.json', snapshot());
+    const probe = processIdentities([pid]).then((values) => {
+      if (ownedChild && (ownedChildren.get(pid) !== ownedChild || ownedChild.exitCode !== null || ownedChild.signalCode !== null)) return;
+      if (values[pid] && typeof values[pid] === 'object') { identities[pid] = values[pid]; persist('observation.json', snapshot()); }
+    });
+    pendingIdentityProbes.add(probe); void probe.finally(() => pendingIdentityProbes.delete(probe));
+  }
   let graceFinished=false;
+  const native = productNativeManager(config, directory, {
+    persist, finished: (receipt) => {
+      if (!stopping && graceFinished) { state = receipt.state === 'completed' ? 'done' : 'failed'; persist('observation.json', snapshot()); }
+    },
+  });
+  const library = productLibraryManager(config, directory, {
+    persist, finished: (receipt) => {
+      if (!stopping && graceFinished) { state = receipt.state === 'completed' ? 'done' : 'failed'; persist('observation.json', snapshot()); }
+    },
+  });
+  const browser = productBrowserManager(config, directory, {
+    persist, finished: (receipt) => {
+      if (!stopping && graceFinished) { state = receipt.state === 'completed' ? 'done' : 'failed'; persist('observation.json', snapshot()); }
+    },
+  });
+  const product = productRunner(config, directory, {
+    persist, register,
+    finished: (receipt) => {
+      writeFileSync(path.join(config.effectRoot, 'result.txt'), JSON.stringify(receipt), { mode: 0o600 });
+      if (!stopping && graceFinished) { state = receipt.state === 'completed' ? 'done' : 'failed'; persist('observation.json', snapshot()); }
+    },
+  });
   const validator=validationManager(config,directory,{
-    persist,register:(pid)=>{descendants.push(pid);persist('observation.json',snapshot());},
+    persist,register,
     finished:(receipt)=>{if(!stopping&&graceFinished){state=receipt.state==='completed'?'done':'failed';persist('observation.json',snapshot());}}
   });
   const server = http.createServer(async (req, res) => {
@@ -56,12 +105,20 @@ if (mode !== 'worker') {
         const value = JSON.parse(body);
         if (url.pathname === '/register-broker') {
           if (!Number.isInteger(value.pid) || value.pid < 1) throw new Error('INVALID_PROCESS');
-          descendants.push(value.pid); persist('observation.json', snapshot()); res.end('{}');
+          register(value.pid); res.end('{}');
         } else {
-          const result = await brokerCall(config, value.name, value.arguments, runtimeApproved && !stopping, validator);
+           const kind = config.operation === 'grace.product-operation' ? JSON.parse(config.text).kind : undefined;
+           const runner = kind === 'native' ? native : kind === 'library' ? library : kind === 'browser' ? browser : config.grace.recipe === 'product' ? product : validator;
+           const result = await brokerCall(config, value.name, value.arguments, runtimeApproved && !stopping, runner);
           res.setHeader('Content-Type','application/json'); res.end(JSON.stringify(result));
         }
-      } catch (error) { const known=['RUNTIME_OR_TOOL_DENIED','ARGUMENTS_DENIED','PAYLOAD_DENIED','POLICY_DENIED','DELIVERY_AUTHORITY_DENIED','LIVE_AUTHORITY_DENIED','PREWORK_REQUIRED','SOURCE_READ_REQUIRED','SAVE_REQUIRED','REPRO_REQUIRED','EFFECT_UNKNOWN','DEPENDENCIES_CHANGED','OPERATION_DIGEST_CONFLICT','REPRO_NOT_VERIFIED','RUN_NOT_FOUND'];const reason=known.includes(error?.message)?error.message:'BROKER_DENIED';res.writeHead(403,{'Content-Type':'application/json'}).end(JSON.stringify({error:{code:reason}})); }
+      } catch (error) {
+        const known=['RUNTIME_OR_TOOL_DENIED','ARGUMENTS_DENIED','PAYLOAD_DENIED','POLICY_DENIED','DELIVERY_AUTHORITY_DENIED','LIVE_AUTHORITY_DENIED','PREWORK_REQUIRED','SOURCE_READ_REQUIRED','SAVE_REQUIRED','REPRO_REQUIRED','EFFECT_UNKNOWN','DEPENDENCIES_CHANGED','OPERATION_DIGEST_CONFLICT','REPRO_NOT_VERIFIED','RUN_NOT_FOUND','PROJECT_ROOT_CHANGED','PROJECT_REGISTRATION_CHANGED','FILE_SCOPE_CHANGED','PRIVATE_RUNTIME_SCOPE_DENIED','FILE_VERSION_CONFLICT','COMMAND_DEPENDENCIES_CHANGED','OPERATION_NOT_STARTED','PROJECT_POLICY_CHANGED','FILE_NOT_FOUND','FILE_PERMISSION_DENIED','PATH_NOT_DIRECTORY'];
+        const reason=known.includes(error?.message)?error.message:'BROKER_DENIED';
+        const field = error?.field ?? (reason === 'FILE_VERSION_CONFLICT' ? 'expectedSha256' : reason === 'FILE_SCOPE_CHANGED' ? 'path' : undefined);
+        persist('broker-error.json', { epoch: config.epoch, jobId: config.jobId, code: reason, ...(field ? { field } : {}), layer: 'grace-operation-broker' });
+        res.writeHead(403,{'Content-Type':'application/json'}).end(JSON.stringify({error:{code:reason,...(field ? { field } : {})}}));
+      }
       return;
     }
     if (req.method === 'GET' && url.pathname === '/status') {
@@ -80,16 +137,25 @@ if (mode !== 'worker') {
         persist('observation.json', snapshot());
       } else if (config.operation === 'fixture.hold') {
         child = spawn(process.execPath, [fileURLToPath(import.meta.url), configPath, 'child'], { stdio: ['ignore', 'ignore', 'ignore', 'ipc'], windowsHide: true });
-        child.on('message', (m) => { if (Number.isInteger(m.pid)) { descendants.push(m.pid); persist('observation.json', snapshot()); } });
+        if (child.pid) register(child.pid, child);
+        child.on('message', (m) => {
+          if (Number.isInteger(m.pid) && m.pid !== child.pid) register(m.pid);
+          if (Number.isInteger(m.closedPid) && descendants.includes(m.closedPid)) { closedDescendants.push(m.closedPid); persist('observation.json', snapshot()); }
+        });
       } else if (config.operation.startsWith('grace.') && config.grace) {
         try {
           const ready = JSON.parse(JSON.parse(readFileSync(path.join(directory,'ready.json'),'utf8')).body);
           child = launchGrace(configPath, config, ready, {
-            register: (pid) => { descendants.push(pid); persist('observation.json', snapshot()); },
+            register,
             approve: (value) => { runtimeApproved = value; }, persist,
             finish: (receipt) => {
               graceFinished=!!receipt;
-              if(config.grace.recipe==='code-check'){
+              if(config.grace.recipe==='product') {
+                const operation = JSON.parse(config.text);
+                 const run = operation.kind === 'native' ? native.status() : operation.kind === 'library' ? library.status() : operation.kind === 'browser' ? browser.status() : product.state();
+                 state = !receipt ? 'failed' : !['native','library','browser'].includes(operation.kind) && operation.input.operation !== 'command.run' ? 'done' : !run ? 'failed' : run.state === 'completed' ? 'done' : ['failed','cancelled','uncertain'].includes(run.state) ? 'failed' : 'running';
+                 if (!receipt) { if (operation.kind === 'library') void library.stop(); else if (operation.kind === 'browser') void browser.stop(); else void product.stop(); }
+              } else if(config.grace.recipe==='code-check'){
                 const run=validator.status();state=!receipt||!run?'failed':run.state==='completed'?'done':run.state==='failed'?'failed':'running';
                 if(!receipt) void validator.stop();
               } else state=receipt?'done':'failed';
@@ -103,10 +169,15 @@ if (mode !== 'worker') {
     }
     if (req.method === 'POST' && url.pathname === '/cancel' && !stopping) {
       stopping = true;
+      if (config.operation === 'grace.product-operation' && JSON.parse(config.text).kind === 'native' && !await native.stop()) { res.writeHead(409).end(); return; }
+      if (config.operation === 'grace.product-operation' && JSON.parse(config.text).kind === 'library' && !await library.stop()) { res.writeHead(409).end(); return; }
+      if (config.operation === 'grace.product-operation' && JSON.parse(config.text).kind === 'browser' && !await browser.stop()) { res.writeHead(409).end(); return; }
+      if (config.grace?.recipe === 'product' && !['native','library','browser'].includes(JSON.parse(config.text).kind) && !await product.stop()) { res.writeHead(409).end(); return; }
       await validator.stop();
       if (child) {
         await new Promise((resolve) => { if (child.exitCode !== null) resolve(); else { child.once('exit', resolve); if (config.grace) child.kill(); else child.send('stop'); } });
       }
+      await Promise.allSettled([...pendingIdentityProbes]);
       state = 'cancelled';
       persist('stopped.json', snapshot());
       res.end(JSON.stringify(snapshot()));
@@ -115,7 +186,9 @@ if (mode !== 'worker') {
     }
     res.writeHead(409).end();
   });
-  server.listen(0, '127.0.0.1', () => {
-    persist('ready.json', { epoch: config.epoch, pid: process.pid, port: server.address().port });
+  server.listen(0, '127.0.0.1', async () => {
+    const values = await processIdentities([process.pid]);
+    if (values[process.pid] && typeof values[process.pid] === 'object') identities[process.pid] = values[process.pid];
+    persist('ready.json', { epoch: config.epoch, pid: process.pid, port: server.address().port, ...(identities[process.pid] ? { identity: identities[process.pid] } : {}) });
   });
 }

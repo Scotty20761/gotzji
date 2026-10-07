@@ -3,7 +3,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, expect, it } from 'vitest';
 import { ExecutionCore } from './core.js';
-import { alive } from './managed-worker.js';
+import { alive, verifyStoppedWorker } from './managed-worker.js';
+import type { WorkerRow } from './store.js';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { createHash, createHmac } from 'node:crypto';
@@ -92,12 +93,16 @@ it('cancellation stops the owned validation command and preserves the cancelled 
 it('rejects native gate evidence when the observed run is rebound to another goal',async()=>{
  const f=await codeFixture();const p=f.core.prepareCodeChange(f.credential,'goal-bound-code');const job=await f.core.submit(f.credential,p.preparationId);const binding=f.core.select(f.credential,job.jobId);
  await f.core.resume(f.credential,binding);
+ let originalGoalId='';
  try{
   await waitFor(async()=>((await f.core.get(f.credential,binding)).progress?.state==='completed'));
-  const db=new DatabaseSync(path.join(f.root,'core','core.sqlite'));try{db.prepare('UPDATE gotzji_claims SET goal_id=? WHERE id=?').run('foreign-goal',job.jobId);}finally{db.close();}
+  const db=new DatabaseSync(path.join(f.root,'core','core.sqlite'));try{originalGoalId=String(db.prepare('SELECT goal_id FROM gotzji_claims WHERE id=?').get(job.jobId)?.goal_id??'');db.prepare('UPDATE gotzji_claims SET goal_id=? WHERE id=?').run('foreign-goal',job.jobId);}finally{db.close();}
   await expect(f.core.tick()).rejects.toMatchObject({code:'INVALID_INPUT',reason:'job_binding_mismatch'});
   expect((await f.core.get(f.credential,binding)).status).toBe('blocked');
- }finally{await f.core.cancel(f.credential,binding);}
+ }finally{
+  if(originalGoalId){const db=new DatabaseSync(path.join(f.root,'core','core.sqlite'));try{db.prepare('UPDATE gotzji_claims SET goal_id=? WHERE id=?').run(originalGoalId,job.jobId);}finally{db.close();}}
+  await f.core.cancel(f.credential,binding);
+ }
 },10000);
 
 it('rejects a signed command receipt that does not match the registered validator recipe',async()=>{
@@ -132,12 +137,11 @@ it('replays only the read-only validation path after an expired partial code run
  let clock=Date.now();const f=await codeFixture(1500,()=>new Date(clock));const p=f.core.prepareCodeChange(f.credential,'expired-partial');const job=await f.core.submit(f.credential,p.preparationId);const binding=f.core.select(f.credential,job.jobId);
  await f.core.resume(f.credential,binding);
  await waitFor(async()=>((await f.core.get(f.credential,binding)).progress?.state==='running'));
- const db=new DatabaseSync(path.join(f.root,'core','core.sqlite'));let old:{epoch:string;directory:string};try{old=db.prepare('SELECT epoch,directory FROM gotzji_workers WHERE job_id=?').get(job.jobId) as unknown as typeof old;}finally{db.close();}
+ const db=new DatabaseSync(path.join(f.root,'core','core.sqlite'));let old:WorkerRow;try{old=db.prepare('SELECT * FROM gotzji_workers WHERE job_id=?').get(job.jobId) as unknown as WorkerRow;}finally{db.close();}
  clock+=301000;await f.core.tick();
  await waitFor(async()=>{await f.core.tick();return (await f.core.get(f.credential,binding)).status==='completed';});
  const after=new DatabaseSync(path.join(f.root,'core','core.sqlite'));try{expect(after.prepare('SELECT reason FROM gotzji_worker_history WHERE epoch=?').get(old.epoch)?.reason).toBe('stopped');expect(after.prepare('SELECT epoch FROM gotzji_workers WHERE job_id=?').get(job.jobId)?.epoch).not.toBe(old.epoch);}finally{after.close();}
- const stopped=JSON.parse(JSON.parse(await readFile(path.join(old.directory,'stopped.json'),'utf8')).body) as {pid:number;descendants:number[]};
- expect([stopped.pid,...stopped.descendants].every((pid)=>alive(pid)===false)).toBe(true);
+ expect(await verifyStoppedWorker(old)).toBe(true);
 },15000);
 
 it('keeps a real nonzero validator result blocked instead of replaying it as an interruption',async()=>{

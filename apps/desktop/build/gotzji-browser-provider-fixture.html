@@ -1,0 +1,9 @@
+<!doctype html>
+<html lang="en" data-gotzji-document-id="gotzji-owned-browser-fixture-v1">
+<head><meta charset="utf-8"><title>gotzji owned browser qualification</title>
+<style>body{font:20px system-ui;margin:40px;max-width:800px;background:#121825;color:#eef4ff}input,button{padding:12px;font:inherit}section{margin:24px 0;border:1px solid #5c6f89;padding:20px}label{display:block;margin-bottom:8px}#result{color:#71e4ba}</style></head>
+<body><h1>gotzji owned browser qualification</h1><p>This local disposable fixture sends no data to external services.</p>
+<section><label for="note">Qualification note</label><input id="note" data-testid="note" value="original"><button id="apply" data-testid="apply" type="button">Apply locally</button><p id="result" role="status">Not applied</p></section>
+<section><p id="preserved">Unrelated content preserved: fixture-keep-20761</p><label for="secret">Protected fixture field</label><input id="secret" type="password" value="synthetic-protected-field"></section>
+<script>document.documentElement.dataset.gotzjiDocumentId = 'gotzji-owned-fixture-' + crypto.randomUUID(); document.getElementById('apply').addEventListener('click', () => {document.getElementById('result').textContent = 'Applied: ' + document.getElementById('note').value;});</script>
+</body></html>

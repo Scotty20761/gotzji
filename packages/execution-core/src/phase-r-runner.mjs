@@ -21,7 +21,7 @@ export function validationManager(config,directory,callbacks){
       if(current) return {runId,state:current.state};
       current={...base,state:'running',exitCode:null,checks:0,elapsedMs:0,lastProgressAt:new Date().toISOString()};persist();
       child=spawn(process.execPath,args,{windowsHide:true,shell:false,stdio:['ignore','pipe','pipe']});
-      if(child.pid) callbacks.register(child.pid);
+      if(child.pid) callbacks.register(child.pid, child);
       let buffer='',verified=false;
       const deadline=setTimeout(()=>{if(child.exitCode===null) child.kill();},config.grace.validationMs+30000);
       child.stdout.on('data',(chunk)=>{

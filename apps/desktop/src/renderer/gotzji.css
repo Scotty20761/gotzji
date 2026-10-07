@@ -1,0 +1,25 @@
+.gotzji-app { height: 100vh; padding-top: 38px; box-sizing: border-box; display: grid; grid-template-columns: 210px minmax(0,1fr); color: #dfe6ef; background: #111720; font: 15px/1.5 system-ui,sans-serif; }
+.gotzji-titlebar { position: fixed; inset: 0 140px auto 0; height: 38px; padding: 7px 20px; box-sizing: border-box; -webkit-app-region: drag; background: #111720; color: #79d4c5; }
+.gotzji-app aside { background: #182230; padding: 24px; border-right: 1px solid #334354; }
+.gotzji-app h1 { color: #79d4c5; margin: 0; font-size: 30px; }
+.gotzji-app nav { display: grid; gap: 8px; margin-top: 30px; }
+.gotzji-app main { min-width: 0; padding: 32px; overflow: auto; }
+.gotzji-app header { display: flex; justify-content: space-between; align-items: center; }
+.gotzji-app h2 { margin-top: 0; }
+.gotzji-app section { padding: 24px; margin: 20px 0; border: 1px solid #334354; border-radius: 12px; background: #18212d; }
+.gotzji-app button { cursor: pointer; padding: 9px 14px; border-radius: 7px; border: 1px solid #40576b; color: inherit; background: #233345; }
+.gotzji-app button:disabled { opacity: .45; cursor: default; }
+.gotzji-app button[aria-current] { border-color: #79d4c5; color: #79d4c5; }
+.gotzji-app label { display: grid; gap: 7px; margin: 14px 0; }
+.gotzji-app input,.gotzji-app textarea,.gotzji-app select { padding: 10px; color: inherit; background: #111720; border: 1px solid #40576b; border-radius: 6px; }
+.gotzji-app textarea { min-height: 160px; font-family: monospace; }
+.gotzji-app pre { overflow: auto; max-height: 450px; padding: 16px; background: #111720; font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.gotzji-app table { width: 100%; text-align: left; border-collapse: collapse; }
+.gotzji-app td,.gotzji-app th { border-bottom: 1px solid #334354; padding: 10px; }
+.gotzji-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.gotzji-job-list { display: grid; gap: 8px; }
+.gotzji-job-list button { display: grid; gap: 4px; text-align: left; }
+.gotzji-job-list small,.gotzji-owner { color: #94a8ba; overflow-wrap: anywhere; }
+.gotzji-error { display: flex; justify-content: space-between; padding: 14px; border: 1px solid #a65850; background: #422622; }
+.gotzji-app dialog { position: fixed; top: 15%; width: min(680px,calc(100vw - 64px)); max-height: 70vh; overflow: auto; box-sizing: border-box; padding: 28px; border: 1px solid #40576b; border-radius: 12px; background: #182230; color: #dfe6ef; z-index: 20; box-shadow: 0 16px 60px #0009; }
+@media(max-width:700px) { .gotzji-app { grid-template-columns: 1fr; } .gotzji-app aside { padding: 14px; } .gotzji-app nav { display: flex; flex-wrap: wrap; margin-top: 10px; } .gotzji-app main { padding: 16px; } }

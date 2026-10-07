@@ -72,10 +72,10 @@ async function fixture(platform: 'linux' | 'darwin', arch = 'x64'): Promise<{
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'lnwjud-hook-')));
   temporaryRoots.push(root);
   const appOutDir = path.join(root, 'output');
-  const bundle = platform === 'darwin' ? path.join(appOutDir, 'lnwjud.app') : appOutDir;
+  const bundle = platform === 'darwin' ? path.join(appOutDir, 'gotzji.app') : appOutDir;
   const resources = platform === 'darwin' ? 'Contents/Resources' : 'resources';
-  const executable = platform === 'darwin' ? 'Contents/MacOS/lnwjud' : 'lnwjud';
-  const launcher = platform === 'darwin' ? 'Contents/Resources/lnwjud-mcp-stdio' : 'lnwjud-mcp-stdio';
+  const executable = platform === 'darwin' ? 'Contents/MacOS/gotzji' : 'gotzji';
+  const launcher = platform === 'darwin' ? 'Contents/Resources/gotzji-mcp-stdio' : 'gotzji-mcp-stdio';
   const nativeName = platform === 'darwin' ? 'lnwjud-macos-host' : 'lnwjud-linux-host';
   const nativeDir = `${resources}/native-host/${platform === 'darwin' ? 'macos' : 'linux'}/${arch}`;
   const binaries = [executable, launcher, `${resources}/runtime-tools/ripgrep/rg`, `${resources}/tunnel-client/tunnel-client`, `${nativeDir}/${nativeName}`];
@@ -176,7 +176,7 @@ it.each(['output-root', 'output-parent'])('does not accept macOS decoys in %s', 
   const f = await fixture('darwin');
   const contents = path.join(f.bundle, 'Contents');
   await fs.rename(contents, path.join(location === 'output-root' ? f.appOutDir : f.root, 'Contents'));
-  await expect(capture(f.context)).rejects.toThrow('Contents/MacOS/lnwjud is unavailable');
+  await expect(capture(f.context)).rejects.toThrow('Contents/MacOS/gotzji is unavailable');
   expect(state.outputs).toHaveLength(0);
 });
 
@@ -211,14 +211,14 @@ function observedPolicy(mode: 'ad-hoc' | 'certificate', arch: string): Record<st
   const teamId = mode === 'certificate' ? 'ABCDE12345' : null;
   const rootExecutableSha256 = digest('binary fixture\n');
   return {
-    schemaVersion: 1, mode, arch, rootIdentifier: 'com.lnwjud.desktop', teamId,
+    schemaVersion: 1, mode, arch, rootIdentifier: 'com.scotty20761.gotzji', teamId,
     rootCdHash: 'a'.repeat(40), rootExecutableSha256, inspectedNestedCodeCount: 1,
     code: [
-      { relativePath: '.', kind: 'app', mode, teamId, identifier: 'com.lnwjud.desktop', cdHash: 'a'.repeat(40) },
-      { relativePath: 'Contents/MacOS/lnwjud', kind: 'executable', mode, teamId,
-        identifier: 'com.lnwjud.desktop', cdHash: 'b'.repeat(40) },
+      { relativePath: '.', kind: 'app', mode, teamId, identifier: 'com.scotty20761.gotzji', cdHash: 'a'.repeat(40) },
+      { relativePath: 'Contents/MacOS/gotzji', kind: 'executable', mode, teamId,
+        identifier: 'com.scotty20761.gotzji', cdHash: 'b'.repeat(40) },
     ],
-    electronProcesses: [{ relativePath: 'Contents/MacOS/lnwjud', hardenedRuntime: true,
+    electronProcesses: [{ relativePath: 'Contents/MacOS/gotzji', hardenedRuntime: true,
       libraryValidationDisabled: mode === 'ad-hoc', secureTimestamp: mode === 'certificate', cdHash: 'b'.repeat(40) }],
   };
 }
@@ -311,7 +311,7 @@ describe('macOS signing transaction', () => {
         entitlements: path.resolve('apps/desktop/build/entitlements.mac.adhoc.plist'),
         timestamp: 'none',
       });
-      expect(options.optionsForFile(path.join(f.bundle, 'Contents', 'Frameworks', 'lnwjud Helper.app'))).toMatchObject({
+      expect(options.optionsForFile(path.join(f.bundle, 'Contents', 'Frameworks', 'gotzji Helper.app'))).toMatchObject({
         entitlements: path.resolve('apps/desktop/build/entitlements.mac.adhoc.inherit.plist'),
         timestamp: 'none',
       });

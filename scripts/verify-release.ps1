@@ -92,13 +92,16 @@ try {
         }
         $rootPackage = Get-Content -LiteralPath (Join-Path $repositoryRoot 'package.json') -Raw | ConvertFrom-Json
         $requiredWindowsArtifacts = @(
-            "lnwjud-Setup-$($rootPackage.version).exe",
-            "lnwjud-Setup-$($rootPackage.version).exe.blockmap",
-            "lnwjud-Portable-$($rootPackage.version).exe",
+            "gotzji-Setup-$($rootPackage.version).exe",
+            "gotzji-Setup-$($rootPackage.version).exe.blockmap",
+            "gotzji-Portable-$($rootPackage.version).exe",
             'latest.yml',
             'portable.yml',
             'SHA256SUMS.txt',
-            'PROVENANCE.json'
+            'PROVENANCE.json',
+            "gotzji-plugin-$($rootPackage.version)-unbound.zip",
+            "gotzji-plugin-$($rootPackage.version)-unbound.zip.sha256",
+            'PLUGIN_PROVENANCE.json'
         )
         foreach ($artifactName in $requiredWindowsArtifacts) {
             $artifactPath = Join-Path $installerDirectory $artifactName

@@ -1,3 +1,4 @@
+/* global process, setTimeout, fetch, AbortSignal */
 // Explicit no-model driver for core/broker integration tests. Never a Claude fallback.
 import { readFileSync } from 'node:fs';
 import { fullTools } from './grace-broker.mjs';
@@ -12,6 +13,10 @@ async function call(name, args) {
   return response.json();
 }
 for (const document of Object.keys(config.grace.documents)) await call('read_policy', { document });
+if(config.grace.recipe==='product'){
+  await call('execute_operation',{});
+  await call('operation_status',{});
+} else {
 const source = await call('read_source', {});
 if(config.grace.recipe==='code-check'){
  await call('check_before',{});
@@ -19,4 +24,5 @@ if(config.grace.recipe==='code-check'){
  await call('start_validation',{});
  await call('validation_status',{});
 } else {await call('save_result', { sourceHash: source.sha256 });await call('check_result', {});}
+}
 process.stdout.write(JSON.stringify({ type:'result', subtype:'success', is_error:false }) + '\n');

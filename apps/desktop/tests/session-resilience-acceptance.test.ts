@@ -348,8 +348,9 @@ describe('session resilience acceptance', () => {
       ['listen_addr: "', 'localhost', ':', 4321, '"'].join(''),
     ])).toHaveLength(3);
     expect(findFixedListenerBindings(['server.listen(0)', 'http://$address/healthz', 'listen_addr: "127.0.0.1:0"'])).toEqual([]);
-    expect(operatorGuidance).toContain("$tc = if ($env:LNWJUD_TUNNEL_CLIENT_PATH)");
-    expect(operatorGuidance).toContain('& $tc doctor --profile lnwjud --profile-dir $profile --explain');
+    expect(operatorGuidance).toContain('selected job ID');
+    expect(operatorGuidance).toContain('operating-system-assigned ports');
+    expect(operatorGuidance).not.toContain('--profile lnwjud');
   });
 });
 

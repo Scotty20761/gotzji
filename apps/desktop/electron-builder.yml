@@ -1,5 +1,5 @@
-appId: com.lnwjud.desktop
-productName: lnwjud
+appId: com.scotty20761.gotzji
+productName: gotzji
 asar: true
 toolsets:
   appimage: 1.0.3
@@ -16,12 +16,26 @@ files:
   - package.json
 publish:
   provider: github
-  owner: engasnm111
-  repo: lnwjud
+  owner: Scotty20761
+  repo: gotzji
   releaseType: release
 afterPack: scripts/capture-packaged-runtime-evidence.mjs
 afterSign: scripts/capture-packaged-runtime-evidence.mjs
 extraResources:
+  - from: ../../packages/execution-core/dist/product-runtime
+    to: gotzji-core
+  - from: build/gotzji-native-office.ps1
+    to: gotzji-native-office.ps1
+  - from: build/gotzji-cad-session-provider.ps1
+    to: gotzji-cad-session-provider.ps1
+  - from: build/licenses
+    to: licenses/dependencies
+  - from: ../../THIRD_PARTY_NOTICES.md
+    to: licenses/THIRD_PARTY_NOTICES.md
+  - from: src/renderer/fonts/prompt/OFL.txt
+    to: licenses/Prompt-OFL.txt
+  - from: ../../LICENSE
+    to: licenses/lnwjud-MIT.txt
   - from: build/tunnel-client
     to: tunnel-client
   - from: build/runtime-tools
@@ -53,12 +67,12 @@ win:
     - target: portable
       arch:
         - x64
-  artifactName: lnwjud-Setup-${version}.${ext}
-  # Keep the branded icon embedded in lnwjud.exe for Windows shortcuts and taskbar.
+  artifactName: gotzji-Setup-${version}.${ext}
+  # Keep the branded icon embedded in gotzji.exe for Windows shortcuts and taskbar.
   signAndEditExecutable: true
   extraFiles:
-    - from: build/lnwjud-mcp-stdio.cmd
-      to: lnwjud-mcp-stdio.cmd
+    - from: build/gotzji-mcp-stdio.cmd
+      to: gotzji-mcp-stdio.cmd
   extraResources:
     - from: build/capability-bridge/windows-capability-bridge.ps1
       to: windows-capability-bridge.ps1
@@ -79,10 +93,10 @@ mac:
   entitlements: build/entitlements.mac.plist
   entitlementsInherit: build/entitlements.mac.inherit.plist
   extendInfo:
-    NSAccessibilityUsageDescription: lnwjud uses Accessibility only after you approve a native UI action.
-    NSScreenCaptureUsageDescription: lnwjud uses Screen Recording only for an explicitly requested capture.
-    NSMicrophoneUsageDescription: lnwjud uses the microphone only for an explicitly requested audio task.
-    NSAppleEventsUsageDescription: lnwjud uses Apple Events only for an explicitly approved Office action.
+    NSAccessibilityUsageDescription: gotzji uses Accessibility only after you approve a native UI action.
+    NSScreenCaptureUsageDescription: gotzji uses Screen Recording only for an explicitly requested capture.
+    NSMicrophoneUsageDescription: gotzji uses the microphone only for an explicitly requested audio task.
+    NSAppleEventsUsageDescription: gotzji uses Apple Events only for an explicitly approved Office action.
   target:
     - target: dmg
       arch:
@@ -92,17 +106,17 @@ mac:
       arch:
         - x64
         - arm64
-  artifactName: lnwjud-${version}-${arch}.${ext}
+  artifactName: gotzji-${version}-${arch}.${ext}
   extraFiles:
-    - from: build/lnwjud-mcp-stdio.sh
+    - from: build/gotzji-mcp-stdio.sh
       # Shell scripts belong in Resources, not the signed-code area at Contents.
-      to: Resources/lnwjud-mcp-stdio
+      to: Resources/gotzji-mcp-stdio
   extraResources:
     - from: build/native-host/macos
       to: native-host/macos
 linux:
-  executableName: lnwjud
-  maintainer: Adisorn <engasnm111@users.noreply.github.com>
+  executableName: gotzji
+  maintainer: Scotty20761 <Scotty20761@users.noreply.github.com>
   icon: build/icons
   category: Development
   synopsis: Local AI-agent runtime and MCP gateway
@@ -117,17 +131,17 @@ linux:
         - x64
         - arm64
   # Keep release filenames aligned with runtime evidence (x64, not amd64/x86_64).
-  artifactName: lnwjud-${version}-${env.LNWJUD_RUNTIME_ARCH}.${ext}
+  artifactName: gotzji-${version}-${env.LNWJUD_RUNTIME_ARCH}.${ext}
   extraFiles:
-    - from: build/lnwjud-mcp-stdio.sh
-      to: lnwjud-mcp-stdio
+    - from: build/gotzji-mcp-stdio.sh
+      to: gotzji-mcp-stdio
   extraResources:
     - from: build/native-host/linux
       to: native-host/linux
 nsis:
   oneClick: false
   perMachine: false
-  # Preserve the historical per-user default (%LOCALAPPDATA%\Programs\lnwjud).
+  # Use the isolated per-user default (%LOCALAPPDATA%\Programs\gotzji).
   # All-users remains an explicit installer-page choice instead of the default.
   selectPerMachineByDefault: false
   allowToChangeInstallationDirectory: true
@@ -139,4 +153,4 @@ nsis:
   uninstallDisplayName: ${productName}
   include: build/installer.nsh
 portable:
-  artifactName: lnwjud-Portable-${version}.${ext}
+  artifactName: gotzji-Portable-${version}.${ext}

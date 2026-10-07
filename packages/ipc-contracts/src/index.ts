@@ -1,4 +1,5 @@
 export const APP_NAME = 'lnwjud';
+export * from './gotzji.js';
 export const APP_VERSION = '5.7.3';
 
 export const ipcChannels = {

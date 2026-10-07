@@ -5,6 +5,7 @@ import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 import { verifyCapabilityBridgeArtifacts } from './verify-capability-bridge-artifacts.mjs';
+import { verifyGotzjiRuntimeDirectory } from './verify-gotzji-runtime.mjs';
 import {
   readMacosSigningPolicyEvidence,
   validateMacosSigningPolicyEvidence,
@@ -18,8 +19,9 @@ const BUNDLED_TUNNEL_CLIENT_VERSION = runtimeDependencies.tunnelClient.version;
 const TARGETS = Object.freeze({
   win32: Object.freeze({
     required: Object.freeze([
-      ['lnwjud.exe', 'lnwjud.exe'],
-      ['lnwjud-mcp-stdio.cmd', 'lnwjud-mcp-stdio.cmd'],
+      ['gotzji.exe', 'gotzji.exe'],
+      ['gotzji-mcp-stdio.cmd', 'gotzji-mcp-stdio.cmd'],
+      ['lnwjud-MIT.txt', 'resources/licenses/lnwjud-MIT.txt'],
       ['windows-capability-bridge.ps1', 'resources/windows-capability-bridge.ps1'],
       ['windows-capability-bridge.sha256', 'resources/windows-capability-bridge.sha256'],
       ['windows-capability-bridge.integrity.json', 'resources/windows-capability-bridge.integrity.json'],
@@ -32,8 +34,8 @@ const TARGETS = Object.freeze({
   }),
   darwin: Object.freeze({
     required: Object.freeze([
-      ['lnwjud', 'Contents/MacOS/lnwjud'],
-      ['lnwjud-mcp-stdio', 'Contents/Resources/lnwjud-mcp-stdio'],
+      ['gotzji', 'Contents/MacOS/gotzji'],
+      ['gotzji-mcp-stdio', 'Contents/Resources/gotzji-mcp-stdio'],
       ['rg', 'Contents/Resources/runtime-tools/ripgrep/rg'],
       ['rg-manifest', 'Contents/Resources/runtime-tools/ripgrep/BUNDLED_RIPGREP.json'],
       ['tunnel-client', 'Contents/Resources/tunnel-client/tunnel-client'],
@@ -44,8 +46,8 @@ const TARGETS = Object.freeze({
   }),
   linux: Object.freeze({
     required: Object.freeze([
-      ['lnwjud', 'lnwjud'],
-      ['lnwjud-mcp-stdio', 'lnwjud-mcp-stdio'],
+      ['gotzji', 'gotzji'],
+      ['gotzji-mcp-stdio', 'gotzji-mcp-stdio'],
       ['rg', 'resources/runtime-tools/ripgrep/rg'],
       ['rg-manifest', 'resources/runtime-tools/ripgrep/BUNDLED_RIPGREP.json'],
       ['tunnel-client', 'resources/tunnel-client/tunnel-client'],
@@ -106,6 +108,13 @@ export async function collectPackagedRuntimeEvidence(context, { allowIncompleteM
     }
     files.push({ name, relativePath: resolvedRelativePath, sizeBytes: metadata.size, sha256: await sha256File(absolutePath) });
   }
+  let gotzjiCore;
+  if (platform === 'win32') {
+    const packageJson = JSON.parse(await readFile(path.join(desktopRoot, 'package.json'), 'utf8'));
+    const core = await verifyGotzjiRuntimeDirectory(path.join(appOutDir, 'resources', 'gotzji-core'), packageJson.version);
+    files.push(...core.files);
+    gotzjiCore = { manifest: core.manifest, manifestSha256: core.manifestSha256 };
+  }
 
   let signing;
   if (platform === 'darwin') {
@@ -118,7 +127,7 @@ export async function collectPackagedRuntimeEvidence(context, { allowIncompleteM
     let policy;
     if (mode !== 'unsigned' && !allowIncompleteMacSigningPolicy) {
       policy = await readMacosSigningPolicyEvidence();
-      const rootExecutable = files.find((entry) => entry.relativePath === 'Contents/MacOS/lnwjud');
+      const rootExecutable = files.find((entry) => entry.relativePath === 'Contents/MacOS/gotzji');
       validateMacosSigningPolicyEvidence(policy, {
         mode,
         arch,
@@ -131,7 +140,7 @@ export async function collectPackagedRuntimeEvidence(context, { allowIncompleteM
       ...(policy ? { policy } : {}),
     };
   }
-  return { schemaVersion: 1, platform, arch, capabilityBridge, files, ...(signing ? { signing } : {}) };
+  return { schemaVersion: 1, platform, arch, capabilityBridge, files, ...(gotzjiCore ? { gotzjiCore } : {}), ...(signing ? { signing } : {}) };
 }
 
 async function assertRegularCanonicalFile(filePath, label) {
@@ -154,14 +163,14 @@ async function assertRegularCanonicalFile(filePath, label) {
 
 function resolvePackagedPath(appOutDir, platform, relativePath) {
   // electron-builder 26 passes the output directory to both afterPack and
-  // afterSign. productName is lnwjud; mac extraFiles live in its Contents.
+  // afterSign. productName is gotzji; mac extraFiles live in its Contents.
   return platform === 'darwin'
-    ? path.join(appOutDir, 'lnwjud.app', relativePath)
+    ? path.join(appOutDir, 'gotzji.app', relativePath)
     : path.join(appOutDir, relativePath);
 }
 
 function isExecutablePath(relativePath) {
-  return ['lnwjud', 'lnwjud-mcp-stdio', 'rg', 'tunnel-client', 'lnwjud-macos-host', 'lnwjud-linux-host']
+  return ['gotzji', 'gotzji-mcp-stdio', 'rg', 'tunnel-client', 'lnwjud-macos-host', 'lnwjud-linux-host']
     .includes(path.posix.basename(relativePath));
 }
 

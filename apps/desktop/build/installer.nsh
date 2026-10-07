@@ -2,7 +2,7 @@
   ; Resolve the shortcut from the actual end-user install directory at install time.
   SetOutPath "$INSTDIR"
   CreateDirectory "$SMPROGRAMS"
-  CreateShortCut "$SMPROGRAMS\lnwjud.lnk" "$INSTDIR\lnwjud.exe" "" "$INSTDIR\lnwjud.exe" 0
+  CreateShortCut "$SMPROGRAMS\gotzji.lnk" "$INSTDIR\gotzji.exe" "" "$INSTDIR\gotzji.exe" 0
 
   ; electron-builder writes "Uninstall ${PRODUCT_FILENAME}.exe" before customInstall.
   ; Keep the standard registry integration, but expose a shorter stable filename to users.
@@ -22,12 +22,12 @@
 !macroend
 
 !macro customUnInstall
-  Delete "$SMPROGRAMS\lnwjud.lnk"
+  Delete "$SMPROGRAMS\gotzji.lnk"
   ; Silent updates/uninstalls must never block on an interactive prompt. Preserve user data by default.
   IfSilent keepData 0
   MessageBox MB_YESNO|MB_ICONQUESTION "Do you want to keep your user settings and workspaces data?$\n$\n(กด 'Yes' เพื่อเก็บข้อมูลการตั้งค่าและ Workspace ไว้$\nกด 'No' เพื่อลบข้อมูลผู้ใช้ทั้งหมดออกจากเครื่อง)" IDYES keepData
-    RMDir /r "$APPDATA\lnwjud"
-    RMDir /r "$LOCALAPPDATA\lnwjud"
-    RMDir /r "$LOCALAPPDATA\lnwjud-updater"
+    RMDir /r "$APPDATA\gotzji"
+    RMDir /r "$LOCALAPPDATA\gotzji"
+    RMDir /r "$LOCALAPPDATA\gotzji-updater"
   keepData:
 !macroend

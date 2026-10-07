@@ -1,14 +1,18 @@
 import { beforeAll, describe, expect, it, vi } from 'vitest';
-import { EMPTY_REMOTE_MCP_STATUS, ipcChannels, type LnwjudApi, type ToolCatalogItem, type ToolCatalogSnapshot, type UserSettings } from '@lnwjud/ipc-contracts';
+import { EMPTY_REMOTE_MCP_STATUS, ipcChannels, type GotzjiApi, type LnwjudApi, type ToolCatalogItem, type ToolCatalogSnapshot, type UserSettings } from '@lnwjud/ipc-contracts';
 
 const electron = vi.hoisted(() => ({
   exposed: undefined as LnwjudApi | undefined,
+  gotzji: undefined as GotzjiApi | undefined,
   invoke: vi.fn(),
 }));
 
 vi.mock('electron', () => ({
   contextBridge: {
-    exposeInMainWorld: (_name: string, api: LnwjudApi): void => { electron.exposed = api; },
+    exposeInMainWorld: (name: string, api: LnwjudApi | GotzjiApi): void => {
+      if (name === 'lnwjud') electron.exposed = api as LnwjudApi;
+      if (name === 'gotzji') electron.gotzji = api as GotzjiApi;
+    },
   },
   ipcRenderer: {
     invoke: electron.invoke,
@@ -59,7 +63,11 @@ const userSettingsFixture: UserSettings = {
 };
 
 describe('preload Tool Catalog validation', () => {
-  beforeAll(async () => { await import('../src/preload/index.js'); });
+  beforeAll(async () => {
+    await import('../src/preload/index.js');
+    expect(electron.exposed).toBeDefined();
+    expect(electron.gotzji).toBeDefined();
+  });
 
   it('preserves ECC opt-in state through the preload settings parser', async () => {
     const enabled = { ...userSettingsFixture, eccEnabled: true };

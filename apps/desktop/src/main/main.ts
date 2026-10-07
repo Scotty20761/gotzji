@@ -4,6 +4,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { performance } from 'node:perf_hooks';
 import { access, lstat, readFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { autoUpdater } from 'electron-updater';
 import {
   APP_NAME,
@@ -105,7 +106,7 @@ import {
 import { platformCompatibilityProfile, supportedHostPlatform } from './platform-compatibility.js';
 import { atomicWrite, type IncidentDesktopMemory, type IncidentReport } from './incident-report.js';
 import { IncidentSaveCoordinator } from './incident-save.js';
-import { localizedUpdateStatusMessage, nativeMessages } from './native-i18n.js';
+import { gotzjiNativeMessages, localizedUpdateStatusMessage, nativeMessages } from './native-i18n.js';
 import { CrashDiagnosticsRecorder, RendererRecoveryBarrier, RendererRecoveryPolicy } from './crash-recovery.js';
 import { DesktopSessionDiagnostics } from './desktop-session-diagnostics.js';
 import { configureNativeCrashDiagnostics, pruneNativeCrashDumpsForDataPath } from './native-crash-diagnostics.js';
@@ -120,6 +121,12 @@ import { createUnavailableCheckpointCipher, shouldDegradeUnavailableSecureStorag
 import type { ElectronNativeCapabilityApi, NativeDesktopCaptureRequest, NativeDesktopCaptureResult, NativeDialogOptions, NativeDialogResult, NativeDisplayMetadata } from './electron-native-capability-backend.js';
 import { configureLinuxAutostart } from './linux-autostart.js';
 import { InstallActivityCoordinator } from './install-activity.js';
+import { GOTZJI_APP_ID, GOTZJI_APP_NAME, GOTZJI_PRODUCT_ENABLED } from './gotzji-product-identity.js';
+import { GotzjiHostClient } from './gotzji-host-client.js';
+import { assertGotzjiInheritedChannel } from './gotzji-desktop-boundary.js';
+import { registerGotzjiIpcHandlers } from './gotzji-desktop-ipc.js';
+import { gotzjiStartupController } from './gotzji-startup.js';
+import { ensureGotzjiProductHost } from '@gotzji/execution-core/product-host';
 
 const ECC_UPSTREAM_VERSION = '2.2.1';
 
@@ -204,6 +211,7 @@ export interface DesktopIpcServices {
 export type MainWindowProvider = () => BrowserWindow | null;
 
 export interface DesktopIpcHooks {
+  readonly governedGotzji?: boolean;
   readonly onLocaleChanged?: (locale: UiLocale) => void;
   readonly onUserSettingsChanged?: (settings: UserSettings) => void;
   readonly onFactoryReset?: () => Promise<{ readonly accepted: boolean }>;
@@ -437,6 +445,10 @@ export function registerIpcHandlers(
     handler: (event: IpcMainInvokeEvent, payload: unknown) => unknown | Promise<unknown>,
   ): void => {
     ipcMain.handle(channel, async (event, payload: unknown) => {
+      if (hooks.governedGotzji === true) {
+        assertTrustedSender(event, getMainWindow());
+        assertGotzjiInheritedChannel(channel);
+      }
       const invoke = (): unknown | Promise<unknown> => handler(event, payload);
       return hooks.ipcDrainBarrier === undefined ? invoke() : hooks.ipcDrainBarrier.run(invoke);
     });
@@ -1561,6 +1573,14 @@ function patchUpdateStatus(patch: Partial<UpdateStatus>): UpdateStatus {
 
 function refreshDesktopTrayMenu(): void {
   if (tray === null) return;
+  if (GOTZJI_PRODUCT_ENABLED) {
+    tray.setContextMenu(Menu.buildFromTemplate([
+      { label: gotzjiNativeMessages.trayOpen, click: revealMainWindow },
+      { type: 'separator' },
+      { label: gotzjiNativeMessages.trayQuit, click: (): void => app.quit() },
+    ]));
+    return;
+  }
   tray.setContextMenu(Menu.buildFromTemplate(createTrayMenuTemplate({
     locale: desktopLocale,
     openMainWindow: revealMainWindow,
@@ -1617,6 +1637,9 @@ async function requestFactoryReset(dataPath: string): Promise<{ readonly accepte
 }
 
 function requestUpdateCheck(source: 'automatic' | 'tray' | 'renderer'): UpdateStatus {
+  if (GOTZJI_PRODUCT_ENABLED) {
+    return patchUpdateStatus({ phase: 'unavailable', message: gotzjiNativeMessages.manualUpdate, canInstall: false });
+  }
   const messages = nativeMessages(desktopLocale);
   if (!app.isPackaged) {
     const status = patchUpdateStatus({ phase: 'unavailable', message: messages.updaterUnavailable, canInstall: false });
@@ -1669,6 +1692,7 @@ function requestUpdateCheck(source: 'automatic' | 'tray' | 'renderer'): UpdateSt
 }
 
 async function requestUpdateInstall(): Promise<{ readonly accepted: boolean; readonly status: UpdateStatus }> {
+  if (GOTZJI_PRODUCT_ENABLED) return { accepted: false, status: currentUpdateStatus };
   if (!app.isPackaged || currentUpdateStatus.phase !== 'ready' || updateInstallCoordinator === null || updateInstallConfirmationPending) {
     return { accepted: false, status: currentUpdateStatus };
   }
@@ -1783,7 +1807,7 @@ function createDesktopTray(): void {
   }
   tray?.destroy();
   tray = new Tray(trayImage);
-  tray.setToolTip(createTrayToolTip(desktopLocale));
+  tray.setToolTip(GOTZJI_PRODUCT_ENABLED ? 'gotzji — Grace' : createTrayToolTip(desktopLocale));
   refreshDesktopTrayMenu();
   tray.on('click', revealMainWindow);
 }
@@ -2526,6 +2550,70 @@ function toElectronSaveDialogOptions(options: NativeDialogOptions): Electron.Sav
   return result;
 }
 
+/** Product entry: inherited providers/SQLite goals/auto-start are not constructed. */
+function bootstrapGotzjiHostOnly(): void {
+  app.setName(GOTZJI_APP_NAME);
+  if (!app.isPackaged || process.platform !== 'win32' || wantsMcpStdio(process.argv) || process.argv.includes(FACTORY_RESET_APPLY_ARG)) { app.exit(1); return; }
+  const productRoot = path.join(process.env.LOCALAPPDATA ?? app.getPath('appData'), GOTZJI_APP_NAME);
+  app.setPath('userData', path.join(productRoot, 'startup-controller'));
+  void app.whenReady().then(async () => {
+    assertSupportedPlatform();
+    // The supervisor inspects retained owner/process/effect identities. This
+    // wrapper neither creates another job engine nor declares old work done.
+    await ensureGotzjiProductHost({ dataPath: path.join(productRoot, 'runtime'), directory: path.join(productRoot, 'runtime'), resourcesPath: process.resourcesPath, packaged: true });
+    app.quit();
+  }).catch(() => app.exit(1));
+}
+
+function bootstrapGotzjiDesktop(): void {
+  app.setName(GOTZJI_APP_NAME);
+  const configuredProductRoot = !app.isPackaged ? process.env.GOTZJI_DATA_PATH : undefined;
+  if (configuredProductRoot && !path.isAbsolute(configuredProductRoot)) throw new Error('GOTZJI_DATA_PATH_INVALID');
+  const productRoot = configuredProductRoot ? path.resolve(configuredProductRoot) : path.join(process.env.LOCALAPPDATA ?? app.getPath('appData'), GOTZJI_APP_NAME);
+  const dataPath = path.join(productRoot, 'ui');
+  app.setPath('userData', dataPath);
+  if (!app.requestSingleInstanceLock()) { app.quit(); return; }
+  configureCrashRecovery(dataPath);
+  app.on('second-instance', revealMainWindow);
+  void app.whenReady().then(async () => {
+    assertSupportedPlatform();
+    app.setAppUserModelId(GOTZJI_APP_ID);
+    // Raw compatibility launch flags cannot activate the inherited work engine.
+    if (wantsMcpStdio(process.argv) || process.argv.includes(FACTORY_RESET_APPLY_ARG)) {
+      throw new Error('GRACE_GOVERNED_ENTRY_REQUIRED');
+    }
+    const developmentHostEntry = app.isPackaged ? undefined : [
+      path.resolve(process.cwd(), 'packages/execution-core/dist/product-server.mjs'),
+      path.resolve(process.cwd(), '../../packages/execution-core/dist/product-server.mjs'),
+      path.resolve(app.getAppPath(), '../../packages/execution-core/dist/product-server.mjs'),
+      path.resolve(app.getAppPath(), '../../../packages/execution-core/dist/product-server.mjs'),
+    ].find((candidate) => existsSync(candidate));
+    const client = new GotzjiHostClient(() => ensureGotzjiProductHost({
+      dataPath: path.join(productRoot, 'runtime'), directory: path.join(productRoot, 'runtime'), resourcesPath: process.resourcesPath, packaged: app.isPackaged,
+      ...(developmentHostEntry ? { hostEntryPath: developmentHostEntry } : {}),
+    }));
+    registerIpcHandlers(() => mainWindow, defaultDesktopServices, { governedGotzji: true });
+    registerGotzjiIpcHandlers(ipcMain, client, (event) => assertTrustedSender(event, mainWindow), {
+      defaults: (): { tunnelId?: string; organizationId?: string } => {
+        if (app.isPackaged) return {};
+        const tunnelId = process.env.GOTZJI_SETUP_TUNNEL_ID; const organizationId = process.env.GOTZJI_SETUP_ORGANIZATION_ID;
+        return { ...(tunnelId && /^tunnel_[a-z0-9]{32}$/u.test(tunnelId) ? { tunnelId } : {}), ...(organizationId && /^org[-_][A-Za-z0-9_-]{1,160}$/u.test(organizationId) ? { organizationId } : {}) };
+      },
+      open: async (page): Promise<void> => {
+        const urls = { tunnels: 'https://platform.openai.com/settings/organization/tunnels', keys: 'https://platform.openai.com/settings/organization/api-keys', connectors: 'https://chatgpt.com/#settings/Connectors' };
+        await shell.openExternal(urls[page]);
+      },
+    }, gotzjiStartupController(app, { packaged: app.isPackaged, platform: process.platform, executable: process.execPath }));
+    configureDesktopSessionDiagnostics(dataPath);
+    createDesktopWindow();
+    createDesktopTray();
+    // Host lifetime is independent: UI close/quit never closes/cancels its jobs.
+    app.on('activate', revealMainWindow);
+  }).catch((error: unknown) => handleDesktopStartupFailure('gotzji', error));
+  app.on('before-quit', handleDesktopBeforeQuit);
+  app.on('window-all-closed', () => handleDesktopWindowsClosed('desktop'));
+}
+
 function bootstrapDesktop(configuredDataPath?: string): void {
   if (platformCompatibility.disableHardwareAcceleration) app.disableHardwareAcceleration();
   const dataPath = configureDataPath(configuredDataPath);
@@ -2618,7 +2706,7 @@ function handleDesktopStartupFailure(scope: string, error: unknown): void {
   recordDesktopStartup(`${scope}:failed`, error);
   console.error('[Startup] ' + scope + ' failed: ' + message);
   try {
-    dialog.showErrorBox('lnwjud failed to start', scope + ' startup failed.\n\n' + message);
+    dialog.showErrorBox(`${GOTZJI_APP_NAME} failed to start`, scope + ' startup failed.\n\n' + message);
   } catch {
     // Console/crash diagnostics remain available if native dialogs cannot be shown.
   }
@@ -2848,7 +2936,9 @@ function configureDataPath(configuredDataPath?: string): string {
 }
 
 const factoryResetApplyRequested = process.argv.includes(FACTORY_RESET_APPLY_ARG);
-if (factoryResetApplyRequested) {
+if (GOTZJI_PRODUCT_ENABLED) {
+  if (process.argv.includes('--gotzji-host-only')) bootstrapGotzjiHostOnly(); else bootstrapGotzjiDesktop();
+} else if (factoryResetApplyRequested) {
   const dataPath = resolveLnwjudDataPath(process.env, app.getPath('appData'), process.platform);
   try {
     if (!applyPendingFactoryResetSync(dataPath, resolveTunnelProfileDirectory())) {

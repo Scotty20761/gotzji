@@ -152,7 +152,8 @@ jobs:
     # Build target-native artifacts alongside the test matrix on main. The
     # release workflow accepts artifacts only from a successful exact-SHA CI
     # run, so test failures still prevent publication.
-    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'
+    # gotzji v1 qualifies Windows x64; retain upstream jobs for their separate source track.
+    if: github.repository != 'Scotty20761/gotzji' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch')
     strategy:
       fail-fast: false
       matrix:
@@ -359,7 +360,8 @@ jobs:
 
   macos-26-package-compatibility:
     name: macOS 26 Package Compatibility (${{ matrix.arch }})
-    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'
+    # gotzji v1 qualifies Windows x64; retain upstream jobs for their separate source track.
+    if: github.repository != 'Scotty20761/gotzji' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch')
     needs: native-package-verification
     strategy:
       fail-fast: false
@@ -736,6 +738,9 @@ jobs:
             apps/desktop/dist/installers/portable.yml
             apps/desktop/dist/installers/SHA256SUMS.txt
             apps/desktop/dist/installers/PROVENANCE.json
+            apps/desktop/dist/installers/gotzji-plugin-*-unbound.zip
+            apps/desktop/dist/installers/gotzji-plugin-*-unbound.zip.sha256
+            apps/desktop/dist/installers/PLUGIN_PROVENANCE.json
           if-no-files-found: error
           retention-days: 14
           compression-level: 0

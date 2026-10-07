@@ -13,8 +13,13 @@ export interface GraceRegistration {
   readonly expectedContent?: string;
   readonly validationMs?: number;
 }
+export interface ProductGraceRegistration {
+  readonly executable: string;
+  readonly libraryRoot: string;
+  readonly testDriver?: string;
+}
 export interface GraceProfile {
-  readonly recipe: 'source-snapshot' | 'code-check';
+  readonly recipe: 'source-snapshot' | 'code-check' | 'product';
   readonly expectedContent: string | null;
   readonly expectedHash: string;
   readonly validationMs: number;
@@ -27,6 +32,10 @@ export interface GraceProfile {
   readonly libraryRoot: string;
   readonly testDriver: string | null;
   readonly testDriverHash: string | null;
+}
+export function productGraceProfile(registration: ProductGraceRegistration): GraceProfile {
+  const profile = graceProfile({ ...registration, sourceFile: path.join(registration.libraryRoot, 'CLAUDE.md') });
+  return { ...profile, recipe: 'product' };
 }
 export function graceProfile(registration: GraceRegistration): GraceProfile {
   const libraryRoot = realpathSync(registration.libraryRoot);

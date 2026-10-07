@@ -5,7 +5,9 @@ import { DatabaseSync } from 'node:sqlite';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { afterEach, describe, expect, it } from 'vitest';
 import { ExecutionCore } from './core.js';
-import { alive, callWorker, signed, stopWorker } from './managed-worker.js';
+import { alive, callWorker, signed, stopWorker, ownedProcessAlive } from './managed-worker.js';
+import { processIdentities } from './process-identity.mjs';
+import { createHmac } from 'node:crypto';
 import { type WorkerRow } from './store.js';
 import type { TaskBinding, QualificationOperation } from './types.js';
 
@@ -52,6 +54,28 @@ afterEach(async () => {
 });
 
 describe('neutral execution authority — real SQLite, files and owned processes', () => {
+  it('does not cancel an unrelated live process that occupies a recorded old PID with a different birth identity', async () => {
+    const f = await fixture(); const binding = await submit(f, 'identity-reuse');
+    await f.core.resume(f.gotzji, binding); await f.core.tick();
+    const w = worker(f, binding);
+    const child = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], { windowsHide: true, stdio: 'ignore' }); unrelated.push(child);
+    const pid = child.pid!; const identity = (await processIdentities([pid]))[pid];
+    expect(identity && typeof identity === 'object').toBe(true);
+    if (!identity || typeof identity !== 'object') throw new Error('Actual process birth probe unavailable');
+    const previousIdentity = { ...identity, birth: 'different-recorded-previous-birth' };
+    expect(await ownedProcessAlive(pid, previousIdentity)).toBe(false);
+    const rewrite = async (name: string, transform: (value: Record<string, unknown>) => Record<string, unknown>): Promise<void> => {
+      const filename = path.join(w.directory, name); const record = JSON.parse(await readFile(filename, 'utf8')) as { body: string };
+      const body = JSON.stringify(transform(JSON.parse(record.body) as Record<string, unknown>));
+      await writeFile(filename, JSON.stringify({ body, mac: createHmac('sha256', w.token).update(body).digest('hex') }));
+    };
+    // Model the old signed record after OS PID reuse. The current process has
+    // real independently observed birth/executable data and is not our worker.
+    await rewrite('ready.json', (value) => ({ ...value, pid, identity: previousIdentity }));
+    await rewrite('stopped.json', (value) => ({ ...value, pid, identities: { [pid]: previousIdentity }, descendants: [], closedDescendants: [] }));
+    expect(await stopWorker(w)).toBe(true);
+    expect(alive(pid)).toBe(true); expect(child.exitCode).toBeNull();
+  }, 15000);
   it('persists one native Goal and returns the same claim on concurrent duplicate submit', async () => {
     const f = await fixture();
     const p = f.core.prepare(f.gotzji, { requestId: 'same', operation: 'fixture.write', text: 'one' });
