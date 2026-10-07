@@ -8,6 +8,7 @@ import { pathToFileURL } from 'node:url';
 import { LibraryWorkflowAdapter } from './library-workflow-adapter.js';
 import { digestLibraryValue } from './library-workflow-contract.js';
 import { childEnvironment, replaceFileSync } from './product-security.mjs';
+import { canonicalSpokePolicy } from './product-library-spoke-policy.mjs';
 import { assertProductAuthority } from './product-broker.mjs';
 import {
   appendContradictionRegistry, assembleAuditedMemo, assertFinalMemoBaseline, assertNavigationSnapshot, captureNavigationSnapshot,
@@ -245,13 +246,12 @@ export function prepareCanonicalSpokePolicy(prepared,actor,effectRoot){
   if(!descriptor)throw typed('LIBRARY_CANONICAL_AGENT_MISSING','none');
   const sourcePath=path.join(prepared.project.rootPath,descriptor.relativePath);const bytes=readFileSync(sourcePath);
   if(digest(bytes)!==descriptor.sha256)throw typed('LIBRARY_CANONICAL_AGENT_CHANGED','none');
-  const source=bytes.toString('utf8');const match=/^---\r?\n[\s\S]*?\r?\n---\r?\n([\s\S]+)$/u.exec(source);
-  if(!match?.[1]?.trim())throw typed('LIBRARY_CANONICAL_AGENT_INVALID','none');
-  const policy={ [actor]:{description:`Canonical ${actor} persona under a task-bound gotzji policy`,prompt:match[1],tools:[]} };
-  const content=`${JSON.stringify(policy,null,2)}\n`;const policyPath=path.join(effectRoot,`agent-policy-${actor}.json`);
+  let policy;try{policy=canonicalSpokePolicy(bytes.toString('utf8'),actor);}catch{throw typed('LIBRARY_CANONICAL_AGENT_INVALID','none');}
+  const expected=prepared.library.spokePolicies?.[actor];if(!expected||expected.canonicalSpecSha256!==descriptor.sha256||expected.policyAdapterSha256!==policy.policyAdapterSha256)throw typed('LIBRARY_SPOKE_POLICY_CHANGED','unknown');
+  const content=policy.content;const policyPath=path.join(effectRoot,`agent-policy-${actor}.json`);
   if(existsSync(policyPath)){if(digest(readFileSync(policyPath))!==digest(content))throw typed('LIBRARY_SPOKE_POLICY_CHANGED','unknown');}
   else writeFileSync(policyPath,content,{flag:'wx',mode:0o600});
-  return{path:policyPath,canonicalSpecSha256:descriptor.sha256,policyAdapterSha256:digest(content)};
+  return{path:policyPath,canonicalSpecSha256:descriptor.sha256,policyAdapterSha256:policy.policyAdapterSha256};
 }
 async function invokeSpoke(config,prepared,step,completed,signal){
   const actor=step.actor;const evidence=prepared.library.selectedSources.map((entry)=>`## ${path.relative(prepared.project.rootPath,entry.path)}\n${readFileSync(entry.path,'utf8')}`).join('\n\n');

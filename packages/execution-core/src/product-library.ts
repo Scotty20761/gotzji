@@ -8,6 +8,7 @@ import { digestLibraryValue, type LibraryRouteAuthority, type LibraryRouteKind, 
 import { discoverPolicies } from './product-projects.js';
 import { CoreError, type FileFingerprint, type RegisteredProject } from './types.js';
 import { hash } from './store.js';
+import { canonicalSpokePolicy } from './product-library-spoke-policy.mjs';
 
 export interface ProductLibraryInput extends LibraryWorkflowInput {
   readonly operation: 'library.workflow'; readonly priority?: number; readonly dependsOn?: readonly string[];
@@ -66,8 +67,15 @@ export function prepareLibraryOperation(project: RegisteredProject, input: Produ
   if (hash(readFileSync(python.path)) !== python.hash) throw new CoreError('LIBRARY_EXECUTOR_CHANGED');
   const policies = discoverPolicies(project.rootPath, selectedSources.map((entry) => path.dirname(entry.path)));
   const workflowPolicies = Object.fromEntries(prepared.sourceScope.descriptors.map((entry) => [`library_policy_${entry.id}`, { path: path.join(project.rootPath, entry.relativePath), hash: entry.sha256 }]));
+  const spokePolicies = input.workflowId === 'library.final-memo' && input.workflowVersion === 2 ? Object.fromEntries(['mammos','facty','indie'].map((actor) => {
+    const descriptor = prepared.sourceScope.descriptors.find((entry) => entry.id === `${actor}-agent`);
+    if (!descriptor) throw new CoreError('LIBRARY_CANONICAL_AGENT_MISSING');
+    const source = readFileSync(path.join(project.rootPath, descriptor.relativePath));
+    if (hash(source) !== descriptor.sha256) throw new CoreError('LIBRARY_CANONICAL_AGENT_CHANGED');
+    return [actor, { canonicalSpecSha256: descriptor.sha256, policyAdapterSha256: canonicalSpokePolicy(source.toString('utf8'), actor as 'mammos'|'facty'|'indie').policyAdapterSha256 }];
+  })) : undefined;
   return { kind: 'library', input: { ...input, parameters: prepared.input.parameters }, project, projectPolicies: { ...policies.projectPolicies, ...workflowPolicies }, policyDirectories: policies.policyDirectories,
-    library: { ...prepared, resources: [`project:${project.resourceKey}`, `library-vault:${project.resourceKey}`, ...(prepared.ast.nodes.some((entry) => entry.actor !== 'grace') ? ['global:library-roster-writer'] : [])], selectedSources, python,
+    library: { ...prepared, ...(spokePolicies ? { spokePolicies } : {}), resources: [`project:${project.resourceKey}`, `library-vault:${project.resourceKey}`, ...(prepared.ast.nodes.some((entry) => entry.actor !== 'grace') ? ['global:library-roster-writer'] : [])], selectedSources, python,
       ...(finalMemo ? { finalMemo: finalMemo.metadata } : {}) } };
 }
 export function libraryCatalog(): readonly LibraryWorkflowDefinition[] { return LIBRARY_WORKFLOW_REGISTRY.filter((entry) => RUNNABLE_LIBRARY_WORKFLOWS.has(`${entry.id}:${entry.version}`)); }
