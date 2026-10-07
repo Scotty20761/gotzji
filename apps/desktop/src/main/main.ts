@@ -3,7 +3,7 @@ import { randomBytes } from 'node:crypto';
 import path from 'node:path';
 import os from 'node:os';
 import { performance } from 'node:perf_hooks';
-import { access, lstat, readFile } from 'node:fs/promises';
+import { access, lstat, readFile, realpath } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { autoUpdater } from 'electron-updater';
 import {
@@ -2588,9 +2588,18 @@ function bootstrapGotzjiDesktop(): void {
       path.resolve(app.getAppPath(), '../../packages/execution-core/dist/product-server.mjs'),
       path.resolve(app.getAppPath(), '../../../packages/execution-core/dist/product-server.mjs'),
     ].find((candidate) => existsSync(candidate));
+    let developmentTestProvider: string | undefined;
+    const configuredTestProvider = !app.isPackaged && process.env.GOTZJI_E2E_MODE === '1' ? process.env.GOTZJI_E2E_PROVIDER_EXECUTABLE : undefined;
+    if (configuredTestProvider !== undefined) {
+      if (!path.isAbsolute(configuredTestProvider)) throw new Error('GOTZJI_E2E_PROVIDER_INVALID');
+      const candidate = path.resolve(configuredTestProvider); const info = await lstat(candidate);
+      if (!info.isFile() || info.isSymbolicLink() || await realpath(candidate) !== candidate) throw new Error('GOTZJI_E2E_PROVIDER_INVALID');
+      developmentTestProvider = candidate;
+    }
     const client = new GotzjiHostClient(() => ensureGotzjiProductHost({
       dataPath: path.join(productRoot, 'runtime'), directory: path.join(productRoot, 'runtime'), resourcesPath: process.resourcesPath, packaged: app.isPackaged,
       ...(developmentHostEntry ? { hostEntryPath: developmentHostEntry } : {}),
+      ...(developmentTestProvider ? { executable: developmentTestProvider } : {}),
     }));
     registerIpcHandlers(() => mainWindow, defaultDesktopServices, { governedGotzji: true });
     registerGotzjiIpcHandlers(ipcMain, client, (event) => assertTrustedSender(event, mainWindow), {

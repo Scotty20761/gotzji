@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -17,11 +17,13 @@ test('gotzji production entry exposes governed controls and denies inherited wor
   }
   let app: ElectronApplication | undefined;
   try {
+    const providerExecutable = path.join(dataRoot, 'claude.exe');
+    await writeFile(providerExecutable, 'gotzji E2E provider path fixture\n', { flag: 'wx' });
     app = await _electron.launch({
       executablePath: electronExecutablePath(desktopRoot),
       args: [mainEntry],
       cwd: desktopRoot,
-      env: { ...process.env, GOTZJI_DATA_PATH: dataRoot },
+      env: { ...process.env, GOTZJI_DATA_PATH: dataRoot, GOTZJI_E2E_MODE: '1', GOTZJI_E2E_PROVIDER_EXECUTABLE: providerExecutable },
       timeout: 40_000,
     });
     const page = await app.firstWindow();
