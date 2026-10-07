@@ -10,6 +10,7 @@ import { stopWorker } from './managed-worker.js';
 import type { ProductGraceRegistration } from './grace-profile.js';
 import type { TaskBinding } from './types.js';
 import type { ProductLibraryInput } from './product-library.js';
+import { libraryWorkflow } from './library-workflow-registry.js';
 const { productBrokerCall } = await import('./product-broker.mjs');
 const { executePreparedLibraryOperation } = await import('./product-library-broker.mjs');
 
@@ -24,7 +25,7 @@ async function fixture(runner=false,finalFailure?:'pipeline'|'atom-after-write'|
   await mkdir(path.join(library,'.claude','skills','debug-mantra'),{recursive:true});
   for(const directory of ['scripts/lib','.claude/agents','Team','indexes/tickers','team-outputs/cards/TEST','team-outputs/filings','team-outputs/earnings','team-outputs/memos','team-outputs/research-reports','knowledge-base/atoms']) await mkdir(path.join(library,directory),{recursive:true});
   for(const filename of ['.claude/skills/karpathy-guidelines/SKILL.md','.claude/skills/debug-mantra/SKILL.md','scripts/audit_orphan_md.py','scripts/validate.py']) await writeFile(path.join(library,filename),'fixture\n');
-  for(const filename of ['references/source-priority.md','references/index-wiring-map.md','references/workflow-memo.md','Team/memo.md','Team/fact-check.md','.claude/agents/mammos.md','.claude/agents/facty.md','.claude/agents/indie.md','user-profile.md','scripts/lib/pipeline_parse.py','scripts/lib/control_lock.py','scripts/lib/source_siblings.py','scripts/lib/design_export.py','scripts/lib/asset_bump.py','scripts/lib/streaming_files.py']) await writeFile(path.join(library,filename),`Policy ${filename}\n`);
+  for(const filename of ['references/source-priority.md','references/index-wiring-map.md','references/workflow-memo.md','Team/memo.md','Team/fact-check.md','.claude/agents/mammos.md','.claude/agents/facty.md','.claude/agents/indie.md','user-profile.md','scripts/lib/pipeline_parse.py','scripts/lib/control_lock.py','scripts/lib/process_lease.py','scripts/lib/source_siblings.py','scripts/lib/design_export.py','scripts/lib/asset_bump.py','scripts/lib/streaming_files.py']) await writeFile(path.join(library,filename),`Policy ${filename}\n`);
   for(const actor of ['mammos','facty','indie']) await writeFile(path.join(library,'.claude','agents',`${actor}.md`),`---\nname: ${actor}\ndescription: fixture ${actor}\n---\n\n# Canonical ${actor}\nFollow the frozen fixture role.\n`);
   await writeFile(path.join(library,'scripts/lib/ticker_company_map.json'),'{}\n');
   await writeFile(path.join(library,'indexes/INDEX_outputs.md'),'outputs\n');await writeFile(path.join(library,'indexes/tickers/TEST.md'),'ticker\n');
@@ -65,6 +66,16 @@ describe('P7 Library runtime',()=>{
     const pdf=await fixture();await writeFile(path.join(pdf.library,'evidence.pdf'),'not a real PDF');const base=memoInput('memo-pdf');const input={...base,parameters:{...base.parameters,paths:JSON.stringify(['evidence.pdf'])}};
     expect(()=>pdf.core.prepareOperation(pdf.credential,input)).toThrow('LIBRARY_PDF_PROVIDER_REQUIRED');
   });
+
+  it('binds the pipeline lock lease dependency and refuses stale replay after its bytes change',async()=>{
+    expect(libraryWorkflow('library.final-memo',2).sources).toContainEqual({id:'process-lease',relativePath:'scripts/lib/process_lease.py'});
+    const f=await fixture(true);const preparation=f.core.prepareOperation(f.credential,memoInput('memo-lease-drift'));
+    await writeFile(path.join(f.library,'scripts/lib/process_lease.py'),'changed valid Python dependency\n');
+    const job=await f.core.submit(f.credential,preparation.preparationId);const binding=f.core.selectLibraryJob(f.credential,'library',job.jobId);f.bindings.push(binding);await f.core.resume(f.credential,binding);
+    const db=new DatabaseSync(path.join(f.root,'state','core.sqlite'));await until(f,()=>!!db.prepare('SELECT 1 FROM gotzji_diagnostics WHERE job_id=?').get(binding.jobId));
+    expect((db.prepare('SELECT code FROM gotzji_diagnostics WHERE job_id=?').get(binding.jobId) as {code:string}).code).toMatch(/(?:LIBRARY_SOURCE_CHANGED|PROJECT_POLICY_CHANGED|DEPENDENCIES_CHANGED|BROKER_DENIED|EFFECT_RECONCILIATION_REQUIRED)/u);
+    await expect(f.core.resume(f.credential,binding)).rejects.toThrow();expect(await present(path.join(f.library,'team-outputs/memos/TEST_memo_2026-10.md'))).toBe(false);db.close();
+  },30000);
 
   it('runs the canonical final memo chain in order and delivers only after explicit user authority',async()=>{
     const f=await fixture(true);const binding=await submit(f,memoInput('memo-success'));await f.core.resume(f.credential,binding);

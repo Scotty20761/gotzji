@@ -118,6 +118,7 @@ export const LIBRARY_WORKFLOW_REGISTRY: readonly LibraryWorkflowDefinition[] = [
       { id: 'pipeline-gateway', relativePath: 'scripts/pipeline_dashboard.py' },
       { id: 'pipeline-parser', relativePath: 'scripts/lib/pipeline_parse.py' },
       { id: 'control-lock', relativePath: 'scripts/lib/control_lock.py' },
+      { id: 'process-lease', relativePath: 'scripts/lib/process_lease.py' },
       { id: 'atom-gateway', relativePath: 'scripts/save_atom.py' },
       { id: 'index-gateway', relativePath: 'scripts/build_indexes_from_frontmatter.py' },
       { id: 'index-source-siblings', relativePath: 'scripts/lib/source_siblings.py' },
