@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "gotzji",
-  "version": "5.7.3",
+  "version": "1.0.0",
   "description": "Use Grace-controlled gotzji projects and durable jobs from ChatGPT and Codex.",
   "author": {
     "name": "gotzji contributors"

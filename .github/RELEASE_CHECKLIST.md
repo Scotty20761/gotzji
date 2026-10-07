@@ -1,6 +1,6 @@
 # gotzji v1.0.0 release checklist
 
-**Current version:** `v5.7.3`. Release target is gotzji v1.0.0; no official gotzji release exists yet. Follow [the canonical release process](../docs/development/RELEASE_PROCESS.md).
+**Current version:** `v1.0.0`. Release target is gotzji v1.0.0; no official gotzji release exists yet. Follow [the canonical release process](../docs/development/RELEASE_PROCESS.md).
 
 Every record must identify exact source/build/catalog, scope, scenario, observed outcome and evidence digest. States: PASS, FAIL, BLOCKED_EXTERNAL, NOT_RUN, STALE. A component test does not close a runtime gate. Private operator/account/artifact evidence stays outside public source. Required domains cannot be waived by marking their entire implementation unsupported.
 

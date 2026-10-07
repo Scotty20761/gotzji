@@ -14,11 +14,11 @@ const ponytailSkillNames = [
 ] as const;
 
 describe('cross-platform desktop packaging', () => {
-  it('[version-contract] pins the product release to v5.7.3', async () => {
+  it('[version-contract] pins the product release to v1.0.0', async () => {
     const rootPackage = JSON.parse(await readFile(path.join(repositoryRoot, 'package.json'), 'utf8')) as { version?: unknown };
     const desktopPackage = JSON.parse(await readFile(path.join(desktopRoot, 'package.json'), 'utf8')) as { version?: unknown };
-    expect(rootPackage.version).toBe('5.7.3');
-    expect(desktopPackage.version).toBe('5.7.3');
+    expect(rootPackage.version).toBe('1.0.0');
+    expect(desktopPackage.version).toBe('1.0.0');
   });
 
   it('[version-contract] keeps every workspace package and runtime version aligned', async () => {
@@ -41,12 +41,12 @@ describe('cross-platform desktop packaging', () => {
     }
     for (const packagePath of packagePaths) {
       const packageJson = JSON.parse(await readFile(packagePath, 'utf8')) as { version?: unknown };
-      expect(packageJson.version, packagePath).toBe('5.7.3');
+      expect(packageJson.version, packagePath).toBe('1.0.0');
     }
     const ipcContracts = await readFile(path.join(repositoryRoot, 'packages', 'ipc-contracts', 'src', 'index.ts'), 'utf8');
     const shared = await readFile(path.join(repositoryRoot, 'packages', 'shared', 'src', 'index.ts'), 'utf8');
-    expect(ipcContracts).toContain("APP_VERSION = '5.7.3'");
-    expect(shared).toContain("APP_VERSION = '5.7.3'");
+    expect(ipcContracts).toContain("APP_VERSION = '1.0.0'");
+    expect(shared).toContain("APP_VERSION = '1.0.0'");
   });
 
   it('[version-contract] keeps source-version and latest-published documentation explicit and aligned', async () => {
@@ -78,7 +78,7 @@ describe('cross-platform desktop packaging', () => {
       ['docs/INSTALL_MACOS.md', `v${version} native macOS release target`],
       ['.github/RELEASE_CHECKLIST.md', `**Current version:** \`v${version}\``],
       ['docs/development/PACKAGING_WINDOWS.md', `current v${version} packaging contract`],
-      ['docs/LNWJUD_CAPABILITIES.md', `lnwjud v${version}`],
+      ['docs/LNWJUD_CAPABILITIES.md', `gotzji v${version}`],
       ['docs/architecture/MULTI_WORKSPACE_CONCURRENCY.md', `current v${version} runtime contract`],
       ['docs/architecture/TOOL_CONTRACT.md', `snapshot synchronized for \`v${version}\``],
       ['docs/architecture/UPGRADE_ARCHITECTURE.md', `checkpoint synchronized for \`v${version}\``],

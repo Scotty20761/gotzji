@@ -1,20 +1,29 @@
 {
   "name": "@lnwjud/capabilities",
-  "version": "5.7.3",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
   "exports": {
     "./gotzji-browser-provider-policy": {
       "types": "./src/gotzji-browser-provider-policy.ts",
-      "import": { "development": "./src/gotzji-browser-provider-policy.ts", "default": "./dist/gotzji-browser-provider-policy.js" }
+      "import": {
+        "development": "./src/gotzji-browser-provider-policy.ts",
+        "default": "./dist/gotzji-browser-provider-policy.js"
+      }
     },
     "./gotzji-browser-provider-cdp": {
       "types": "./src/gotzji-browser-provider-cdp.ts",
-      "import": { "development": "./src/gotzji-browser-provider-cdp.ts", "default": "./dist/gotzji-browser-provider-cdp.js" }
+      "import": {
+        "development": "./src/gotzji-browser-provider-cdp.ts",
+        "default": "./dist/gotzji-browser-provider-cdp.js"
+      }
     },
     "./gotzji-browser-provider-session": {
       "types": "./src/gotzji-browser-provider-session.ts",
-      "import": { "development": "./src/gotzji-browser-provider-session.ts", "default": "./dist/gotzji-browser-provider-session.js" }
+      "import": {
+        "development": "./src/gotzji-browser-provider-session.ts",
+        "default": "./dist/gotzji-browser-provider-session.js"
+      }
     },
     ".": {
       "types": "./src/index.ts",

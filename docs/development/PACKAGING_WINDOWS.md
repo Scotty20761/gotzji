@@ -1,10 +1,10 @@
 # Windows packaging
 
-The current v5.7.3 packaging contract targets the isolated gotzji Windows x64 app. Source baseline 5.7.3 is not an official gotzji release. No macOS/Linux/ARM64 release is claimed.
+The current v1.0.0 packaging contract targets the isolated gotzji Windows x64 app. Source baseline 5.7.3 is not an official gotzji release. No macOS/Linux/ARM64 release is claimed.
 
 Expected local candidate paths:
-- apps/desktop/dist/installers/gotzji-Setup-5.7.3.exe
-- apps/desktop/dist/installers/gotzji-Portable-5.7.3.exe
+- apps/desktop/dist/installers/gotzji-Setup-1.0.0.exe
+- apps/desktop/dist/installers/gotzji-Portable-1.0.0.exe
 
 Use corepack pnpm@10.15.0 package:windows from a clean owned source checkpoint. The canonical script builds the host and app, bundles native runtime helpers and preserves upstream/third-party notices. Build prerequisites include Node/Corepack and the .NET SDK where the native secret migrator requires it. Installed-user absence of those build tools requires a separate clean-machine qualification.
 

@@ -1,6 +1,6 @@
 # gotzji — development and qualification
 
-## Current source version: v5.7.3
+## Current source version: v1.0.0
 
 Latest published release: **none**. The source is being developed toward gotzji v1.0.0. No official gotzji executable has been released. Historical lnwjud documentation is retained under docs/upstream/ and is not a description of gotzji's shipped features.
 
@@ -20,7 +20,7 @@ The personal plugin requires actual account/workspace consent and qualification.
 
 ## Build and private candidate
 
-Use the commands in README.md. Expected local build output is apps/desktop/dist/installers/gotzji-Setup-5.7.3.exe and apps/desktop/dist/installers/gotzji-Portable-5.7.3.exe; those paths do not imply published or qualified artifacts.
+Use the commands in README.md. Expected local build output is apps/desktop/dist/installers/gotzji-Setup-1.0.0.exe and apps/desktop/dist/installers/gotzji-Portable-1.0.0.exe; those paths do not imply published or qualified artifacts.
 
 The intended release is Windows x64, official unsigned, with SHA-256, complete runtime inventory and upstream/third-party notices. Automatic updates are disabled. Native Office/CAD software is an external licensed prerequisite. The packaged app must include its own host/runtime; installed-user absence of Node/pnpm/.NET still requires a clean-machine check.
 
