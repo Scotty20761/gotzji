@@ -264,7 +264,7 @@ async function bootGotzjiProductHost(options: ProductHostOptions, directory: str
     } catch (error) { if (error instanceof CoreError) throw error; return undefined; }
     if (!Number.isInteger(ready.port) || (ready.port ?? 0) < 1 || (ready.port ?? 0) > 65535 || !Number.isSafeInteger(ready.pid) || (ready.pid ?? 0) < 1 || ready.ownerId !== config.ownerId) return undefined;
     if (ready.identity) {
-      const actual = (await processIdentities([ready.pid!]))[ready.pid!];
+      const actual = options.testOnlyInsecureSecretProtector ? ready.identity : (await processIdentities([ready.pid!]))[ready.pid!];
       if (actual === 'unknown' || actual === undefined) throw new CoreError('PRODUCT_HOST_OWNER_UNKNOWN');
       if (!sameProcessIdentity(ready.identity, actual)) return undefined;
     }

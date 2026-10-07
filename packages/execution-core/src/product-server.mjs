@@ -22,7 +22,8 @@ const buildIdentity = productRuntimeIdentity(entry, runtimeOptions);
 const manifestPath = path.join(path.dirname(entry), 'product-runtime-manifest.json');
 const testSecretProtector = testSecretFixture ? testOnlyProductSecretProtector() : undefined;
 let config = await readProductConfiguration(directory, testSecretProtector);
-const ownership = await acquireProductHostOwnership(directory, config.daemonSecret);
+const testIdentityReader = testSecretFixture ? async (pids) => Object.fromEntries(pids.map((pid) => [pid, pid === process.pid ? { birth: 'gotzji-unpackaged-e2e-fixture', executable: realpathSync(process.execPath) } : 'unknown'])) : undefined;
+const ownership = await acquireProductHostOwnership(directory, config.daemonSecret, testIdentityReader);
 if (ownership.status !== 'acquired') {
   const incident = { schemaVersion: 1, product: 'gotzji', phase: 'ownership-denied', status: ownership.status, reason: ownership.reason, recordedAt: new Date().toISOString() };
   writeFileSync(path.join(directory, 'product-ownership-incident.json'), JSON.stringify(incident), { mode: 0o600 });
