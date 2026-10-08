@@ -263,6 +263,19 @@ describe('neutral execution authority — real SQLite, files and owned processes
     try { await expect(ExecutionCore.open(f.root)).rejects.toMatchObject({ code: 'CORE_DATABASE_MISSING' }); }
     finally { await rename(filename + '.saved', filename); }
   });
+
+  it('waits for another connection holding the database instead of failing to reopen', async () => {
+    const f = await fixture(); f.core.close(); const filename = path.join(f.root, 'core.sqlite');
+    // A worker's last connection closing checkpoints the WAL under an exclusive lock; this child holds one for 400 ms.
+    const holder = spawn(process.execPath, ['--no-warnings', '--input-type=module', '-e', `import { DatabaseSync } from 'node:sqlite'; const db = new DatabaseSync(${JSON.stringify(filename)}); db.exec('PRAGMA locking_mode=EXCLUSIVE; BEGIN EXCLUSIVE; UPDATE gotzji_meta SET version=version;'); console.log('locked'); setTimeout(() => { db.exec('COMMIT;'); db.close(); }, 400);`], { stdio: ['ignore', 'pipe', 'inherit'] });
+    try {
+      await new Promise<void>((resolve, reject) => { holder.stdout?.on('data', (data: Buffer) => { if (String(data).includes('locked')) resolve(); }); holder.once('exit', (code) => reject(new Error(`holder exited ${String(code)}`))); });
+      const reopened = await ExecutionCore.open(f.root); cores.push(reopened);
+      expect(reopened.enrollAdapter('after-lock', 'owner-one')).toBeTypeOf('string');
+    } finally {
+      if (holder.exitCode === null) await new Promise((resolve) => holder.once('exit', resolve));
+    }
+  });
   it('accepts the declared payload boundary without dropping bytes and rejects overflow', async () => {
     const f = await fixture(); const text = 'a'.repeat(65536); const b = await submit(f, 'large', 'fixture.write', text);
     await f.core.resume(f.gotzji, b); await f.core.tick();

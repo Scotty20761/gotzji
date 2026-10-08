@@ -84,7 +84,7 @@ export class CoreStore {
     const anchorFile = path.join(path.dirname(filename), 'authority.json');
     if (!existsSync(filename) || !existsSync(anchorFile)) throw new CoreError('CORE_DATABASE_MISSING');
     const anchor = JSON.parse(readFileSync(anchorFile, 'utf8')) as { authority: string };
-    const database = new DatabaseSync(filename, { readOnly: true });
+    const database = new DatabaseSync(filename, { readOnly: true, timeout: 5000 });
     try {
       const meta = database.prepare('SELECT version,policy,authority_id FROM gotzji_meta').get();
       if (meta?.version !== 1 || meta.authority_id !== anchor.authority || typeof meta.policy !== 'string') throw new CoreError('CORE_VERSION_OR_POLICY_CHANGED');
