@@ -12,7 +12,8 @@ export interface ProductBrowserServiceOptions { readonly directory: string; read
 
 /** Browser creation/enrollment is owner setup. Work still enters prepare/Grace. */
 export class ProductBrowserService {
-  private current: { projectId: string; enrollment: TrustedProductBrowserEnrollment } | undefined;
+  // termination-unknown is set before the provider stop, the later phases only after their proof; any phase projects stopping until the terminal record is written.
+  private current: { projectId: string; enrollment: TrustedProductBrowserEnrollment; stopPhase?: 'termination-unknown' | 'provider-stopped' | 'catalog-cleared' } | undefined;
   private readonly protector: ProductSecretProtector;
   private mutation: Promise<unknown> = Promise.resolve();
   public constructor(private readonly options: ProductBrowserServiceOptions) { this.protector = options.protector ?? windowsProductSecretProtector(); mkdirSync(path.join(options.directory, 'browser-sessions'), { recursive: true, mode: 0o700 }); }
@@ -31,6 +32,8 @@ export class ProductBrowserService {
   public inspect(projectId: string): Promise<unknown> { return this.serial(async () => {
     if (!this.current) return { state: 'not-enrolled', projectId };
     if (this.current.projectId !== projectId) throw new CoreError('BROWSER_PROJECT_DENIED');
+    // A stopping session is never re-verified, refreshed or re-enrolled.
+    if (this.current.stopPhase) return this.project();
     if (!await verifyOwnedProductBrowserSession(this.current.enrollment.options.session)) return { state: 'unavailable', projectId, reason: 'BROWSER_SESSION_UNVERIFIED' };
     if (!await this.busy()) {
       const refreshed = await this.current.enrollment.refresh();
@@ -42,13 +45,23 @@ export class ProductBrowserService {
   public stop(projectId: string): Promise<unknown> { return this.serial(async () => {
     if (!this.current) return { state: 'not-enrolled', projectId };
     if (this.current.projectId !== projectId) throw new CoreError('BROWSER_PROJECT_DENIED');
-    if (await this.busy()) throw new CoreError('BROWSER_SESSION_HAS_RETAINED_JOBS');
-    const sessionId = this.current.enrollment.options.session.sessionId;
-    this.options.core.clearBrowserSession(this.options.credential, sessionId);
-    await this.current.enrollment.stop(); this.current = undefined;
+    const current = this.current;
+    // Provider stop cannot be repeated after the browser exits, and catalog clear
+    // cannot be repeated after it succeeds: a retry resumes at the first unproven stage.
+    if (!current.stopPhase || current.stopPhase === 'termination-unknown') {
+      if (await this.busy()) throw new CoreError('BROWSER_SESSION_HAS_RETAINED_JOBS');
+      current.stopPhase = 'termination-unknown';
+      await current.enrollment.stop();
+      current.stopPhase = 'provider-stopped';
+    }
+    if (current.stopPhase === 'provider-stopped') {
+      this.options.core.clearBrowserSession(this.options.credential, current.enrollment.options.session.sessionId);
+      current.stopPhase = 'catalog-cleared';
+    }
     // A terminal record stays protected for restart reconstruction; it carries
     // no executable callbacks and cannot make a new session appear owned.
     await this.protectedWrite({ schemaVersion: 1, ownerId: this.options.ownerId, stopped: true });
+    this.current = undefined;
     return { state: 'stopped', projectId };
   }); }
   public async restore(): Promise<void> {
@@ -71,7 +84,7 @@ export class ProductBrowserService {
     await this.options.core.enrollBrowserSession(this.options.credential, enrollment.options); this.current = { projectId: project.projectId, enrollment };
   }
   public projection(): unknown { return this.current ? this.project() : { state: 'not-enrolled' }; }
-  private project(): unknown { return this.current ? { state: 'ready', projectId: this.current.projectId, ...this.current.enrollment.publicBinding } : { state: 'not-enrolled' }; }
+  private project(): unknown { return this.current ? { state: this.current.stopPhase ? 'stopping' : 'ready', projectId: this.current.projectId, ...this.current.enrollment.publicBinding } : { state: 'not-enrolled' }; }
   private async busy(): Promise<boolean> { return (await this.options.core.list(this.options.credential)).some((entry) => entry.requestedOperation?.startsWith('browser.') && !['completed', 'cancelled', 'failed'].includes(entry.status)); }
   private async save(projectId: string, enrollment: TrustedProductBrowserEnrollment): Promise<void> {
     const { verifyOwnedSession: _verify, ...options } = enrollment.options; void _verify;
