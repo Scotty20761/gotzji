@@ -59,7 +59,7 @@ else core.list(config.credential); // Verify the retained owner credential befor
 let authorityPersistence;
 if (!startupControlOnly) {
   config = { ...config, authority: core.authority() };
-  // CurrentUser DPAPI starts a separate Windows process. Let the independent
+  // CurrentUser DPAPI runs in a separate Windows PowerShell session. Let the independent
   // catalog/listener setup proceed while it seals the upgrade anchor, but do
   // not publish readiness until the durable write has succeeded.
   authorityPersistence = observeProductHostAuthorityPersistence(writeProductConfiguration(config, testSecretProtector));

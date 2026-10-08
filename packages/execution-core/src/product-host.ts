@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { CoreError } from './types.js';
 import { ensureProductControlDocuments } from './product-control-policy.js';
 import { childEnvironment, sanitizedStream } from './product-security.mjs';
-import { processIdentities, sameProcessIdentity, type ProcessIdentity } from './process-identity.mjs';
+import { processIdentities, sameProcessIdentity, windowsPowerShellSession, type ProcessIdentity, type WindowsPowerShellSession } from './process-identity.mjs';
 
 export interface ProductSecretProtector {
   protect(value: string): Promise<string>;
@@ -85,27 +85,21 @@ export function productRuntimeRequiresManifest(entry: string, argv: readonly str
 }
 
 const MAX_SECRET_BYTES = 64 * 1024;
-/** Uses CurrentUser DPAPI without placing plaintext on a command line. */
-export function windowsProductSecretProtector(): ProductSecretProtector {
+const SECRET_PROVIDER_CODES: Readonly<Record<string, string>> = { POWERSHELL_SESSION_TIMEOUT: 'SECRET_PROVIDER_TIMEOUT', POWERSHELL_SESSION_UNAVAILABLE: 'SECRET_PROVIDER_UNAVAILABLE', POWERSHELL_SESSION_OUTPUT_LIMIT: 'SECRET_PROVIDER_OUTPUT_LIMIT', POWERSHELL_SESSION_INPUT_FAILED: 'SECRET_PROVIDER_INPUT_FAILED' };
+/** Uses CurrentUser DPAPI without placing plaintext on a command line; one owned Windows PowerShell session serves every call. */
+export function windowsProductSecretProtector(session?: WindowsPowerShellSession): ProductSecretProtector {
   if (process.platform !== 'win32') throw new CoreError('WINDOWS_SECRET_PROVIDER_REQUIRED');
-  const transform = (value: string, encrypt: boolean): Promise<string> => new Promise((resolve, reject) => {
-    if (Buffer.byteLength(value) > MAX_SECRET_BYTES) { reject(new CoreError('SECRET_PAYLOAD_TOO_LARGE')); return; }
-    const action = encrypt
-      ? '$bytes=[Text.Encoding]::UTF8.GetBytes($inputValue); $result=[Security.Cryptography.ProtectedData]::Protect($bytes,$null,[Security.Cryptography.DataProtectionScope]::CurrentUser); [Convert]::ToBase64String($result)'
-      : '$bytes=[Convert]::FromBase64String($inputValue); $result=[Security.Cryptography.ProtectedData]::Unprotect($bytes,$null,[Security.Cryptography.DataProtectionScope]::CurrentUser); [Text.Encoding]::UTF8.GetString($result)';
-    const script = `$ErrorActionPreference='Stop'; [Console]::InputEncoding=[Text.UTF8Encoding]::new($false); [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); Add-Type -AssemblyName System.Security; $inputValue=[Console]::In.ReadToEnd(); ${action}`;
-    const executable = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
-    const child = spawn(executable, ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
-    let output = ''; let settled = false;
-    const finish = (error?: Error): void => { if (settled) return; settled = true; clearTimeout(timer); if (error) reject(error); else resolve(output.trim()); };
-    const timer = setTimeout(() => { child.kill(); finish(new CoreError('SECRET_PROVIDER_TIMEOUT')); }, 10_000);
-    child.stdout.on('data', (data: Buffer) => { output += data.toString('utf8'); if (Buffer.byteLength(output) > MAX_SECRET_BYTES * 2) { child.kill(); finish(new CoreError('SECRET_PROVIDER_OUTPUT_LIMIT')); } });
-    child.stderr.on('data', () => { /* Never expose secret/provider stderr to UI or MCP. */ });
-    child.once('error', () => finish(new CoreError('SECRET_PROVIDER_UNAVAILABLE')));
-    child.once('exit', (code) => finish(code === 0 ? undefined : new CoreError('SECRET_OWNER_OR_PROVIDER_DENIED')));
-    child.stdin.on('error', () => finish(new CoreError('SECRET_PROVIDER_INPUT_FAILED')));
-    child.stdin.end(value, 'utf8');
-  });
+  // DPAPI stays on Windows PowerShell, where System.Security loads.
+  const provider = session ?? windowsPowerShellSession(path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'), 'dpapi');
+  const transform = async (value: string, encrypt: boolean): Promise<string> => {
+    if (Buffer.byteLength(value) > MAX_SECRET_BYTES) throw new CoreError('SECRET_PAYLOAD_TOO_LARGE');
+    let result: string;
+    try { result = encrypt ? await provider.protect(Buffer.from(value, 'utf8').toString('base64')) : await provider.unprotect(value); }
+    catch (error) { throw new CoreError(SECRET_PROVIDER_CODES[String((error as { code?: unknown }).code)] ?? 'SECRET_OWNER_OR_PROVIDER_DENIED'); }
+    if (typeof result !== 'string') throw new CoreError('SECRET_OWNER_OR_PROVIDER_DENIED');
+    if (result.length > MAX_SECRET_BYTES * 2) throw new CoreError('SECRET_PROVIDER_OUTPUT_LIMIT');
+    return encrypt ? result : Buffer.from(result, 'base64').toString('utf8');
+  };
   return { protect: (value) => transform(value, true), unprotect: (value) => transform(value, false) };
 }
 

@@ -7,6 +7,18 @@ export type WindowsProcessIdentityExecutor = (executable: string, args: string[]
 }) => Promise<{ stdout: string }>;
 export function createWindowsProcessIdentityReader(options?: {
   currentPid?: number; programFiles?: string; systemRoot?: string;
-  exists?: (filename: string) => boolean; run?: WindowsProcessIdentityExecutor;
+  exists?: (filename: string) => boolean; run?: WindowsProcessIdentityExecutor; session?: WindowsPowerShellSession;
   onFailure?: (failure: { code: string; elapsedMs: number }) => void;
 }): typeof processIdentities;
+/** One owned PowerShell per role and program; identity and DPAPI never share one. Failures reject with a POWERSHELL_SESSION_* code. */
+export interface WindowsPowerShellSession {
+  identity(pids: readonly number[], timeoutMs?: number): Promise<Record<string, unknown>>;
+  protect(base64: string, timeoutMs?: number): Promise<string>;
+  unprotect(base64: string, timeoutMs?: number): Promise<string>;
+  close(): void;
+}
+export function createWindowsPowerShellSession(options: {
+  program: string; role?: 'identity' | 'dpapi'; idleMs?: number; outputLimit?: number;
+  spawn?: (command: string, args: readonly string[], options: object) => import('node:child_process').ChildProcess;
+}): WindowsPowerShellSession;
+export function windowsPowerShellSession(program: string, role?: 'identity' | 'dpapi'): WindowsPowerShellSession;

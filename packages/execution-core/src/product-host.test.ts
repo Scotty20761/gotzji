@@ -9,6 +9,7 @@ import { cleanupProductHostStartup, completeProductHostStartup, ensureGotzjiProd
 import { ensureProductControlDocuments } from './product-control-policy.js';
 import { productGraceProfile } from './grace-profile.js';
 import { canonicalTemporaryDirectorySync } from './test-fixtures.js';
+import type { WindowsPowerShellSession } from './process-identity.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -141,6 +142,22 @@ describe('private product enrollment storage', () => {
     expect(Object.keys(profile.documents)).toEqual(['rules', 'agents', 'workflow', 'index']);
     expect(readFileSync(path.join(directory, 'KNOWLEDGE_INDEX.md'), 'utf8')).toContain('not an Investment Library vault');
     ensureProductControlDocuments(directory);
+  });
+  it.runIf(process.platform === 'win32')('keeps the secret provider codes and byte encoding over the shared PowerShell session', async () => {
+    const fail = (code: string): (() => Promise<string>) => async (): Promise<string> => { throw Object.assign(new Error(code), { code }); };
+    const session = (overrides: Partial<WindowsPowerShellSession>): WindowsPowerShellSession => ({ identity: async (): Promise<Record<string, unknown>> => ({}), close: (): void => undefined, protect: async (value: string): Promise<string> => `sealed:${value}`, unprotect: async (value: string): Promise<string> => Buffer.from(value.replace(/^sealed:/u, ''), 'base64').toString('base64'), ...overrides });
+    const roundtrip = windowsProductSecretProtector(session({}));
+    const sealed = await roundtrip.protect('งานลับ'); expect(sealed).toBe(`sealed:${Buffer.from('งานลับ', 'utf8').toString('base64')}`);
+    expect(await roundtrip.unprotect(sealed)).toBe('งานลับ');
+    await expect(windowsProductSecretProtector(session({ protect: fail('POWERSHELL_SESSION_TIMEOUT') })).protect('x')).rejects.toMatchObject({ code: 'SECRET_PROVIDER_TIMEOUT' });
+    await expect(windowsProductSecretProtector(session({ unprotect: fail('POWERSHELL_SESSION_DENIED') })).unprotect('x')).rejects.toMatchObject({ code: 'SECRET_OWNER_OR_PROVIDER_DENIED' });
+    await expect(windowsProductSecretProtector(session({ protect: fail('POWERSHELL_SESSION_EXITED') })).protect('x')).rejects.toMatchObject({ code: 'SECRET_OWNER_OR_PROVIDER_DENIED' });
+    for (const [code, expected] of [['POWERSHELL_SESSION_UNAVAILABLE', 'SECRET_PROVIDER_UNAVAILABLE'], ['POWERSHELL_SESSION_INPUT_FAILED', 'SECRET_PROVIDER_INPUT_FAILED'], ['POWERSHELL_SESSION_OUTPUT_LIMIT', 'SECRET_PROVIDER_OUTPUT_LIMIT'], ['POWERSHELL_SESSION_REQUEST_INVALID', 'SECRET_OWNER_OR_PROVIDER_DENIED']] as const) {
+      await expect(windowsProductSecretProtector(session({ unprotect: fail(code) })).unprotect('x')).rejects.toMatchObject({ code: expected });
+    }
+    await expect(windowsProductSecretProtector(session({ protect: async () => 'a'.repeat(64 * 1024 * 2 + 1) })).protect('x')).rejects.toMatchObject({ code: 'SECRET_PROVIDER_OUTPUT_LIMIT' });
+    await expect(windowsProductSecretProtector(session({ protect: async () => 42 as unknown as string })).protect('x')).rejects.toMatchObject({ code: 'SECRET_OWNER_OR_PROVIDER_DENIED' });
+    await expect(windowsProductSecretProtector(session({})).protect('a'.repeat(64 * 1024 + 1))).rejects.toMatchObject({ code: 'SECRET_PAYLOAD_TOO_LARGE' });
   });
   it.runIf(process.platform === 'win32')('uses actual CurrentUser DPAPI and atomically retains owner/Unicode config without plaintext secrets', async () => {
     const directory = canonicalTemporaryDirectorySync('gotzji-dpapi-');
