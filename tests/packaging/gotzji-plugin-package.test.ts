@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -12,7 +12,7 @@ const sourceCommit = '1'.repeat(40);
 
 describe('gotzji Agent Plugin package', () => {
   it.each(['LF', 'CRLF'])('accepts %s skill headers while preserving the exact signed source bytes', async (lineEnding) => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'gotzji-plugin-line-endings-'));
+    const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'gotzji-plugin-line-endings-')));
     try {
       const sourceRoot = path.join(root, 'source');
       await cp(canonicalSource, sourceRoot, { recursive: true });
@@ -36,7 +36,7 @@ describe('gotzji Agent Plugin package', () => {
   });
 
   it('builds a deterministic public source package that is explicitly unbound', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'gotzji-plugin-generic-'));
+    const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'gotzji-plugin-generic-')));
     try {
       const outputDirectory = path.join(root, 'output');
       const first = await buildGotzjiPluginPackage({ outputDirectory, sourceCommit, cleanSource: true });
@@ -124,7 +124,7 @@ describe('gotzji Agent Plugin package', () => {
   });
 
   it('creates a separate personal package only from an explicit registered technical ID', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'gotzji-plugin-personal-'));
+    const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'gotzji-plugin-personal-')));
     const appId = `${'plugin_'}${'asdk_app_'}${'b'.repeat(32)}`;
     try {
       const result = await buildGotzjiPluginPackage({ personal: true, appId, outputDirectory: path.join(root, 'output') });
@@ -147,7 +147,7 @@ describe('gotzji Agent Plugin package', () => {
   });
 
   it('rejects missing and forged personal bindings without emitting an archive', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'gotzji-plugin-binding-negative-'));
+    const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'gotzji-plugin-binding-negative-')));
     try {
       await expect(buildGotzjiPluginPackage({ personal: true, outputDirectory: path.join(root, 'missing') }))
         .rejects.toThrow('PERSONAL_BINDING_REQUIRES_REGISTERED_APP_ID');
@@ -161,7 +161,7 @@ describe('gotzji Agent Plugin package', () => {
   });
 
   it('rejects source credentials, private binding files, symlinks and overlapping output paths', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'gotzji-plugin-security-'));
+    const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'gotzji-plugin-security-')));
     try {
       const credentialSource = path.join(root, 'credential-source');
       await cp(canonicalSource, credentialSource, { recursive: true });
@@ -192,7 +192,7 @@ describe('gotzji Agent Plugin package', () => {
   });
 
   it('verifies existing bytes and rejects tampered evidence, source, paths, credentials and personal mappings', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'gotzji-plugin-verifier-'));
+    const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'gotzji-plugin-verifier-')));
     try {
       const baseline = await buildGotzjiPluginPackage({ outputDirectory: path.join(root, 'baseline'), sourceCommit, cleanSource: true });
 
@@ -278,7 +278,7 @@ describe('gotzji Agent Plugin package', () => {
   });
 
   it('packages only the owned workflow skill and keeps job identity and evidence boundaries explicit', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'gotzji-plugin-skill-'));
+    const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'gotzji-plugin-skill-')));
     try {
       const result = await buildGotzjiPluginPackage({ outputDirectory: path.join(root, 'output') });
       const entries = readStoredZip(await readFile(result.archivePath));
