@@ -36,18 +36,22 @@ export async function ownedProcessAlive(pid: number, expected: ProcessIdentity |
   if (observed === 'unknown' || observed === undefined) return 'unknown';
   return observed === null ? false : sameProcessIdentity(expected, observed);
 }
-async function stoppedOwnership(worker: WorkerRow, observation: WorkerObservation): Promise<boolean> {
+function stoppedEntries(worker: WorkerRow, observation: WorkerObservation): { pid: number; expected: ProcessIdentity | undefined }[] | undefined {
   const ready = signed<Ready>(worker, 'ready.json');
-  if (!ready) return false;
-  const entries = [
+  if (!ready || observation.state !== 'cancelled' || observation.pid !== ready.pid) return undefined;
+  return [
     { pid: observation.pid, expected: ready.identity ?? observation.identities?.[observation.pid] },
     ...observation.descendants
       .filter((pid) => !observation.closedDescendants?.includes(pid))
       .map((pid) => ({ pid, expected: observation.identities?.[pid] })),
   ];
-  const live = entries.filter((entry) => alive(entry.pid) !== false);
+}
+async function stoppedOwnership(worker: WorkerRow, observation: WorkerObservation, liveness: typeof alive = alive, reader: typeof processIdentities = processIdentities): Promise<boolean> {
+  const entries = stoppedEntries(worker, observation);
+  if (!entries) return false;
+  const live = entries.filter((entry) => liveness(entry.pid) !== false);
   if (!live.length) return true;
-  const identities = await processIdentities(live.map((entry) => entry.pid));
+  const identities = await reader(live.map((entry) => entry.pid));
   return live.every(({ pid, expected }) => {
     if (!expected) return false;
     const observed = identities[pid];
@@ -96,12 +100,20 @@ export async function stopWorker(worker: WorkerRow): Promise<boolean> {
   if (observed === 'absent') return true;
   if (observed === 'unknown') return false;
   try { await callWorker(worker, 'cancel'); } catch { /* Lost response still needs independent exit evidence. */ }
+  return await awaitStoppedOwnership(worker);
+}
+/** The signed worker receipt remains the authority; injected observations only support focused stop-proof tests. */
+export async function awaitStoppedOwnership(worker: WorkerRow, dependencies: { alive?: typeof alive; identities?: typeof processIdentities; delay?: () => Promise<void> } = {}): Promise<boolean> {
+  const liveness = dependencies.alive ?? alive;
+  const reader = dependencies.identities ?? processIdentities;
   for (let n = 0; n < 100; n++) {
     const stopped = signed<WorkerObservation>(worker, 'stopped.json');
-    if (stopped && await stoppedOwnership(worker, stopped)) return true;
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    const entries = stopped ? stoppedEntries(worker, stopped) : undefined;
+    if (entries && entries.every((entry) => liveness(entry.pid) === false)) return true;
+    await (dependencies.delay?.() ?? new Promise((resolve) => setTimeout(resolve, 20)));
   }
-  return false;
+  const stopped = signed<WorkerObservation>(worker, 'stopped.json');
+  return !!stopped && await stoppedOwnership(worker, stopped, liveness, reader);
 }
 export async function launchWorker(worker: WorkerRow, effectRoot: string, operation: string, text: string, binding: { jobId: string; owner: string; policy: string; database: string; intentRevision: number; authorizationDigest?: string; grace: GraceProfile | null; privateRuntimeRoots: readonly string[]; nativeTestRunner?: { readonly path: string; readonly sha256: string }; libraryTestRunner?: { readonly path: string; readonly sha256: string }; browserTestTransport?: { readonly path:string; readonly sha256:string } }): Promise<void> {
   if (realpathSync(effectRoot) !== effectRoot) throw new CoreError('EFFECT_ROOT_CHANGED');
