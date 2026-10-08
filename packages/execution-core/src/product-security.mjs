@@ -21,7 +21,9 @@ export function replaceFileSync(temporary, target, options = {}) {
 }
 /** Deliberately excludes unknown variables, NODE_OPTIONS and provider secrets. */
 export function childEnvironment(source = process.env) {
-  const allowed = new Set(['PATH','PATHEXT','SystemRoot','WINDIR','TEMP','TMP','USERPROFILE','HOMEDRIVE','HOMEPATH','HOME','LANG','LC_ALL','APPDATA','LOCALAPPDATA','ProgramData','ProgramFiles','ProgramFiles(x86)','DISPLAY','WAYLAND_DISPLAY','XDG_RUNTIME_DIR','XDG_SESSION_TYPE','DBUS_SESSION_BUS_ADDRESS','XDG_CURRENT_DESKTOP','XDG_CONFIG_HOME','XDG_DATA_HOME'].map((name) => name.toLowerCase()));
+  // PSModuleAnalysisCachePath names a prebuilt module cache; without it Windows PowerShell 5.1 re-analyzes every
+  // installed module before its first cmdlet, which took over 25 s on the hosted runner.
+  const allowed = new Set(['PATH','PATHEXT','SystemRoot','WINDIR','TEMP','TMP','USERPROFILE','HOMEDRIVE','HOMEPATH','HOME','LANG','LC_ALL','APPDATA','LOCALAPPDATA','ProgramData','ProgramFiles','ProgramFiles(x86)','PSModuleAnalysisCachePath','DISPLAY','WAYLAND_DISPLAY','XDG_RUNTIME_DIR','XDG_SESSION_TYPE','DBUS_SESSION_BUS_ADDRESS','XDG_CURRENT_DESKTOP','XDG_CONFIG_HOME','XDG_DATA_HOME'].map((name) => name.toLowerCase()));
   const result = Object.fromEntries(Object.entries(source).filter(([key, value]) => allowed.has(key.toLowerCase()) && value !== undefined));
   if (process.versions.electron) result.ELECTRON_RUN_AS_NODE = '1';
   return result;

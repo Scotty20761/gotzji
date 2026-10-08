@@ -276,7 +276,7 @@ describe('governed product operations — real native Goal, file and process sea
     await expect(f.core.reprioritize(other, { jobId: f.bindings[0]!.jobId, priority: 3 })).rejects.toMatchObject({ code: 'TASK_AUTHORITY_DENIED' });
   }, 20000);
   it('uses an explicit child environment and redacts retained model-visible logs across chunks', async () => {
-    expect(childEnvironment({ PATH: 'safe', SECRET_X: 'sensitive-host-secret', NODE_OPTIONS: '--dangerous', ANTHROPIC_API_KEY: 'provider-secret' })).toEqual({ PATH: 'safe' });
+    expect(childEnvironment({ PATH: 'safe', PSModuleAnalysisCachePath: 'C:/cache/ModuleAnalysisCache', SECRET_X: 'sensitive-host-secret', NODE_OPTIONS: '--dangerous', ANTHROPIC_API_KEY: 'provider-secret' })).toEqual({ PATH: 'safe', PSModuleAnalysisCachePath: 'C:/cache/ModuleAnalysisCache' });
     let sanitized = ''; const stream = sanitizedStream((text: string) => { sanitized += text; });
     stream.write(Buffer.from('SECRET_X=sensitive-')); stream.write(Buffer.from('value\nAuthorization: Bearer token-value\n')); stream.end();
     expect(sanitized).not.toContain('sensitive-value'); expect(sanitized).not.toContain('token-value');
