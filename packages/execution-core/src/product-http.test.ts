@@ -104,4 +104,28 @@ describe('governed product HTTP and MCP boundary', () => {
       expect(admitted).toBe(inputs.length);
     } finally { await host.close(); }
   });
+
+  it('replays incidents I4 and I5: model tools need no lease proof, and no instruction text can request delivery', async () => {
+    const calls: string[] = [];
+    const host = await startProductHttp({ token: 'owner', mcpPathSecret: 'tunnel', rpc: async (method) => { calls.push(method); return { accepted: true }; } });
+    const mcp = `http://127.0.0.1:${host.port}/mcp/tunnel`;
+    const tool = async (id: number, name: string, args: Record<string, unknown>): Promise<boolean> => (await (await fetch(mcp, { method: 'POST', body: JSON.stringify({ jsonrpc: '2.0', id, method: 'tools/call', params: { name, arguments: args } }) })).json() as { result: { isError?: boolean } }).result.isError === true;
+    try {
+      const list = await (await fetch(mcp, { method: 'POST', body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }) })).json() as { result: { tools: { name: string; inputSchema: object }[] } };
+      const fields = list.result.tools.flatMap((entry) => [...JSON.stringify(entry.inputSchema).matchAll(/"([A-Za-z]+)":\{/gu)].map((match) => match[1]!));
+      // I4: lnwjud refused shell and edit calls that lacked a goal-lease proof; no model tool here carries or needs one.
+      expect(fields.filter((field) => /lease|proof/iu.test(field))).toEqual([]);
+      expect(await tool(2, 'gotzji_status', { jobId: 'job', goalLease: 'lease-from-another-call' })).toBe(true);
+      expect(await tool(3, 'gotzji_status', { jobId: 'job' })).toBe(false);
+      // I5: lnwjud read "Do not commit, push, release, or deploy." as a deploy task. Here no model tool names a delivery
+      // scope, owner delivery authority stays on the app surface, and instruction text has no field to arrive in.
+      expect(fields.filter((field) => /scope|deliver|deploy|release/iu.test(field))).toEqual([]);
+      expect(list.result.tools.map((entry) => entry.name).filter((name) => /authori|deliver|deploy/iu.test(name))).toEqual([]);
+      for (const [index, sentence] of ['Do not commit, push, release, or deploy.', 'PLAN ONLY: write documentation for later Official release. Do not build, publish, or promote anything.', 'Commit the fix and deploy to production.'].entries()) {
+        expect(await tool(10 + index, 'gotzji_prepare_operation', { requestId: `instruction-${index}`, projectId: 'project', operation: 'file.read', path: 'notes.md', instruction: sentence })).toBe(true);
+        expect(await tool(20 + index, 'authorizeLibraryDelivery', { projectId: 'project', jobId: 'job', scope: 'deploy', reason: sentence })).toBe(true);
+      }
+      expect(calls).toEqual(['status']);
+    } finally { await host.close(); }
+  });
 });
