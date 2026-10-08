@@ -13,12 +13,14 @@ function ready(){
  return readHostReady(config.directory,config.daemonSecret,sourceHash,configurationHash);
 }
 let host=ready();
-const hostDeadline=Date.now()+6000;
+// A published host should answer at once; a host this frontend starts may first wait 5 s on a busy database and 5 s on
+// process identity before it answers.
+const hostDeadline=Date.now()+(host?6000:20000);
 async function reachable(value){try{const r=await fetch(`http://127.0.0.1:${value.port}/health`,{headers,signal:AbortSignal.timeout(Math.min(1500,Math.max(1,hostDeadline-Date.now())))});return r.ok&&(await r.json()).server==='gotzji';}catch{return false;}}
 let joined=!!host&&await reachable(host);
 if(!joined){
  if(!host){const child=spawn(process.execPath,[daemon,configPath],{windowsHide:true,detached:true,stdio:'ignore'});child.unref();}
- for(let n=0;n<150&&Date.now()<hostDeadline;n++){const candidate=ready();if(candidate&&await reachable(candidate)){host=candidate;joined=true;break;}await new Promise((r)=>setTimeout(r,40));}
+ for(let n=0;n<500&&Date.now()<hostDeadline;n++){const candidate=ready();if(candidate&&await reachable(candidate)){host=candidate;joined=true;break;}await new Promise((r)=>setTimeout(r,40));}
  if(!joined) throw new Error(host?'HOST_RECONCILIATION_REQUIRED':'HOST_UNAVAILABLE');
 }
 const definitions=[
