@@ -1,4 +1,4 @@
-/* global process, setInterval, URL */
+/* global process, setInterval, setTimeout, clearTimeout, URL */
 // Model input selects only a sealed host-prepared operation, never a raw executable or shell.
 import http from 'node:http';
 import { readFileSync, writeFileSync, unlinkSync } from 'node:fs';
@@ -15,6 +15,7 @@ import { productNativeManager } from './product-native-manager.mjs';
 import { productLibraryManager } from './product-library-manager.mjs';
 import { productBrowserManager } from './product-browser-manager.mjs';
 import { replaceFileSync } from './product-security.mjs';
+import { syntheticCleanupAuthorizer } from './test-worker-cleanup.mjs';
 
 const configPath = process.argv[2];
 const mode = process.argv[3] ?? 'worker';
@@ -37,6 +38,7 @@ if (mode !== 'worker') {
 } else {
   const config = JSON.parse(readFileSync(configPath, 'utf8'));
   const directory = path.dirname(configPath);
+  const authorizeSyntheticCleanup = syntheticCleanupAuthorizer(config, directory, fileURLToPath(import.meta.url));
   const descendants = [];
   const identities = {};
   const closedDescendants = [];
@@ -102,6 +104,37 @@ if (mode !== 'worker') {
     res.setHeader('Connection','close');
     if (req.headers.authorization !== `Bearer ${config.token}`) { res.writeHead(403).end(); return; }
     const url = new URL(req.url, 'http://127.0.0.1');
+    if (req.method === 'POST' && url.pathname === '/synthetic-test-cleanup') {
+      const nonce = url.searchParams.get('nonce');
+      if (!authorizeSyntheticCleanup(nonce)) { res.writeHead(403).end(); return; }
+      stopping = true;
+      try {
+        const exits = [];
+        for (const owned of ownedChildren.values()) {
+          if (owned.exitCode !== null || owned.signalCode !== null) continue;
+          exits.push(new Promise((resolve, reject) => {
+            const timeout = setTimeout(() => reject(new Error('TEST_CHILD_STOP_UNVERIFIED')), 2000);
+            owned.once('close', () => { clearTimeout(timeout); resolve(); });
+            owned.kill('SIGTERM');
+          }));
+        }
+        await Promise.all(exits);
+        await Promise.allSettled([...pendingIdentityProbes]);
+        const remaining = descendants.filter((pid) => {
+          try { process.kill(pid, 0); return true; }
+          catch (error) { return error.code !== 'ESRCH'; }
+        });
+        if (remaining.length) {
+          const observed = await processIdentities(remaining);
+          if (remaining.some((pid) => observed[pid] !== null && (!identities[pid] || observed[pid] === 'unknown' || observed[pid] === undefined
+            || (observed[pid].birth === identities[pid].birth && observed[pid].executable === identities[pid].executable)))) throw new Error('TEST_CHILD_STOP_UNVERIFIED');
+        }
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ nonce, epoch: config.epoch, pid: process.pid }));
+        server.close(() => process.exit(0));
+      } catch { res.writeHead(409).end(); }
+      return;
+    }
     if (req.method === 'POST' && ['/broker', '/register-broker'].includes(url.pathname) && config.grace) {
       try {
         let body = ''; for await (const chunk of req) { body += chunk; if (body.length > 100000) throw new Error('TOO_LARGE'); }
@@ -157,10 +190,11 @@ if (mode !== 'worker') {
                 const operation = JSON.parse(config.text);
                  const run = operation.kind === 'native' ? native.status() : operation.kind === 'library' ? library.status() : operation.kind === 'browser' ? browser.status() : product.state();
                  state = !receipt ? 'failed' : !['native','library','browser'].includes(operation.kind) && operation.input.operation !== 'command.run' ? 'done' : !run ? 'failed' : run.state === 'completed' ? 'done' : ['failed','cancelled','uncertain'].includes(run.state) ? 'failed' : 'running';
-                 if (!receipt) { if (operation.kind === 'library') void library.stop(); else if (operation.kind === 'browser') void browser.stop(); else void product.stop(); }
+                 // Best-effort abort only; a stop with proof still goes through /cancel, so a rejection here must not crash the worker.
+                 if (!receipt) { if (operation.kind === 'library') void library.stop().catch(() => undefined); else if (operation.kind === 'browser') void browser.stop().catch(() => undefined); else void product.stop().catch(() => undefined); }
               } else if(config.grace.recipe==='code-check'){
                 const run=validator.status();state=!receipt||!run?'failed':run.state==='completed'?'done':run.state==='failed'?'failed':'running';
-                if(!receipt) void validator.stop();
+                if(!receipt) void validator.stop().catch(() => undefined);
               } else state=receipt?'done':'failed';
               persist('observation.json',snapshot());
             },
@@ -172,11 +206,14 @@ if (mode !== 'worker') {
     }
     if (req.method === 'POST' && url.pathname === '/cancel' && !stopping) {
       stopping = true;
-      if (config.operation === 'grace.product-operation' && JSON.parse(config.text).kind === 'native' && !await native.stop()) { res.writeHead(409).end(); return; }
-      if (config.operation === 'grace.product-operation' && JSON.parse(config.text).kind === 'library' && !await library.stop()) { res.writeHead(409).end(); return; }
-      if (config.operation === 'grace.product-operation' && JSON.parse(config.text).kind === 'browser' && !await browser.stop()) { res.writeHead(409).end(); return; }
-      if (config.grace?.recipe === 'product' && !['native','library','browser'].includes(JSON.parse(config.text).kind) && !await product.stop()) { res.writeHead(409).end(); return; }
-      await validator.stop();
+      // A stop that throws is refused like one that returns false: no receipt, and the worker stays alive for inspection.
+      try {
+        if (config.operation === 'grace.product-operation' && JSON.parse(config.text).kind === 'native' && !await native.stop()) { res.writeHead(409).end(); return; }
+        if (config.operation === 'grace.product-operation' && JSON.parse(config.text).kind === 'library' && !await library.stop()) { res.writeHead(409).end(); return; }
+        if (config.operation === 'grace.product-operation' && JSON.parse(config.text).kind === 'browser' && !await browser.stop()) { res.writeHead(409).end(); return; }
+        if (config.grace?.recipe === 'product' && !['native','library','browser'].includes(JSON.parse(config.text).kind) && !await product.stop()) { res.writeHead(409).end(); return; }
+        await validator.stop();
+      } catch { res.writeHead(409).end(); return; }
       if (child) {
         await new Promise((resolve) => { if (child.exitCode !== null) resolve(); else { child.once('exit', resolve); if (config.grace) child.kill(); else child.send('stop'); } });
       }

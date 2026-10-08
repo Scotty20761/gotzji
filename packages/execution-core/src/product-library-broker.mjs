@@ -128,7 +128,8 @@ export async function executePreparedLibraryOperation(config, signal, options = 
   try { return await promise; } finally { if(active.get(key)===promise) active.delete(key); }
 }
 
-export function readPreparedLibraryState(config) { const prepared=assertPreparedLibraryAuthorization(config); assertEffectRoot(config); return readState(config,prepared); }
+/** The recorded outcome is authenticated by its own MAC; later dependency drift gates new effects, not what already happened. */
+export function readRecordedLibraryState(config) { assertEffectRoot(config); return readState(config); }
 
 async function createGrant(config, prepared, request, options) {
   await assertLive(config,prepared,options);

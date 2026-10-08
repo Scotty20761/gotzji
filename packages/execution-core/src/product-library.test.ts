@@ -6,13 +6,14 @@ import { DatabaseSync } from 'node:sqlite';
 import { afterEach, describe, expect, it } from 'vitest';
 import { ExecutionCore } from './core.js';
 import { hash, type WorkerRow } from './store.js';
-import { stopWorker } from './managed-worker.js';
+import { alive, signed, stopWorker } from './managed-worker.js';
 import type { ProductGraceRegistration } from './grace-profile.js';
 import type { TaskBinding } from './types.js';
 import type { ProductLibraryInput } from './product-library.js';
 import { libraryWorkflow } from './library-workflow-registry.js';
 const { productBrokerCall } = await import('./product-broker.mjs');
 const { executePreparedLibraryOperation } = await import('./product-library-broker.mjs');
+const { issueSyntheticCleanupCapability } = await import('./test-worker-cleanup.mjs');
 
 interface Fixture { root:string; library:string; core:ExecutionCore; credential:string; profile:ProductGraceRegistration; libraryTestRunner?:string; bindings:TaskBinding[] }
 const fixtures:Fixture[]=[];
@@ -57,7 +58,20 @@ async function until(f:Fixture,predicate:()=>Promise<boolean>|boolean):Promise<v
 function codeInput(requestId:string,intent:string):ProductLibraryInput{return{requestId,projectId:'library',operation:'library.workflow',workflowId:'library.code-qa',workflowVersion:2,parameters:{intent,paths:JSON.stringify(['source.md']),expectedSha256:'0'.repeat(64),content:'Changed\n'}};}
 function memoInput(requestId:string):ProductLibraryInput{return{requestId,projectId:'library',operation:'library.workflow',workflowId:'library.final-memo',workflowVersion:2,parameters:{ticker:'TEST',evidencePeriod:'2026-10'}};}
 async function present(filename:string):Promise<boolean>{try{await access(filename);return true;}catch{return false;}}
-afterEach(async()=>{for(const f of fixtures.splice(0)){const db=new DatabaseSync(path.join(f.root,'state','core.sqlite'));const workers=db.prepare('SELECT * FROM gotzji_workers').all() as unknown as WorkerRow[];db.close();for(const worker of workers)await stopWorker(worker);try{f.core.close();}catch{/* already closed */}await rm(f.root,{recursive:true,force:true});}});
+async function cleanupSyntheticWorker(worker:WorkerRow):Promise<void>{
+  if(await stopWorker(worker))return;
+  const config=JSON.parse(await readFile(path.join(worker.directory,'config.json'),'utf8'));
+  if(config.epoch!==worker.epoch||config.jobId!==worker.job_id||config.token!==worker.token)throw new Error('Fixture cleanup identity changed');
+  const ready=signed<{pid:number;port:number}>(worker,'ready.json');if(!ready)throw new Error('Fixture cleanup ready record missing');
+  const capability=issueSyntheticCleanupCapability(config,worker.directory,fileURLToPath(new URL('./fixture-worker.mjs',import.meta.url)));
+  const response=await fetch(`http://127.0.0.1:${ready.port}/synthetic-test-cleanup?nonce=${capability}`,{method:'POST',headers:{Authorization:`Bearer ${worker.token}`},signal:AbortSignal.timeout(10000)});
+  if(!response.ok)throw new Error('Fixture cleanup refused: '+worker.directory);
+  const result=await response.json() as {nonce:string;pid:number;epoch:string};
+  if(result.nonce!==capability||result.pid!==ready.pid||result.epoch!==worker.epoch)throw new Error('Fixture cleanup response changed');
+  for(let attempt=0;attempt<100;attempt++){if(alive(ready.pid)===false)return;await new Promise((resolve)=>setTimeout(resolve,20));}
+  throw new Error('Fixture cleanup termination unverified: '+worker.directory);
+}
+afterEach(async()=>{const failures:Error[]=[];for(const f of fixtures.splice(0)){let stopped=false;try{const db=new DatabaseSync(path.join(f.root,'state','core.sqlite'));let workers:WorkerRow[];try{workers=db.prepare('SELECT * FROM gotzji_workers').all() as unknown as WorkerRow[];}finally{db.close();}const refused:unknown[]=[];for(const worker of workers){try{await cleanupSyntheticWorker(worker);}catch(error){refused.push(error);}}if(refused.length)throw new AggregateError(refused,'Fixture worker cleanup failed');stopped=true;}catch(error){failures.push(new Error('Fixture evidence retained: '+f.root,{cause:error}));}finally{try{f.core.close();}catch{/* already closed */}}if(stopped)try{await rm(f.root,{recursive:true,force:true});}catch(error){failures.push(new Error('Fixture removal failed: '+f.root,{cause:error}));}}if(failures.length)throw new AggregateError(failures,failures.map((error)=>error.message).join('\n'));});
 
 describe('P7 Library runtime',()=>{
   it('reports typed dependency gaps and refuses direct PDF evidence without the canonical provider',async()=>{
@@ -108,18 +122,29 @@ describe('P7 Library runtime',()=>{
   },90000);
 
   it('retains uncertain ownership after a lost atom-gateway response and never allocates a duplicate',async()=>{
-    const f=await fixture(true,'atom-after-write');const binding=await submit(f,memoInput('memo-lost-atom'));await f.core.resume(f.credential,binding);const db=new DatabaseSync(path.join(f.root,'state','core.sqlite'));await until(f,()=>!!db.prepare("SELECT 1 FROM gotzji_recipe_operations WHERE job_id=? AND operation_id='library-step:atoms' AND phase='uncertain'").get(binding.jobId));
+    const f=await fixture(true,'atom-after-write');const binding=await submit(f,memoInput('memo-lost-atom'));await f.core.resume(f.credential,binding);const db=new DatabaseSync(path.join(f.root,'state','core.sqlite'));try{await until(f,()=>!!db.prepare("SELECT 1 FROM gotzji_recipe_operations WHERE job_id=? AND operation_id='library-step:atoms' AND phase='uncertain'").get(binding.jobId));
     const before=(await readdir(path.join(f.library,'knowledge-base/atoms'))).filter((name)=>name.startsWith('ATOM-'));expect(before).toEqual(['ATOM-9000-pending.md']);
     expect(db.prepare('SELECT 1 FROM gotzji_writers WHERE job_id=?').get(binding.jobId)).toBeDefined();
-    await expect(f.core.resume(f.credential,binding)).rejects.toThrow();const after=(await readdir(path.join(f.library,'knowledge-base/atoms'))).filter((name)=>name.startsWith('ATOM-'));expect(after).toEqual(before);db.close();
+    await expect(f.core.resume(f.credential,binding)).rejects.toThrow();const after=(await readdir(path.join(f.library,'knowledge-base/atoms'))).filter((name)=>name.startsWith('ATOM-'));expect(after).toEqual(before);
+    const worker=db.prepare('SELECT * FROM gotzji_workers WHERE job_id=?').get(binding.jobId) as unknown as WorkerRow;
+    const ready=signed<{pid:number;port:number}>(worker,'ready.json')!;const denied=await fetch(`http://127.0.0.1:${ready.port}/synthetic-test-cleanup?nonce=${'0'.repeat(64)}`,{method:'POST',headers:{Authorization:'Bearer wrong'},signal:AbortSignal.timeout(3000)});expect(denied.status).toBe(403);
+    const forged=await fetch(`http://127.0.0.1:${ready.port}/synthetic-test-cleanup?nonce=${'1'.repeat(64)}`,{method:'POST',headers:{Authorization:`Bearer ${worker.token}`},signal:AbortSignal.timeout(3000)});expect(forged.status).toBe(403);expect(alive(ready.pid)).toBe(true);
+    const writerBefore=db.prepare('SELECT * FROM gotzji_writers WHERE job_id=?').get(binding.jobId);const jobBefore=db.prepare('SELECT status,lease_generation,lease_token_hash,lease_owner_session_id FROM goals').all();const claimsBefore=db.prepare('SELECT * FROM gotzji_resource_claims WHERE job_id=?').all(binding.jobId);const uncertainBefore=db.prepare("SELECT * FROM gotzji_recipe_operations WHERE job_id=? AND phase='uncertain'").all(binding.jobId);
+    await cleanupSyntheticWorker(worker);expect(alive(ready.pid)).toBe(false);expect(await present(path.join(worker.directory,'stopped.json'))).toBe(false);
+    expect(db.prepare('SELECT * FROM gotzji_writers WHERE job_id=?').get(binding.jobId)).toEqual(writerBefore);expect(db.prepare('SELECT status,lease_generation,lease_token_hash,lease_owner_session_id FROM goals').all()).toEqual(jobBefore);expect(db.prepare('SELECT * FROM gotzji_resource_claims WHERE job_id=?').all(binding.jobId)).toEqual(claimsBefore);expect(db.prepare("SELECT * FROM gotzji_recipe_operations WHERE job_id=? AND phase='uncertain'").all(binding.jobId)).toEqual(uncertainBefore);}finally{db.close();}
   },60000);
 
   it('rejects an unexpected navigation mutation after the signed index receipt',async()=>{
     const f=await fixture(true);const binding=await submit(f,memoInput('memo-nav-drift'));await f.core.resume(f.credential,binding);const db=new DatabaseSync(path.join(f.root,'state','core.sqlite'));
-    await until(f,()=>!!db.prepare("SELECT 1 FROM gotzji_recipe_operations WHERE job_id=? AND operation_id='library-step:verify' AND phase='verified'").get(binding.jobId));
-    await writeFile(path.join(f.library,'indexes/tickers/TEST.md'),'unexpected external mutation\n');
-    f.core.authorizeLibraryDelivery(f.credential,binding,'user-delivery');await until(f,()=>!!db.prepare("SELECT 1 FROM gotzji_diagnostics WHERE job_id=? AND code='LIBRARY_NAVIGATION_CHANGED'").get(binding.jobId));
-    expect(db.prepare("SELECT 1 FROM gotzji_recipe_operations WHERE job_id=? AND operation_id='library-step:deliver'").get(binding.jobId)).toBeUndefined();db.close();
+    try{
+      await until(f,()=>!!db.prepare("SELECT 1 FROM gotzji_recipe_operations WHERE job_id=? AND operation_id='library-step:verify' AND phase='verified'").get(binding.jobId));
+      await writeFile(path.join(f.library,'indexes/tickers/TEST.md'),'unexpected external mutation\n');
+      f.core.authorizeLibraryDelivery(f.credential,binding,'user-delivery');await until(f,()=>!!db.prepare("SELECT 1 FROM gotzji_diagnostics WHERE job_id=? AND code='LIBRARY_NAVIGATION_CHANGED'").get(binding.jobId));
+      // The drift is caught before delivery, a recorded no-effect failure: the worker must record it and stay alive for an owned stop, not crash.
+      const worker=db.prepare('SELECT * FROM gotzji_workers WHERE job_id=?').get(binding.jobId) as unknown as WorkerRow;await until(f,()=>signed<{state:string}>(worker,'library-progress.json')?.state==='failed');
+      expect(signed<{code?:string}>(worker,'library-progress.json')?.code).toBe('LIBRARY_NAVIGATION_CHANGED');expect(alive(signed<{pid:number}>(worker,'ready.json')!.pid)).toBe(true);expect(await stopWorker(worker)).toBe(true);
+      expect(db.prepare("SELECT 1 FROM gotzji_recipe_operations WHERE job_id=? AND operation_id='library-step:deliver'").get(binding.jobId)).toBeUndefined();
+    }finally{db.close();}
   },60000);
 
   it('runs a frozen read workflow end to end with real host receipts and no model-selected effect',async()=>{

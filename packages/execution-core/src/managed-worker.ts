@@ -13,7 +13,7 @@ import { signPreparedBrowserOperation, type PreparedProductBrowserOperation } fr
 
 export const WORKER_FILE = fileURLToPath(new URL('./fixture-worker.mjs', import.meta.url));
 export function workerFingerprint(): string {
-  return hash([...['fixture-worker','grace-broker','grace-runtime','grace-stdio','grace-verifier','fingerprints','phase-r-runner','phase-r-validator','phase-r-host-identity','product-broker','product-runner','product-security','process-identity','product-native-broker','product-native-manager','product-browser-broker','product-browser-manager','product-library-broker','product-library-manager','product-library-final-memo'].map((name) => hash(readFileSync(new URL(`./${name}.mjs`, import.meta.url)))),hash(readFileSync(new URL('./product-library-weekly-wrapper.py',import.meta.url)))].join(':'));
+  return hash([...['fixture-worker','grace-broker','grace-runtime','grace-stdio','grace-verifier','fingerprints','phase-r-runner','phase-r-validator','phase-r-host-identity','product-broker','product-runner','product-security','process-identity','test-worker-cleanup','product-native-broker','product-native-manager','product-browser-broker','product-browser-manager','product-library-broker','product-library-manager','product-library-final-memo'].map((name) => hash(readFileSync(new URL(`./${name}.mjs`, import.meta.url)))),hash(readFileSync(new URL('./product-library-weekly-wrapper.py',import.meta.url)))].join(':'));
 }
 export function alive(pid: number): boolean | 'unknown' {
   try { process.kill(pid, 0); return true; }
