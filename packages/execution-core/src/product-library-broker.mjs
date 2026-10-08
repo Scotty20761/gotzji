@@ -39,7 +39,7 @@ export function assertPreparedLibraryDependencies(config, knownPrepared) {
   const prepared = knownPrepared ?? JSON.parse(config.text);
   if (prepared?.kind !== 'library') throw typed('LIBRARY_PREPARATION_REQUIRED','none');
   let navigationAfter; let effects=[];
-  const db=new DatabaseSync(config.database,{readOnly:true});
+  const db=new DatabaseSync(config.database,{readOnly:true,timeout:5000});
   try{const row=db.prepare("SELECT phase FROM gotzji_recipe_operations WHERE job_id=? AND operation_id='library-step:index'").get(config.jobId);if(row?.phase==='verified'){
     const value=readStepValue(config,'index');navigationAfter=value.navigationAfter;effects=value.navigationEffects??[];
   }}finally{db.close();}
@@ -153,7 +153,7 @@ async function assertLive(config, prepared, options) {
 async function waitForDeliveryAuthority(config,prepared,step,signal,options){
   while(!signal.aborted){
     await assertLive(config,prepared,options);
-    const db=new DatabaseSync(config.database,{readOnly:true});
+    const db=new DatabaseSync(config.database,{readOnly:true,timeout:5000});
     try { const row=db.prepare('SELECT digest FROM gotzji_library_delivery WHERE job_id=? AND scope=?').get(config.jobId,step.deliveryScope); if(row) return {scope:step.deliveryScope,authorityDigest:String(row.digest)}; }
     finally{db.close();}
     writeState(config,prepared,{state:'awaiting-delivery-authority',outcome:'none',stepId:step.id,scope:step.deliveryScope});
@@ -163,7 +163,7 @@ async function waitForDeliveryAuthority(config,prepared,step,signal,options){
   throw typed('LIBRARY_CANCELLED','none');
 }
 function readCompletedReceipts(config,prepared){
-  const db=new DatabaseSync(config.database,{readOnly:true});
+  const db=new DatabaseSync(config.database,{readOnly:true,timeout:5000});
   try{return prepared.library.ast.nodes.flatMap((step)=>{const row=db.prepare('SELECT phase,receipt FROM gotzji_recipe_operations WHERE job_id=? AND operation_id=?').get(config.jobId,operationId(step.id));if(!row)return[];if(row.phase==='verified'&&typeof row.receipt==='string')return[JSON.parse(row.receipt).receipt];if(['started','uncertain'].includes(row.phase))throw typed('LIBRARY_EFFECT_RECONCILIATION_REQUIRED','unknown');return[];});}finally{db.close();}
 }
 function reserveStep(config,prepared,step,grant){

@@ -47,7 +47,7 @@ export function hostBuildIdentity(){
  return hashJavaScriptClosure(entries);
 }
 export function hostConfigurationIdentity(config){
- const database=new DatabaseSync(path.join(config.directory,'core.sqlite'),{readOnly:true});let policy;try{policy=String(database.prepare('SELECT policy FROM gotzji_meta').get()?.policy??'');}finally{database.close();}
+ const database=new DatabaseSync(path.join(config.directory,'core.sqlite'),{readOnly:true,timeout:5000});let policy;try{policy=String(database.prepare('SELECT policy FROM gotzji_meta').get()?.policy??'');}finally{database.close();}
  if(!policy) throw new Error('HOST_POLICY_UNAVAILABLE');
  const recipe=config.recipe??'source-snapshot';
  const documents=['CLAUDE.md','AGENTS.md','references/agent-knowledge-workflow.md','KNOWLEDGE_INDEX.md',...(recipe==='code-check'?['.claude/skills/karpathy-guidelines/SKILL.md','.claude/skills/debug-mantra/SKILL.md']:[])];

@@ -1,5 +1,6 @@
-import { readFile, writeFile, rm, stat, rename } from 'node:fs/promises';
+import { readFile, readdir, writeFile, rm, stat, rename } from 'node:fs/promises';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -275,6 +276,19 @@ describe('neutral execution authority — real SQLite, files and owned processes
     } finally {
       if (holder.exitCode === null) await new Promise((resolve) => holder.once('exit', resolve));
     }
+  });
+
+  it('opens every core database connection with a busy timeout', async () => {
+    // Without one a connection fails at once while another process holds the database (CI: reopen, phase-r frontend).
+    const directory = path.dirname(fileURLToPath(import.meta.url));
+    const sources = (await readdir(directory)).filter((name) => /\.(?:ts|mjs)$/u.test(name) && !name.endsWith('.test.ts'));
+    const missing: string[] = [];
+    for (const name of sources) {
+      const text = await readFile(path.join(directory, name), 'utf8');
+      for (const match of text.matchAll(/new DatabaseSync\(/gu)) if (!(text.slice(match.index, match.index + 300).split(');')[0] ?? '').includes('timeout')) missing.push(`${name}:${text.slice(0, match.index).split('\n').length}`);
+    }
+    expect(sources.length).toBeGreaterThan(10);
+    expect(missing).toEqual([]);
   });
   it('accepts the declared payload boundary without dropping bytes and rejects overflow', async () => {
     const f = await fixture(); const text = 'a'.repeat(65536); const b = await submit(f, 'large', 'fixture.write', text);
