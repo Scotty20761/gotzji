@@ -11,6 +11,8 @@ import { createHash, createHmac } from 'node:crypto';
 import { randomBytes } from 'node:crypto';
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { once } from 'node:events';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import type { GraceRegistration } from './grace-profile.js';
 import { acquireHostOwnership, hashJavaScriptClosure } from './phase-r-host-identity.mjs';
 import { canonicalTemporaryDirectory } from './test-fixtures.js';
@@ -34,7 +36,7 @@ async function codeFixture(validationMs=25,now?:()=>Date):Promise<{root:string;c
 }
 async function waitFor(fn:()=>Promise<boolean>):Promise<void>{for(let n=0;n<400;n++){if(await fn()) return;await new Promise((r)=>setTimeout(r,20));}throw new Error('condition not observed');}
 const sha256=(value:string):string=>createHash('sha256').update(value).digest('hex');
-function nextLine(child:ChildProcessWithoutNullStreams):Promise<string>{return new Promise((resolve,reject)=>{let buffer='';const timeout=setTimeout(()=>{cleanup();reject(new Error('child reply timeout'));},10000);const onData=(chunk:Buffer):void=>{buffer+=chunk.toString('utf8');const end=buffer.indexOf('\n');if(end>=0){cleanup();resolve(buffer.slice(0,end));}};const onExit=():void=>{cleanup();reject(new Error('child exited before writing a line'));};const cleanup=():void=>{clearTimeout(timeout);child.stdout.off('data',onData);child.off('exit',onExit);};child.stdout.on('data',onData);child.once('exit',onExit);});}
+function nextLine(child:ChildProcessWithoutNullStreams):Promise<string>{return new Promise((resolve,reject)=>{let buffer='',stderr='';const timeout=setTimeout(()=>{cleanup();reject(new Error('child reply timeout: '+stderr));},10000);const onErrorData=(chunk:Buffer):void=>{stderr=(stderr+chunk.toString('utf8')).slice(-4096);};const onData=(chunk:Buffer):void=>{buffer+=chunk.toString('utf8');const end=buffer.indexOf('\n');if(end>=0){cleanup();resolve(buffer.slice(0,end));}};const onExit=(code:number|null,signal:NodeJS.Signals|null):void=>{cleanup();reject(new Error(`child exited before writing a line (code=${code}, signal=${signal}): ${stderr}`));};const cleanup=():void=>{clearTimeout(timeout);child.stdout.off('data',onData);child.stderr.off('data',onErrorData);child.off('exit',onExit);};child.stdout.on('data',onData);child.stderr.on('data',onErrorData);child.once('exit',onExit);});}
 async function jsonLine(child:ChildProcessWithoutNullStreams,request:unknown):Promise<Record<string,unknown>>{
  const line=nextLine(child);child.stdin.write(`${JSON.stringify(request)}\n`);return JSON.parse(await line) as Record<string,unknown>;
 }
@@ -162,14 +164,43 @@ it('keeps a real nonzero validator result blocked instead of replaying it as an 
  }finally{await f.core.cancel(f.credential,binding);}
 },15000);
 
+it.each([false,true])('keeps the authenticated live owner when health is permanently unavailable=%s',async(permanentlyUnavailable)=>{
+ const f=await codeFixture();
+ const daemonSecret=randomBytes(32).toString('hex');
+ const config={...f.registration,directory:path.join(f.root,'core'),credential:f.credential,daemonSecret};
+ const configPath=path.join(f.root,'host.json');await writeFile(configPath,JSON.stringify(config));
+ const identity=await import(pathToFileURL(fileURLToPath(new URL('../dist/phase-r-host-identity.mjs',import.meta.url))).href);
+ const ownership=identity.acquireHostOwnership(config.directory,daemonSecret);
+ expect(ownership).not.toBeNull();
+ let requests=0;
+ const server=createServer((req,res)=>{
+  if(req.headers.authorization!==`Bearer ${daemonSecret}`){res.writeHead(403).end();return;}
+  requests++;res.writeHead(permanentlyUnavailable||requests<=2?503:200,{'Content-Type':'application/json'}).end(JSON.stringify({server:'gotzji'}));
+ });
+ server.listen(0,'127.0.0.1');await once(server,'listening');
+ identity.publishHostReady(config.directory,daemonSecret,ownership,{port:(server.address() as AddressInfo).port,sourceHash:identity.hostBuildIdentity(),configurationHash:identity.hostConfigurationIdentity(config)});
+ const child=spawn(process.execPath,[fileURLToPath(new URL('../dist/phase-r-frontend.mjs',import.meta.url)),configPath],{stdio:['pipe','pipe','pipe'],windowsHide:true});
+ try{
+  const response=jsonLine(child,{jsonrpc:'2.0',id:1,method:'initialize'});
+  if(permanentlyUnavailable) await expect(response).rejects.toThrow('HOST_RECONCILIATION_REQUIRED');
+  else {const reply=await response;expect(reply.error).toBeUndefined();expect(reply.result).toBeDefined();}
+  expect(requests).toBeGreaterThanOrEqual(3);
+  const db=new DatabaseSync(path.join(config.directory,'core.sqlite'));try{expect(db.prepare('SELECT pid,nonce FROM gotzji_host_owners WHERE name=?').get('daemon')).toEqual({pid:process.pid,nonce:ownership.nonce});}finally{db.close();}
+ }finally{
+  child.stdin.end();if(child.exitCode===null)await Promise.race([once(child,'exit'),new Promise((resolve)=>setTimeout(resolve,1500))]);
+  if(child.exitCode===null){const exited=once(child,'exit');child.kill();await exited;}
+  await new Promise<void>((resolve)=>server.close(()=>resolve()));ownership.release();
+ }
+},10000);
+
 it('admits concurrent and rejoined frontends while data drift blocks only new effects',async()=>{
  const root=await canonicalTemporaryDirectory('gotzji-phase-r-host-');const directory=path.join(root,'core');let daemonPid:number|undefined;let workerDirectory='';const frontends:ChildProcessWithoutNullStreams[]=[];
  try{
   const libraryRoot=path.join(root,'library');for(const file of ['CLAUDE.md','AGENTS.md','KNOWLEDGE_INDEX.md','references/agent-knowledge-workflow.md','.claude/skills/karpathy-guidelines/SKILL.md','.claude/skills/debug-mantra/SKILL.md']){await mkdir(path.dirname(path.join(libraryRoot,file)),{recursive:true});await writeFile(path.join(libraryRoot,file),'# Fixed host admission policy.\n');}
   const sourceFile=path.join(root,'source.mjs');await writeFile(sourceFile,'export function add(a, b) { return a - b; }\n');
   const registration={executable:process.execPath,libraryRoot,sourceFile,testDriver:fileURLToPath(new URL('./grace-test-driver.mjs',import.meta.url)),recipe:'code-check' as const,expectedContent:'export function add(a, b) { return a + b; }\n',validationMs:500};
-  const seedScript="const {ExecutionCore}=await import(process.argv[1]);const {DatabaseSync}=await import('node:sqlite');const registration=JSON.parse(process.argv[2]),directory=process.argv[3];const core=await ExecutionCore.open(directory,{grace:registration});const credential=core.enrollAdapter('gotzji','owner');const prepared=core.prepare(credential,{requestId:'frontend-data-drift',operation:'fixture.hold',text:''});const job=await core.submit(credential,prepared.preparationId);await core.resume(credential,core.select(credential,job.jobId));const db=new DatabaseSync(directory+'/core.sqlite',{readOnly:true});let workerDirectory;try{workerDirectory=db.prepare('SELECT directory FROM gotzji_workers WHERE job_id=?').get(job.jobId).directory;}finally{db.close();}core.close();process.stdout.write(JSON.stringify({credential,jobId:job.jobId,workerDirectory}));process.exit(0);";
-  const seeded=spawnSync(process.execPath,['--input-type=module','-e',seedScript,pathToFileURL(fileURLToPath(new URL('../dist/core.js',import.meta.url))).href,JSON.stringify(registration),directory],{encoding:'utf8',windowsHide:true,timeout:15000});expect(seeded.status,seeded.stderr).toBe(0);const seed=JSON.parse(seeded.stdout) as {credential:string;jobId:string;workerDirectory:string};const {credential,jobId}=seed;workerDirectory=seed.workerDirectory;await waitFor(async()=>{try{return (JSON.parse(JSON.parse(await readFile(path.join(workerDirectory,'observation.json'),'utf8')).body).descendants as number[]).length===2;}catch{return false;}});
+  const seedScript="const {readFileSync}=await import('node:fs');const {ExecutionCore}=await import(process.argv[1]);const {DatabaseSync}=await import('node:sqlite');const registration=JSON.parse(process.argv[2]),directory=process.argv[3];const core=await ExecutionCore.open(directory,{grace:registration});const credential=core.enrollAdapter('gotzji','owner');const prepared=core.prepare(credential,{requestId:'frontend-data-drift',operation:'fixture.hold',text:''});const job=await core.submit(credential,prepared.preparationId);await core.resume(credential,core.select(credential,job.jobId));const db=new DatabaseSync(directory+'/core.sqlite',{readOnly:true});let workerDirectory;try{workerDirectory=db.prepare('SELECT directory FROM gotzji_workers WHERE job_id=?').get(job.jobId).directory;}finally{db.close();}const isAlive=(pid)=>{try{process.kill(pid,0);return true;}catch(e){return e.code==='ESRCH'?false:'unknown';}};let ready=false,last;for(let attempt=0;attempt<400;attempt++){try{last=JSON.parse(JSON.parse(readFileSync(workerDirectory+'/observation.json','utf8')).body);if(last.state==='running'&&last.descendants.length===2&&isAlive(last.pid)===true&&last.descendants.every(pid=>isAlive(pid)===true)){ready=true;break;}}catch{}await new Promise(r=>setTimeout(r,20));}if(!ready)throw new Error('Seed hold tree not ready: '+JSON.stringify({state:last?.state,descendantCount:last?.descendants?.length}));core.close();process.stdout.write(JSON.stringify({credential,jobId:job.jobId,workerDirectory}));process.exit(0);";
+  const seeded=spawnSync(process.execPath,['--input-type=module','-e',seedScript,pathToFileURL(fileURLToPath(new URL('../dist/core.js',import.meta.url))).href,JSON.stringify(registration),directory],{encoding:'utf8',windowsHide:true,timeout:15000});expect(seeded.status,seeded.stderr).toBe(0);const seed=JSON.parse(seeded.stdout) as {credential:string;jobId:string;workerDirectory:string};const {credential,jobId}=seed;workerDirectory=seed.workerDirectory;let setupObservation:unknown;try{await waitFor(async()=>{try{const observed=JSON.parse(JSON.parse(await readFile(path.join(workerDirectory,'observation.json'),'utf8')).body) as {pid:number;state:string;descendants:number[]};setupObservation={state:observed.state,parentAlive:alive(observed.pid),descendantCount:observed.descendants.length,descendantsAlive:observed.descendants.map((pid)=>alive(pid))};return observed.state==='running'&&observed.descendants.length===2&&alive(observed.pid)===true&&observed.descendants.every((pid)=>alive(pid)===true);}catch(error){setupObservation={readError:error instanceof Error?error.message:'unknown'};return false;}});}catch{throw new Error('Hold setup did not become ready: '+JSON.stringify(setupObservation));}
   const daemonSecret=randomBytes(32).toString('hex');const configPath=path.join(root,'host.json');await writeFile(configPath,JSON.stringify({...registration,directory,credential,daemonSecret}));
   const frontend=fileURLToPath(new URL('../dist/phase-r-frontend.mjs',import.meta.url));
   for(let n=0;n<2;n++) frontends.push(spawn(process.execPath,[frontend,configPath],{stdio:['pipe','pipe','pipe'],windowsHide:true}));

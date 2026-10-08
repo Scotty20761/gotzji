@@ -305,7 +305,7 @@ function validateSourceContracts(files, expectedVersion) {
     || template.apps.gotzji.required !== true) {
     throw new Error('PLUGIN_APP_BINDING_TEMPLATE_INVALID');
   }
-  const skill = files.get('skills/gotzji-workflow/SKILL.md')?.toString('utf8') ?? '';
+  const skill = (files.get('skills/gotzji-workflow/SKILL.md')?.toString('utf8') ?? '').replace(/\r\n/gu, '\n');
   if (!skill.startsWith('---\nname: gotzji-workflow\ndescription: ')
     || !skill.includes('gotzji_prepare_operation')
     || !skill.includes('gotzji_result')

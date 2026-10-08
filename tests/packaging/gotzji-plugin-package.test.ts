@@ -11,6 +11,30 @@ const version = (JSON.parse(await readFile(path.join(repositoryRoot, 'package.js
 const sourceCommit = '1'.repeat(40);
 
 describe('gotzji Agent Plugin package', () => {
+  it.each(['LF', 'CRLF'])('accepts %s skill headers while preserving the exact signed source bytes', async (lineEnding) => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'gotzji-plugin-line-endings-'));
+    try {
+      const sourceRoot = path.join(root, 'source');
+      await cp(canonicalSource, sourceRoot, { recursive: true });
+      const relativePath = 'skills/gotzji-workflow/SKILL.md';
+      const skillPath = path.join(sourceRoot, relativePath);
+      const normalized = (await readFile(skillPath, 'utf8')).replace(/\r\n/gu, '\n');
+      const sourceBytes = Buffer.from(lineEnding === 'CRLF' ? normalized.replace(/\n/gu, '\r\n') : normalized);
+      await writeFile(skillPath, sourceBytes);
+      const result = await buildGotzjiPluginPackage({ sourceRoot, outputDirectory: path.join(root, 'output'), sourceCommit, cleanSource: true });
+      const entries = readStoredZip(await readFile(result.archivePath));
+      expect(entries.get(relativePath)).toEqual(sourceBytes);
+      expect(jsonEntry(entries, 'PACKAGE_MANIFEST.json').sourceInventory).toContainEqual({
+        path: relativePath, bytes: sourceBytes.length, sha256: sha256(sourceBytes),
+      });
+      await expect(verifyGotzjiPluginPackage({ sourceRoot, archivePath: result.archivePath, checksumPath: result.checksumPath, provenancePath: result.provenancePath })).resolves.toMatchObject({ connectionVerified: false });
+      await writeFile(skillPath, Buffer.concat([sourceBytes, Buffer.from('\nChanged after packaging.\n')]));
+      await expect(verifyGotzjiPluginPackage({ sourceRoot, archivePath: result.archivePath, checksumPath: result.checksumPath, provenancePath: result.provenancePath })).rejects.toThrow('SOURCE_INVENTORY_MISMATCH');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('builds a deterministic public source package that is explicitly unbound', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'gotzji-plugin-generic-'));
     try {

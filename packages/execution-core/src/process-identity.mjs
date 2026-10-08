@@ -1,11 +1,17 @@
-/* global process */
+/* global process, performance */
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { readFileSync, realpathSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import path from 'node:path';
 import { childEnvironment } from './product-security.mjs';
 const exec = promisify(execFile);
-let windowsCurrentIdentity;
+let windowsProbeFailureReported = false;
+const windowsReader = createWindowsProcessIdentityReader({ onFailure: ({ code, elapsedMs }) => {
+  if (!windowsProbeFailureReported) {
+    windowsProbeFailureReported = true;
+    process.emitWarning(`Windows process identity probe failed: ${code}; elapsedMs=${elapsedMs}`, { code: 'WINDOWS_IDENTITY_PROBE_FAILED' });
+  }
+} });
 export const UNPACKAGED_E2E_PROCESS_BIRTH = 'gotzji-unpackaged-e2e-fixture';
 export function sameProcessIdentity(expected, actual) {
   return !!expected && !!actual && typeof actual === 'object' && expected.birth === actual.birth && expected.executable === actual.executable;
@@ -45,19 +51,49 @@ export async function processIdentities(values) {
     }
   })));
   if (process.platform !== 'win32') return Object.fromEntries(pids.map((pid) => [pid, 'unknown']));
-  // The current PID cannot be reused while this module is alive. Retaining its
-  // exact first OS birth/executable avoids repeated PowerShell startup without
-  // caching identities for child PIDs that can exit and be reused.
-  const requested = windowsCurrentIdentity ? pids.filter((pid) => pid !== process.pid) : pids;
-  const retained = windowsCurrentIdentity && pids.includes(process.pid) ? { [process.pid]: windowsCurrentIdentity } : {};
-  if (!requested.length) return retained;
-  const program = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
-  const script = `$r=@{};foreach($n in @(${requested.join(',')})){try{$p=Get-Process -Id $n -ErrorAction Stop;$r[[string]$n]=@{birth=$p.StartTime.ToUniversalTime().Ticks.ToString();executable=$p.Path.ToLowerInvariant()}}catch{if(Get-Process -Id $n -ErrorAction SilentlyContinue){$r[[string]$n]='unknown'}else{$r[[string]$n]=$null}}};$r|ConvertTo-Json -Compress -Depth 3`;
-  try {
-    const result = await exec(program, ['-NoLogo','-NoProfile','-NonInteractive','-Command',script], { windowsHide: true, env: childEnvironment(), timeout: 5000, maxBuffer: 65536 });
-    const observed = { ...retained, ...JSON.parse(result.stdout.trim()) };
-    if (pids.includes(process.pid) && observed[process.pid] && typeof observed[process.pid] === 'object') windowsCurrentIdentity = observed[process.pid];
-    return observed;
-  }
-  catch { return { ...retained, ...Object.fromEntries(requested.map((pid) => [pid, 'unknown'])) }; }
+  return windowsReader(pids);
+}
+
+/** OS proof stays fresh for child PIDs; only identical in-flight queries share a result. */
+export function createWindowsProcessIdentityReader(options = {}) {
+  const currentPid = options.currentPid ?? process.pid;
+  const modern = path.win32.join(options.programFiles ?? process.env.ProgramFiles ?? 'C:\\Program Files', 'PowerShell', '7', 'pwsh.exe');
+  const legacy = path.win32.join(options.systemRoot ?? process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+  const program = (options.exists ?? existsSync)(modern) ? modern : legacy;
+  const run = options.run ?? exec;
+  const pending = new Map();
+  let currentIdentity;
+  return async (values) => {
+    const pids = [...new Set(values)].filter((pid) => Number.isSafeInteger(pid) && pid > 0).slice(0, 64);
+    const requested = pids.filter((pid) => pid !== currentPid || !currentIdentity).sort((a, b) => a - b);
+    const retained = currentIdentity && pids.includes(currentPid) ? { [currentPid]: currentIdentity } : {};
+    if (!requested.length) return retained;
+    const key = requested.join(',');
+    let query = pending.get(key);
+    if (!query) {
+      const script = `$r=@{};foreach($n in @(${key})){try{$p=Get-Process -Id $n -ErrorAction Stop;$r[[string]$n]=@{birth=$p.StartTime.ToUniversalTime().Ticks.ToString();executable=$p.Path.ToLowerInvariant()}}catch{if(Get-Process -Id $n -ErrorAction SilentlyContinue){$r[[string]$n]='unknown'}else{$r[[string]$n]=$null}}};$r|ConvertTo-Json -Compress -Depth 3`;
+      query = (async () => {
+        const started = performance.now();
+        try {
+          const response = await run(program, ['-NoLogo','-NoProfile','-NonInteractive','-Command',script], { windowsHide: true, env: childEnvironment(), timeout: 5000, maxBuffer: 65536 });
+          const parsed = JSON.parse(response.stdout.trim());
+          const observed = Object.fromEntries(requested.map((pid) => {
+            const value = parsed?.[pid];
+            const proven = value && typeof value === 'object' && typeof value.birth === 'string' && value.birth && typeof value.executable === 'string' && value.executable;
+            return [pid, value === null ? null : proven ? { birth: value.birth, executable: value.executable } : 'unknown'];
+          }));
+          if (observed[currentPid] && typeof observed[currentPid] === 'object') currentIdentity = observed[currentPid];
+          return observed;
+        } catch (error) {
+          const code = /^[A-Z_]{1,40}$/u.test(error?.code ?? '') ? error.code : error?.killed ? 'KILLED' : 'INVALID_RESPONSE';
+          try { options.onFailure?.({ code, elapsedMs: Math.round(performance.now() - started) }); }
+          catch { /* Observational diagnostics cannot turn an unknown proof into a rejected query. */ }
+          return Object.fromEntries(requested.map((pid) => [pid, 'unknown']));
+        }
+      })();
+      pending.set(key, query);
+      void query.then(() => { pending.delete(key); }, () => { pending.delete(key); });
+    }
+    return { ...retained, ...await query };
+  };
 }
