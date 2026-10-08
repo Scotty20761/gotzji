@@ -9,12 +9,12 @@ import {
 import { isEngineeringGateEvidenceFailureReason, type Result } from '@lnwjud/domain';
 import { RuntimeEngineeringEvidenceVerifier } from '@lnwjud/mcp-server/engineering-evidence-verifier';
 import { SqliteGoalRepository, SqliteWorkspaceRepository } from '@lnwjud/storage';
-import { CoreStore, hash, secret, type AdapterRow, type ClaimRow, type WorkerRow, type CoreUpgrade } from './store.js';
+import { CoreStore, hash, secret, type AdapterRow, type ClaimRow, type WorkerRow, type WriterRow, type CoreUpgrade } from './store.js';
 import { callWorker, launchWorker, observeWorker, stopWorker, workerFingerprint } from './managed-worker.js';
 import { signed } from './managed-worker.js';
 import { assertGraceProfile, graceProfile, productGraceProfile, type GraceProfile, type GraceRegistration, type ProductGraceRegistration } from './grace-profile.js';
 import { PRODUCT_CATALOG, registeredProject, productOperation, reviewedRecipe } from './product-projects.js';
-import { CoreError, type JobView, type Preparation, type RequestInput, type TaskBinding, type CodeRunReceipt, type RegisteredProject, type ProjectRegistration, type ProductOperationInput, type BasicProductOperationInput, type ProductOperation, type PreparedProductOperation, type CatalogEntry, type ReviewedCommandRegistration } from './types.js';
+import { CoreError, type JobView, type SettleDecision, type Preparation, type RequestInput, type TaskBinding, type CodeRunReceipt, type RegisteredProject, type ProjectRegistration, type ProductOperationInput, type BasicProductOperationInput, type ProductOperation, type PreparedProductOperation, type CatalogEntry, type ReviewedCommandRegistration } from './types.js';
 import { PRODUCT_NATIVE_OPERATIONS, prepareProductNativeOperation, type ProductNativeInput, type TrustedProductNativeOptions, type ProductNativeOperationName } from './product-native.js';
 import { libraryRoute, libraryCatalog, prepareLibraryOperation, verifiedLibraryNavigationEvolution, type ProductLibraryInput, type TrustedLibraryOptions } from './product-library.js';
 import type { LibraryRouteKind, LibraryDeliveryScope } from './library-workflow-contract.js';
@@ -22,6 +22,12 @@ import { PRODUCT_BROWSER_OPERATIONS, prepareProductBrowserOperation, type Produc
 
 const WORKSPACE = 'gotzji-qualification-library';
 const MUTATION_QUEUES = new Map<string, Promise<unknown>>();
+const SETTLE_REFUSALS = {
+  SETTLE_UNSUPPORTED: 'Only project file and command jobs can be settled by the owner',
+  JOB_NOT_SETTLEABLE: 'Only a blocked job that still holds its project can be settled',
+  WORKER_STOP_REQUIRED: 'The job worker must be proven stopped before settling',
+  JOB_STILL_RUNNING: 'This job has not finished working; cancel it instead',
+} as const;
 export interface CoreNativeOptions extends TrustedProductNativeOptions {
   readonly operations?: readonly ProductNativeOperationName[];
   readonly testRunnerModule?: string;
@@ -458,7 +464,7 @@ export class ExecutionCore {
           return this.view(claim);
         }
         const operation = this.#store.operation(claim.id);
-        if (operation?.phase === 'started' || operation?.phase === 'uncertain') {
+        if (operation?.phase === 'started' || operation?.phase === 'uncertain' || operation?.phase === 'settled') {
           this.markUncertain(claim.id);
           throw new CoreError('EFFECT_RECONCILIATION_REQUIRED');
         }
@@ -562,6 +568,59 @@ export class ExecutionCore {
       this.#store.clearDiagnostic(claim.id);
       return this.view(claim);
     });
+  }
+  /**
+   * App-only owner decision for a blocked project job that holds its project after its work ended: the core marked it
+   * uncertain, its goal ended, or its worker reports finished work. Running work is never settled; Cancel stops it.
+   * Records the decision with the observed bytes before ending an active goal as cancelled, then releases exactly this
+   * job's claims. It never completes or delivers, stops only the job's own worker through the stop proof, and keeps a
+   * completed job's verified receipt. Native, browser and Library jobs keep provider reconciliation.
+   */
+  public async settleBlockedJob(credential: string, binding: TaskBinding, decision: SettleDecision): Promise<JobView> {
+    if (decision !== 'effect-present' && decision !== 'no-effect') throw new CoreError('SETTLE_DECISION_INVALID', 'Choose effect-present or no-effect', 'decision');
+    const claim = this.bound(credential, binding);
+    return this.serial(claim.id, async (): Promise<JobView> => {
+      const goal = await this.ensureGoal(claim);
+      const refusal = this.settleRefusal(claim, (await this.view(claim)).status, goal.status === 'active');
+      if (refusal) throw new CoreError(refusal, SETTLE_REFUSALS[refusal], refusal === 'SETTLE_UNSUPPORTED' ? 'operation' : 'jobId');
+      if (goal.status === 'completed' && decision === 'no-effect') throw new CoreError('SETTLE_DECISION_INVALID', 'This job completed with a verified effect', 'decision');
+      const writer = this.#store.writer(claim.id) as WriterRow;
+      const worker = this.#store.worker(claim.id);
+      if (worker && !await stopWorker(worker)) throw new CoreError('WORKER_STOP_REQUIRED', SETTLE_REFUSALS.WORKER_STOP_REQUIRED, 'jobId');
+      const summary = decision === 'effect-present' ? 'OWNER_SETTLED_EFFECT_PRESENT' : 'OWNER_SETTLED_NO_EFFECT';
+      const prepared = JSON.parse(this.#store.input(claim).text) as ProductOperation;
+      let observedSha256: string | null | undefined;
+      if (prepared.input.operation === 'file.write' && prepared.target) { try { observedSha256 = hash(readFileSync(prepared.target)); } catch { observedSha256 = null; } }
+      const observedAt = this.#now().toISOString();
+      const database = this.#store.database.connection;
+      // The decision is durable before the goal ends, so an interrupted settle leaves evidence and no 'started' phase behind.
+      if (goal.status === 'completed') database.prepare('UPDATE gotzji_operations SET phase=? WHERE job_id=?').run('verified', claim.id);
+      else database.prepare('INSERT INTO gotzji_operations(job_id,digest,phase,receipt) VALUES (?,?,?,?) ON CONFLICT(job_id) DO UPDATE SET phase=excluded.phase,receipt=excluded.receipt')
+        .run(claim.id, this.operationDigest(claim), 'settled', JSON.stringify({ verifier: 'owner-settlement-v1', decision, owner: claim.owner, observedAt, ...(observedSha256 === undefined ? {} : { observedSha256 }), previous: this.#store.operation(claim.id)?.receipt ?? null }));
+      this.#store.event(claim.id, summary, observedAt);
+      if (goal.status === 'active') unwrap(await this.#service.cancelGoal(this.actor(claim, 'settle'), { goalId: goal.goalId, expectedRevision: goal.revision, summary, evidence: [] }));
+      this.#store.clearDiagnostic(claim.id);
+      this.releaseWriter(claim.id, writer.epoch);
+      return this.view(claim);
+    });
+  }
+  /** One answer for the job view and the settle action; undefined means the owner may settle. Reads files only. */
+  private settleRefusal(claim: ClaimRow, status: JobView['status'], active: boolean): keyof typeof SETTLE_REFUSALS | undefined {
+    const input = this.#store.input(claim);
+    const prepared = input.operation === 'grace.product-operation' ? JSON.parse(input.text) as PreparedProductOperation : undefined;
+    if (!prepared || (prepared.kind !== undefined && prepared.kind !== 'basic')) return 'SETTLE_UNSUPPORTED';
+    const writer = this.#store.writer(claim.id);
+    if (!writer || status !== 'blocked') return 'JOB_NOT_SETTLEABLE';
+    const worker = this.#store.worker(claim.id);
+    if (!worker) return this.unlaunched(writer.epoch) ? undefined : 'WORKER_STOP_REQUIRED';
+    if (worker.epoch !== writer.epoch) return 'WORKER_STOP_REQUIRED';
+    if (!active) return undefined;
+    // An active job's own uncertainty is no evidence: one slow status check marks live work uncertain. Only the worker's
+    // signed record that its work ended counts; a dead worker that never recorded it is released through Cancel.
+    let ended: boolean;
+    try { ended = ['done', 'failed', 'cancelled'].includes(String(signed<{ state: string }>(worker, 'observation.json')?.state)) || !!signed<{ state: string }>(worker, 'stopped.json'); }
+    catch { return 'WORKER_STOP_REQUIRED'; }
+    return ended ? undefined : 'JOB_STILL_RUNNING';
   }
   /** Host supervisor tick: no caller credentials, receipt booleans or executables accepted. */
   public async tick(): Promise<void> {
@@ -710,7 +769,8 @@ export class ExecutionCore {
     const result: JobView = { jobId: claim.id, status, revision: goal.revision, operation: this.#store.input(claim).operation, evidenceDigest: operation?.receipt ? hash(operation.receipt) : null, curation: 'explicit-only', deliveryBoundary:'local', ...(product ? { projectId: String(product.project_id), requestedOperation: String(product.operation) as ProductOperationInput['operation'], ...(product.waiting_reason ? { waitingReason: String(product.waiting_reason) } : {}) } : {}), ...(progress?{progress:{runId:progress.runId,state:progress.state,elapsedMs:progress.elapsedMs,checks:progress.checks,lastProgressAt:progress.lastProgressAt}}:{}), ...(diagnostic ? {blockerCode:String(diagnostic.code)} : expired ? {blockerCode:'LEASE_RECOVERY_REQUIRED'} : {}) };
     const queued = product ? this.#store.database.connection.prepare('SELECT priority FROM gotzji_queue WHERE job_id=?').get(claim.id) : undefined;
     const position = product && status === 'queued' ? this.orderedQueue(claim.owner).findIndex((entry) => entry.id === claim.id) + 1 : 0;
-    return { ...result, requestId: claim.request_id, ...(goal.terminalSummary ? { summary: goal.terminalSummary } : {}), ...(waitingForProvider ? { status: 'blocked', blockerCode: 'GRACE_ACCOUNT_LIMIT', waitingReason: 'PROVIDER_LIMIT', ...(providerLimit.retry_at === null ? {} : { retryAt: new Date(Number(providerLimit.retry_at)).toISOString() }) } : {}), ...(claim.policy !== this.#policy && goal.status === 'active' ? { status: 'blocked', blockerCode: 'POLICY_RECONCILIATION_REQUIRED' } : {}), ...(queued ? { priority: Number(queued.priority), ...(position ? { queuePosition: position } : {}) } : {}), ...(product?.blocking_resource ? { blockingResource: String(product.blocking_resource) } : {}), ...(product?.blocking_job ? { blockingJob: String(product.blocking_job) } : {}), ...(product?.blocking_dependency ? { blockingDependency: String(product.blocking_dependency) } : {}) };
+    const projected: JobView = { ...result, requestId: claim.request_id, ...(goal.terminalSummary ? { summary: goal.terminalSummary } : {}), ...(waitingForProvider ? { status: 'blocked', blockerCode: 'GRACE_ACCOUNT_LIMIT', waitingReason: 'PROVIDER_LIMIT', ...(providerLimit.retry_at === null ? {} : { retryAt: new Date(Number(providerLimit.retry_at)).toISOString() }) } : {}), ...(claim.policy !== this.#policy && goal.status === 'active' ? { status: 'blocked', blockerCode: 'POLICY_RECONCILIATION_REQUIRED' } : {}), ...(queued ? { priority: Number(queued.priority), ...(position ? { queuePosition: position } : {}) } : {}), ...(product?.blocking_resource ? { blockingResource: String(product.blocking_resource) } : {}), ...(product?.blocking_job ? { blockingJob: String(product.blocking_job) } : {}), ...(product?.blocking_dependency ? { blockingDependency: String(product.blocking_dependency) } : {}) };
+    return projected.status === 'blocked' && !this.settleRefusal(claim, 'blocked', goal.status === 'active') ? { ...projected, settleDecisions: goal.status === 'completed' ? ['effect-present'] : ['effect-present', 'no-effect'] } : projected;
   }
   private effectRoot(jobId: string): string { return path.join(this.#root, 'effects', jobId); }
   private resourceScope(claim: ClaimRow): string {

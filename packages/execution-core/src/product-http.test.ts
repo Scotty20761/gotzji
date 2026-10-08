@@ -29,6 +29,16 @@ describe('governed product HTTP and MCP boundary', () => {
       const registered = await fetch(rpc, { method: 'POST', headers, body: JSON.stringify({ method: 'registerProject', input: { projectId: 'test', displayName: 'Test', rootPath: 'C:/test' } }) });
       expect((await registered.json()).ok).toBe(true);
       expect(calls).toEqual(['registerProject']);
+      expect(list.result.tools.map((tool) => tool.name).filter((name) => /settle/iu.test(name))).toEqual([]);
+      for (const name of ['settleJob', 'gotzji_settleJob', 'gotzji_settle']) {
+        const settleOverMcp = await fetch(mcp, { method: 'POST', body: JSON.stringify({ jsonrpc: '2.0', id: 9, method: 'tools/call', params: { name, arguments: { jobId: 'job', decision: 'no-effect' } } }) });
+        expect((await settleOverMcp.json()).result.isError).toBe(true);
+      }
+      const invalidDecision = await fetch(rpc, { method: 'POST', headers, body: JSON.stringify({ method: 'settleJob', input: { jobId: 'job', decision: 'released' } }) });
+      expect((await invalidDecision.json()).ok).not.toBe(true);
+      const settled = await fetch(rpc, { method: 'POST', headers, body: JSON.stringify({ method: 'settleJob', input: { jobId: 'job', decision: 'no-effect' } }) });
+      expect((await settled.json()).ok).toBe(true);
+      expect(calls).toEqual(['registerProject', 'settleJob']);
     } finally { await host.close(); }
   });
 

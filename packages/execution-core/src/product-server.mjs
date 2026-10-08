@@ -88,7 +88,7 @@ if (!startupControlOnly) {
 const configurationIdentity = productConfigurationIdentity(config);
 const runtimeVersion = existsSync(manifestPath) ? JSON.parse(readFileSync(manifestPath, 'utf8')).version : 'development';
 const allowCurrentWork = () => { try { return !startupControlOnly && productRuntimeIdentity(entry, runtimeOptions) === buildIdentity; } catch { return false; } };
-const controls = new Set(['health', 'list', 'inspectQueue', 'status', 'logs', 'result', 'cancel', 'connectionStatus', 'stopConnection', 'browserSession', 'stopBrowserSession', 'libraryChannelStatus', 'stopLibraryConnection', ...(testSecretFixture ? ['testOnlyE2eShutdown'] : [])]);
+const controls = new Set(['health', 'list', 'inspectQueue', 'status', 'logs', 'result', 'cancel', 'settleJob', 'connectionStatus', 'stopConnection', 'browserSession', 'stopBrowserSession', 'libraryChannelStatus', 'stopLibraryConnection', ...(testSecretFixture ? ['testOnlyE2eShutdown'] : [])]);
 let connection;
 const browser = config.browser && !startupControlOnly ? new ProductBrowserService({ directory, ownerId: config.ownerId, credential, core, ...config.browser, prerequisite: productBrowserPrerequisite(path.join(path.dirname(entry), 'product-browser-broker.mjs')) }) : undefined;
 const libraryChannel = new ProductLibraryChannel({ directory, ownerId: config.ownerId, primaryCredential: credential, core, version: runtimeVersion, allowWork: allowCurrentWork, ...(config.tunnel ? { tunnel: config.tunnel } : {}) });
@@ -133,6 +133,7 @@ const listener = await startProductHttp({ token: config.daemonSecret, mcpPathSec
     case 'logs': return core.logs(credential, binding(input), input.cursor ?? 0, input.limit ?? 4000);
     case 'result': return core.readOperationResult(credential, binding(input));
     case 'cancel': return core.cancel(credential, binding(input));
+    case 'settleJob': if (surface !== 'app') throw new CoreError('JOB_SETTLEMENT_DENIED'); return core.settleBlockedJob(credential, binding(input), input.decision);
     case 'resume': return core.resume(credential, binding(input));
     default: throw new CoreError('METHOD_DENIED');
   }

@@ -198,6 +198,121 @@ describe('governed product operations — real native Goal, file and process sea
     await expect(f.core.cancel(f.credential, binding)).rejects.toMatchObject({ code: 'EFFECT_RECONCILIATION_REQUIRED', field: 'path' });
     expect(await f.core.get(f.credential, binding)).toMatchObject({ status: 'blocked' });
   }, 10000);
+
+  it('lets the owner settle a write held by bytes changed after it ran, so the next job on that project runs', async () => {
+    const f = await fixture(); const root = await project(f, 'one');
+    const target = path.join(root, 'source.txt');
+    const binding = await submit(f, { requestId: 'change', projectId: 'one', operation: 'file.write', path: 'source.txt', expectedSha256: hash(await readFile(target)), content: 'Approved\r\n' });
+    await f.core.resume(f.credential, binding);
+    const db = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'));
+    const worker = db.prepare('SELECT * FROM gotzji_workers WHERE job_id=?').get(binding.jobId) as unknown as WorkerRow; db.close();
+    for (let i = 0; i < 100 && (await callWorker(worker, 'status')).state !== 'done'; i++) await new Promise((resolve) => setTimeout(resolve, 30));
+    await writeFile(target, 'Owner edit after the run');
+    await expect(f.core.tick()).rejects.toMatchObject({ code: 'ARTIFACT_CHANGED' });
+    expect(await f.core.get(f.credential, binding)).toMatchObject({ status: 'blocked', blockerCode: 'ARTIFACT_CHANGED', settleDecisions: ['effect-present', 'no-effect'] });
+    const next = await submit(f, { requestId: 'next', projectId: 'one', operation: 'file.read', path: 'source.txt' });
+    const waiting = await f.core.resume(f.credential, next);
+    expect(waiting).toMatchObject({ status: 'queued', waitingReason: 'RESOURCE_HELD', blockingJob: binding.jobId }); expect(waiting).not.toHaveProperty('settleDecisions');
+    await expect(f.core.settleBlockedJob(f.credential, next, 'no-effect')).rejects.toMatchObject({ code: 'JOB_NOT_SETTLEABLE' });
+    expect(await f.core.settleBlockedJob(f.credential, binding, 'effect-present')).toMatchObject({ status: 'cancelled', summary: 'OWNER_SETTLED_EFFECT_PRESENT' });
+    const state = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'));
+    const operation = state.prepare('SELECT phase,receipt FROM gotzji_operations WHERE job_id=?').get(binding.jobId) as { phase: string; receipt: string };
+    const events = (state.prepare('SELECT event FROM gotzji_job_events WHERE job_id=?').all(binding.jobId) as { event: string }[]).map((row) => row.event);
+    const held = state.prepare('SELECT COUNT(*) AS count FROM gotzji_writers WHERE job_id=?').get(binding.jobId) as { count: number }; state.close();
+    expect(operation.phase).toBe('settled');
+    expect(JSON.parse(operation.receipt)).toMatchObject({ verifier: 'owner-settlement-v1', decision: 'effect-present', observedSha256: hash(Buffer.from('Owner edit after the run')) });
+    expect(events).toContain('OWNER_SETTLED_EFFECT_PRESENT'); expect(held.count).toBe(0);
+    await expect(f.core.settleBlockedJob(f.credential, binding, 'effect-present')).rejects.toMatchObject({ code: 'JOB_NOT_SETTLEABLE' });
+    await until(f, async () => (await f.core.get(f.credential, next)).status === 'completed');
+    await expect(f.core.settleBlockedJob(f.credential, next, 'no-effect')).rejects.toMatchObject({ code: 'JOB_NOT_SETTLEABLE' });
+    expect(await readFile(target, 'utf8')).toBe('Owner edit after the run');
+  }, 15000);
+
+  it('refuses to settle a running job or a worker without stop proof, then settles a cancelled held write from a control-only host', async () => {
+    const f = await fixture(); const root = await project(f, 'one'); await project(f, 'two', 1600);
+    const running = await submit(f, { requestId: 'long', projectId: 'two', operation: 'command.run', commandId: 'run' });
+    await f.core.resume(f.credential, running);
+    await until(f, async () => f.core.logs(f.credential, running).text.includes('progress-two'));
+    await expect(f.core.settleBlockedJob(f.credential, running, 'no-effect')).rejects.toMatchObject({ code: 'JOB_NOT_SETTLEABLE' });
+    const target = path.join(root, 'source.txt');
+    const binding = await submit(f, { requestId: 'change', projectId: 'one', operation: 'file.write', path: 'source.txt', expectedSha256: hash(await readFile(target)), content: 'Approved\r\n' });
+    await f.core.resume(f.credential, binding);
+    const db = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'));
+    const worker = db.prepare('SELECT * FROM gotzji_workers WHERE job_id=?').get(binding.jobId) as unknown as WorkerRow; db.close();
+    for (let i = 0; i < 100 && (await callWorker(worker, 'status')).state !== 'done'; i++) await new Promise((resolve) => setTimeout(resolve, 30));
+    await writeFile(target, 'Owner edit after the run');
+    await expect(f.core.cancel(f.credential, binding)).rejects.toMatchObject({ code: 'EFFECT_RECONCILIATION_REQUIRED', field: 'path' });
+    // A host whose runtime changed starts control-only while this writer is held; settling must work there.
+    f.core.close(); f.core = await ExecutionCore.openForControl(path.join(f.root, 'state'));
+    expect(await f.core.get(f.credential, binding)).toMatchObject({ status: 'blocked', settleDecisions: ['effect-present', 'no-effect'] });
+    const ready = path.join(worker.directory, 'ready.json'); const proof = await readFile(ready);
+    await writeFile(ready, '{}');
+    await expect(f.core.settleBlockedJob(f.credential, binding, 'no-effect')).rejects.toMatchObject({ code: 'WORKER_STOP_REQUIRED' });
+    expect(await f.core.get(f.credential, binding)).toMatchObject({ status: 'blocked' });
+    await writeFile(ready, proof);
+    // A held job can lack its operation row (interrupted admission); the decision still becomes a durable receipt.
+    const admission = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite')); admission.prepare('DELETE FROM gotzji_operations WHERE job_id=?').run(binding.jobId); admission.close();
+    expect(await f.core.settleBlockedJob(f.credential, binding, 'no-effect')).toMatchObject({ status: 'cancelled' });
+    const state = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'));
+    const operation = state.prepare('SELECT phase,receipt FROM gotzji_operations WHERE job_id=?').get(binding.jobId) as { phase: string; receipt: string };
+    const events = (state.prepare('SELECT event FROM gotzji_job_events WHERE job_id=?').all(binding.jobId) as { event: string }[]).map((row) => row.event); state.close();
+    expect(operation.phase).toBe('settled');
+    expect(JSON.parse(operation.receipt)).toMatchObject({ verifier: 'owner-settlement-v1', decision: 'no-effect', observedSha256: hash(Buffer.from('Owner edit after the run')), previous: null });
+    expect(events).toContain('OWNER_SETTLED_NO_EFFECT');
+    f.core.close(); f.core = await ExecutionCore.open(path.join(f.root, 'state'), { product: f.profile });
+    await until(f, async () => (await f.core.get(f.credential, running)).status === 'completed');
+  }, 25000);
+
+  it('never settles running work that only looks blocked, so the command still reaches its end', async () => {
+    const f = await fixture(); await project(f, 'two', 4000);
+    const running = await submit(f, { requestId: 'long', projectId: 'two', operation: 'command.run', commandId: 'run' });
+    await f.core.resume(f.credential, running);
+    await until(f, async () => f.core.logs(f.credential, running).text.includes('progress-two'));
+    // An owner-wide provider limit from another job and a transient supervision diagnostic both project this live job as blocked.
+    const db = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'));
+    db.prepare('INSERT INTO gotzji_provider_limits VALUES (?,?,?,?)').run('owner', 'f'.repeat(64), null, '{}');
+    db.prepare('INSERT INTO gotzji_diagnostics VALUES (?,?,?)').run(running.jobId, 'WORKER_UNAVAILABLE', new Date().toISOString());
+    const view = await f.core.get(f.credential, running);
+    expect(view.status).toBe('blocked'); expect(view).not.toHaveProperty('settleDecisions');
+    await expect(f.core.settleBlockedJob(f.credential, running, 'no-effect')).rejects.toMatchObject({ code: 'JOB_STILL_RUNNING' });
+    db.prepare('DELETE FROM gotzji_provider_limits').run(); db.prepare('DELETE FROM gotzji_diagnostics').run();
+    // One failed status check marks live work uncertain for the rest of its run; that alone must not make it settleable.
+    const worker = db.prepare('SELECT * FROM gotzji_workers WHERE job_id=?').get(running.jobId) as unknown as WorkerRow; db.close();
+    const ready = path.join(worker.directory, 'ready.json'); const proof = await readFile(ready);
+    await writeFile(ready, '{}');
+    await expect(f.core.tick()).rejects.toMatchObject({ code: 'WORKER_RECONCILIATION_REQUIRED' });
+    await writeFile(ready, proof);
+    await f.core.tick();
+    const uncertain = await f.core.get(f.credential, running);
+    expect(uncertain.status).toBe('blocked'); expect(uncertain).not.toHaveProperty('settleDecisions');
+    await expect(f.core.settleBlockedJob(f.credential, running, 'effect-present')).rejects.toMatchObject({ code: 'JOB_STILL_RUNNING' });
+    await until(f, async () => (await f.core.get(f.credential, running)).status === 'completed');
+    expect(f.core.logs(f.credential, running).text).toContain('end-two');
+  }, 20000);
+
+  it('keeps a completed job’s verified result when the owner settles a writer still held after completion', async () => {
+    const f = await fixture(); const root = await project(f, 'one');
+    const target = path.join(root, 'source.txt');
+    const binding = await submit(f, { requestId: 'change', projectId: 'one', operation: 'file.write', path: 'source.txt', expectedSha256: hash(await readFile(target)), content: 'Approved\r\n' });
+    await f.core.resume(f.credential, binding);
+    let state = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'));
+    const writer = state.prepare('SELECT root,job_id,epoch FROM gotzji_writers WHERE job_id=?').get(binding.jobId) as { root: string; job_id: string; epoch: string };
+    const claims = state.prepare('SELECT resource_key,job_id,epoch FROM gotzji_resource_claims WHERE job_id=?').all(binding.jobId) as { resource_key: string; job_id: string; epoch: string }[]; state.close();
+    await until(f, async () => (await f.core.get(f.credential, binding)).status === 'completed');
+    const result = await f.core.readOperationResult(f.credential, binding);
+    // The window between finishing the goal and releasing the writer, followed by an owner edit that cleanup cannot verify.
+    state = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'));
+    state.prepare('INSERT INTO gotzji_writers(root,job_id,epoch) VALUES (?,?,?)').run(writer.root, writer.job_id, writer.epoch);
+    for (const claim of claims) state.prepare('INSERT INTO gotzji_resource_claims(resource_key,job_id,epoch) VALUES (?,?,?)').run(claim.resource_key, claim.job_id, claim.epoch);
+    state.prepare('UPDATE gotzji_operations SET phase=? WHERE job_id=?').run('uncertain', binding.jobId); state.close();
+    await writeFile(target, 'Owner edit after completion');
+    expect(await f.core.get(f.credential, binding)).toMatchObject({ status: 'blocked', settleDecisions: ['effect-present'] });
+    await expect(f.core.settleBlockedJob(f.credential, binding, 'no-effect')).rejects.toMatchObject({ code: 'SETTLE_DECISION_INVALID' });
+    expect(await f.core.settleBlockedJob(f.credential, binding, 'effect-present')).toMatchObject({ status: 'completed' });
+    expect(await f.core.readOperationResult(f.credential, binding)).toEqual(result);
+    state = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'));
+    expect(state.prepare('SELECT COUNT(*) AS count FROM gotzji_writers WHERE job_id=?').get(binding.jobId)).toMatchObject({ count: 0 }); state.close();
+  }, 15000);
   it('rejects IPC-style executable/argument enrollment and changed prepared script dependencies', async () => {
     const f = await fixture(); const root = await project(f, 'one');
     expect(() => f.core.registerProject(f.credential, { projectId: 'forged', displayName: 'Forged', rootPath: root, commands: [{ executable: 'powershell.exe', args: ['anything'] }] } as never)).toThrow('INVALID_REQUEST');

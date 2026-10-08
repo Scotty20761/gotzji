@@ -10,7 +10,7 @@ export const gotzjiIpcChannels = {
 
 export const gotzjiMethods = [
   'listProjects', 'registerProject', 'listCatalog', 'prepareOperation', 'submit',
-  'listJobs', 'status', 'logs', 'result', 'cancel', 'resume', 'inspectQueue', 'reprioritize',
+  'listJobs', 'status', 'logs', 'result', 'cancel', 'settleJob', 'resume', 'inspectQueue', 'reprioritize',
   'connectionStatus', 'configureConnection', 'startConnection', 'stopConnection',
   'startBrowserSession', 'browserSession', 'stopBrowserSession', 'authorizeLibraryDelivery',
   'enrollLibraryChannel', 'libraryChannelStatus', 'configureLibraryConnection', 'startLibraryConnection', 'stopLibraryConnection',

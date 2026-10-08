@@ -9,6 +9,7 @@ export interface Preparation {
   readonly digest: string;
 }
 export type JobStatus = 'queued' | 'running' | 'verifying' | 'blocked' | 'completed' | 'cancelled' | 'failed';
+export type SettleDecision = 'effect-present' | 'no-effect';
 export interface JobView {
   readonly jobId: string;
   readonly requestId?: string;
@@ -30,6 +31,8 @@ export interface JobView {
   readonly blockingDependency?: string;
   readonly retryAt?: string;
   readonly progress?: { readonly runId: string; readonly state: string; readonly elapsedMs: number; readonly checks: number; readonly lastProgressAt: string };
+  /** Decisions the owner may record to settle this blocked project job: it holds its project and its work has ended. */
+  readonly settleDecisions?: readonly SettleDecision[];
 }
 /** Adapter-private, never part of model-visible output. */
 export interface TaskBinding { readonly jobId: string; readonly handle: string }

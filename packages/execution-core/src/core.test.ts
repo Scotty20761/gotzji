@@ -288,4 +288,11 @@ describe('neutral execution authority — real SQLite, files and owned processes
       await until(async () => observation.descendants.every((pid) => alive(pid) === false));
     }
   });
+
+  it('keeps owner settlement to the owning adapter, product project jobs and the two named decisions', async () => {
+    const f = await fixture(); const b = await submit(f);
+    await expect(f.core.settleBlockedJob(f.gotzji, b, 'released' as never)).rejects.toMatchObject({ code: 'SETTLE_DECISION_INVALID', field: 'decision' });
+    await expect(f.core.settleBlockedJob(f.foreign, b, 'no-effect')).rejects.toMatchObject({ code: 'TASK_AUTHORITY_DENIED' });
+    await expect(f.core.settleBlockedJob(f.gotzji, b, 'no-effect')).rejects.toMatchObject({ code: 'SETTLE_UNSUPPORTED', field: 'operation' });
+  });
 });

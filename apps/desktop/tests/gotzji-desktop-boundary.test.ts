@@ -77,6 +77,20 @@ describe('gotzji desktop governed boundary', () => {
     expect(requests).toHaveLength(2);
   });
 
+  it('sends an owner settlement only for the selected job with one of the two named decisions', async () => {
+    const requests: unknown[] = [];
+    const endpoint = await serve(async (request, response) => {
+      let text = ''; for await (const chunk of request) text += String(chunk); requests.push(JSON.parse(text));
+      response.end(JSON.stringify({ ok: true, value: { status: 'cancelled' } }));
+    });
+    const client = new GotzjiHostClient(async () => ({ endpoint, token: 'secret', ownerId: 'owner' }));
+    await expect(client.request({ method: 'settleJob', input: { jobId: 'job', decision: 'effect-present' } })).resolves.toEqual({ status: 'cancelled' });
+    await expect(client.request({ method: 'settleJob', input: { jobId: 'job', decision: 'released' } })).rejects.toThrow('INVALID_GOTZJI_REQUEST');
+    await expect(client.request({ method: 'settleJob', input: { jobId: 'job', decision: 'no-effect', projectId: 'other' } })).rejects.toThrow('INVALID_GOTZJI_REQUEST');
+    await expect(client.request({ method: 'settleJob', input: { decision: 'no-effect' } })).rejects.toThrow('INVALID_GOTZJI_REQUEST');
+    expect(requests).toEqual([{ method: 'settleJob', input: { jobId: 'job', decision: 'effect-present' } }]);
+  });
+
   it('maps control history/catalog methods and cannot redirect a private credential to another host', async () => {
     const methods: string[] = [];
     const endpoint = await serve(async (request, response) => {

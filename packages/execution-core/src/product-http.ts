@@ -20,7 +20,7 @@ export const PRODUCT_MCP_TOOLS = [
   { name: 'gotzji_resume', method: 'resume', readOnly: false, description: 'Inspect and resume a selected admitted job without submitting it again.' },
   { name: 'gotzji_cancel', method: 'cancel', readOnly: false, description: 'Cancel only the explicitly selected owner job and inspect its termination result.' },
 ] as const;
-const ALLOWED_APP_METHODS = new Set(['health', 'registerProject', 'listProjects', 'catalog', 'prepareOperation', 'submit', 'list', 'inspectQueue', 'reprioritize', 'status', 'logs', 'result', 'cancel', 'resume', 'connectionStatus', 'configureConnection', 'startConnection', 'stopConnection', 'startBrowserSession', 'browserSession', 'stopBrowserSession', 'authorizeLibraryDelivery', 'enrollLibraryChannel', 'libraryChannelStatus', 'configureLibraryConnection', 'startLibraryConnection', 'stopLibraryConnection', 'testOnlyE2eShutdown']);
+const ALLOWED_APP_METHODS = new Set(['health', 'registerProject', 'listProjects', 'catalog', 'prepareOperation', 'submit', 'list', 'inspectQueue', 'reprioritize', 'status', 'logs', 'result', 'cancel', 'settleJob', 'resume', 'connectionStatus', 'configureConnection', 'startConnection', 'stopConnection', 'startBrowserSession', 'browserSession', 'stopBrowserSession', 'authorizeLibraryDelivery', 'enrollLibraryChannel', 'libraryChannelStatus', 'configureLibraryConnection', 'startLibraryConnection', 'stopLibraryConnection', 'testOnlyE2eShutdown']);
 type Schema = Record<string, unknown>;
 const text = { type: 'string', minLength: 1 };
 const priority = { type: 'integer', minimum: 0, maximum: 3 };
@@ -67,6 +67,7 @@ export function productControlSchema(method: string): Schema {
   if (method === 'submit') return objectSchema({ preparationId: text }, ['preparationId']);
   if (method === 'reprioritize') return objectSchema({ jobId: text, priority }, ['jobId', 'priority']);
   if (['status', 'result', 'cancel', 'resume'].includes(method)) return objectSchema({ jobId: text }, ['jobId']);
+  if (method === 'settleJob') return objectSchema({ jobId: text, decision: { type: 'string', enum: ['effect-present', 'no-effect'] } }, ['jobId', 'decision']);
   if (method === 'logs') return objectSchema({ jobId: text, cursor: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 8192 } }, ['jobId']);
   return objectSchema({}, []);
 }
