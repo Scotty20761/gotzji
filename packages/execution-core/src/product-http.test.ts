@@ -39,6 +39,20 @@ describe('governed product HTTP and MCP boundary', () => {
       const settled = await fetch(rpc, { method: 'POST', headers, body: JSON.stringify({ method: 'settleJob', input: { jobId: 'job', decision: 'no-effect' } }) });
       expect((await settled.json()).ok).toBe(true);
       expect(calls).toEqual(['registerProject', 'settleJob']);
+      // Owner-approved recipes (incident I7): app only, typed, never a model tool.
+      expect(list.result.tools.map((tool) => tool.name).filter((name) => /recipe/iu.test(name))).toEqual([]);
+      for (const name of ['registerRecipe', 'bindProjectRecipe', 'gotzji_registerRecipe']) {
+        const overMcp = await fetch(mcp, { method: 'POST', body: JSON.stringify({ jsonrpc: '2.0', id: 10, method: 'tools/call', params: { name, arguments: { recipeId: 'phase-tests', executable: 'C:/Python/python.exe', args: [], dependencies: [], projectId: 'test' } } }) });
+        expect((await overMcp.json()).result.isError).toBe(true);
+      }
+      const app = async (method: string, input: Record<string, unknown>): Promise<boolean> => (await (await fetch(rpc, { method: 'POST', headers, body: JSON.stringify({ method, input }) })).json() as { ok: boolean }).ok;
+      expect(await app('registerRecipe', { recipeId: 'bad id', executable: 'C:/Python/python.exe', args: [], dependencies: [] })).toBe(false);
+      expect(await app('registerRecipe', { recipeId: 'phase-tests', executable: 'C:/Python/python.exe', args: [7], dependencies: [] })).toBe(false);
+      expect(await app('registerRecipe', { recipeId: 'phase-tests', executable: 'C:/Python/python.exe', args: ['-I'], dependencies: [], shell: true })).toBe(false);
+      expect(await app('registerRecipe', { recipeId: 'phase-tests', displayName: 'Phase 2 checks', executable: 'C:/Python/python.exe', args: ['-I'], dependencies: [], timeoutMs: 600000 })).toBe(true);
+      expect(await app('bindProjectRecipe', { projectId: 'test', recipeId: 'phase-tests', extra: true })).toBe(false);
+      expect(await app('bindProjectRecipe', { projectId: 'test', recipeId: 'phase-tests' })).toBe(true);
+      expect(calls).toEqual(['registerProject', 'settleJob', 'registerRecipe', 'bindProjectRecipe']);
     } finally { await host.close(); }
   });
 

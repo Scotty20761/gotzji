@@ -189,7 +189,7 @@ export class ExecutionCore {
     this.#store.database.connection.prepare('INSERT OR IGNORE INTO gotzji_projects VALUES (?,?,?)').run(adapter.owner, project.projectId, JSON.stringify(project));
     return project;
   }
-  /** Trusted composition/test setup only. Never callable through app RPC or MCP. */
+  /** Trusted composition, test setup, or the owner through the local app (incident I7). Never callable through MCP. */
   public registerReviewedCommand(credential: string, registration: ReviewedCommandRegistration): CatalogEntry {
     const adapter = this.authorize(credential, true);
     if (this.#grace?.recipe !== 'product') throw new CoreError('PRODUCT_PROFILE_REQUIRED');
@@ -199,6 +199,35 @@ export class ExecutionCore {
     if (previous && String(previous.recipe) !== serialized) throw new CoreError('RECIPE_REGISTRATION_CONFLICT', 'Review changed code as a new immutable recipe ID', 'recipeId');
     this.#store.database.connection.prepare('INSERT OR IGNORE INTO gotzji_reviewed_recipes VALUES (?,?,?)').run(adapter.owner, recipe.recipeId, serialized);
     return { name: `command.recipe.${recipe.recipeId}`, recipeId: recipe.recipeId, state: 'available', description: recipe.displayName ?? recipe.recipeId, controller: 'grace' };
+  }
+  /** App-only and append-only: binds a reviewed recipe to a project without rewriting the registration jobs embed. */
+  public bindProjectRecipe(credential: string, binding: { readonly projectId: string; readonly recipeId: string }): RegisteredProject {
+    const adapter = this.authorize(credential, true);
+    if (this.#grace?.recipe !== 'product') throw new CoreError('PRODUCT_PROFILE_REQUIRED');
+    const row = this.#store.database.connection.prepare('SELECT registration FROM gotzji_projects WHERE owner=? AND project_id=?').get(adapter.owner, binding.projectId);
+    if (!row) throw new CoreError('PROJECT_NOT_REGISTERED', 'Choose a registered project', 'projectId');
+    const project = JSON.parse(String(row.registration)) as RegisteredProject;
+    if (project.kind === 'library') throw new CoreError('RECIPE_BINDING_UNSUPPORTED', 'Library projects run their own workflows', 'projectId');
+    if (!this.#store.database.connection.prepare('SELECT 1 FROM gotzji_reviewed_recipes WHERE owner=? AND recipe_id=?').get(adapter.owner, binding.recipeId)) throw new CoreError('RECIPE_NOT_REGISTERED', 'Choose a recipe from the server catalog', 'recipeId');
+    this.#store.database.connection.prepare('INSERT OR IGNORE INTO gotzji_project_recipes VALUES (?,?,?,?)').run(adapter.owner, project.projectId, binding.recipeId, this.#now().toISOString());
+    return { ...project, recipeIds: this.projectRecipeIds(credential, project) };
+  }
+  /** Recipes a project may run: its registration's own plus every owner binding, in that order. */
+  public projectRecipeIds(credential: string, project: RegisteredProject): readonly string[] {
+    const adapter = this.authorize(credential);
+    return [...new Set([...project.recipeIds, ...this.boundRecipeIds(adapter.owner, project.projectId)])];
+  }
+  /** What the owner approved, for the app only: the catalog the model reads never carries local paths. */
+  public recipeReview(credential: string, recipeId: string): { readonly recipeId: string; readonly executable: string; readonly executableSha256: string; readonly args: readonly string[]; readonly timeoutMs: number; readonly dependencies: readonly { readonly path: string; readonly pinned: 'at-approval' | 'each-run'; readonly sha256?: string }[] } {
+    const adapter = this.authorize(credential);
+    const row = this.#store.database.connection.prepare('SELECT recipe FROM gotzji_reviewed_recipes WHERE owner=? AND recipe_id=?').get(adapter.owner, recipeId);
+    if (!row) throw new CoreError('RECIPE_NOT_REGISTERED', 'Choose a recipe from the server catalog', 'recipeId');
+    const recipe = JSON.parse(String(row.recipe)) as ReturnType<typeof reviewedRecipe>;
+    return { recipeId: recipe.recipeId, executable: recipe.executable, executableSha256: recipe.executableHash, args: recipe.args, timeoutMs: recipe.timeoutMs,
+      dependencies: recipe.dependencies.map((item) => { const fixed = item.includes('${projectRoot}') ? undefined : recipe.fixedDependencies.find((entry) => entry.path === path.resolve(item)); return fixed ? { path: item, pinned: 'at-approval' as const, sha256: fixed.hash } : { path: item, pinned: 'each-run' as const }; }) };
+  }
+  private boundRecipeIds(owner: string, projectId: string): readonly string[] {
+    return this.#store.database.connection.prepare('SELECT recipe_id FROM gotzji_project_recipes WHERE owner=? AND project_id=? ORDER BY bound_at,recipe_id').all(owner, projectId).map((entry) => String(entry.recipe_id));
   }
   public listProjects(credential: string): readonly RegisteredProject[] {
     const adapter = this.authorize(credential);
@@ -323,7 +352,7 @@ export class ExecutionCore {
     }
     const basic = input as BasicProductOperationInput;
     const recipe = basic.operation === 'command.run' ? this.#store.database.connection.prepare('SELECT recipe FROM gotzji_reviewed_recipes WHERE owner=? AND recipe_id=?').get(adapter.owner, basic.commandId ?? '') : undefined;
-    const operation = productOperation(JSON.parse(String(row.registration)) as RegisteredProject, basic, recipe ? JSON.parse(String(recipe.recipe)) as ReturnType<typeof reviewedRecipe> : undefined,{privateRuntimeRoots:this.privateRuntimeRoots()});
+    const operation = productOperation(JSON.parse(String(row.registration)) as RegisteredProject, basic, recipe ? JSON.parse(String(recipe.recipe)) as ReturnType<typeof reviewedRecipe> : undefined,{privateRuntimeRoots:this.privateRuntimeRoots(),boundRecipeIds:this.boundRecipeIds(adapter.owner,basic.projectId)});
     return this.createPreparation(credential, { requestId: input.requestId, operation: 'grace.product-operation', text: JSON.stringify(operation) });
   }
   public async list(credential: string): Promise<readonly JobView[]> {

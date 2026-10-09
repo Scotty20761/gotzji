@@ -9,7 +9,7 @@ export const gotzjiIpcChannels = {
 } as const;
 
 export const gotzjiMethods = [
-  'listProjects', 'registerProject', 'listCatalog', 'prepareOperation', 'submit',
+  'listProjects', 'registerProject', 'registerRecipe', 'bindProjectRecipe', 'listCatalog', 'prepareOperation', 'submit',
   'listJobs', 'status', 'logs', 'result', 'cancel', 'settleJob', 'resume', 'inspectQueue', 'reprioritize',
   'connectionStatus', 'configureConnection', 'startConnection', 'stopConnection',
   'startBrowserSession', 'browserSession', 'stopBrowserSession', 'authorizeLibraryDelivery',

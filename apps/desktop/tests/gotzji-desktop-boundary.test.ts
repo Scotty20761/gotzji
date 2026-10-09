@@ -91,6 +91,23 @@ describe('gotzji desktop governed boundary', () => {
     expect(requests).toEqual([{ method: 'settleJob', input: { jobId: 'job', decision: 'effect-present' } }]);
   });
 
+  it('sends an owner recipe approval and project binding only with their known fields', async () => {
+    const requests: unknown[] = [];
+    const endpoint = await serve(async (request, response) => {
+      let text = ''; for await (const chunk of request) text += String(chunk); requests.push(JSON.parse(text));
+      response.end(JSON.stringify({ ok: true, value: { accepted: true } }));
+    });
+    const client = new GotzjiHostClient(async () => ({ endpoint, token: 'secret', ownerId: 'owner' }));
+    const recipe = { recipeId: 'phase-tests', displayName: 'Phase 2 checks', executable: 'C:/Python/python.exe', args: ['-I', '${projectRoot}/validation/test_phase2.py'], dependencies: ['${projectRoot}/validation/test_phase2.py'], timeoutMs: 600000 };
+    await expect(client.request({ method: 'registerRecipe', input: recipe })).resolves.toEqual({ accepted: true });
+    await expect(client.request({ method: 'registerRecipe', input: { ...recipe, shell: true } })).rejects.toThrow('INVALID_GOTZJI_REQUEST');
+    await expect(client.request({ method: 'registerRecipe', input: { ...recipe, args: [1] } })).rejects.toThrow('INVALID_GOTZJI_REQUEST');
+    await expect(client.request({ method: 'registerRecipe', input: { ...recipe, executable: '' } })).rejects.toThrow('INVALID_GOTZJI_REQUEST');
+    await expect(client.request({ method: 'bindProjectRecipe', input: { projectId: 'project', recipeId: 'phase-tests' } })).resolves.toEqual({ accepted: true });
+    await expect(client.request({ method: 'bindProjectRecipe', input: { projectId: 'project', recipeId: 'phase-tests', args: ['-c'] } })).rejects.toThrow('INVALID_GOTZJI_REQUEST');
+    expect(requests).toEqual([{ method: 'registerRecipe', input: recipe }, { method: 'bindProjectRecipe', input: { projectId: 'project', recipeId: 'phase-tests' } }]);
+  });
+
   it('maps control history/catalog methods and cannot redirect a private credential to another host', async () => {
     const methods: string[] = [];
     const endpoint = await serve(async (request, response) => {

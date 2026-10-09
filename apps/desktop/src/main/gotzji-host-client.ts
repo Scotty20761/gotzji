@@ -40,6 +40,16 @@ export function parseGotzjiRequest(value: unknown): GotzjiRequest {
     if (Object.keys(value.input).some((key) => !['tunnelId', 'runtimeKey', 'organizationId'].includes(key)) || typeof value.input.tunnelId !== 'string' || !/^tunnel_[a-z0-9]{32}$/u.test(value.input.tunnelId) || typeof value.input.runtimeKey !== 'string' || value.input.runtimeKey.length < 20 || value.input.runtimeKey.length > 1024 || /[\r\n\0]/u.test(value.input.runtimeKey) || value.input.organizationId !== undefined && (typeof value.input.organizationId !== 'string' || !/^org[-_][A-Za-z0-9_-]{1,160}$/u.test(value.input.organizationId))) throw new GotzjiHostError('INVALID_GOTZJI_REQUEST');
   }
   if (['status', 'logs', 'result', 'cancel', 'settleJob', 'resume'].includes(method)) requiredText(value.input, 'jobId');
+  if (method === 'registerRecipe') {
+    requiredText(value.input, 'recipeId'); requiredText(value.input, 'executable');
+    const strings = (item: unknown): boolean => Array.isArray(item) && item.every((entry) => typeof entry === 'string');
+    if (Object.keys(value.input).some((key) => !['recipeId', 'displayName', 'executable', 'args', 'dependencies', 'timeoutMs'].includes(key)) || !strings(value.input.args) || !strings(value.input.dependencies)
+      || (value.input.timeoutMs !== undefined && !Number.isSafeInteger(value.input.timeoutMs))) throw new GotzjiHostError('INVALID_GOTZJI_REQUEST');
+  }
+  if (method === 'bindProjectRecipe') {
+    requiredText(value.input, 'projectId'); requiredText(value.input, 'recipeId');
+    if (Object.keys(value.input).some((key) => key !== 'projectId' && key !== 'recipeId')) throw new GotzjiHostError('INVALID_GOTZJI_REQUEST');
+  }
   if (method === 'settleJob' && (!['effect-present', 'no-effect'].includes(String(value.input.decision)) || Object.keys(value.input).some((key) => key !== 'jobId' && key !== 'decision'))) throw new GotzjiHostError('INVALID_GOTZJI_REQUEST');
   if (method === 'prepareOperation') {
     requiredText(value.input, 'projectId');

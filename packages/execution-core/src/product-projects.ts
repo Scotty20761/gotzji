@@ -23,12 +23,22 @@ function fingerprint(filename: string, field = 'dependencies'): FileFingerprint 
 export function reviewedRecipe(registration: ReviewedCommandRegistration): ReviewedCommandRegistration & { readonly timeoutMs: number; readonly executableHash: string; readonly fixedDependencies: readonly FileFingerprint[] } {
   if (!registration || !/^[a-zA-Z0-9_-]{1,64}$/.test(registration.recipeId)) invalid('recipeId', 'A stable server recipe ID is required');
   if (!path.isAbsolute(registration.executable) || !Array.isArray(registration.args) || registration.args.some((arg) => typeof arg !== 'string' || arg.includes('\0'))) invalid('recipe', 'Use a trusted executable and argument array');
+  if (/^[\\/]{2}/u.test(registration.executable)) invalid('executable', 'Use an executable on a local disk, not a network path');
   if (!Array.isArray(registration.dependencies) || registration.dependencies.some((item) => typeof item !== 'string' || (!path.isAbsolute(item) && !item.startsWith('${projectRoot}')))) invalid('dependencies', 'Declare every reviewed script/config dependency as an absolute path or projectRoot template');
   const executable = filesystem('executable', () => realpathSync(registration.executable));
+  if (/^[\\/]{2}/u.test(executable)) invalid('executable', 'Use an executable on a local disk, not a network path');
   const timeoutMs = registration.timeoutMs ?? 120000;
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 7200000) invalid('timeoutMs', 'Use a budget between 100 ms and two hours');
   const fixedDependencies = registration.dependencies.filter((item) => !item.includes('${projectRoot}')).map((item) => fingerprint(item));
-  for (const arg of registration.args) if ((path.isAbsolute(arg) || arg.startsWith('${projectRoot}')) && !registration.dependencies.includes(arg) && (arg.includes('${projectRoot}') || existsSync(arg))) invalid('dependencies', 'Declare file arguments in dependencies');
+  if (fixedDependencies.some((entry) => /^[\\/]{2}/u.test(entry.path))) invalid('dependencies', 'Pin files on a local disk, not a network path');
+  // A file the command is given must be declared: absolute and projectRoot paths are dependencies, and a relative or
+  // `--option=path` file is refused, because it would run project bytes that no dependency names.
+  for (const arg of registration.args) for (const candidate of [/^-[^=]*=/u.test(arg) ? arg.slice(arg.indexOf('=') + 1) : arg]) {
+    // On Windows one leading slash names a switch (`/c`, `/p:Configuration=Release`) unless it is an existing file.
+    if (process.platform === 'win32' && /^\/[^\\/]/u.test(candidate) && !existsSync(candidate)) continue;
+    if (path.isAbsolute(candidate) || candidate.startsWith('${projectRoot}')) { if (!registration.dependencies.includes(candidate)) invalid('dependencies', 'Declare file arguments in dependencies'); }
+    else if (!candidate.includes('://') && (/[\\/]/u.test(candidate) || /\.(?:py|pyw|ps1|psm1|bat|cmd|js|mjs|cjs|ts|sh|rb|pl)$/iu.test(candidate))) invalid('args', 'Write project files as ${projectRoot}/… and declare them in dependencies');
+  }
   return { ...registration, executable, args: [...registration.args], dependencies: [...registration.dependencies], timeoutMs, executableHash: hash(filesystem('executable', () => readFileSync(executable))), fixedDependencies };
 }
 export function registeredProject(owner: string, registration: ProjectRegistration): RegisteredProject {
@@ -75,7 +85,7 @@ export function assertOutsidePrivateRuntime(target: string, privateRoots: readon
   const normalized=path.resolve(target).toLowerCase();
   for(const root of privateRoots){const protectedRoot=path.resolve(root).toLowerCase();const relative=path.relative(protectedRoot,normalized);if(!relative||(!relative.startsWith('..')&&!path.isAbsolute(relative)))throw new CoreError('PRIVATE_RUNTIME_SCOPE_DENIED','Server authority/config/receipt files are outside project file operations','path','authority','Select an ordinary project file');}
 }
-export function productOperation(project: RegisteredProject, input: BasicProductOperationInput, recipe?: ReturnType<typeof reviewedRecipe>, options: { readonly privateRuntimeRoots?: readonly string[] } = {}): ProductOperation {
+export function productOperation(project: RegisteredProject, input: BasicProductOperationInput, recipe?: ReturnType<typeof reviewedRecipe>, options: { readonly privateRuntimeRoots?: readonly string[]; readonly boundRecipeIds?: readonly string[] } = {}): ProductOperation {
   if (!input || !/^[a-zA-Z0-9_-]{1,100}$/.test(input.requestId)) invalid('requestId', 'Use 1–100 letters, digits, underscores or hyphens');
   if (input.projectId !== project.projectId) invalid('projectId', 'Select an enrolled project');
   if (!['file.read','file.write','command.run'].includes(input.operation)) invalid('operation', 'Select an available operation');
@@ -86,7 +96,8 @@ export function productOperation(project: RegisteredProject, input: BasicProduct
   if (input.dependsOn && (!Array.isArray(input.dependsOn) || input.dependsOn.length > 8 || input.dependsOn.some((id) => !/^[a-f0-9]{64}$/.test(id)) || new Set(input.dependsOn).size !== input.dependsOn.length)) invalid('dependsOn', 'Select up to eight unique existing owned jobs');
   if (filesystem('rootPath', () => realpathSync(project.rootPath)) !== project.rootPath) throw new CoreError('PROJECT_ROOT_CHANGED', undefined, 'rootPath');
   if (input.operation === 'command.run') {
-    if (!recipe || !project.recipeIds.includes(recipe.recipeId) || input.commandId !== recipe.recipeId) invalid('commandId', 'Only enrolled immutable server recipes can run');
+    // Owner bindings add recipes without rewriting the project registration that every prepared job embeds.
+    if (!recipe || ![...project.recipeIds, ...(options.boundRecipeIds ?? [])].includes(recipe.recipeId) || input.commandId !== recipe.recipeId) invalid('commandId', 'Only enrolled immutable server recipes can run');
     const substitute = (item: string): string => item.replaceAll('${projectRoot}', project.rootPath);
     const dependencies = recipe.dependencies.map((item) => fingerprint(substitute(item)));
     for (const previous of recipe.fixedDependencies) if (!dependencies.some((entry) => entry.path === previous.path && entry.hash === previous.hash)) throw new CoreError('COMMAND_DEPENDENCIES_CHANGED', 'A reviewed fixed script/config changed; enroll a new trusted recipe', 'commandId', 'recipe', 'Have the host review the changed dependency');

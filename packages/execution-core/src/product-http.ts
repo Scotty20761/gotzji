@@ -20,7 +20,7 @@ export const PRODUCT_MCP_TOOLS = [
   { name: 'gotzji_resume', method: 'resume', readOnly: false, description: 'Inspect and resume a selected admitted job without submitting it again.' },
   { name: 'gotzji_cancel', method: 'cancel', readOnly: false, description: 'Cancel only the explicitly selected owner job and inspect its termination result.' },
 ] as const;
-const ALLOWED_APP_METHODS = new Set(['health', 'registerProject', 'listProjects', 'catalog', 'prepareOperation', 'submit', 'list', 'inspectQueue', 'reprioritize', 'status', 'logs', 'result', 'cancel', 'settleJob', 'resume', 'connectionStatus', 'configureConnection', 'startConnection', 'stopConnection', 'startBrowserSession', 'browserSession', 'stopBrowserSession', 'authorizeLibraryDelivery', 'enrollLibraryChannel', 'libraryChannelStatus', 'configureLibraryConnection', 'startLibraryConnection', 'stopLibraryConnection', 'testOnlyE2eShutdown']);
+const ALLOWED_APP_METHODS = new Set(['health', 'registerProject', 'registerRecipe', 'bindProjectRecipe', 'listProjects', 'catalog', 'prepareOperation', 'submit', 'list', 'inspectQueue', 'reprioritize', 'status', 'logs', 'result', 'cancel', 'settleJob', 'resume', 'connectionStatus', 'configureConnection', 'startConnection', 'stopConnection', 'startBrowserSession', 'browserSession', 'stopBrowserSession', 'authorizeLibraryDelivery', 'enrollLibraryChannel', 'libraryChannelStatus', 'configureLibraryConnection', 'startLibraryConnection', 'stopLibraryConnection', 'testOnlyE2eShutdown']);
 type Schema = Record<string, unknown>;
 const text = { type: 'string', minLength: 1 };
 const priority = { type: 'integer', minimum: 0, maximum: 3 };
@@ -64,6 +64,8 @@ export function productControlSchema(method: string): Schema {
     return { oneOf: [...basic, ...browser, ...library] };
   }
   if (method === 'registerProject') return objectSchema({ projectId: { ...text, pattern: '^[a-zA-Z0-9_-]{1,64}$' }, displayName: { ...text, maxLength: 200 }, rootPath: text, kind: { type: 'string', enum: ['project', 'library'] }, recipeIds: { type: 'array', uniqueItems: true, items: { type: 'string', pattern: '^[a-zA-Z0-9_-]{1,64}$' } } }, ['projectId', 'displayName', 'rootPath']);
+  if (method === 'registerRecipe') return objectSchema({ recipeId: { ...text, pattern: '^[a-zA-Z0-9_-]{1,64}$' }, displayName: { ...text, maxLength: 200 }, executable: { ...text, maxLength: 4096 }, args: { type: 'array', maxItems: 64, items: { type: 'string', maxLength: 4096 } }, dependencies: { type: 'array', maxItems: 64, items: { ...text, maxLength: 4096 } }, timeoutMs: { type: 'integer', minimum: 100, maximum: 7200000 } }, ['recipeId', 'executable', 'args', 'dependencies']);
+  if (method === 'bindProjectRecipe') return objectSchema({ projectId: text, recipeId: { ...text, pattern: '^[a-zA-Z0-9_-]{1,64}$' } }, ['projectId', 'recipeId']);
   if (method === 'submit') return objectSchema({ preparationId: text }, ['preparationId']);
   if (method === 'reprioritize') return objectSchema({ jobId: text, priority }, ['jobId', 'priority']);
   if (['status', 'result', 'cancel', 'resume'].includes(method)) return objectSchema({ jobId: text }, ['jobId']);

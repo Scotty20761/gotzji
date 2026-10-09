@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState, type ReactElement } from 'react';
 import type { GotzjiHostStatus, GotzjiMethod } from '@lnwjud/ipc-contracts';
 import './gotzji.css';
 import { buildNativeFormInput, nativeFormFields } from './gotzji-native-form.js';
+import { EMPTY_RECIPE_FORM, recipeRequest, recipeReviewLines, type RecipeForm } from './gotzji-recipe-form.js';
 import { GotzjiConnectionPanel } from './GotzjiConnectionPanel.js';
 import { GotzjiStartupPanel } from './GotzjiStartupPanel.js';
 import { GotzjiBrowserPanel } from './GotzjiBrowserPanel.js';
@@ -38,6 +39,9 @@ export function GotzjiApp(): ReactElement {
   const [workflowParameters, setWorkflowParameters] = useState('{"paths":"[\\"README.md\\"]"}');
   const [browserValues, setBrowserValues] = useState({ selector: 'h1', text: '', postSelector: 'h1', expectedPostText: '', url: '', steps: '[]' });
   const [deliveryScope, setDeliveryScope] = useState('commit');
+  const [recipeForm, setRecipeForm] = useState<RecipeForm>(EMPTY_RECIPE_FORM);
+  const [recipeReview, setRecipeReview] = useState<readonly string[]>([]);
+  const [recipeBinding, setRecipeBinding] = useState({ projectId: '', recipeId: '' });
   const [preparationId, setPreparationId] = useState<string | null>(null);
   const [requestId, setRequestId] = useState<string | null>(null);
   const [nativeValues, setNativeValues] = useState<Readonly<Record<string, string>>>({ paragraph: '1', slide: '1', x: '0', y: '0', z: '0' });
@@ -157,7 +161,19 @@ export function GotzjiApp(): ReactElement {
             <input type="checkbox" disabled={busy} checked={selectedRecipes.includes(String(recipe.recipeId))} onChange={(event) => setSelectedRecipes((previous) => event.target.checked ? [...previous, String(recipe.recipeId)] : previous.filter((id) => id !== recipe.recipeId))} />{String(recipe.description)}</label>)}</fieldset>}
           <button disabled={busy || !registration.projectId || !registration.rootPath || !registration.displayName}
             onClick={() => void act(async () => { await request('registerProject', { ...registration, kind: projectKind, recipeIds: selectedRecipes }); await refresh(); setProjectId(registration.projectId); })}>ลงทะเบียน</button>
-          <label>ประเภทโครงการ<select value={projectKind} disabled={busy} onChange={(event) => setProjectKind(event.target.value as 'project' | 'library')}><option value="project">โครงการทั่วไป</option><option value="library">Library ที่มีข้อกำหนดและดัชนี</option></select></label></section></>}
+          <label>ประเภทโครงการ<select value={projectKind} disabled={busy} onChange={(event) => setProjectKind(event.target.value as 'project' | 'library')}><option value="project">โครงการทั่วไป</option><option value="library">Library ที่มีข้อกำหนดและดัชนี</option></select></label></section>
+        <section><h3>คำสั่งที่เจ้าของตรวจแล้ว</h3><p>คำสั่งนี้รันโปรแกรมที่เลือกด้วยสิทธิ์ของคุณ Grace เลือกได้เฉพาะคำสั่งที่ผูกกับโครงการ และใส่อาร์กิวเมนต์เองไม่ได้ ไฟล์ที่เขียนเป็น {'${projectRoot}/…'} จะตรึงค่าตอนเริ่มงานแต่ละครั้ง ซึ่ง Grace แก้ไฟล์ในโครงการได้ ถ้าต้องการตรึงสคริปต์ไว้ตั้งแต่ตอนอนุมัติ ให้ใช้ path เต็มนอกโครงการ อย่าใส่ path ในชื่อคำสั่ง เพราะ Grace เห็นชื่อนี้ PowerShell ให้ใส่ -NoProfile -NonInteractive -ExecutionPolicy Bypass -File และ python แนะนำ -I</p>
+          {(['recipeId', 'displayName', 'executable', 'timeoutMinutes'] as const).map((field) => <label key={field}>{field === 'recipeId' ? 'รหัสคำสั่ง' : field === 'displayName' ? 'ชื่อที่ Grace เห็น' : field === 'executable' ? 'โปรแกรม (path เต็ม)' : 'เวลาสูงสุด (นาที)'}
+            <input disabled={busy} value={recipeForm[field]} onChange={(event) => setRecipeForm({ ...recipeForm, [field]: event.target.value })} /></label>)}
+          {(['args', 'dependencies'] as const).map((field) => <label key={field}>{field === 'args' ? 'อาร์กิวเมนต์ (บรรทัดละหนึ่ง)' : 'ไฟล์ที่คำสั่งใช้ (บรรทัดละหนึ่ง)'}
+            <textarea disabled={busy} value={recipeForm[field]} onChange={(event) => setRecipeForm({ ...recipeForm, [field]: event.target.value })} /></label>)}
+          <button disabled={busy || !recipeForm.recipeId || !recipeForm.executable} onClick={() => void act(async () => { setRecipeReview(recipeReviewLines(await request('registerRecipe', { ...recipeRequest(recipeForm) }))); await refresh(); })}>อนุมัติคำสั่งนี้</button>
+          {recipeReview.length > 0 && <pre>{recipeReview.join('\n')}</pre>}
+          <label>ผูกกับโครงการ<select disabled={busy} value={recipeBinding.projectId} onChange={(event) => setRecipeBinding({ ...recipeBinding, projectId: event.target.value })}><option value="">เลือกโครงการ</option>
+            {projects.filter((project) => project.kind !== 'library').map((project) => <option key={String(project.projectId)} value={String(project.projectId)}>{String(project.displayName)}</option>)}</select></label>
+          <label>คำสั่ง<select disabled={busy} value={recipeBinding.recipeId} onChange={(event) => setRecipeBinding({ ...recipeBinding, recipeId: event.target.value })}><option value="">เลือกคำสั่ง</option>
+            {recipes.map((recipe) => <option key={String(recipe.recipeId)} value={String(recipe.recipeId)}>{String(recipe.description ?? recipe.recipeId)}</option>)}</select></label>
+          <button disabled={busy || !recipeBinding.projectId || !recipeBinding.recipeId} onClick={() => void act(async () => { await request('bindProjectRecipe', recipeBinding); await refresh(); })}>เพิ่มคำสั่งให้โครงการ</button></section></>}
       {page === 'tools' && <><section><h3>เครื่องมือ</h3><table><thead><tr><th>เครื่องมือ</th><th>สถานะ</th><th>รายละเอียด</th></tr></thead><tbody>{catalog.map((item) =>
         <tr key={`${item.name}:${item.projectId ?? ''}:${item.workflowId ?? ''}:${item.workflowVersion ?? ''}`}><td>{String(item.workflowId ?? item.name)}</td><td>{item.state === 'available' ? 'พร้อมใช้งาน' : 'ยังไม่พร้อม'}</td><td>{String(item.reason ?? item.description ?? '')}</td></tr>)}</tbody></table></section>
         <GotzjiBrowserPanel projectId={projectId} disabled={host?.state !== 'ready'} onChanged={refresh} />
