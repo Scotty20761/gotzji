@@ -5,7 +5,7 @@ import type { ExecutionCore } from './core.js';
 import { GotzjiConnectionService, type ProductConnectionStatus } from './product-connection.js';
 import { productControlSchema, startProductHttp } from './product-http.js';
 import { windowsProductSecretProtector, type ProductSecretProtector } from './product-host.js';
-import { CoreError, type JobView, type TaskBinding } from './types.js';
+import { CoreError, type TaskBinding } from './types.js';
 
 interface ChannelConfiguration { schemaVersion: 1; ownerId: string; credential: string; mcpPathSecret: string; projectIds: string[] }
 export interface LibraryChannelOptions { readonly directory: string; readonly ownerId: string; readonly primaryCredential: string; readonly core: ExecutionCore; readonly version: string; readonly allowWork: () => boolean; readonly tunnel?: { readonly executable: string; readonly executableSha256: string }; readonly protector?: ProductSecretProtector }
@@ -55,7 +55,7 @@ export class ProductLibraryChannel {
     if (this.options.allowWork()) {
       this.options.core.ensureAdapterEnrollment('lnwjud-library', this.options.ownerId, config.credential);
       for (const projectId of config.projectIds) this.options.core.enrollLibraryRoute(config.credential, { projectId, route: 'lnwjud-library' });
-    } else await this.options.core.list(config.credential);
+    } else await this.options.core.list(config.credential, { limit: 1 });
     const controls = new Set(['health', 'list', 'inspectQueue', 'status', 'logs', 'result', 'cancel']);
     const schema = (method: string): Record<string, unknown> => {
       const value = productControlSchema(method);
@@ -72,7 +72,7 @@ export class ProductLibraryChannel {
         case 'catalog': return this.options.core.catalog(config.credential).filter((entry) => entry.name === 'library.workflow' && this.config!.projectIds.includes(String(entry.projectId)));
         case 'prepareOperation': { if (input.operation !== 'library.workflow' || !this.config!.projectIds.includes(String(input.projectId))) throw new CoreError('LIBRARY_ROUTE_AUTHORITY_DENIED'); const preparation = await this.options.core.prepareOperation(config.credential, input as never); this.preparationIds.add(preparation.preparationId); return preparation; }
         case 'submit': if (!this.preparationIds.has(String(input.preparationId))) throw new CoreError('LIBRARY_PREPARATION_RESELECT_REQUIRED'); return this.options.core.submit(config.credential, String(input.preparationId));
-        case 'list': return this.jobs();
+        case 'list': return this.options.core.list(config.credential, { ...(input.limit === undefined ? {} : { limit: Number(input.limit) }), ...(input.before === undefined ? {} : { before: String(input.before) }), operation: 'library.workflow', projectIds: this.config!.projectIds });
         case 'inspectQueue': return (await this.options.core.inspectQueue(config.credential)).filter((entry) => entry.requestedOperation === 'library.workflow' && this.config!.projectIds.includes(entry.projectId ?? ''));
         case 'reprioritize': await this.binding(String(input.jobId)); return this.options.core.reprioritize(config.credential, input as never);
         case 'status': return this.options.core.get(config.credential, await this.binding(String(input.jobId)));
@@ -87,8 +87,11 @@ export class ProductLibraryChannel {
     writeFileSync(path.join(this.options.directory, 'product-lnwjud-library-endpoint.json'), JSON.stringify({ body, mac: createHmac('sha256', config.credential).update(body).digest('hex') }), { mode: 0o600 });
     if (this.options.tunnel) { this.connection = new GotzjiConnectionService({ directory: this.options.directory, ownerId: this.options.ownerId, ...this.options.tunnel, channel: 'lnwjud-library', mcpTarget: (): string => `http://127.0.0.1:${this.listener!.port}/mcp/${config.mcpPathSecret}` }); if (this.options.allowWork()) await this.connection.restore(); }
   }
-  private async jobs(): Promise<readonly JobView[]> { return (await this.options.core.list(this.config!.credential)).filter((entry) => entry.requestedOperation === 'library.workflow' && this.config!.projectIds.includes(entry.projectId ?? '')); }
-  private async binding(jobId: string): Promise<TaskBinding> { const job = (await this.jobs()).find((entry) => entry.jobId === jobId); if (!job?.projectId) throw new CoreError('LIBRARY_ROUTE_AUTHORITY_DENIED'); return this.options.core.selectLibraryJob(this.config!.credential, job.projectId, jobId); }
+  /** A job of this channel's projects, found directly rather than in a page of jobs, so older jobs stay reachable. */
+  private async binding(jobId: string): Promise<TaskBinding> {
+    for (const projectId of this.config!.projectIds) { try { return this.options.core.selectLibraryJob(this.config!.credential, projectId, jobId); } catch { /* not this project's Library job */ } }
+    throw new CoreError('LIBRARY_ROUTE_AUTHORITY_DENIED');
+  }
   private statePath(): string { return path.join(this.options.directory, 'product-lnwjud-library.sealed.json'); }
   private async save(config: ChannelConfiguration): Promise<void> { const candidate = `${this.statePath()}.${randomUUID()}.tmp`; writeFileSync(candidate, JSON.stringify({ schemaVersion: 1, payload: await this.protector.protect(JSON.stringify(config)) }), { flag: 'wx', mode: 0o600 }); renameSync(candidate, this.statePath()); }
   private serial<T>(action: () => Promise<T>): Promise<T> { const promise = this.mutation.then(action); this.mutation = promise.catch(() => undefined); return promise; }

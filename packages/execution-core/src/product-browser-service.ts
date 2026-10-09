@@ -85,7 +85,7 @@ export class ProductBrowserService {
   }
   public projection(): unknown { return this.current ? this.project() : { state: 'not-enrolled' }; }
   private project(): unknown { return this.current ? { state: this.current.stopPhase ? 'stopping' : 'ready', projectId: this.current.projectId, ...this.current.enrollment.publicBinding } : { state: 'not-enrolled' }; }
-  private async busy(): Promise<boolean> { return (await this.options.core.list(this.options.credential)).some((entry) => entry.requestedOperation?.startsWith('browser.') && !['completed', 'cancelled', 'failed'].includes(entry.status)); }
+  private async busy(): Promise<boolean> { return (await this.options.core.activeJobs(this.options.credential)).some((entry) => entry.requestedOperation?.startsWith('browser.') && !['completed', 'cancelled', 'failed'].includes(entry.status)); }
   private async save(projectId: string, enrollment: TrustedProductBrowserEnrollment): Promise<void> {
     const { verifyOwnedSession: _verify, ...options } = enrollment.options; void _verify;
     await this.protectedWrite({ schemaVersion: 1, ownerId: this.options.ownerId, projectId, options, publicBinding: enrollment.publicBinding });

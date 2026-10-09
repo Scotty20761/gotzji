@@ -56,7 +56,7 @@ catch (error) {
   }
 }
 if (!startupControlOnly) core.ensureAdapterEnrollment('gotzji-product', config.ownerId, config.credential);
-else core.list(config.credential); // Verify the retained owner credential before exposing controls.
+else core.list(config.credential, { limit: 1 }); // Verify the retained owner credential before exposing controls.
 let authorityPersistence;
 if (!startupControlOnly) {
   config = { ...config, authority: core.authority() };
@@ -138,7 +138,7 @@ const listener = await startProductHttp({ token: config.daemonSecret, mcpPathSec
     // Only the owner's app may start a delivery command (incident I5); every other surface prepares as Grace.
     case 'prepareOperation': return core.prepareOperation(credential, input, { ownerRun: surface === 'app' });
     case 'submit': return core.submit(credential, input.preparationId);
-    case 'list': return core.list(credential);
+    case 'list': return core.list(credential, surface === 'app' ? input : { limit: 25, ...input });
     case 'inspectQueue': return core.inspectQueue(credential);
     case 'supportReport': if (surface !== 'app') throw new CoreError('SUPPORT_REPORT_DENIED'); return core.supportReport(credential, hostMetrics());
     case 'reprioritize': return core.reprioritize(credential, input);

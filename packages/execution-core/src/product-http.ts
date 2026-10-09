@@ -11,7 +11,7 @@ export const PRODUCT_MCP_TOOLS = [
   { name: 'gotzji_tools', method: 'catalog', readOnly: true, description: 'List typed operations and provider readiness.' },
   { name: 'gotzji_prepare_operation', method: 'prepareOperation', readOnly: false, description: 'Prepare a typed Grace-controlled file, reviewed command, native object or registered Library workflow in an enrolled project.' },
   { name: 'gotzji_submit', method: 'submit', readOnly: false, description: 'Submit a prepared request and return its durable job identity promptly.' },
-  { name: 'gotzji_jobs', method: 'list', readOnly: true, description: 'List this owner’s jobs; select the intended job explicitly.' },
+  { name: 'gotzji_jobs', method: 'list', readOnly: true, description: 'List this owner’s newest jobs (25 by default, up to 500); pass before = the last jobId to page back. Select the intended job explicitly.' },
   { name: 'gotzji_queue', method: 'inspectQueue', readOnly: true, description: 'Inspect queue order and the selected owner’s blocking resources, jobs and dependencies.' },
   { name: 'gotzji_reprioritize', method: 'reprioritize', readOnly: false, description: 'Change a selected waiting job’s priority without preempting active work.' },
   { name: 'gotzji_status', method: 'status', readOnly: true, description: 'Inspect a selected job without starting or repeating work.' },
@@ -65,6 +65,7 @@ export function productControlSchema(method: string): Schema {
   }
   if (method === 'registerProject') return objectSchema({ projectId: { ...text, pattern: '^[a-zA-Z0-9_-]{1,64}$' }, displayName: { ...text, maxLength: 200 }, rootPath: text, kind: { type: 'string', enum: ['project', 'library'] }, recipeIds: { type: 'array', uniqueItems: true, items: { type: 'string', pattern: '^[a-zA-Z0-9_-]{1,64}$' } } }, ['projectId', 'displayName', 'rootPath']);
   if (method === 'registerRecipe') return objectSchema({ recipeId: { ...text, pattern: '^[a-zA-Z0-9_-]{1,64}$' }, displayName: { ...text, maxLength: 200 }, executable: { ...text, maxLength: 4096 }, args: { type: 'array', maxItems: 64, items: { type: 'string', maxLength: 4096 } }, dependencies: { type: 'array', maxItems: 64, items: { ...text, maxLength: 4096 } }, timeoutMs: { type: 'integer', minimum: 100, maximum: 7200000 }, writeScope: { type: 'string', enum: ['project'] }, delivery: { type: 'boolean', enum: [true] } }, ['recipeId', 'executable', 'args', 'dependencies']);
+  if (method === 'list') return objectSchema({ limit: { type: 'integer', minimum: 1, maximum: 500 }, before: { ...text, pattern: '^[a-f0-9]{64}$' } }, []);
   if (method === 'bindProjectRecipe') return objectSchema({ projectId: text, recipeId: { ...text, pattern: '^[a-zA-Z0-9_-]{1,64}$' } }, ['projectId', 'recipeId']);
   if (method === 'submit') return objectSchema({ preparationId: text }, ['preparationId']);
   if (method === 'reprioritize') return objectSchema({ jobId: text, priority }, ['jobId', 'priority']);

@@ -376,15 +376,42 @@ export class ExecutionCore {
     const operation = productOperation(JSON.parse(String(row.registration)) as RegisteredProject, basic, reviewed,{privateRuntimeRoots:this.privateRuntimeRoots(),boundRecipeIds:this.boundRecipeIds(adapter.owner,basic.projectId)});
     return this.createPreparation(credential, { requestId: input.requestId, operation: 'grace.product-operation', text: JSON.stringify(operation) });
   }
-  public async list(credential: string): Promise<readonly JobView[]> {
+  /**
+   * The owner's newest jobs, one page at a time (incident I8: lnwjud's task list took 10.9 s). `before` is the last job
+   * of the previous page; history no longer slows the newest page.
+   */
+  public async list(credential: string, options: { readonly limit?: number; readonly before?: string; readonly operation?: string; readonly projectIds?: readonly string[] } = {}): Promise<readonly JobView[]> {
     const adapter = this.authorize(credential);
-    const claims = this.#store.database.connection.prepare('SELECT * FROM gotzji_claims WHERE owner=? AND goal_id IS NOT NULL ORDER BY rowid DESC').all(adapter.owner) as unknown as ClaimRow[];
-    return Promise.all(claims.map((claim) => this.view(claim)));
+    const limit = options.limit ?? 100;
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 500) throw new CoreError('INVALID_REQUEST', 'Use a page of 1 to 500 jobs', 'limit', 'request', 'Correct the named field and list again');
+    const database = this.#store.database.connection;
+    const cursor = options.before === undefined ? undefined : database.prepare('SELECT rowid FROM gotzji_claims WHERE id=? AND owner=?').get(options.before, adapter.owner);
+    if (options.before !== undefined && !cursor) throw new CoreError('INVALID_REQUEST', 'Continue from a job in the previous page', 'before', 'request', 'Correct the named field and list again');
+    // Filters are set by trusted callers only (a channel's own jobs); the list schema admits just limit and before.
+    if (options.projectIds?.length === 0) return [];
+    const filters: string[] = []; const values: (string | number)[] = [adapter.owner];
+    if (cursor) { filters.push('c.rowid<?'); values.push(Number(cursor.rowid)); }
+    if (options.operation !== undefined) { filters.push('p.operation=?'); values.push(options.operation); }
+    if (options.projectIds !== undefined) { filters.push(`p.project_id IN (${options.projectIds.map(() => '?').join(',')})`); values.push(...options.projectIds); }
+    const join = options.operation !== undefined || options.projectIds !== undefined ? ' JOIN gotzji_product_jobs p ON p.job_id=c.id' : '';
+    const claims = database.prepare(`SELECT c.* FROM gotzji_claims c${join} WHERE c.owner=? AND c.goal_id IS NOT NULL${filters.map((filter) => ` AND ${filter}`).join('')} ORDER BY c.rowid DESC LIMIT ?`).all(...values, limit) as unknown as ClaimRow[];
+    const positions = this.queuePositions(adapter.owner);
+    return Promise.all(claims.map((claim) => this.view(claim, positions)));
+  }
+  /** Every job that is still active or still holds a writer; bounded by the queue cap and the worker slots. */
+  public async activeJobs(credential: string): Promise<readonly JobView[]> {
+    const adapter = this.authorize(credential);
+    const claims = this.#store.database.connection.prepare("SELECT c.* FROM gotzji_claims c JOIN goals g ON g.id=c.goal_id WHERE c.owner=? AND (g.status='active' OR EXISTS(SELECT 1 FROM gotzji_writers w WHERE w.job_id=c.id)) ORDER BY c.rowid DESC").all(adapter.owner) as unknown as ClaimRow[];
+    const positions = this.queuePositions(adapter.owner);
+    return Promise.all(claims.map((claim) => this.view(claim, positions)));
   }
   public async inspectQueue(credential: string): Promise<readonly JobView[]> {
     const adapter = this.authorize(credential);
-    return Promise.all(this.orderedQueue(adapter.owner).map((claim) => this.view(claim)));
+    const queue = this.orderedQueue(adapter.owner); const positions = new Map(queue.map((claim, index) => [claim.id, index + 1]));
+    return Promise.all(queue.map((claim) => this.view(claim, positions)));
   }
+  /** Queue positions computed once per listing instead of once per job. */
+  private queuePositions(owner: string): ReadonlyMap<string, number> { return new Map(this.orderedQueue(owner).map((claim, index) => [claim.id, index + 1])); }
   /** The owner's support report (incident I8). App-only: the server refuses every other surface. `host` comes from the product server. */
   public async supportReport(credential: string, host: Readonly<Record<string, unknown>> = {}): Promise<SupportReport> {
     const started = performance.now();
@@ -836,7 +863,7 @@ export class ExecutionCore {
     this.#store.database.connection.prepare('UPDATE gotzji_claims SET goal_id=? WHERE id=? AND (goal_id IS NULL OR goal_id=?)').run(goal.goalId, claim.id, goal.goalId);
     return goal;
   }
-  private async view(claim: ClaimRow): Promise<JobView> {
+  private async view(claim: ClaimRow, positions?: ReadonlyMap<string, number>): Promise<JobView> {
     this.assertAuthority();
     const goal = await this.snapshot(claim);
     const operation = this.#store.operation(claim.id);
@@ -858,7 +885,7 @@ export class ExecutionCore {
     const progress = run ?? nativeProgress;
     const result: JobView = { jobId: claim.id, status, revision: goal.revision, operation: this.#store.input(claim).operation, evidenceDigest: operation?.receipt ? hash(operation.receipt) : null, curation: 'explicit-only', deliveryBoundary:'local', ...(product ? { projectId: String(product.project_id), requestedOperation: String(product.operation) as ProductOperationInput['operation'], ...(product.waiting_reason ? { waitingReason: String(product.waiting_reason) } : {}) } : {}), ...(progress?{progress:{runId:progress.runId,state:progress.state,elapsedMs:progress.elapsedMs,checks:progress.checks,lastProgressAt:progress.lastProgressAt}}:{}), ...(diagnostic ? {blockerCode:String(diagnostic.code)} : expired ? {blockerCode:'LEASE_RECOVERY_REQUIRED'} : {}) };
     const queued = product ? this.#store.database.connection.prepare('SELECT priority FROM gotzji_queue WHERE job_id=?').get(claim.id) : undefined;
-    const position = product && status === 'queued' ? this.orderedQueue(claim.owner).findIndex((entry) => entry.id === claim.id) + 1 : 0;
+    const position = product && status === 'queued' ? (positions ? positions.get(claim.id) ?? 0 : this.orderedQueue(claim.owner).findIndex((entry) => entry.id === claim.id) + 1) : 0;
     const projected: JobView = { ...result, requestId: claim.request_id, ...(goal.terminalSummary ? { summary: goal.terminalSummary } : {}), ...(waitingForProvider ? { status: 'blocked', blockerCode: 'GRACE_ACCOUNT_LIMIT', waitingReason: 'PROVIDER_LIMIT', ...(providerLimit.retry_at === null ? {} : { retryAt: new Date(Number(providerLimit.retry_at)).toISOString() }) } : {}), ...(claim.policy !== this.#policy && goal.status === 'active' ? { status: 'blocked', blockerCode: 'POLICY_RECONCILIATION_REQUIRED' } : {}), ...(queued ? { priority: Number(queued.priority), ...(position ? { queuePosition: position } : {}) } : {}), ...(product?.blocking_resource ? { blockingResource: String(product.blocking_resource) } : {}), ...(product?.blocking_job ? { blockingJob: String(product.blocking_job) } : {}), ...(product?.blocking_dependency ? { blockingDependency: String(product.blocking_dependency) } : {}) };
     return projected.status === 'blocked' && !this.settleRefusal(claim, 'blocked', goal.status === 'active') ? { ...projected, settleDecisions: goal.status === 'completed' ? ['effect-present'] : ['effect-present', 'no-effect'] } : projected;
   }

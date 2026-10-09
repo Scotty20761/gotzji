@@ -153,7 +153,7 @@ export function GotzjiApp(): ReactElement {
       {error !== null && <div role="alert" className="gotzji-error">{error}<button onClick={() => setError(null)}>ปิด</button></div>}
       {page === 'home' && <><section><h3>ระบบควบคุม</h3><p>{host?.state === 'ready' ? 'ระบบพร้อมรับงาน · Grace ควบคุมการทำงาน' : host?.state === 'control-only' ? 'ดูผลและยกเลิกงานเดิมได้ · ต้องตรวจระบบก่อนเริ่มงานใหม่' : 'กำลังรอระบบ'}</p>
         {host?.errorCode && <p>{host.errorCode}</p>}{host?.action && <p>{host.action}</p>}<p>งานที่เริ่มแล้วมีประวัติแยกกัน เปิดกลับมาดูและควบคุมได้จากประวัติงาน</p></section>
-        <section><h3>งานทั้งหมด {jobs.length}</h3><JobList jobs={jobs} disabled={busy} select={(id) => { setJobId(id); setPage('worklog'); }} /></section><GotzjiConnectionPanel disabled={host?.state !== 'ready'} /></>}
+        <section><h3>งานล่าสุด {jobs.length} งาน</h3><JobList jobs={jobs} disabled={busy} select={(id) => { setJobId(id); setPage('worklog'); }} /></section><GotzjiConnectionPanel disabled={host?.state !== 'ready'} /></>}
       {page === 'projects' && <><section><h3>โครงการที่ลงทะเบียน</h3>{projects.map((project) => <button disabled={busy} key={String(project.projectId)}
         onClick={() => { setProjectId(String(project.projectId)); setPage('tools'); }}>{String(project.displayName)} · {String(project.rootPath)}</button>)}</section>
         <section><h3>เพิ่มโครงการ</h3>{(['projectId', 'displayName', 'rootPath'] as const).map((field) => <label key={field}>{field === 'projectId' ? 'รหัสโครงการ' : field === 'displayName' ? 'ชื่อโครงการ' : 'โฟลเดอร์โครงการ'}

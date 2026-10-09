@@ -5,12 +5,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ProductBrowserService } from './product-browser-service.js';
 import type { ExecutionCore } from './core.js';
 import type { TrustedProductBrowserEnrollment } from './product-browser.js';
-import type { RegisteredProject } from './types.js';
+import type { JobView, RegisteredProject } from './types.js';
 
 const broker = vi.hoisted(() => ({ create: vi.fn(), verify: vi.fn(async () => true) }));
 vi.mock('./product-browser-broker.mjs', () => ({ createTrustedProductBrowserEnrollment: broker.create, verifyOwnedProductBrowserSession: broker.verify }));
 const roots: string[] = [];
-async function fixture(): Promise<{ service: ProductBrowserService; stop: ReturnType<typeof vi.fn>; clear: ReturnType<typeof vi.fn>; protect: ReturnType<typeof vi.fn>; stored: () => Promise<unknown>; order: string[] }> {
+async function fixture(): Promise<{ service: ProductBrowserService; stop: ReturnType<typeof vi.fn>; clear: ReturnType<typeof vi.fn>; protect: ReturnType<typeof vi.fn>; active: ReturnType<typeof vi.fn>; stored: () => Promise<unknown>; order: string[] }> {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'gotzji-browser-service-')); roots.push(directory);
   const order: string[] = [];
   const stop = vi.fn(async () => { order.push('stop'); return { stopped: true as const, pid: 101 }; });
@@ -21,16 +21,24 @@ async function fixture(): Promise<{ service: ProductBrowserService; stop: Return
   broker.create.mockResolvedValue(enrollment);
   // The service uses only these four Core methods; this test isolates sequencing, not native browser ownership.
   const project: RegisteredProject = { projectId: 'project', owner: 'owner', displayName: 'Fixture', rootPath: directory, resourceKey: 'fixture-project', recipeIds: [] };
-  const core: Pick<ExecutionCore, 'listProjects' | 'enrollBrowserSession' | 'list' | 'clearBrowserSession'> = { listProjects: () => [project], enrollBrowserSession: async () => undefined, list: async () => [], clearBrowserSession: clear };
+  const active = vi.fn(async (): Promise<readonly JobView[]> => []);
+  const core: Pick<ExecutionCore, 'listProjects' | 'enrollBrowserSession' | 'activeJobs' | 'clearBrowserSession'> = { listProjects: () => [project], enrollBrowserSession: async () => undefined, activeJobs: active, clearBrowserSession: clear };
   const protect = vi.fn(async (value: string): Promise<string> => value);
   const service = new ProductBrowserService({ directory, ownerId: 'owner', credential: 'credential', executable: 'fixture', executableSha256: 'hash', prerequisite: { path: 'fixture', hash: 'hash' }, core: core as ExecutionCore, protector: { protect, unprotect: async (value: string): Promise<string> => value } });
   await service.start({ projectId: 'project', startUrl: 'https://example.com/' });
   const stored = async (): Promise<unknown> => JSON.parse(JSON.parse(await readFile(path.join(directory, 'product-browser.sealed.json'), 'utf8')).payload);
-  return { service, stop, clear, protect, stored, order };
+  return { service, stop, clear, protect, active, stored, order };
 }
 afterEach(async () => { vi.clearAllMocks(); for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
 
 describe('browser service termination authority', () => {
+  it('refuses to stop while a browser job is still active, before touching the provider', async () => {
+    const f = await fixture();
+    f.active.mockResolvedValueOnce([{ jobId: 'job', status: 'running', requestedOperation: 'browser.navigate' } as unknown as JobView]);
+    await expect(f.service.stop('project')).rejects.toMatchObject({ code: 'BROWSER_SESSION_HAS_RETAINED_JOBS' });
+    expect(f.stop).not.toHaveBeenCalled(); expect(f.clear).not.toHaveBeenCalled();
+  });
+
   it('keeps enrollment and sealed state when stop fails, then retries that same session', async () => {
     const f = await fixture(); const before = await f.stored();
     f.stop.mockRejectedValueOnce(Object.assign(new Error('unverified'), { code: 'BROWSER_TERMINATION_UNVERIFIED' }));
