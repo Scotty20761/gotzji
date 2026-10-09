@@ -473,7 +473,9 @@ describe('governed product operations — real native Goal, file and process sea
     await until(f, async () => (await f.core.get(f.credential, binding)).status === 'completed');
     expect((await f.core.get(f.credential, binding)).jobId).toBe(binding.jobId);
     expect(await f.core.readOperationResult(f.credential, binding)).toMatchObject({ output: { content: 'Original\r\nภาษาไทย\r\n' } });
-    expect(db.prepare('SELECT COUNT(*) AS count FROM gotzji_worker_history').get()?.count).toBe(1);
+    // One earlier epoch (the provider wait); the finished job's own worker is retired with its row kept (incident I8).
+    expect(db.prepare('SELECT COUNT(*) AS count FROM gotzji_worker_history h WHERE NOT EXISTS(SELECT 1 FROM gotzji_workers w WHERE w.epoch=h.epoch)').get()?.count).toBe(1);
+    expect(db.prepare('SELECT COUNT(*) AS count FROM gotzji_worker_history h JOIN gotzji_workers w ON w.epoch=h.epoch').get()?.count).toBe(1);
     expect(db.prepare('SELECT status FROM goals').get()?.status).toBe('completed'); db.close();
   }, 15000);
   it('upgrades an anchored quiescent predecessor store and rolls policy back without rewriting job intent or result', async () => {

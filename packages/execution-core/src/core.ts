@@ -90,10 +90,11 @@ export class ExecutionCore {
       now,
       taskStateReader: { read: async (_workspaceId, task): Promise<'running' | 'terminal' | 'absent' | 'unknown'> => {
         const epoch = typeof task === 'string' ? task : task.taskId;
-        const row = this.#store.database.connection.prepare('SELECT * FROM gotzji_workers WHERE epoch=?').get(epoch) as unknown as WorkerRow | undefined;
-        if (row) return observeWorker(row);
+        // A retired epoch is terminal even while its row is kept (incident I8) and after retention prunes its files.
         const retired = this.#store.database.connection.prepare('SELECT reason FROM gotzji_worker_history WHERE epoch=?').get(epoch);
-        return retired && ['stopped','not_launched'].includes(String(retired.reason)) ? 'terminal' : 'unknown';
+        if (retired && ['stopped','absent','not_launched'].includes(String(retired.reason))) return 'terminal';
+        const row = this.#store.database.connection.prepare('SELECT * FROM gotzji_workers WHERE epoch=?').get(epoch) as unknown as WorkerRow | undefined;
+        return row ? observeWorker(row) : 'unknown';
       } },
     });
     this.#service = new GoalContinuationService(workspaces, this.#goals, {
@@ -136,6 +137,7 @@ export class ExecutionCore {
       }
     }
     const workspaces = new SqliteWorkspaceRepository(core.#store.database);
+    await core.retireFinishedWorkers();
     if (!await workspaces.get(WORKSPACE)) await workspaces.insert({ id: WORKSPACE, displayName: 'Gotzji qualification', rootPath: core.#root, realRootPath: core.#root, createdAt: core.#now().toISOString() });
     return core;
   }
@@ -582,6 +584,8 @@ export class ExecutionCore {
           this.markUncertain(claim.id);
           throw new CoreError('EFFECT_RECONCILIATION_REQUIRED');
         }
+        // Archive before deleting: an unrecorded directory makes the next open refuse with an orphan (I8 review M2).
+        this.#store.archiveWorker(worker, 'absent', this.#now().toISOString());
         this.#store.database.connection.prepare('DELETE FROM gotzji_workers WHERE job_id=?').run(claim.id);
         this.releaseWriter(claim.id, worker.epoch);
       }
@@ -1427,8 +1431,32 @@ export class ExecutionCore {
   }
   private releaseWriter(jobId: string, epoch: string): void {
     const database = this.#store.database.connection; database.exec('BEGIN IMMEDIATE;');
-    try { database.prepare('DELETE FROM gotzji_resource_claims WHERE job_id=? AND epoch=?').run(jobId, epoch); database.prepare('DELETE FROM gotzji_writers WHERE job_id=? AND epoch=?').run(jobId, epoch); database.exec('COMMIT;'); }
+    try { database.prepare('DELETE FROM gotzji_resource_claims WHERE job_id=? AND epoch=?').run(jobId, epoch); database.prepare('DELETE FROM gotzji_writers WHERE job_id=? AND epoch=?').run(jobId, epoch); this.retireWorker(jobId, epoch); database.exec('COMMIT;'); }
     catch (error) { database.exec('ROLLBACK;'); throw error; }
+  }
+  /**
+   * Record that a finished job's worker is stopped (`stopped.json`) or proven gone (incident I8). Every terminal path
+   * releases its writer only after that proof, so the upgrade fence and retention need not wait for a `stopped.json`
+   * a crashed or rebooted worker can never write. The row itself stays for its readers.
+   */
+  private retireWorker(jobId: string, epoch: string): void {
+    const database = this.#store.database.connection;
+    const worker = database.prepare('SELECT * FROM gotzji_workers WHERE job_id=? AND epoch=?').get(jobId, epoch) as unknown as WorkerRow | undefined;
+    if (!worker || database.prepare("SELECT 1 FROM gotzji_claims c JOIN goals g ON g.id=c.goal_id WHERE c.id=? AND g.status='active'").get(jobId)) return;
+    this.#store.archiveWorker(worker, this.stoppedProof(worker) ? 'stopped' : 'absent', this.#now().toISOString());
+  }
+  /** A verified stopped.json; damaged evidence counts as none, so retirement never strands a writer or stops the host starting. */
+  private stoppedProof(worker: WorkerRow): boolean {
+    try { const stopped = signed<{ epoch: string; state: string }>(worker, 'stopped.json'); return stopped?.epoch === worker.epoch && stopped.state === 'cancelled'; }
+    catch { return false; }
+  }
+  /** Retire workers of jobs that finished before retirement was recorded, so the next upgrade is not refused for them. */
+  private async retireFinishedWorkers(): Promise<void> {
+    const workers = this.#store.database.connection.prepare("SELECT w.* FROM gotzji_workers w JOIN gotzji_claims c ON c.id=w.job_id JOIN goals g ON g.id=c.goal_id WHERE g.status<>'active' AND NOT EXISTS(SELECT 1 FROM gotzji_writers x WHERE x.job_id=w.job_id) AND NOT EXISTS(SELECT 1 FROM gotzji_worker_history h WHERE h.epoch=w.epoch)").all() as unknown as WorkerRow[];
+    for (const worker of workers) {
+      const reason = this.stoppedProof(worker) ? 'stopped' : await observeWorker(worker) === 'absent' ? 'absent' : undefined;
+      if (reason) this.#store.archiveWorker(worker, reason, this.#now().toISOString());
+    }
   }
   private recentlyRenewed(worker: WorkerRow): boolean { return this.#now().getTime() - worker.last_renewed < UNOBSERVED_GRACE_MS; }
   private markUncertain(jobId: string): void { this.#store.database.connection.prepare('UPDATE gotzji_operations SET phase=? WHERE job_id=?').run('uncertain', jobId); }
