@@ -99,18 +99,23 @@ export async function stopWorker(worker: WorkerRow): Promise<boolean> {
   const observed = await observeWorker(worker);
   if (observed === 'absent') return true;
   if (observed === 'unknown') return false;
-  try { await callWorker(worker, 'cancel'); } catch { /* Lost response still needs independent exit evidence. */ }
-  return await awaitStoppedOwnership(worker);
+  // A refusal the worker answered needs no long wait. An accepted cancel, or one whose answer was lost, still needs
+  // independent exit evidence and gets time to produce it on a slow machine.
+  let patient = true;
+  try { await callWorker(worker, 'cancel'); } catch (error) { patient = !(error instanceof CoreError); }
+  return await awaitStoppedOwnership(worker, { patient });
 }
 /** The signed worker receipt remains the authority; injected observations only support focused stop-proof tests. */
-export async function awaitStoppedOwnership(worker: WorkerRow, dependencies: { alive?: typeof alive; identities?: typeof processIdentities; delay?: () => Promise<void> } = {}): Promise<boolean> {
+export async function awaitStoppedOwnership(worker: WorkerRow, dependencies: { alive?: typeof alive; identities?: typeof processIdentities; delay?: () => Promise<void>; patient?: boolean } = {}): Promise<boolean> {
   const liveness = dependencies.alive ?? alive;
   const reader = dependencies.identities ?? processIdentities;
   for (let n = 0; n < 100; n++) {
     const stopped = signed<WorkerObservation>(worker, 'stopped.json');
     const entries = stopped ? stoppedEntries(worker, stopped) : undefined;
     if (entries && entries.every((entry) => liveness(entry.pid) === false)) return true;
-    await (dependencies.delay?.() ?? new Promise((resolve) => setTimeout(resolve, 20)));
+    // A quick stop is seen within the first second. A patient wait gives a slow machine about 16 s (macOS identity
+    // probes alone can take seconds before the worker writes stopped.json).
+    await (dependencies.delay?.() ?? new Promise((resolve) => setTimeout(resolve, dependencies.patient && n >= 50 ? 300 : 20)));
   }
   const stopped = signed<WorkerObservation>(worker, 'stopped.json');
   return !!stopped && await stoppedOwnership(worker, stopped, liveness, reader);
