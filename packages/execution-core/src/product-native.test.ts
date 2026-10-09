@@ -110,6 +110,10 @@ describe('native preparation and private worker binding', () => {
     await expect(prepareProductNativeOperation(f.project, input, { scriptPath: f.scriptPath, scriptSha256: f.scriptSha256 })).rejects.toThrow('NATIVE_PROVIDER_NOT_CONFIGURED');
     const prepared = await prepareProductNativeOperation(f.project, input, { scriptPath: f.scriptPath, scriptSha256: f.scriptSha256, cad: { scriptPath: f.scriptPath, scriptSha256: f.scriptSha256, executable: exe, executableSha256: hash('trusted-executable') } });
     expect(prepared.native).toMatchObject({ provider: 'cad-session', cad: { executable: exe, executableSha256: hash('trusted-executable') } });
+    // The layer table is read through the same owned session and takes no entity handle.
+    const layers = await prepareProductNativeOperation(f.project, { requestId: 'cad-layers', projectId: 'project', operation: 'cad.layers.inspect', path: 'source.dwg' }, { scriptPath: f.scriptPath, scriptSha256: f.scriptSha256, cad: { scriptPath: f.scriptPath, scriptSha256: f.scriptSha256, executable: exe, executableSha256: hash('trusted-executable') } });
+    expect(layers.native).toMatchObject({ provider: 'cad-session', input: { operation: 'cad.layers.inspect' } });
+    await expect(prepareProductNativeOperation(f.project, { requestId: 'cad-layers', projectId: 'project', operation: 'cad.layers.inspect', path: 'source.dwg', handle: 'A1' }, { scriptPath: f.scriptPath, scriptSha256: f.scriptSha256, cad: { scriptPath: f.scriptPath, scriptSha256: f.scriptSha256, executable: exe, executableSha256: hash('trusted-executable') } })).rejects.toThrow('NATIVE_INPUT_INVALID');
   });
   it('rejects changed source bytes before calling a provider', async () => {
     const f = await fixture(); const runner = vi.fn();

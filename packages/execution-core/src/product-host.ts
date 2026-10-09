@@ -86,7 +86,7 @@ export function productRuntimeRequiresManifest(entry: string, argv: readonly str
 
 const MAX_SECRET_BYTES = 64 * 1024;
 /** SHA-256 of the provider scripts this build ships (LF line ends, see .gitattributes); a test pins them to the files. */
-export const PRODUCT_PROVIDER_SHA256 = { office: '4dddc9af44dc46e3e6a8c62a23652cdf48ff92515bd33d30e98c34ae25c69fbe', cad: 'bb6a1cb7754e1aea3ac163eadb1be32cd24a971adeb7f2222edaaaf5eb79f387' } as const;
+export const PRODUCT_PROVIDER_SHA256 = { office: '4dddc9af44dc46e3e6a8c62a23652cdf48ff92515bd33d30e98c34ae25c69fbe', cad: '86f1594198735bc989df70b83e31af7dbe7ee19b2872f54fe4283bfc5d34b922' } as const;
 const SECRET_PROVIDER_CODES: Readonly<Record<string, string>> = { POWERSHELL_SESSION_TIMEOUT: 'SECRET_PROVIDER_TIMEOUT', POWERSHELL_SESSION_UNAVAILABLE: 'SECRET_PROVIDER_UNAVAILABLE', POWERSHELL_SESSION_OUTPUT_LIMIT: 'SECRET_PROVIDER_OUTPUT_LIMIT', POWERSHELL_SESSION_INPUT_FAILED: 'SECRET_PROVIDER_INPUT_FAILED' };
 /** Uses CurrentUser DPAPI without placing plaintext on a command line; one owned Windows PowerShell session serves every call. */
 export function windowsProductSecretProtector(session?: WindowsPowerShellSession): ProductSecretProtector {

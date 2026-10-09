@@ -12,7 +12,8 @@ export type GotzjiNativeOperation =
   | { readonly operation: 'powerpoint.shape.read'; readonly filePath: string; readonly expectedSha256: string; readonly slide: number; readonly shape: string }
   | { readonly operation: 'powerpoint.shape.write'; readonly filePath: string; readonly expectedSha256: string; readonly outputPath: string; readonly slide: number; readonly shape: string; readonly text: string }
   | { readonly operation: 'cad.entity.inspect'; readonly filePath: string; readonly expectedSha256: string; readonly handle: string }
-  | { readonly operation: 'cad.entity.move'; readonly filePath: string; readonly expectedSha256: string; readonly outputPath: string; readonly handle: string; readonly displacement: readonly [number, number, number] };
+  | { readonly operation: 'cad.entity.move'; readonly filePath: string; readonly expectedSha256: string; readonly outputPath: string; readonly handle: string; readonly displacement: readonly [number, number, number] }
+  | { readonly operation: 'cad.layers.inspect'; readonly filePath: string; readonly expectedSha256: string };
 
 export interface GotzjiNativeGrant {
   readonly ownerId: string;
@@ -57,7 +58,7 @@ export async function planGotzjiNativeOperation(value: unknown, rootPath: string
     'excel.range.read': ['sheet', 'range'], 'excel.range.write': ['sheet', 'range', 'values', 'outputPath'],
     'word.paragraph.read': ['paragraph'], 'word.paragraph.write': ['paragraph', 'text', 'outputPath'],
     'powerpoint.shape.read': ['slide', 'shape'], 'powerpoint.shape.write': ['slide', 'shape', 'text', 'outputPath'],
-    'cad.entity.inspect': ['handle'], 'cad.entity.move': ['handle', 'displacement', 'outputPath'],
+    'cad.entity.inspect': ['handle'], 'cad.entity.move': ['handle', 'displacement', 'outputPath'], 'cad.layers.inspect': [],
   };
   const fields = schemas[operation];
   if (!fields || Object.keys(value).some((key) => !['operation', 'filePath', 'expectedSha256', ...fields].includes(key))) throw new GotzjiNativeError('NATIVE_INPUT_INVALID', 'operation');
@@ -91,7 +92,7 @@ export async function planGotzjiNativeOperation(value: unknown, rootPath: string
   if (fields.includes('text')) {
     if (typeof value.text !== 'string' || value.text.length > 32768 || /[\r\n\0]/u.test(value.text)) throw new GotzjiNativeError('NATIVE_INPUT_INVALID', 'text');
   }
-  if (provider === 'cad') {
+  if (operation.startsWith('cad.entity.')) {
     if (typeof value.handle !== 'string' || !/^[a-fA-F0-9]{1,16}$/u.test(value.handle)) throw new GotzjiNativeError('NATIVE_INPUT_INVALID', 'handle');
     if (operation.endsWith('move') && (!Array.isArray(value.displacement) || value.displacement.length !== 3 || value.displacement.some((coordinate: unknown) => typeof coordinate !== 'number' || !Number.isFinite(coordinate) || Math.abs(coordinate) > 1e6))) throw new GotzjiNativeError('NATIVE_INPUT_INVALID', 'displacement');
   }

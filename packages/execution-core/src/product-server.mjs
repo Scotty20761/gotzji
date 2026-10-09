@@ -38,7 +38,7 @@ if (!config.credential) {
   await writeProductConfiguration(config, testSecretProtector);
 }
 const product = { executable: config.executable, libraryRoot: config.libraryRoot };
-const nativeOptions = config.native ? { ...config.native, operations: ['excel.range.read', 'excel.range.write', 'word.paragraph.read', 'word.paragraph.write', 'powerpoint.shape.read', 'powerpoint.shape.write', ...(config.native.cad ? ['cad.entity.inspect', 'cad.entity.move'] : [])] } : undefined;
+const nativeOptions = config.native ? { ...config.native, operations: ['excel.range.read', 'excel.range.write', 'word.paragraph.read', 'word.paragraph.write', 'powerpoint.shape.read', 'powerpoint.shape.write', ...(config.native.cad ? ['cad.entity.inspect', 'cad.entity.move', 'cad.layers.inspect'] : [])] } : undefined;
 const libraryOptions = config.library;
 const privateRuntimeRoots = [path.dirname(directory)];
 let core;

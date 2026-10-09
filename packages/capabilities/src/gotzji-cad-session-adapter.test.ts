@@ -50,6 +50,27 @@ describe('CAD provider-owned session contract (synthetic seam, no native qualifi
     expect(result.savedAndReopened).toBe(true); expect(result.originalPreserved).toBe(true); expect(calls).toBe(2); expect(authorize).toHaveBeenCalledTimes(2);
     expect(result.outputSha256).toBe(nativeBytesDigest(await readFile(f.output)));
   });
+  it('reads the layer table, Thai names and colour methods included, and keeps the original untouched (incident I6)', async () => {
+    const f = await fixture();
+    const zero = { name: '0', method: 195, index: 7, rgb: [255, 255, 255], book: '', colorName: '', linetype: 'Continuous', lineweight: -3, on: true, frozen: false, locked: false, plottable: true };
+    const thai = { ...zero, name: 'เลเยอร์', frozen: true, locked: true, plottable: false };
+    const rgb = { ...zero, name: 'GJ_RGB', method: 194, index: 168, rgb: [10, 20, 30] };
+    const table = { count: 3, current: '0', digest: 'b'.repeat(64), layers: [zero, thai, rgb] };
+    const session = { ...receipt(), native: table };
+    const requests: unknown[] = [];
+    const a = await adapter(f, async () => true, async (_script, input) => { requests.push(input); return session; });
+    const result = await a.execute(f.grant, { operation: 'cad.layers.inspect', filePath: f.source, expectedSha256: f.expected });
+    expect(result).toMatchObject({ operation: 'cad.layers.inspect', outputSha256: null, savedAndReopened: false, originalPreserved: true, before: table, after: null });
+    expect(requests).toEqual([{ operation: 'cad.layers.inspect', filePath: f.source, expectedSha256: f.expected, executable: f.executable }]);
+    // A table that does not hold together is refused; nothing was written, so nothing happened.
+    for (const native of [{ ...table, count: 4 }, { ...table, current: 'absent' }, { ...table, layers: [zero, { ...rgb, rgb: [10, 20, 300] }, thai] }, { ...table, layers: [zero, { ...thai, name: '' }, rgb] },
+      { ...table, layers: [zero, thai, { ...rgb, name: 'gj_rgb' }, { ...rgb, name: 'GJ_RGB' }], count: 4 }, { ...table, digest: 'not-a-digest' }]) {
+      const broken = await adapter(f, async () => true, async () => ({ ...receipt(), native }));
+      await expect(broken.execute(f.grant, { operation: 'cad.layers.inspect', filePath: f.source, expectedSha256: f.expected })).rejects.toMatchObject({ code: 'CAD_LAYER_TABLE_UNVERIFIED', outcome: 'none' });
+    }
+    // An entity handle is not part of this operation.
+    await expect(a.execute(f.grant, { operation: 'cad.layers.inspect', filePath: f.source, expectedSha256: f.expected, handle: '254' })).rejects.toMatchObject({ code: 'NATIVE_INPUT_INVALID' });
+  });
   it('records that ZWCAD asked about an earlier crash, so the owner can learn of it', async () => {
     const f = await fixture();
     const a = await adapter(f, async () => true, async () => ({ ...receipt(line()), crashPromptDeclined: true }));

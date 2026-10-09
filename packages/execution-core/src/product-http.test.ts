@@ -79,6 +79,7 @@ describe('governed product HTTP and MCP boundary', () => {
       { operation: 'word.paragraph.read', path: 'doc.docx', paragraph: 1 }, { operation: 'word.paragraph.write', path: 'doc.docx', paragraph: 1, text: 'after', outputPath: 'after.docx' },
       { operation: 'powerpoint.shape.read', path: 'deck.pptx', slide: 1, shape: 'Title' }, { operation: 'powerpoint.shape.write', path: 'deck.pptx', slide: 1, shape: 'Title', text: 'after', outputPath: 'after.pptx' },
       { operation: 'cad.entity.inspect', path: 'drawing.dwg', handle: 'A1' }, { operation: 'cad.entity.move', path: 'drawing.dwg', handle: 'A1', displacement: [1, 2, 3], outputPath: 'after.dwg' },
+      { operation: 'cad.layers.inspect', path: 'drawing.dwg' },
     ];
     try {
       for (const operation of cases) {

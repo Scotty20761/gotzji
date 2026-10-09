@@ -18,6 +18,14 @@ interface CadLine {
   readonly startPoint: readonly [number, number, number];
   readonly endPoint: readonly [number, number, number];
 }
+/** One row of the layer table as ZWCAD reports it; names are read loosely (an xref layer reads as X|Y). */
+export interface CadLayer {
+  readonly name: string; readonly method: number; readonly index: number; readonly rgb: readonly [number, number, number];
+  readonly book: string; readonly colorName: string; readonly linetype: string; readonly lineweight: number;
+  readonly on: boolean; readonly frozen: boolean; readonly locked: boolean; readonly plottable: boolean;
+}
+/** The layer table; `digest` is the provider's SHA-256 of the rows exactly as ZWCAD wrote them. */
+interface CadLayerTable { readonly count: number; readonly current: string; readonly digest: string; readonly layers: readonly CadLayer[] }
 interface CadSessionResult {
   readonly native: { readonly before: CadLine; readonly after: CadLine; readonly unrelatedPreserved: true };
   readonly nativePid: number;
@@ -43,6 +51,13 @@ export class GotzjiCadSessionAdapter {
     const script = await this.pinnedFile(this.options.scriptPath, this.options.scriptSha256);
     const executable = await this.pinnedFile(this.options.executable, this.options.executableSha256);
     const runner = this.options.runner ?? runGotzjiNativePowerShell;
+    if (plan.input.operation === 'cad.layers.inspect') {
+      const session = layerSession(await runner(script, { ...plan.input, executable }, signal));
+      if (await nativeFileDigest(plan.input.filePath) !== plan.input.expectedSha256) throw new GotzjiNativeError('NATIVE_ORIGINAL_CHANGED', undefined, 'unknown');
+      const table: CadLayerTable = { count: session.native.count, current: session.native.current, digest: session.native.digest, layers: session.native.layers };
+      // A read returns the table once.
+      return { operation: plan.input.operation, provider: 'cad', providerVersion: session.providerVersion, nativePid: session.nativePid, sourceSha256: plan.input.expectedSha256, outputSha256: null, originalPreserved: true, savedAndReopened: false, unrelatedPreserved: true, verified: true, before: table, after: null, ...(session.crashPromptDeclined === true ? { crashPromptDeclined: true as const } : {}) };
+    }
     const first = sessionResult(await runner(script, { ...plan.input, executable }, signal));
     if (first.native.before.handle.toUpperCase() !== (plan.input as Extract<GotzjiNativeOperation, { operation: 'cad.entity.inspect' | 'cad.entity.move' }>).handle.toUpperCase()) throw new GotzjiNativeError('CAD_SESSION_ENTITY_MISMATCH', 'handle', 'unknown');
     let after = first.native.after;
@@ -85,6 +100,24 @@ export class GotzjiCadSessionAdapter {
   }
 }
 
+function layerSession(value: unknown): { readonly native: CadLayerTable; readonly nativePid: number; readonly providerVersion: string; readonly crashPromptDeclined?: boolean } {
+  if (!record(value) || value.owned !== true || value.closed !== true || value.originalSessionsPreserved !== true
+    || !Number.isSafeInteger(value.nativePid) || Number(value.nativePid) < 1 || typeof value.birth !== 'string' || !/^\d{10,24}$/u.test(value.birth)
+    || typeof value.providerVersion !== 'string' || !value.providerVersion.startsWith('25.') || !record(value.native)) throw new GotzjiNativeError('CAD_SESSION_OWNERSHIP_OR_RECEIPT_UNVERIFIED', undefined, 'unknown');
+  const native = value.native;
+  if (!Number.isSafeInteger(native.count) || Number(native.count) < 1 || Number(native.count) > 4096 || !layerText(native.current) || typeof native.digest !== 'string' || !/^[a-f0-9]{64}$/u.test(native.digest)
+    || !Array.isArray(native.layers) || native.layers.length !== native.count || !native.layers.every(cadLayer) || !native.layers.some((layer: CadLayer) => layer.name === native.current)
+    // ZWCAD keeps layer names unique regardless of case; a repeat means the reader went wrong.
+    || new Set(native.layers.map((layer: CadLayer) => layer.name.toUpperCase())).size !== native.layers.length) throw new GotzjiNativeError('CAD_LAYER_TABLE_UNVERIFIED', undefined, 'none');
+  return value as unknown as { readonly native: CadLayerTable; readonly nativePid: number; readonly providerVersion: string; readonly crashPromptDeclined?: boolean };
+}
+function cadLayer(value: unknown): value is CadLayer {
+  return record(value) && layerText(value.name) && Number.isSafeInteger(value.method) && Number.isSafeInteger(value.index) && Number(value.index) >= 0 && Number(value.index) <= 256
+    && Array.isArray(value.rgb) && value.rgb.length === 3 && value.rgb.every((channel) => Number.isSafeInteger(channel) && channel >= 0 && channel <= 255)
+    && typeof value.book === 'string' && value.book.length <= 255 && typeof value.colorName === 'string' && value.colorName.length <= 255 && layerText(value.linetype)
+    && Number.isSafeInteger(value.lineweight) && typeof value.on === 'boolean' && typeof value.frozen === 'boolean' && typeof value.locked === 'boolean' && typeof value.plottable === 'boolean';
+}
+function layerText(value: unknown): value is string { return typeof value === 'string' && value.length > 0 && value.length <= 255; }
 function sessionResult(value: unknown): CadSessionResult {
   if (!record(value) || value.owned !== true || value.closed !== true || value.originalSessionsPreserved !== true
     || !Number.isSafeInteger(value.nativePid) || Number(value.nativePid) < 1 || typeof value.birth !== 'string' || !/^\d{10,24}$/u.test(value.birth)

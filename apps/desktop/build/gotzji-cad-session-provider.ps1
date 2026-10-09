@@ -5,7 +5,7 @@ $crashPromptDeclined = $false
 # One budget for the whole run, so every wait plus the final close stays inside the runner's 120 s limit.
 $runDeadline = [DateTime]::UtcNow.AddSeconds(95)
 # Codes the LISP writes before it changes anything; with the conditions in Get-Outcome they prove no effect.
-$refusals = @('CAD_SESSION_ENTITY_UNSUPPORTED','CAD_SESSION_ENTITY_NOT_FOUND','CAD_DRAWING_TOO_LARGE')
+$refusals = @('CAD_SESSION_ENTITY_UNSUPPORTED','CAD_SESSION_ENTITY_NOT_FOUND','CAD_DRAWING_TOO_LARGE','CAD_LAYER_TABLE_TOO_LARGE')
 function Stop-Owned {
   # Ends only the process this script started, through the handle Start-Process returned (no PID reuse is possible).
   if ($null -eq $script:cadProcess) { return $true }
@@ -19,7 +19,8 @@ function Get-Outcome([string]$code, [bool]$exited) {
   # No effect is proven only when nothing was approved (or the LISP refused before any change), the owned process has
   # ended, no output exists and the source still has the approved bytes.
   try {
-    $noEffect = (-not $script:approved) -or ($script:refusals -contains $code)
+    # A read changes nothing even when it fails partway, so it ends with no effect under the same conditions.
+    $noEffect = (-not $script:approved) -or ($script:refusals -contains $code) -or (@('cad.entity.inspect','cad.layers.inspect') -contains [string]$script:request.operation)
     $noOutput = [string]::IsNullOrEmpty([string]$script:request.outputPath) -or -not (Test-Path -LiteralPath ([string]$script:request.outputPath))
     $sourceSame = (Get-FileHash -LiteralPath $script:request.filePath -Algorithm SHA256).Hash.ToLowerInvariant() -ceq $script:request.expectedSha256
     if ($noEffect -and $exited -and $noOutput -and $sourceSame) { return 'none' }
@@ -59,12 +60,12 @@ trap {
 $inputText = [Console]::In.ReadToEnd()
 if ($inputText.Length -gt 32768) { throw 'CAD_SESSION_INPUT_LIMIT' }
 $request = $inputText | ConvertFrom-Json
-$allowed = @('cad.entity.inspect','cad.entity.move')
+$allowed = @('cad.entity.inspect','cad.entity.move','cad.layers.inspect')
 if ($allowed -notcontains $request.operation -or -not [IO.Path]::IsPathRooted($request.executable)) { throw 'CAD_SESSION_INPUT_INVALID' }
 $exe = [IO.Path]::GetFullPath($request.executable)
 $version = [Diagnostics.FileVersionInfo]::GetVersionInfo($exe)
 if ($version.ProductName -ne 'ZWCAD 2025' -or $version.FileVersion -notmatch '^25\.') { throw 'CAD_SESSION_VERSION_UNSUPPORTED' }
-if ($request.handle -notmatch '^[0-9A-Fa-f]{1,64}$' -or [IO.Path]::GetExtension($request.filePath) -ine '.dwg') { throw 'CAD_SESSION_HANDLE_OR_FORMAT_UNSUPPORTED' }
+if (($request.operation -like 'cad.entity.*' -and $request.handle -notmatch '^[0-9A-Fa-f]{1,64}$') -or [IO.Path]::GetExtension($request.filePath) -ine '.dwg') { throw 'CAD_SESSION_HANDLE_OR_FORMAT_UNSUPPORTED' }
 if ((Get-FileHash -LiteralPath $request.filePath -Algorithm SHA256).Hash.ToLowerInvariant() -cne $request.expectedSha256) { throw 'CAD_SESSION_SOURCE_CHANGED' }
 Add-Type -TypeDefinition @'
 using System; using System.Runtime.InteropServices;
@@ -125,6 +126,7 @@ $ready = Join-Path $stage 'ready.txt'
 $approval = Join-Path $stage 'approve.txt'
 $resultFile = Join-Path $stage 'native.json'
 $failureFile = Join-Path $stage 'native-error.txt'
+$layersFile = Join-Path $stage 'layers.jsonl'
 $script = Join-Path $stage 'operation.scr'
 $env:GOTZJI_CAD_NONCE = $nonce
 $env:GOTZJI_CAD_READY = $ready
@@ -132,6 +134,7 @@ $env:GOTZJI_CAD_READY_TMP = $ready + '.tmp'
 $env:GOTZJI_CAD_APPROVAL = $approval
 $env:GOTZJI_CAD_RESULT = $resultFile
 $env:GOTZJI_CAD_ERROR = $failureFile
+$env:GOTZJI_CAD_LAYERS = $layersFile
 $env:GOTZJI_CAD_OPERATION = $request.operation
 $env:GOTZJI_CAD_HANDLE = [string]$request.handle
 $env:GOTZJI_CAD_SOURCE = [string]$request.filePath
@@ -148,6 +151,16 @@ $lisp = @'
 (defun gjline (e) (strcat "{\"handle\":" (gjq (vla-get-Handle e)) ",\"objectType\":" (gjq (vla-get-ObjectName e)) ",\"layer\":" (gjq (vla-get-Layer e)) ",\"startPoint\":" (gjpoint (vlax-safearray->list (vlax-variant-value (vla-get-StartPoint e)))) ",\"endPoint\":" (gjpoint (vlax-safearray->list (vlax-variant-value (vla-get-EndPoint e)))) "}"))
 (defun gjothers (space excluded / result e data) (setq result nil) (vlax-for e space (if (/= (vla-get-Handle e) excluded) (progn (setq data (vl-remove-if '(lambda (pair) (member (car pair) '(-1 330 360))) (entget (vlax-vla-object->ename e)))) (setq result (cons data result))))) (vl-princ-to-string (reverse result)))
 (defun gjwrite (file text / f) (setq f (open file "w")) (write-line text f) (close f))
+(defun gjhex (n / s) (setq s "") (repeat 4 (setq s (strcat (substr "0123456789abcdef" (1+ (rem n 16)) 1) s) n (/ n 16))) s)
+(defun gjunit (c) (cond ((= c 34) "\\\"") ((= c 92) "\\\\") ((and (>= c 32) (< c 127)) (chr c)) ((> c 65535) (strcat "\\u" (gjhex (+ 55296 (/ (- c 65536) 1024))) "\\u" (gjhex (+ 56320 (rem (- c 65536) 1024))))) (T (strcat "\\u" (gjhex c)))))
+(defun gjjson (s) (strcat "\"" (apply 'strcat (mapcar 'gjunit (vl-string->list s))) "\""))
+(defun gjbool (v) (if (= v :vlax-true) "true" "false"))
+(defun gjlayer (l / c row) (setq c (vla-get-TrueColor l))
+ (setq row (strcat "{\"name\":" (gjjson (vla-get-Name l)) ",\"method\":" (itoa (vla-get-ColorMethod c)) ",\"index\":" (itoa (vla-get-ColorIndex c))
+  ",\"rgb\":[" (itoa (vla-get-Red c)) "," (itoa (vla-get-Green c)) "," (itoa (vla-get-Blue c)) "],\"book\":" (gjjson (vla-get-BookName c)) ",\"colorName\":" (gjjson (vla-get-ColorName c))
+  ",\"linetype\":" (gjjson (vla-get-Linetype l)) ",\"lineweight\":" (itoa (vla-get-Lineweight l)) ",\"on\":" (gjbool (vla-get-LayerOn l))
+  ",\"frozen\":" (gjbool (vla-get-Freeze l)) ",\"locked\":" (gjbool (vla-get-Lock l)) ",\"plottable\":" (gjbool (vla-get-Plottable l)) "}"))
+ (vlax-release-object c) row)
 (defun *error* (message) (gjwrite (getenv "GOTZJI_CAD_ERROR") "CAD_SESSION_NATIVE_FAILED") (princ))
 (setq gjapp (vlax-get-acad-object) gjdoc (vla-get-ActiveDocument gjapp) gjspace (vla-get-ModelSpace gjdoc))
 (setq gjready (open (getenv "GOTZJI_CAD_READY_TMP") "w"))
@@ -160,6 +173,13 @@ $lisp = @'
 (setq gjf (open (getenv "GOTZJI_CAD_APPROVAL") "r") gjapproved (equal (read-line gjf) "@@NONCE@@")) (close gjf)
 (if gjapproved (progn
 (setq gjoperation (getenv "GOTZJI_CAD_OPERATION"))
+(if (equal gjoperation "cad.layers.inspect") (progn
+ (setq gjout (open (getenv "GOTZJI_CAD_LAYERS") "w") gjcount 0 gjbytes 0)
+ (vlax-for gjl (vla-get-Layers gjdoc) (setq gjcount (1+ gjcount)) (if (and (<= gjcount 4096) (<= gjbytes 1800000)) (progn (setq gjrow (gjlayer gjl) gjbytes (+ gjbytes 1 (strlen gjrow))) (write-line gjrow gjout))))
+ (close gjout)
+ (if (or (> gjcount 4096) (> gjbytes 1800000)) (gjwrite (getenv "GOTZJI_CAD_ERROR") "CAD_LAYER_TABLE_TOO_LARGE")
+  (gjwrite (getenv "GOTZJI_CAD_RESULT") (strcat "{\"count\":" (itoa gjcount) ",\"current\":" (gjjson (getvar "CLAYER")) "}")))
+) (progn
  (setq gje (vl-catch-all-apply 'vla-HandleToObject (list gjdoc (getenv "GOTZJI_CAD_HANDLE"))))
  (cond
  ((vl-catch-all-error-p gje) (gjwrite (getenv "GOTZJI_CAD_ERROR") "CAD_SESSION_ENTITY_NOT_FOUND"))
@@ -170,7 +190,7 @@ $lisp = @'
  (gjwrite (getenv "GOTZJI_CAD_RESULT") (strcat "{\"before\":" gjbefore ",\"after\":" (gjline gje) ",\"unrelatedPreserved\":" (if (equal gjbeforeothers (gjothers gjspace (vla-get-Handle gje))) "true" "false") "}"))
  (gjwrite (strcat (getenv "GOTZJI_CAD_RESULT") ".others") gjbeforeothers)
  ))
-))))
+))))))
 (princ)
 ))
 (princ)
@@ -224,5 +244,20 @@ $unrelated = if (Test-Path -LiteralPath ($resultFile+'.others')) { (Get-FileHash
 $originals = $true
 foreach ($original in $existing) { $now=Get-Process -Id $original.Id -ErrorAction SilentlyContinue; if ($null -eq $now -or $now.StartTime -ne $original.StartTime) { $originals=$false } }
 $native = Get-Content -LiteralPath $resultFile -Raw | ConvertFrom-Json
+$layerRows = $null
+if ($request.operation -eq 'cad.layers.inspect') {
+  if (-not (Test-Path -LiteralPath $layersFile)) { Fail 'CAD_LAYER_TABLE_UNVERIFIED' }
+  $lines = @([IO.File]::ReadAllLines($layersFile, [Text.Encoding]::ASCII) | Where-Object { $_ -ne '' })
+  # Each row must parse; the rows themselves are written out verbatim, so the size bound below is exact.
+  foreach ($line in $lines) { try { [void]($line | ConvertFrom-Json) } catch { Fail 'CAD_LAYER_TABLE_UNVERIFIED' } }
+  $layerRows = '[' + ($lines -join ',') + ']'
+  $native = @{ count = [int]$native.count; current = [string]$native.current; digest = (Get-FileHash -LiteralPath $layersFile -Algorithm SHA256).Hash.ToLowerInvariant(); layers = '@@LAYERS@@' }
+}
 Remove-Stage $closed
-@{ok=$true;value=@{native=$native;nativePid=$cadProcess.Id;birth=[string]$birth;providerVersion=$version.FileVersion;owned=$owned;closed=$closed;originalSessionsPreserved=$originals;unrelatedHash=$unrelated;crashPromptDeclined=$crashPromptDeclined}}|ConvertTo-Json -Compress -Depth 12
+$output = @{ok=$true;value=@{native=$native;nativePid=$cadProcess.Id;birth=[string]$birth;providerVersion=$version.FileVersion;owned=$owned;closed=$closed;originalSessionsPreserved=$originals;unrelatedHash=$unrelated;crashPromptDeclined=$crashPromptDeclined}}|ConvertTo-Json -Compress -Depth 12
+if ($null -ne $layerRows) {
+  $output = $output.Replace('"@@LAYERS@@"', $layerRows)
+  # The runner reads at most 2 MiB.
+  if ([Text.Encoding]::UTF8.GetByteCount($output) -gt 1900000) { Fail 'CAD_LAYER_TABLE_TOO_LARGE' }
+}
+$output

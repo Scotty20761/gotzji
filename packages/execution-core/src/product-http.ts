@@ -30,7 +30,7 @@ const operationFields: Record<string, readonly string[]> = {
   'excel.range.read': ['path', 'sheet', 'range'], 'excel.range.write': ['path', 'sheet', 'range', 'values', 'outputPath'],
   'word.paragraph.read': ['path', 'paragraph'], 'word.paragraph.write': ['path', 'paragraph', 'text', 'outputPath'],
   'powerpoint.shape.read': ['path', 'slide', 'shape'], 'powerpoint.shape.write': ['path', 'slide', 'shape', 'text', 'outputPath'],
-  'cad.entity.inspect': ['path', 'handle'], 'cad.entity.move': ['path', 'handle', 'displacement', 'outputPath'],
+  'cad.entity.inspect': ['path', 'handle'], 'cad.entity.move': ['path', 'handle', 'displacement', 'outputPath'], 'cad.layers.inspect': ['path'],
 };
 const fields: Record<string, Schema> = {
   path: text, outputPath: text, expectedSha256: { type: 'string', pattern: '^[a-f0-9]{64}$' }, content: { type: 'string' }, commandId: text,
