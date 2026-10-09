@@ -50,6 +50,13 @@ describe('CAD provider-owned session contract (synthetic seam, no native qualifi
     expect(result.savedAndReopened).toBe(true); expect(result.originalPreserved).toBe(true); expect(calls).toBe(2); expect(authorize).toHaveBeenCalledTimes(2);
     expect(result.outputSha256).toBe(nativeBytesDigest(await readFile(f.output)));
   });
+  it('records that ZWCAD asked about an earlier crash, so the owner can learn of it', async () => {
+    const f = await fixture();
+    const a = await adapter(f, async () => true, async () => ({ ...receipt(line()), crashPromptDeclined: true }));
+    expect(await a.execute(f.grant, { operation: 'cad.entity.inspect', filePath: f.source, expectedSha256: f.expected, handle: '254' })).toMatchObject({ crashPromptDeclined: true });
+    const quiet = await adapter(f, async () => true, async () => receipt(line()));
+    expect(await quiet.execute(f.grant, { operation: 'cad.entity.inspect', filePath: f.source, expectedSha256: f.expected, handle: '254' })).not.toHaveProperty('crashPromptDeclined');
+  });
   it('rejects a mismatched native reopen and preserves the original source', async () => {
     const f = await fixture(); let calls = 0;
     const a = await adapter(f, async () => true, async () => {

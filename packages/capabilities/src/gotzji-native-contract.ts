@@ -41,6 +41,8 @@ export interface GotzjiNativeReceipt {
   readonly verified: true;
   readonly before: unknown;
   readonly after: unknown;
+  /** The provider answered ZWCAD's question about an earlier crash (No; nothing was sent). */
+  readonly crashPromptDeclined?: true;
 }
 export class GotzjiNativeError extends Error {
   public constructor(public readonly code: string, public readonly field?: string, public readonly outcome: 'none' | 'unknown' = 'none') {

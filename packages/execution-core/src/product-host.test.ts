@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
-import { cleanupProductHostStartup, completeProductHostStartup, ensureGotzjiProductHost, observeProductHostAuthorityPersistence, productRuntimeIdentity, productRuntimeRequiresManifest, readProductConfiguration, windowsProductSecretProtector, writeProductConfiguration, type ProductHostConfiguration } from './product-host.js';
+import { cleanupProductHostStartup, completeProductHostStartup, ensureGotzjiProductHost, observeProductHostAuthorityPersistence, PRODUCT_PROVIDER_SHA256, productRuntimeIdentity, productRuntimeRequiresManifest, readProductConfiguration, reconcileProviderPins, shippedProvider, windowsProductSecretProtector, writeProductConfiguration, type ProductHostConfiguration } from './product-host.js';
 import { ensureProductControlDocuments } from './product-control-policy.js';
 import { productGraceProfile } from './grace-profile.js';
 import { canonicalTemporaryDirectorySync } from './test-fixtures.js';
@@ -61,6 +61,59 @@ describe('private product enrollment storage', () => {
     const incident = readFileSync(path.join(directory, incidentFile!), 'utf8');
     expect(incident).not.toContain(config.daemonSecret); expect(incident).not.toContain(config.mcpPathSecret); expect(incident).not.toContain(config.credential);
     expect(incident).toContain('NODE_OPTIONS=absent'); expect(incident).toContain('REDACTED');
+  });
+  it('re-pins shipped provider scripts on every start and drops only a script present with other bytes (incident I6)', () => {
+    const directory = canonicalTemporaryDirectorySync('gotzji-provider-pins-');
+    try {
+      const office = path.join(directory, 'office.ps1'); const cad = path.join(directory, 'cad.ps1'); const exe = path.join(directory, 'zwcad.exe');
+      writeFileSync(office, 'office v2'); writeFileSync(cad, 'cad v2'); writeFileSync(exe, 'zwcad');
+      const sha = (text: string): string => createHash('sha256').update(text).digest('hex');
+      const base: ProductHostConfiguration = { schemaVersion: 1, directory, ownerId: 'owner', daemonSecret: 'a'.repeat(64), mcpPathSecret: 'b'.repeat(64), executable: exe, libraryRoot: directory };
+      const zwcad = { executable: exe, executableSha256: sha('zwcad') };
+      const earlier = { ...base, native: { scriptPath: office, scriptSha256: sha('office v1'), cad: { scriptPath: cad, scriptSha256: sha('cad v1'), ...zwcad } } };
+      // A new build's scripts replace the older pins; ZWCAD's own pin is kept, not rediscovered.
+      const upgraded = reconcileProviderPins(earlier, shippedProvider([office], sha('office v2')), shippedProvider([cad], sha('cad v2')), () => { throw new Error('rediscovered'); });
+      expect(upgraded.native).toEqual({ scriptPath: office, scriptSha256: sha('office v2'), cad: { scriptPath: cad, scriptSha256: sha('cad v2'), ...zwcad } });
+      expect(reconcileProviderPins(upgraded, shippedProvider([office], sha('office v2')), shippedProvider([cad], sha('cad v2')), () => undefined)).toBe(upgraded);
+      // A script present with other bytes drops only its own pin, and the host still starts without that provider.
+      expect(shippedProvider([cad], sha('cad v3'))).toBeNull();
+      expect(reconcileProviderPins(upgraded, shippedProvider([office], sha('office v2')), null, () => undefined).native).toEqual({ scriptPath: office, scriptSha256: sha('office v2') });
+      expect(reconcileProviderPins(upgraded, null, undefined, () => undefined).native).toBeUndefined();
+      // An absent or unreadable script keeps the earlier pin.
+      expect(shippedProvider([path.join(directory, 'absent.ps1')], sha('x'))).toBeUndefined();
+      expect(shippedProvider([directory], sha('x'))).toBeUndefined();
+      expect(reconcileProviderPins(upgraded, undefined, undefined, () => undefined)).toBe(upgraded);
+      // A first CAD pin also pins ZWCAD.
+      expect(reconcileProviderPins({ ...base, native: { scriptPath: office, scriptSha256: sha('office v2') } }, undefined, shippedProvider([cad], sha('cad v2')), () => ({ scriptPath: exe, scriptSha256: sha('zwcad') })).native?.cad)
+        .toEqual({ scriptPath: cad, scriptSha256: sha('cad v2'), ...zwcad });
+      // An updated ZWCAD is found again when it is the qualified build, and leaves CAD unavailable when it is not.
+      writeFileSync(exe, 'zwcad v2');
+      expect(reconcileProviderPins(upgraded, undefined, shippedProvider([cad], sha('cad v2')), () => ({ scriptPath: exe, scriptSha256: sha('zwcad v2') })).native?.cad)
+        .toEqual({ scriptPath: cad, scriptSha256: sha('cad v2'), executable: exe, executableSha256: sha('zwcad v2') });
+      expect(reconcileProviderPins(upgraded, undefined, shippedProvider([cad], sha('cad v2')), () => undefined).native).toEqual({ scriptPath: office, scriptSha256: sha('office v2') });
+      // A ZWCAD reinstalled elsewhere is found again.
+      const moved = path.join(directory, 'zwcad-moved.exe'); writeFileSync(moved, 'zwcad'); rmSync(exe);
+      expect(reconcileProviderPins(upgraded, undefined, shippedProvider([cad], sha('cad v2')), () => ({ scriptPath: moved, scriptSha256: sha('zwcad') })).native?.cad)
+        .toEqual({ scriptPath: cad, scriptSha256: sha('cad v2'), executable: moved, executableSha256: sha('zwcad') });
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  });
+  it('replaces an earlier provider pin when the provider script on disk changed (incident I6)', async () => {
+    const directory = canonicalTemporaryDirectorySync('gotzji-provider-repin-');
+    try {
+      const script = path.join(directory, 'office.ps1'); writeFileSync(script, 'office v1');
+      const protector = { protect: async (value: string): Promise<string> => value, unprotect: async (value: string): Promise<string> => value };
+      const options = { directory, dataPath: directory, resourcesPath: directory, packaged: false, nativeScriptPath: script, hostEntryPath: path.join(directory, 'absent-host.mjs'), secretProtector: protector };
+      await expect(ensureGotzjiProductHost(options)).rejects.toThrow('PRODUCT_HOST_RUNTIME_MISSING');
+      // A new build replaced the script; the next start pins the new bytes instead of keeping the first pin forever.
+      writeFileSync(script, 'office v2');
+      await expect(ensureGotzjiProductHost(options)).rejects.toThrow('PRODUCT_HOST_RUNTIME_MISSING');
+      expect((await readProductConfiguration(directory, protector)).native?.scriptSha256).toBe(createHash('sha256').update('office v2').digest('hex'));
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  });
+  it('ships the hashes of the provider scripts this build packages', () => {
+    const build = fileURLToPath(new URL('../../../apps/desktop/build/', import.meta.url));
+    const sha = (name: string): string => createHash('sha256').update(readFileSync(path.join(build, name))).digest('hex');
+    expect(PRODUCT_PROVIDER_SHA256).toEqual({ office: sha('gotzji-native-office.ps1'), cad: sha('gotzji-cad-session-provider.ps1') });
   });
   it('shares concurrent app bootstrap and publishes one complete native snapshot before daemon launch', async () => {
     const directory = canonicalTemporaryDirectorySync('gotzji-concurrent-host-');

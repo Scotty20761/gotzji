@@ -85,6 +85,8 @@ export function productRuntimeRequiresManifest(entry: string, argv: readonly str
 }
 
 const MAX_SECRET_BYTES = 64 * 1024;
+/** SHA-256 of the provider scripts this build ships (LF line ends, see .gitattributes); a test pins them to the files. */
+export const PRODUCT_PROVIDER_SHA256 = { office: '4dddc9af44dc46e3e6a8c62a23652cdf48ff92515bd33d30e98c34ae25c69fbe', cad: 'bb6a1cb7754e1aea3ac163eadb1be32cd24a971adeb7f2222edaaaf5eb79f387' } as const;
 const SECRET_PROVIDER_CODES: Readonly<Record<string, string>> = { POWERSHELL_SESSION_TIMEOUT: 'SECRET_PROVIDER_TIMEOUT', POWERSHELL_SESSION_UNAVAILABLE: 'SECRET_PROVIDER_UNAVAILABLE', POWERSHELL_SESSION_OUTPUT_LIMIT: 'SECRET_PROVIDER_OUTPUT_LIMIT', POWERSHELL_SESSION_INPUT_FAILED: 'SECRET_PROVIDER_INPUT_FAILED' };
 /** Uses CurrentUser DPAPI without placing plaintext on a command line; one owned Windows PowerShell session serves every call. */
 export function windowsProductSecretProtector(session?: WindowsPowerShellSession): ProductSecretProtector {
@@ -206,20 +208,13 @@ async function bootGotzjiProductHost(options: ProductHostOptions, directory: str
   const initialIdentity = productConfigurationIdentity(config);
   if (config.libraryRoot === path.join(directory, 'workspace')) ensureProductControlDocuments(config.libraryRoot);
   if (!config.credential) config = { ...config, credential: randomBytes(32).toString('hex') };
-  if (!config.native) {
-    const candidates = options.nativeScriptPath ? [options.nativeScriptPath] : options.packaged ? [path.join(options.resourcesPath, 'gotzji-native-office.ps1')] : [path.resolve(process.cwd(), 'apps/desktop/build/gotzji-native-office.ps1'), path.resolve(process.cwd(), 'build/gotzji-native-office.ps1')];
-    const scriptPath = candidates.find((candidate) => existsSync(candidate));
-    if (scriptPath) config = { ...config, native: pinnedProductFile(scriptPath) };
-  }
-  if (config.native && !config.native.cad) {
-    const candidates = options.cadScriptPath ? [options.cadScriptPath] : options.packaged ? [path.join(options.resourcesPath, 'gotzji-cad-session-provider.ps1')] : [path.resolve(process.cwd(), 'apps/desktop/build/gotzji-cad-session-provider.ps1'), path.resolve(process.cwd(), 'build/gotzji-cad-session-provider.ps1')];
-    const scriptPath = candidates.find((candidate) => existsSync(candidate));
-    const executable = scriptPath ? discoverProductCadExecutable() : undefined;
-    if (scriptPath && executable) {
-      const provider = pinnedProductFile(scriptPath); const pin = pinnedProductFile(executable);
-      config = { ...config, native: { ...config.native, cad: { ...provider, executable: pin.scriptPath, executableSha256: pin.scriptSha256 } } };
-    }
-  }
+  const officeCandidates = options.nativeScriptPath ? [options.nativeScriptPath] : options.packaged ? [path.join(options.resourcesPath, 'gotzji-native-office.ps1')] : [path.resolve(process.cwd(), 'apps/desktop/build/gotzji-native-office.ps1'), path.resolve(process.cwd(), 'build/gotzji-native-office.ps1')];
+  const cadCandidates = options.cadScriptPath ? [options.cadScriptPath] : options.packaged ? [path.join(options.resourcesPath, 'gotzji-cad-session-provider.ps1')] : [path.resolve(process.cwd(), 'apps/desktop/build/gotzji-cad-session-provider.ps1'), path.resolve(process.cwd(), 'build/gotzji-cad-session-provider.ps1')];
+  // An explicit development path is taken as found; a shipped script must have the bytes this build ships.
+  config = reconcileProviderPins(config,
+    shippedProvider(officeCandidates, options.nativeScriptPath ? undefined : PRODUCT_PROVIDER_SHA256.office),
+    shippedProvider(cadCandidates, options.cadScriptPath ? undefined : PRODUCT_PROVIDER_SHA256.cad),
+    discoverProductCadExecutable);
   if (!config.tunnel) {
     const candidates = options.tunnelClientPath ? [options.tunnelClientPath] : options.packaged ? [path.join(options.resourcesPath, 'tunnel-client', 'tunnel-client.exe')] : [path.resolve(process.cwd(), 'apps/desktop/build/tunnel-client/tunnel-client.exe'), path.resolve(process.cwd(), 'build/tunnel-client/tunnel-client.exe')];
     const filename = candidates.find((candidate) => existsSync(candidate));
@@ -301,6 +296,45 @@ async function bootGotzjiProductHost(options: ProductHostOptions, directory: str
   throw new CoreError('PRODUCT_HOST_NOT_READY', 'Readiness budget expired; an absent endpoint does not prove a dead worker', undefined, 'host-startup', 'Inspect the retained startup incident and owner-process state before retrying');
 }
 
+type ProviderPin = { readonly scriptPath: string; readonly scriptSha256: string };
+/**
+ * The provider script found among the candidates, when its bytes are the expected ones. `undefined` when none is
+ * present or it cannot be read now (an earlier pin is kept); `null` when it is present with other bytes (its pin is
+ * dropped). No expected hash accepts the file as found.
+ */
+export function shippedProvider(candidates: readonly string[], expected: string | undefined): ProviderPin | null | undefined {
+  const scriptPath = candidates.find((candidate) => existsSync(candidate));
+  if (!scriptPath) return undefined;
+  let pin: ProviderPin;
+  try { pin = pinnedProductFile(scriptPath); } catch { return undefined; }
+  return expected === undefined || pin.scriptSha256 === expected ? pin : null;
+}
+/**
+ * Re-pin the provider scripts on every start, so a new build does not strand its own providers (incident I6). A
+ * dropped script leaves its provider unavailable while the host still starts. ZWCAD is found again only when its
+ * bytes changed; one that is no longer the qualified build leaves CAD unavailable. The pins are part of the core's
+ * policy, so a change passes the upgrade fence.
+ */
+export function reconcileProviderPins(config: ProductHostConfiguration, office: ProviderPin | null | undefined, cad: ProviderPin | null | undefined, discoverExecutable: () => ProviderPin | undefined): ProductHostConfiguration {
+  let next = config;
+  if (office === null) next = Object.fromEntries(Object.entries(next).filter(([key]) => key !== 'native')) as unknown as ProductHostConfiguration;
+  else if (office && (office.scriptPath !== next.native?.scriptPath || office.scriptSha256 !== next.native?.scriptSha256)) next = { ...next, native: { ...office, ...(next.native?.cad ? { cad: next.native.cad } : {}) } };
+  if (!next.native || cad === undefined) return next;
+  const withoutCad = { ...next, native: { scriptPath: next.native.scriptPath, scriptSha256: next.native.scriptSha256 } };
+  if (cad === null) return withoutCad;
+  const earlier = next.native.cad;
+  let executable: { executable: string; executableSha256: string };
+  // Kept unless ZWCAD is gone or has other bytes; an unreadable file (a passing lock) keeps the pin.
+  if (earlier && existsSync(earlier.executable) && shippedProvider([earlier.executable], earlier.executableSha256) !== null) executable = { executable: earlier.executable, executableSha256: earlier.executableSha256 };
+  else {
+    const found = discoverExecutable();
+    if (!found) return earlier ? withoutCad : next;
+    executable = { executable: found.scriptPath, executableSha256: found.scriptSha256 };
+  }
+  const pinned = { ...cad, ...executable };
+  return earlier && pinned.scriptPath === earlier.scriptPath && pinned.scriptSha256 === earlier.scriptSha256 && pinned.executable === earlier.executable && pinned.executableSha256 === earlier.executableSha256
+    ? next : { ...next, native: { ...next.native, cad: pinned } };
+}
 function pinnedProductFile(filename: string): { scriptPath: string; scriptSha256: string } {
   const resolved = path.resolve(filename); const info = lstatSync(resolved);
   if (!info.isFile() || info.isSymbolicLink() || realpathSync(resolved) !== resolved) throw new CoreError('NATIVE_PROVIDER_CHANGED');
@@ -322,7 +356,8 @@ function discoverRegisteredProductExecutable(provider: 'chrome' | 'python'): str
 }
 
 /** Registry discovery reads metadata only; it never attaches to a user CAD process. */
-export function discoverProductCadExecutable(): string | undefined {
+/** The qualified ZWCAD 2025 build, pinned with the bytes that were checked (no second read). */
+export function discoverProductCadExecutable(): ProviderPin | undefined {
   if (process.platform !== 'win32') return undefined;
   const registry = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'reg.exe');
   const readDefault = (key: string): string | undefined => {
@@ -337,6 +372,6 @@ export function discoverProductCadExecutable(): string | undefined {
     const pin = pinnedProductFile(executable);
     // The first release enables the exact official ZWCAD 2025 build that was
     // qualified. Other installations remain unsupported until qualified.
-    return pin.scriptSha256 === '0c2431a3b701bad4bbcbd67047dec6c31b9aecfbab998cbcf11f0a4b2b5366ca' ? pin.scriptPath : undefined;
+    return pin.scriptSha256 === '0c2431a3b701bad4bbcbd67047dec6c31b9aecfbab998cbcf11f0a4b2b5366ca' ? pin : undefined;
   } catch { return undefined; }
 }

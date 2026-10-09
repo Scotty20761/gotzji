@@ -27,6 +27,7 @@ interface CadSessionResult {
   readonly closed: true;
   readonly originalSessionsPreserved: true;
   readonly unrelatedHash: string;
+  readonly crashPromptDeclined?: boolean;
 }
 
 /** Fixed LINE actions in nonce/HWND/PID/birth-bound sessions; ambient COM is never used. */
@@ -47,6 +48,7 @@ export class GotzjiCadSessionAdapter {
     let after = first.native.after;
     let outputSha256: string | null = null;
     let reopened = false;
+    let crashPromptDeclined = first.crashPromptDeclined === true;
     if (plan.input.operation === 'cad.entity.move') {
       const operation = plan.input;
       if (!lineDisplaced(first.native.before, after, operation.displacement)) throw new GotzjiNativeError('CAD_SESSION_MOVE_UNVERIFIED', undefined, 'unknown');
@@ -65,9 +67,10 @@ export class GotzjiCadSessionAdapter {
       if (outputSha256 !== await nativeFileDigest(operation.outputPath)) throw new GotzjiNativeError('CAD_SESSION_OUTPUT_CHANGED', 'outputPath', 'unknown');
       after = second.native.before;
       reopened = true;
+      crashPromptDeclined ||= second.crashPromptDeclined === true;
     } else if (!sameLine(first.native.before, after)) throw new GotzjiNativeError('CAD_SESSION_READ_CHANGED', undefined, 'unknown');
     if (await nativeFileDigest(plan.input.filePath) !== plan.input.expectedSha256) throw new GotzjiNativeError('NATIVE_ORIGINAL_CHANGED', undefined, 'unknown');
-    return { operation: plan.input.operation, provider: 'cad', providerVersion: first.providerVersion, nativePid: first.nativePid, sourceSha256: plan.input.expectedSha256, outputSha256, originalPreserved: true, savedAndReopened: reopened, unrelatedPreserved: true, verified: true, before: first.native.before, after };
+    return { operation: plan.input.operation, provider: 'cad', providerVersion: first.providerVersion, nativePid: first.nativePid, sourceSha256: plan.input.expectedSha256, outputSha256, originalPreserved: true, savedAndReopened: reopened, unrelatedPreserved: true, verified: true, before: first.native.before, after, ...(crashPromptDeclined ? { crashPromptDeclined: true as const } : {}) };
   }
 
   private async authorize(grant: GotzjiNativeGrant, digest: string, resources: readonly string[], signal?: AbortSignal): Promise<void> {
