@@ -77,7 +77,8 @@ describe('replayed owner recipes (incident I7)', () => {
     expect(() => register(['test_phase2.py'])).toThrow(expect.objectContaining({ field: 'args' }));
     expect(() => register(['--file=${projectRoot}/x.py'])).toThrow(expect.objectContaining({ field: 'dependencies' }));
     expect(() => register([path.join(tools, 'missing.mjs')])).toThrow(expect.objectContaining({ field: 'dependencies' }));
-    expect(() => register(['-I', '--check'], [], '\\\\server\\share\\python.exe')).toThrow(expect.objectContaining({ field: 'executable' }));
+    // Two leading slashes name a network share on every platform; two backslashes are not even absolute outside Windows.
+    expect(() => register(['-I', '--check'], [], '//server/share/python.exe')).toThrow(expect.objectContaining({ code: 'INVALID_REQUEST', field: 'executable' }));
     // Windows switches such as cmd's /c or msbuild's /p: are arguments, not files.
     if (process.platform === 'win32') expect(register(['/c', 'echo', '/p:Configuration=Release'])).toMatchObject({ state: 'available' });
     f.core.registerReviewedCommand(f.credential, { recipeId: 'pinned', executable: process.execPath, args: [pinned, '--file=${projectRoot}/x.mjs'], dependencies: [pinned, '${projectRoot}/x.mjs'] });
