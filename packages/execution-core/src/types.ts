@@ -72,8 +72,12 @@ export interface ReviewedCommandRegistration {
   /** Owner-declared (incident I3): the command writes only inside the selected project folder and runs no Git or
    * whole-repository build. Absent means it may write anywhere in its workspace. */
   readonly writeScope?: 'project';
+  /** Owner-declared (incident I5): a delivery command (push, publish, promote) runs only when the owner starts it in the app. */
+  readonly delivery?: true;
 }
 export interface FileFingerprint { readonly path: string; readonly hash: string }
+/** Set only by the owner's app surface. */
+export interface PrepareOptions { readonly ownerRun?: boolean }
 export interface ReviewedCommand {
   readonly commandId: string;
   readonly executable: string;
@@ -104,7 +108,7 @@ export interface CatalogEntry {
   readonly name: string;
   readonly state: 'available' | 'unsupported';
   readonly description: string;
-  readonly controller: 'grace';
+  readonly controller: 'grace' | 'owner';
   readonly reason?: string;
   readonly recipeId?: string;
   readonly workflowId?: string;

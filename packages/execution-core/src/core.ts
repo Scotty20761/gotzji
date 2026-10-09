@@ -14,7 +14,7 @@ import { callWorker, launchWorker, observeWorker, stopWorker, workerFingerprint 
 import { signed } from './managed-worker.js';
 import { assertGraceProfile, graceProfile, productGraceProfile, type GraceProfile, type GraceRegistration, type ProductGraceRegistration } from './grace-profile.js';
 import { PRODUCT_CATALOG, claimsOverlap, folderClaim, registeredProject, productOperation, reviewedRecipe } from './product-projects.js';
-import { CoreError, type JobView, type SettleDecision, type Preparation, type RequestInput, type TaskBinding, type CodeRunReceipt, type RegisteredProject, type ProjectRegistration, type ProductOperationInput, type BasicProductOperationInput, type ProductOperation, type PreparedProductOperation, type CatalogEntry, type ReviewedCommandRegistration } from './types.js';
+import { CoreError, type JobView, type SettleDecision, type Preparation, type RequestInput, type TaskBinding, type CodeRunReceipt, type RegisteredProject, type ProjectRegistration, type ProductOperationInput, type BasicProductOperationInput, type ProductOperation, type PreparedProductOperation, type CatalogEntry, type ReviewedCommandRegistration, type PrepareOptions } from './types.js';
 import { PRODUCT_NATIVE_OPERATIONS, prepareProductNativeOperation, type ProductNativeInput, type TrustedProductNativeOptions, type ProductNativeOperationName } from './product-native.js';
 import { libraryRoute, libraryCatalog, prepareLibraryOperation, verifiedLibraryNavigationEvolution, type ProductLibraryInput, type TrustedLibraryOptions } from './product-library.js';
 import type { LibraryRouteKind, LibraryDeliveryScope } from './library-workflow-contract.js';
@@ -218,13 +218,18 @@ export class ExecutionCore {
     return [...new Set([...project.recipeIds, ...this.boundRecipeIds(adapter.owner, project.projectId)])];
   }
   /** What the owner approved, for the app only: the catalog the model reads never carries local paths. */
-  public recipeReview(credential: string, recipeId: string): { readonly recipeId: string; readonly executable: string; readonly executableSha256: string; readonly args: readonly string[]; readonly timeoutMs: number; readonly writeScope: 'project' | 'workspace'; readonly dependencies: readonly { readonly path: string; readonly pinned: 'at-approval' | 'each-run'; readonly sha256?: string }[] } {
+  public recipeReview(credential: string, recipeId: string): { readonly recipeId: string; readonly executable: string; readonly executableSha256: string; readonly args: readonly string[]; readonly timeoutMs: number; readonly writeScope: 'project' | 'workspace'; readonly delivery: boolean; readonly dependencies: readonly { readonly path: string; readonly pinned: 'at-approval' | 'each-run'; readonly sha256?: string }[] } {
     const adapter = this.authorize(credential);
     const row = this.#store.database.connection.prepare('SELECT recipe FROM gotzji_reviewed_recipes WHERE owner=? AND recipe_id=?').get(adapter.owner, recipeId);
     if (!row) throw new CoreError('RECIPE_NOT_REGISTERED', 'Choose a recipe from the server catalog', 'recipeId');
     const recipe = JSON.parse(String(row.recipe)) as ReturnType<typeof reviewedRecipe>;
-    return { recipeId: recipe.recipeId, executable: recipe.executable, executableSha256: recipe.executableHash, args: recipe.args, timeoutMs: recipe.timeoutMs, writeScope: recipe.writeScope ?? 'workspace',
+    return { recipeId: recipe.recipeId, executable: recipe.executable, executableSha256: recipe.executableHash, args: recipe.args, timeoutMs: recipe.timeoutMs, writeScope: recipe.writeScope ?? 'workspace', delivery: recipe.delivery === true,
       dependencies: recipe.dependencies.map((item) => { const fixed = item.includes('${projectRoot}') ? undefined : recipe.fixedDependencies.find((entry) => entry.path === path.resolve(item)); return fixed ? { path: item, pinned: 'at-approval' as const, sha256: fixed.hash } : { path: item, pinned: 'each-run' as const }; }) };
+  }
+  /** A delivery command is listed for the model as the owner's to run, so Grace can ask instead of trying (incident I5). */
+  private recipeCatalogText(recipeId: string, recipe: ReviewedCommandRegistration): Pick<CatalogEntry, 'description' | 'controller'> {
+    const name = recipe.displayName ?? recipeId;
+    return recipe.delivery ? { description: `${name} (delivery: the owner runs it from the gotzji app)`, controller: 'owner' } : { description: name, controller: 'grace' };
   }
   private boundRecipeIds(owner: string, projectId: string): readonly string[] {
     return this.#store.database.connection.prepare('SELECT recipe_id FROM gotzji_project_recipes WHERE owner=? AND project_id=? ORDER BY bound_at,recipe_id').all(owner, projectId).map((entry) => String(entry.recipe_id));
@@ -286,7 +291,7 @@ export class ExecutionCore {
   public catalog(credential: string): readonly CatalogEntry[] {
     const adapter = this.authorize(credential);
     const entries = PRODUCT_CATALOG.map((entry) => this.#grace?.recipe === 'product' || entry.state === 'unsupported' ? { ...entry } : { ...entry, state: 'unsupported' as const, reason: 'PRODUCT_PROFILE_REQUIRED' });
-    const recipes = this.#store.database.connection.prepare('SELECT recipe_id,recipe FROM gotzji_reviewed_recipes WHERE owner=? ORDER BY recipe_id').all(adapter.owner).map((row): CatalogEntry => ({ name: `command.recipe.${String(row.recipe_id)}`, recipeId: String(row.recipe_id), state: 'available', description: (JSON.parse(String(row.recipe)) as ReviewedCommandRegistration).displayName ?? String(row.recipe_id), controller: 'grace' }));
+    const recipes = this.#store.database.connection.prepare('SELECT recipe_id,recipe FROM gotzji_reviewed_recipes WHERE owner=? ORDER BY recipe_id').all(adapter.owner).map((row): CatalogEntry => ({ name: `command.recipe.${String(row.recipe_id)}`, recipeId: String(row.recipe_id), state: 'available', ...this.recipeCatalogText(String(row.recipe_id), JSON.parse(String(row.recipe)) as ReviewedCommandRegistration) }));
     const native = PRODUCT_NATIVE_OPERATIONS.map((name): CatalogEntry => ({ name, state: this.nativeAvailable(name) ? 'available' : 'unsupported', description: `Grace-controlled ${name} with original preservation and native receipt verification`, controller: 'grace', ...(this.nativeAvailable(name) ? {} : { reason: 'NATIVE_PROVIDER_NOT_QUALIFIED' }) }));
     const browser = PRODUCT_BROWSER_OPERATIONS.map((name): CatalogEntry => ({ name, state: this.#browser && this.#grace?.recipe === 'product' && (this.#browser.operations ?? PRODUCT_BROWSER_OPERATIONS).includes(name) ? 'available' : 'unsupported', description:`Grace-controlled ${name} in the enrolled owned browser session`,controller:'grace',...(this.#browser && this.#grace?.recipe === 'product' ? {} : {reason:'BROWSER_PROVIDER_NOT_QUALIFIED'}) }));
     const library: CatalogEntry[] = [];
@@ -303,12 +308,13 @@ export class ExecutionCore {
       return !lstatSync(this.#native.scriptPath).isSymbolicLink() && realpathSync(this.#native.scriptPath) === path.resolve(this.#native.scriptPath) && hash(readFileSync(this.#native.scriptPath)) === this.#native.scriptSha256;
     } catch { return false; }
   }
-  public prepareOperation(credential: string, input: BasicProductOperationInput): Preparation;
-  public prepareOperation(credential: string, input: ProductNativeInput): Promise<Preparation>;
-  public prepareOperation(credential: string, input: ProductBrowserInput): Promise<Preparation>;
-  public prepareOperation(credential: string, input: ProductLibraryInput): Preparation;
-  public prepareOperation(credential: string, input: ProductOperationInput): Preparation | Promise<Preparation>;
-  public prepareOperation(credential: string, input: ProductOperationInput): Preparation | Promise<Preparation> {
+  public prepareOperation(credential: string, input: BasicProductOperationInput, options?: PrepareOptions): Preparation;
+  public prepareOperation(credential: string, input: ProductNativeInput, options?: PrepareOptions): Promise<Preparation>;
+  public prepareOperation(credential: string, input: ProductBrowserInput, options?: PrepareOptions): Promise<Preparation>;
+  public prepareOperation(credential: string, input: ProductLibraryInput, options?: PrepareOptions): Preparation;
+  public prepareOperation(credential: string, input: ProductOperationInput, options?: PrepareOptions): Preparation | Promise<Preparation>;
+  /** `ownerRun` is set only by the owner's app surface; every other caller is refused delivery commands (incident I5). */
+  public prepareOperation(credential: string, input: ProductOperationInput, options: PrepareOptions = {}): Preparation | Promise<Preparation> {
     const adapter = this.authorize(credential, true);
     if (this.#grace?.recipe !== 'product') throw new CoreError('PRODUCT_PROFILE_REQUIRED');
     const row = this.#store.database.connection.prepare('SELECT registration FROM gotzji_projects WHERE owner=? AND project_id=?').get(adapter.owner, input?.projectId ?? '');
@@ -352,7 +358,9 @@ export class ExecutionCore {
     }
     const basic = input as BasicProductOperationInput;
     const recipe = basic.operation === 'command.run' ? this.#store.database.connection.prepare('SELECT recipe FROM gotzji_reviewed_recipes WHERE owner=? AND recipe_id=?').get(adapter.owner, basic.commandId ?? '') : undefined;
-    const operation = productOperation(JSON.parse(String(row.registration)) as RegisteredProject, basic, recipe ? JSON.parse(String(recipe.recipe)) as ReturnType<typeof reviewedRecipe> : undefined,{privateRuntimeRoots:this.privateRuntimeRoots(),boundRecipeIds:this.boundRecipeIds(adapter.owner,basic.projectId)});
+    const reviewed = recipe ? JSON.parse(String(recipe.recipe)) as ReturnType<typeof reviewedRecipe> : undefined;
+    if (reviewed?.delivery && options.ownerRun !== true) throw new CoreError('DELIVERY_OWNER_ONLY', 'A delivery command runs only when the owner starts it in the gotzji app', 'commandId', 'request', 'Ask the owner to run this delivery from the gotzji app');
+    const operation = productOperation(JSON.parse(String(row.registration)) as RegisteredProject, basic, reviewed,{privateRuntimeRoots:this.privateRuntimeRoots(),boundRecipeIds:this.boundRecipeIds(adapter.owner,basic.projectId)});
     return this.createPreparation(credential, { requestId: input.requestId, operation: 'grace.product-operation', text: JSON.stringify(operation) });
   }
   public async list(credential: string): Promise<readonly JobView[]> {

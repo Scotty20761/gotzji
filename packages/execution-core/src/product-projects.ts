@@ -30,6 +30,7 @@ export function reviewedRecipe(registration: ReviewedCommandRegistration): Revie
   const timeoutMs = registration.timeoutMs ?? 120000;
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 7200000) invalid('timeoutMs', 'Use a budget between 100 ms and two hours');
   if (registration.writeScope !== undefined && registration.writeScope !== 'project') invalid('writeScope', 'Declare project, or leave it out when the command may write anywhere in its workspace');
+  if (registration.delivery !== undefined && registration.delivery !== true) invalid('delivery', 'Declare true for a delivery command, or leave it out');
   const fixedDependencies = registration.dependencies.filter((item) => !item.includes('${projectRoot}')).map((item) => fingerprint(item));
   if (fixedDependencies.some((entry) => /^[\\/]{2}/u.test(entry.path))) invalid('dependencies', 'Pin files on a local disk, not a network path');
   // A file the command is given must be declared: absolute and projectRoot paths are dependencies, and a relative or

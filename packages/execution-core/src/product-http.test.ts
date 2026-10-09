@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import { readFile } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
 import { startProductHttp } from './product-http.js';
 import { CoreError } from './types.js';
 import { request as httpRequest } from 'node:http';
@@ -50,7 +52,8 @@ describe('governed product HTTP and MCP boundary', () => {
       expect(await app('registerRecipe', { recipeId: 'phase-tests', executable: 'C:/Python/python.exe', args: [7], dependencies: [] })).toBe(false);
       expect(await app('registerRecipe', { recipeId: 'phase-tests', executable: 'C:/Python/python.exe', args: ['-I'], dependencies: [], shell: true })).toBe(false);
       expect(await app('registerRecipe', { recipeId: 'phase-tests', executable: 'C:/Python/python.exe', args: ['-I'], dependencies: [], writeScope: 'workspace' })).toBe(false);
-      expect(await app('registerRecipe', { recipeId: 'phase-tests', displayName: 'Phase 2 checks', executable: 'C:/Python/python.exe', args: ['-I'], dependencies: [], timeoutMs: 600000, writeScope: 'project' })).toBe(true);
+      expect(await app('registerRecipe', { recipeId: 'phase-tests', executable: 'C:/Python/python.exe', args: ['-I'], dependencies: [], delivery: false })).toBe(false);
+      expect(await app('registerRecipe', { recipeId: 'phase-tests', displayName: 'Phase 2 checks', executable: 'C:/Python/python.exe', args: ['-I'], dependencies: [], timeoutMs: 600000, writeScope: 'project', delivery: true })).toBe(true);
       expect(await app('bindProjectRecipe', { projectId: 'test', recipeId: 'phase-tests', extra: true })).toBe(false);
       expect(await app('bindProjectRecipe', { projectId: 'test', recipeId: 'phase-tests' })).toBe(true);
       expect(calls).toEqual(['registerProject', 'settleJob', 'registerRecipe', 'bindProjectRecipe']);
@@ -142,5 +145,12 @@ describe('governed product HTTP and MCP boundary', () => {
       }
       expect(calls).toEqual(['status']);
     } finally { await host.close(); }
+  });
+
+  it('lets only the owner app surface start a delivery command (incident I5)', async () => {
+    // The core refuses delivery recipes unless the caller says the owner started the run; only the app surface may say so.
+    const source = await readFile(fileURLToPath(new URL('./product-server.mjs', import.meta.url)), 'utf8');
+    expect(source.match(/core\.prepareOperation\(/gu)).toHaveLength(1);
+    expect(source).toContain("core.prepareOperation(credential, input, { ownerRun: surface === 'app' })");
   });
 });

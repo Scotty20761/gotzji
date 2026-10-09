@@ -126,7 +126,8 @@ const listener = await startProductHttp({ token: config.daemonSecret, mcpPathSec
     case 'registerRecipe': { if (surface !== 'app') throw new CoreError('RECIPE_REGISTRATION_DENIED'); const entry = core.registerReviewedCommand(credential, input); return { ...entry, review: core.recipeReview(credential, entry.recipeId) }; }
     case 'bindProjectRecipe': if (surface !== 'app') throw new CoreError('RECIPE_REGISTRATION_DENIED'); return core.bindProjectRecipe(credential, input);
     case 'catalog': { const session = browser?.projection(); return core.catalog(credential).map((entry) => entry.name.startsWith('browser.') && session?.state === 'ready' ? { ...entry, browserSession: session } : entry); }
-    case 'prepareOperation': return core.prepareOperation(credential, input);
+    // Only the owner's app may start a delivery command (incident I5); every other surface prepares as Grace.
+    case 'prepareOperation': return core.prepareOperation(credential, input, { ownerRun: surface === 'app' });
     case 'submit': return core.submit(credential, input.preparationId);
     case 'list': return core.list(credential);
     case 'inspectQueue': return core.inspectQueue(credential);

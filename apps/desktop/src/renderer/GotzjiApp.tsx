@@ -169,6 +169,8 @@ export function GotzjiApp(): ReactElement {
             <textarea disabled={busy} value={recipeForm[field]} onChange={(event) => setRecipeForm({ ...recipeForm, [field]: event.target.value })} /></label>)}
           <label><input type="checkbox" disabled={busy} checked={recipeForm.projectOnly} onChange={(event) => setRecipeForm({ ...recipeForm, projectOnly: event.target.checked })} />
             เขียนเฉพาะในโฟลเดอร์ของโครงการ: เลือกเมื่อคำสั่งนี้ไม่เขียนนอกโฟลเดอร์ของโครงการ และไม่รัน Git หรือ build ทั้งคลัง งานในโฟลเดอร์อื่นของเวิร์กสเปซเดียวกันจะทำพร้อมกันได้ ถ้าไม่เลือก คำสั่งนี้จะถือทั้งเวิร์กสเปซจนจบ</label>
+          <label><input type="checkbox" disabled={busy} checked={recipeForm.delivery} onChange={(event) => setRecipeForm({ ...recipeForm, delivery: event.target.checked })} />
+            คำสั่งส่งมอบ (push, เผยแพร่, โปรโมตเป็นเวอร์ชันทางการ): Grace สั่งรันเองไม่ได้ คุณกดรันจากหน้าทำงานของแอปนี้เองทุกครั้ง สิ่งที่ถูกส่งออกคือสิ่งที่อยู่ในโครงการตอนที่รัน ถ้าต้องการตรึงสิ่งที่ส่ง ให้ประกาศไฟล์นั้นเป็นไฟล์ที่คำสั่งใช้</label>
           <button disabled={busy || !recipeForm.recipeId || !recipeForm.executable} onClick={() => void act(async () => { setRecipeReview(recipeReviewLines(await request('registerRecipe', { ...recipeRequest(recipeForm) }))); await refresh(); })}>อนุมัติคำสั่งนี้</button>
           {recipeReview.length > 0 && <pre>{recipeReview.join('\n')}</pre>}
           <label>ผูกกับโครงการ<select disabled={busy} value={recipeBinding.projectId} onChange={(event) => setRecipeBinding({ ...recipeBinding, projectId: event.target.value })}><option value="">เลือกโครงการ</option>
