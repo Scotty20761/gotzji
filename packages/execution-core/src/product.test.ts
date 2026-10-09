@@ -134,7 +134,8 @@ describe('governed product operations — real native Goal, file and process sea
     await f.core.cancel(f.credential, f.bindings[0]!);
     expect((await f.core.submit(f.credential, overflow.preparationId)).status).toBe('queued');
     expect((await f.core.list(f.credential)).length).toBe(33);
-  }, 15000);
+    // About 8 s locally, mostly re-hashing node.exe per submit; hosted Windows runners have taken over 15 s.
+  }, process.env.CI ? 45_000 : 15_000);
   it('waits for dependencies and rejects failed dependency work without starting an effect', async () => {
     const f = await fixture(); await project(f, 'one'); await project(f, 'two');
     const dependency = await submit(f, { requestId: 'parent', projectId: 'one', operation: 'command.run', commandId: 'run' });

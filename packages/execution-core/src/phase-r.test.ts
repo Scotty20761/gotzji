@@ -16,6 +16,8 @@ import type { AddressInfo } from 'node:net';
 import type { GraceRegistration } from './grace-profile.js';
 import { acquireHostOwnership, hashJavaScriptClosure } from './phase-r-host-identity.mjs';
 import { canonicalTemporaryDirectory } from './test-fixtures.js';
+// Hosted Windows runners stall for seconds at a time (process spawn, first PowerShell, Defender scans); CI gets three times each budget.
+const BUDGET = process.env.CI ? 3 : 1;
 const fixtures: { root: string; core: ExecutionCore }[] = [];
 afterEach(async () => {
   for (const {root,core} of fixtures.splice(0)) {
@@ -36,7 +38,7 @@ async function codeFixture(validationMs=25,now?:()=>Date):Promise<{root:string;c
 }
 async function waitFor(fn:()=>Promise<boolean>):Promise<void>{for(let n=0;n<400;n++){if(await fn()) return;await new Promise((r)=>setTimeout(r,20));}throw new Error('condition not observed');}
 const sha256=(value:string):string=>createHash('sha256').update(value).digest('hex');
-function nextLine(child:ChildProcessWithoutNullStreams):Promise<string>{return new Promise((resolve,reject)=>{let buffer='',stderr='';const timeout=setTimeout(()=>{cleanup();reject(new Error('child reply timeout: '+stderr));},10000);const onErrorData=(chunk:Buffer):void=>{stderr=(stderr+chunk.toString('utf8')).slice(-4096);};const onData=(chunk:Buffer):void=>{buffer+=chunk.toString('utf8');const end=buffer.indexOf('\n');if(end>=0){cleanup();resolve(buffer.slice(0,end));}};const onExit=(code:number|null,signal:NodeJS.Signals|null):void=>{cleanup();reject(new Error(`child exited before writing a line (code=${code}, signal=${signal}): ${stderr}`));};const cleanup=():void=>{clearTimeout(timeout);child.stdout.off('data',onData);child.stderr.off('data',onErrorData);child.off('exit',onExit);};child.stdout.on('data',onData);child.stderr.on('data',onErrorData);child.once('exit',onExit);});}
+function nextLine(child:ChildProcessWithoutNullStreams):Promise<string>{return new Promise((resolve,reject)=>{let buffer='',stderr='';const timeout=setTimeout(()=>{cleanup();reject(new Error('child reply timeout: '+stderr));},10000*BUDGET);const onErrorData=(chunk:Buffer):void=>{stderr=(stderr+chunk.toString('utf8')).slice(-4096);};const onData=(chunk:Buffer):void=>{buffer+=chunk.toString('utf8');const end=buffer.indexOf('\n');if(end>=0){cleanup();resolve(buffer.slice(0,end));}};const onExit=(code:number|null,signal:NodeJS.Signals|null):void=>{cleanup();reject(new Error(`child exited before writing a line (code=${code}, signal=${signal}): ${stderr}`));};const cleanup=():void=>{clearTimeout(timeout);child.stdout.off('data',onData);child.stderr.off('data',onErrorData);child.off('exit',onExit);};child.stdout.on('data',onData);child.stderr.on('data',onErrorData);child.once('exit',onExit);});}
 async function jsonLine(child:ChildProcessWithoutNullStreams,request:unknown):Promise<Record<string,unknown>>{
  const line=nextLine(child);child.stdin.write(`${JSON.stringify(request)}\n`);return JSON.parse(await line) as Record<string,unknown>;
 }
@@ -53,7 +55,7 @@ it('real code repair and asynchronous command produce native gate evidence and t
   expect(await f.core.readCodeResult(f.credential,binding)).toMatchObject({content:f.registration.expectedContent});
   const db=new DatabaseSync(path.join(f.root,'core','core.sqlite'));try{const goal=db.prepare('SELECT engineering_metadata_json FROM goals').get();expect(JSON.parse(String(goal?.engineering_metadata_json)).gates[0].status).toBe('passed');expect(db.prepare('SELECT COUNT(*) n FROM gotzji_outbox WHERE job_id=?').get(job.jobId)?.n).toBe(1);}finally{db.close();}
  }finally{await f.core.cancel(f.credential,binding);}
-},10000);
+},10000*BUDGET);
 it('observer closure and retry preserve the live command and exactly one effect/job',async()=>{
  const f=await codeFixture(1200);const p=f.core.prepareCodeChange(f.credential,'same-code');const job=await f.core.submit(f.credential,p.preparationId);const binding=f.core.select(f.credential,job.jobId);
  await f.core.resume(f.credential,binding);
@@ -68,7 +70,7 @@ it('observer closure and retry preserve the live command and exactly one effect/
   const db=new DatabaseSync(path.join(f.root,'core','core.sqlite'));try{expect(db.prepare('SELECT COUNT(*) n FROM gotzji_workers WHERE job_id=?').get(job.jobId)?.n).toBe(1);expect(db.prepare('SELECT COUNT(*) n FROM gotzji_claims').get()?.n).toBe(1);}finally{db.close();}
   const logs=reopened.logs(f.credential,binding,0,80);expect(Buffer.byteLength(logs.text)).toBeLessThanOrEqual(80);expect(logs.nextCursor).toBeGreaterThan(0);
  }finally{if(reopened){await reopened.cancel(f.credential,binding);reopened.close();}else if(!originalClosed){await f.core.cancel(f.credential,binding);}}
-},10000);
+},10000*BUDGET);
 it('returns the host-authorized delivery boundary with the canonical selected job', async () => {
   const root=await canonicalTemporaryDirectory('gotzji-phase-r-');
   const core=await ExecutionCore.open(root); fixtures.push({root,core});
@@ -92,7 +94,7 @@ it('cancellation stops the owned validation command and preserves the cancelled 
  const stopped=JSON.parse(JSON.parse(await readFile(path.join(directory,'stopped.json'),'utf8')).body) as {descendants:number[]};
  expect(stopped.descendants.every((pid)=>alive(pid)===false)).toBe(true);
  expect((await f.core.get(f.credential,binding)).status).toBe('cancelled');
-},10000);
+},10000*BUDGET);
 
 it('rejects native gate evidence when the observed run is rebound to another goal',async()=>{
  const f=await codeFixture();const p=f.core.prepareCodeChange(f.credential,'goal-bound-code');const job=await f.core.submit(f.credential,p.preparationId);const binding=f.core.select(f.credential,job.jobId);
@@ -107,7 +109,7 @@ it('rejects native gate evidence when the observed run is rebound to another goa
   if(originalGoalId){const db=new DatabaseSync(path.join(f.root,'core','core.sqlite'));try{db.prepare('UPDATE gotzji_claims SET goal_id=? WHERE id=?').run(originalGoalId,job.jobId);}finally{db.close();}}
   await f.core.cancel(f.credential,binding);
  }
-},10000);
+},10000*BUDGET);
 
 it('rejects a signed command receipt that does not match the registered validator recipe',async()=>{
  const f=await codeFixture(3000);const p=f.core.prepareCodeChange(f.credential,'recipe-bound-code');const job=await f.core.submit(f.credential,p.preparationId);const binding=f.core.select(f.credential,job.jobId);
@@ -124,7 +126,7 @@ it('rejects a signed command receipt that does not match the registered validato
   const body=JSON.stringify(receipt);await writeFile(filename,JSON.stringify({body,mac:createHmac('sha256',worker.token).update(body).digest('hex')}));
   await expect(f.core.get(f.credential,binding)).rejects.toThrow('COMMAND_RECEIPT_INVALID');
  }finally{await f.core.cancel(f.credential,binding);}
-},10000);
+},10000*BUDGET);
 
 it('recovers an expired completed code worker only after proving the old process stopped',async()=>{
  let clock=Date.now();const f=await codeFixture(25,()=>new Date(clock));const p=f.core.prepareCodeChange(f.credential,'expired-complete');const job=await f.core.submit(f.credential,p.preparationId);const binding=f.core.select(f.credential,job.jobId);
@@ -135,7 +137,7 @@ it('recovers an expired completed code worker only after proving the old process
  expect((await f.core.get(f.credential,binding)).status).toBe('completed');
  const stopped=JSON.parse(JSON.parse(await readFile(path.join(directory,'stopped.json'),'utf8')).body) as {pid:number;descendants:number[]};
  expect([stopped.pid,...stopped.descendants].every((pid)=>alive(pid)===false)).toBe(true);
-},10000);
+},10000*BUDGET);
 
 it('replays only the read-only validation path after an expired partial code run is stopped',async()=>{
  let clock=Date.now();const f=await codeFixture(1500,()=>new Date(clock));const p=f.core.prepareCodeChange(f.credential,'expired-partial');const job=await f.core.submit(f.credential,p.preparationId);const binding=f.core.select(f.credential,job.jobId);
@@ -147,7 +149,7 @@ it('replays only the read-only validation path after an expired partial code run
  await waitFor(async()=>{await f.core.tick();return (await f.core.get(f.credential,binding)).status==='completed';});
  const after=new DatabaseSync(path.join(f.root,'core','core.sqlite'));try{expect(after.prepare('SELECT reason FROM gotzji_worker_history WHERE epoch=?').get(old.epoch)?.reason).toBe('stopped');expect(after.prepare('SELECT epoch FROM gotzji_workers WHERE job_id=?').get(job.jobId)?.epoch).not.toBe(old.epoch);}finally{after.close();}
  expect(await verifyStoppedWorker(old)).toBe(true);
-},15000);
+},15000*BUDGET);
 
 it('keeps a real nonzero validator result blocked instead of replaying it as an interruption',async()=>{
  let clock=Date.now();const f=await codeFixture(5000,()=>new Date(clock));const p=f.core.prepareCodeChange(f.credential,'failed-validation');const job=await f.core.submit(f.credential,p.preparationId);const binding=f.core.select(f.credential,job.jobId);
@@ -162,7 +164,7 @@ it('keeps a real nonzero validator result blocked instead of replaying it as an 
   await expect(f.core.tick()).rejects.toThrow('VALIDATION_FAILED');
   expect((await f.core.get(f.credential,binding)).status).toBe('blocked');
  }finally{await f.core.cancel(f.credential,binding);}
-},15000);
+},15000*BUDGET);
 
 it.each([false,true])('keeps the authenticated live owner when health is permanently unavailable=%s',async(permanentlyUnavailable)=>{
  const f=await codeFixture();
@@ -191,7 +193,7 @@ it.each([false,true])('keeps the authenticated live owner when health is permane
   if(child.exitCode===null){const exited=once(child,'exit');child.kill();await exited;}
   await new Promise<void>((resolve)=>server.close(()=>resolve()));ownership.release();
  }
-},10000);
+},10000*BUDGET);
 
 it('admits concurrent and rejoined frontends while data drift blocks only new effects',async()=>{
  const root=await canonicalTemporaryDirectory('gotzji-phase-r-host-');const directory=path.join(root,'core');let daemonPid:number|undefined;let workerDirectory='';const frontends:ChildProcessWithoutNullStreams[]=[];
@@ -200,7 +202,7 @@ it('admits concurrent and rejoined frontends while data drift blocks only new ef
   const sourceFile=path.join(root,'source.mjs');await writeFile(sourceFile,'export function add(a, b) { return a - b; }\n');
   const registration={executable:process.execPath,libraryRoot,sourceFile,testDriver:fileURLToPath(new URL('./grace-test-driver.mjs',import.meta.url)),recipe:'code-check' as const,expectedContent:'export function add(a, b) { return a + b; }\n',validationMs:500};
   const seedScript="const {readFileSync}=await import('node:fs');const {ExecutionCore}=await import(process.argv[1]);const {DatabaseSync}=await import('node:sqlite');const registration=JSON.parse(process.argv[2]),directory=process.argv[3];const core=await ExecutionCore.open(directory,{grace:registration});const credential=core.enrollAdapter('gotzji','owner');const prepared=core.prepare(credential,{requestId:'frontend-data-drift',operation:'fixture.hold',text:''});const job=await core.submit(credential,prepared.preparationId);await core.resume(credential,core.select(credential,job.jobId));const db=new DatabaseSync(directory+'/core.sqlite',{readOnly:true});let workerDirectory;try{workerDirectory=db.prepare('SELECT directory FROM gotzji_workers WHERE job_id=?').get(job.jobId).directory;}finally{db.close();}const isAlive=(pid)=>{try{process.kill(pid,0);return true;}catch(e){return e.code==='ESRCH'?false:'unknown';}};let ready=false,last;for(let attempt=0;attempt<400;attempt++){try{last=JSON.parse(JSON.parse(readFileSync(workerDirectory+'/observation.json','utf8')).body);if(last.state==='running'&&last.descendants.length===2&&isAlive(last.pid)===true&&last.descendants.every(pid=>isAlive(pid)===true)){ready=true;break;}}catch{}await new Promise(r=>setTimeout(r,20));}if(!ready)throw new Error('Seed hold tree not ready: '+JSON.stringify({state:last?.state,descendantCount:last?.descendants?.length}));core.close();process.stdout.write(JSON.stringify({credential,jobId:job.jobId,workerDirectory}));process.exit(0);";
-  const seeded=spawnSync(process.execPath,['--input-type=module','-e',seedScript,pathToFileURL(fileURLToPath(new URL('../dist/core.js',import.meta.url))).href,JSON.stringify(registration),directory],{encoding:'utf8',windowsHide:true,timeout:15000});expect(seeded.status,seeded.stderr).toBe(0);const seed=JSON.parse(seeded.stdout) as {credential:string;jobId:string;workerDirectory:string};const {credential,jobId}=seed;workerDirectory=seed.workerDirectory;let setupObservation:unknown;try{await waitFor(async()=>{try{const observed=JSON.parse(JSON.parse(await readFile(path.join(workerDirectory,'observation.json'),'utf8')).body) as {pid:number;state:string;descendants:number[]};setupObservation={state:observed.state,parentAlive:alive(observed.pid),descendantCount:observed.descendants.length,descendantsAlive:observed.descendants.map((pid)=>alive(pid))};return observed.state==='running'&&observed.descendants.length===2&&alive(observed.pid)===true&&observed.descendants.every((pid)=>alive(pid)===true);}catch(error){setupObservation={readError:error instanceof Error?error.message:'unknown'};return false;}});}catch{throw new Error('Hold setup did not become ready: '+JSON.stringify(setupObservation));}
+  const seeded=spawnSync(process.execPath,['--input-type=module','-e',seedScript,pathToFileURL(fileURLToPath(new URL('../dist/core.js',import.meta.url))).href,JSON.stringify(registration),directory],{encoding:'utf8',windowsHide:true,timeout:15000*BUDGET});expect(seeded.status,seeded.stderr).toBe(0);const seed=JSON.parse(seeded.stdout) as {credential:string;jobId:string;workerDirectory:string};const {credential,jobId}=seed;workerDirectory=seed.workerDirectory;let setupObservation:unknown;try{await waitFor(async()=>{try{const observed=JSON.parse(JSON.parse(await readFile(path.join(workerDirectory,'observation.json'),'utf8')).body) as {pid:number;state:string;descendants:number[]};setupObservation={state:observed.state,parentAlive:alive(observed.pid),descendantCount:observed.descendants.length,descendantsAlive:observed.descendants.map((pid)=>alive(pid))};return observed.state==='running'&&observed.descendants.length===2&&alive(observed.pid)===true&&observed.descendants.every((pid)=>alive(pid)===true);}catch(error){setupObservation={readError:error instanceof Error?error.message:'unknown'};return false;}});}catch{throw new Error('Hold setup did not become ready: '+JSON.stringify(setupObservation));}
   const daemonSecret=randomBytes(32).toString('hex');const configPath=path.join(root,'host.json');await writeFile(configPath,JSON.stringify({...registration,directory,credential,daemonSecret}));
   const frontend=fileURLToPath(new URL('../dist/phase-r-frontend.mjs',import.meta.url));
   for(let n=0;n<2;n++) frontends.push(spawn(process.execPath,[frontend,configPath],{stdio:['pipe','pipe','pipe'],windowsHide:true}));
@@ -235,7 +237,7 @@ it('admits concurrent and rejoined frontends while data drift blocks only new ef
   const ownedPids=new Set<number>();if(workerDirectory){for(const name of ['ready.json','observation.json','stopped.json']){try{const value=JSON.parse(JSON.parse(await readFile(path.join(workerDirectory,name),'utf8')).body) as {pid?:number;descendants?:number[]};if(value.pid)ownedPids.add(value.pid);for(const pid of value.descendants??[])ownedPids.add(pid);}catch{ /* incomplete fixture receipts remain optional during cleanup */ }}}for(const pid of ownedPids)if(alive(pid)===true)try{process.kill(pid);}catch{ /* the owned fixture process may already have exited */ }for(let attempt=0;attempt<100&&[...ownedPids].some((pid)=>alive(pid)===true);attempt++)await new Promise((resolve)=>setTimeout(resolve,20));
   await rm(root,{recursive:true,force:true,maxRetries:5,retryDelay:100});
  }
-},30000);
+},30000*BUDGET);
 
 it('serializes competing stale-owner reclaimers and treats an incomplete legacy owner as transient contention',async()=>{
  const root=await canonicalTemporaryDirectory('gotzji-phase-r-host-');const database=new DatabaseSync(path.join(root,'core.sqlite'));database.exec("CREATE TABLE gotzji_host_owners (name TEXT PRIMARY KEY, pid INTEGER NOT NULL, nonce TEXT NOT NULL); INSERT INTO gotzji_host_owners VALUES ('daemon',2147483647,'dead-owner');");database.close();
@@ -247,7 +249,7 @@ it('serializes competing stale-owner reclaimers and treats an incomplete legacy 
   const check=new DatabaseSync(path.join(root,'core.sqlite'));try{expect(check.prepare('SELECT COUNT(*) n FROM gotzji_host_owners').get()?.n).toBe(0);}finally{check.close();}
   await writeFile(path.join(root,'daemon-owner.json'),'{');expect(acquireHostOwnership(root,key)).toBeNull();await rm(path.join(root,'daemon-owner.json'));const recovered=acquireHostOwnership(root,key);expect(recovered).not.toBeNull();recovered?.release();
  }finally{for(const child of children) if(child.exitCode===null) child.kill();await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:100});}
-},15000);
+},15000*BUDGET);
 
 it('changes the host closure identity when a loaded dependency byte changes',async()=>{
  const root=await canonicalTemporaryDirectory('gotzji-phase-r-host-');try{const entry=path.join(root,'entry.mjs'),dependency=path.join(root,'dependency.mjs');await writeFile(entry,"export { value } from './dependency.mjs';\n");await writeFile(dependency,'export const value = 1;\n');const before=hashJavaScriptClosure([pathToFileURL(entry)]);await writeFile(dependency,'export const value = 2;\n');expect(hashJavaScriptClosure([pathToFileURL(entry)])).not.toBe(before);}finally{await rm(root,{recursive:true,force:true});}
