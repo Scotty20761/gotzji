@@ -1,5 +1,6 @@
 import { randomUUID, createHmac } from 'node:crypto';
-import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, openSync, readSync, closeSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, openSync, readSync, closeSync, type Dirent } from 'node:fs';
+import { lstat, readdir, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -29,6 +30,12 @@ const WRITE_SLOTS = 2;
 // A live worker that misses a status call is busy (a synchronous SQLite wait, a file retry), not lost. Healthy checks
 // renew it every 30 s; only one left unrenewed this long is treated as unobservable.
 const UNOBSERVED_GRACE_MS = 90_000;
+// Retention (incident I8): a finished job's worker and effect folders are kept 30 days after its worker retired, and
+// fewer while all job folders pass 256 MiB. Its rows stay. One pass an hour.
+const RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+const RETENTION_BYTES = 256 * 1024 * 1024;
+const RETENTION_INTERVAL_MS = 60 * 60 * 1000;
+const RESULT_EXPIRED = 'Retention removed this job’s files; its status and history remain';
 const SETTLE_REFUSALS = {
   SETTLE_UNSUPPORTED: 'Only project file and command jobs can be settled by the owner',
   JOB_NOT_SETTLEABLE: 'Only a blocked job that still holds its project can be settled',
@@ -53,6 +60,18 @@ function reportText(value: string): string {
 function unwrap<T>(result: Result<T>): T { if (!result.ok) {const reason=result.error.details?.reason;throw new CoreError(result.error.code,isEngineeringGateEvidenceFailureReason(reason)?reason:undefined);} return result.value; }
 
 /** Foundation host. Only fixed qualification recipes are executable in this version. */
+/** Bytes of the regular files under a folder, never following links. */
+async function treeBytes(folder: string): Promise<number> {
+  let entries: Dirent[];
+  try { entries = await readdir(folder, { withFileTypes: true }); } catch { return 0; }
+  let total = 0;
+  for (const entry of entries) {
+    const child = path.join(folder, entry.name);
+    if (entry.isDirectory()) total += await treeBytes(child);
+    else if (entry.isFile()) { try { total += (await lstat(child)).size; } catch { /* removed meanwhile */ } }
+  }
+  return total;
+}
 export class ExecutionCore {
   readonly #store: CoreStore;
   readonly #goals: SqliteGoalRepository;
@@ -67,9 +86,11 @@ export class ExecutionCore {
   #browser: CoreBrowserOptions | null;
   readonly #privateRuntimeRoots: readonly string[];
   #timer: ReturnType<typeof setInterval> | undefined;
+  readonly #retentionBytes: number;
+  #prunedAt = -Infinity;
   #closed = false;
 
-  private constructor(root: string, now: () => Date, grace: GraceRegistration | undefined, controlOnly: boolean, product?: ProductGraceRegistration, upgrade?: CoreUpgrade, nativeOptions?: CoreNativeOptions, libraryOptions?: TrustedLibraryOptions, browserOptions?: CoreBrowserOptions, privateRuntimeRoots: readonly string[] = []) {
+  private constructor(root: string, now: () => Date, grace: GraceRegistration | undefined, controlOnly: boolean, product?: ProductGraceRegistration, upgrade?: CoreUpgrade, nativeOptions?: CoreNativeOptions, libraryOptions?: TrustedLibraryOptions, browserOptions?: CoreBrowserOptions, privateRuntimeRoots: readonly string[] = [], retentionBytes?: number) {
     mkdirSync(root, { recursive: true, mode: 0o700 });
     this.#root = realpathSync(root);
     this.#privateRuntimeRoots=[...new Set([this.#root,...privateRuntimeRoots.map((entry)=>realpathSync(entry))])];
@@ -82,6 +103,8 @@ export class ExecutionCore {
     if (nativeOptions?.testRunnerModule && this.#grace?.mode !== 'test-driver') throw new CoreError('NATIVE_TEST_RUNNER_DENIED');
     if (libraryOptions?.testRunnerModule && this.#grace?.mode !== 'test-driver') throw new CoreError('LIBRARY_TEST_RUNNER_DENIED');
     if (browserOptions?.testTransportModule && this.#grace?.mode !== 'test-driver') throw new CoreError('BROWSER_TEST_TRANSPORT_DENIED');
+    if (retentionBytes !== undefined && this.#grace?.mode !== 'test-driver') throw new CoreError('RETENTION_TEST_CAP_DENIED');
+    this.#retentionBytes = retentionBytes ?? RETENTION_BYTES;
     this.#policy = controlOnly ? CoreStore.existingPolicy(path.join(this.#root,'core.sqlite')) : this.policyFingerprint();
     this.#store = new CoreStore(path.join(this.#root, 'core.sqlite'), this.#policy, upgrade);
     this.#goals = new SqliteGoalRepository(this.#store.database);
@@ -126,10 +149,10 @@ export class ExecutionCore {
       })) },
     });
   }
-  public static async open(root: string, options: { now?: () => Date; grace?: GraceRegistration; product?: ProductGraceRegistration; controlOnly?: boolean; upgrade?: CoreUpgrade; nativeOptions?: CoreNativeOptions; libraryOptions?: TrustedLibraryOptions; browserOptions?: CoreBrowserOptions; privateRuntimeRoots?: readonly string[] } = {}): Promise<ExecutionCore> {
+  public static async open(root: string, options: { now?: () => Date; grace?: GraceRegistration; product?: ProductGraceRegistration; controlOnly?: boolean; upgrade?: CoreUpgrade; nativeOptions?: CoreNativeOptions; libraryOptions?: TrustedLibraryOptions; browserOptions?: CoreBrowserOptions; privateRuntimeRoots?: readonly string[]; retentionBytes?: number } = {}): Promise<ExecutionCore> {
     if (options.grace && options.product) throw new CoreError('CORE_PROFILE_CONFLICT');
     if (options.controlOnly && options.upgrade) throw new CoreError('CONTROL_ONLY');
-    const core = new ExecutionCore(root, options.now ?? ((): Date => new Date()), options.grace, options.controlOnly === true, options.product, options.upgrade, options.nativeOptions, options.libraryOptions, options.browserOptions, options.privateRuntimeRoots);
+    const core = new ExecutionCore(root, options.now ?? ((): Date => new Date()), options.grace, options.controlOnly === true, options.product, options.upgrade, options.nativeOptions, options.libraryOptions, options.browserOptions, options.privateRuntimeRoots, options.retentionBytes);
     const workersPath = path.join(core.#root, 'workers');
     if (existsSync(workersPath)) for (const entry of readdirSync(workersPath)) {
       if (existsSync(path.join(workersPath, entry, 'config.json')) && !core.#store.database.connection.prepare('SELECT 1 FROM gotzji_workers WHERE epoch=? UNION ALL SELECT 1 FROM gotzji_worker_history WHERE epoch=?').get(entry,entry)) {
@@ -513,6 +536,7 @@ export class ExecutionCore {
   public async readCodeResult(credential: string, binding: TaskBinding): Promise<{sha256:string;content:string}> {
     const claim=this.bound(credential,binding);
     if(this.#store.input(claim).operation!=='grace.code-check'||(await this.view(claim)).status!=='completed') throw new CoreError('RESULT_NOT_VERIFIED');
+    if(this.expired(claim,this.effectRoot(claim.id))) throw new CoreError('RESULT_EXPIRED',RESULT_EXPIRED);
     const filename=path.join(this.effectRoot(claim.id),'result.txt');
     if(lstatSync(filename).isSymbolicLink()) throw new CoreError('EFFECT_ROOT_CHANGED');
     const bytes=readFileSync(filename);
@@ -525,6 +549,7 @@ export class ExecutionCore {
     const receipt = this.#store.operation(claim.id)?.receipt;
     if (!receipt) throw new CoreError('RESULT_NOT_VERIFIED');
     const result = JSON.parse(receipt) as Record<string, unknown>;
+    if (this.expired(claim, this.effectRoot(claim.id))) throw new CoreError('RESULT_EXPIRED', RESULT_EXPIRED);
     const filename = path.join(this.effectRoot(claim.id), 'result.txt');
     if (lstatSync(filename).isSymbolicLink()) throw new CoreError('EFFECT_ROOT_CHANGED');
     const bytes = readFileSync(filename);
@@ -546,9 +571,10 @@ export class ExecutionCore {
     }
     return { ...result, output };
   }
-  public logs(credential:string,binding:TaskBinding,cursor=0,limit=4000):{text:string;nextCursor:number} {
+  public logs(credential:string,binding:TaskBinding,cursor=0,limit=4000):{text:string;nextCursor:number;expired?:true} {
     const claim=this.bound(credential,binding);const worker=this.#store.worker(claim.id);
     if(!worker||!Number.isSafeInteger(cursor)||cursor<0||!Number.isSafeInteger(limit)||limit<1||limit>16000) throw new CoreError('INVALID_LOG_CURSOR');
+    if(this.expired(claim,worker.directory)) return {text:'',nextCursor:cursor,expired:true};
     const filename=path.join(worker.directory,this.#store.input(claim).operation==='grace.product-operation'?'product.stdout':'validation.stdout');
     if(!existsSync(filename)) return {text:'',nextCursor:cursor};
     const info=lstatSync(filename);if(info.isSymbolicLink()||cursor>info.size) throw new CoreError('INVALID_LOG_CURSOR');
@@ -776,6 +802,7 @@ export class ExecutionCore {
         failure ??= error;
       }
     }
+    try { await this.pruneRetention(); } catch (error) { failure ??= error; }
     if (failure) throw failure;
   }
   public startSupervisor(): void {
@@ -805,7 +832,7 @@ export class ExecutionCore {
     if (!claim || this.#store.input(claim).operation !== 'grace.product-operation') { assertGraceProfile(this.#grace); return; }
     const prepared = JSON.parse(this.#store.input(claim).text) as PreparedProductOperation;
     const worker = this.#store.worker(claim.id);
-    if (prepared.kind !== 'library' || !worker) { assertGraceProfile(this.#grace); return; }
+    if (prepared.kind !== 'library' || !worker || this.expired(claim, this.effectRoot(claim.id))) { assertGraceProfile(this.#grace); return; }
     const evolution = verifiedLibraryNavigationEvolution(prepared, this.#store.database.connection, claim.id, worker, this.effectRoot(claim.id));
     if (!evolution) { assertGraceProfile(this.#grace); return; }
     const entries = [{ path: this.#grace.executable, hash: this.#grace.executableHash }, { path: this.#grace.sourceFile, hash: this.#grace.sourceHash },
@@ -1457,6 +1484,47 @@ export class ExecutionCore {
       const reason = this.stoppedProof(worker) ? 'stopped' : await observeWorker(worker) === 'absent' ? 'absent' : undefined;
       if (reason) this.#store.archiveWorker(worker, reason, this.#now().toISOString());
     }
+  }
+  /**
+   * Retention (incident I8). A finished job's worker and effect folders are removed 30 days after its last worker
+   * retired, and oldest first while all job folders hold more than the cap. A job qualifies only when every worker it
+   * had is retired and it holds no writer or claim. A folder that cannot be removed now is retried by a later pass and
+   * not counted against younger jobs.
+   */
+  private async pruneRetention(): Promise<void> {
+    const now = this.#now().getTime();
+    if (now - this.#prunedAt < RETENTION_INTERVAL_MS) return;
+    this.#prunedAt = now;
+    const database = this.#store.database.connection;
+    const jobs = database.prepare(`SELECT c.id, MAX(h.observed_at) AS retired_at FROM gotzji_claims c JOIN goals g ON g.id=c.goal_id JOIN gotzji_worker_history h ON h.job_id=c.id
+      WHERE g.status IN ('completed','failed','cancelled') AND NOT EXISTS(SELECT 1 FROM gotzji_writers x WHERE x.job_id=c.id) AND NOT EXISTS(SELECT 1 FROM gotzji_resource_claims r WHERE r.job_id=c.id)
+        AND NOT EXISTS(SELECT 1 FROM gotzji_workers w WHERE w.job_id=c.id AND NOT EXISTS(SELECT 1 FROM gotzji_worker_history y WHERE y.epoch=w.epoch))
+      GROUP BY c.id ORDER BY retired_at`).all() as unknown as { id: string; retired_at: string }[];
+    const workers = path.join(this.#root, 'workers'); const effects = path.join(this.#root, 'effects');
+    let total = await treeBytes(workers) + await treeBytes(effects);
+    for (const job of jobs) {
+      if (now - Date.parse(job.retired_at) < RETENTION_MS && total <= this.#retentionBytes) break;
+      const epochs = database.prepare('SELECT epoch FROM gotzji_worker_history WHERE job_id=? UNION SELECT epoch FROM gotzji_workers WHERE job_id=?').all(job.id, job.id).map((row) => String(row.epoch));
+      // Only direct children of the store's own folders, never a name that resolves elsewhere.
+      const folders = [...epochs.map((epoch) => path.join(workers, epoch)), this.effectRoot(job.id)].filter((folder) => [workers, effects].includes(path.dirname(folder)) && existsSync(folder));
+      if (folders.length === 0) continue;
+      let removed = true;
+      for (const folder of folders) {
+        try {
+          // A folder replaced by a link (or a file) is left for inspection, never followed.
+          const info = await lstat(folder);
+          if (!info.isDirectory()) { if (info.isFile()) total -= info.size; removed = false; continue; }
+          total -= await treeBytes(folder);
+          await rm(folder, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+        } catch { removed = false; }
+      }
+      const event = removed ? 'RETENTION_PRUNED' : 'RETENTION_PRUNE_FAILED';
+      if (!database.prepare('SELECT 1 FROM gotzji_job_events WHERE job_id=? AND event=?').get(job.id, event)) this.#store.event(job.id, event, this.#now().toISOString());
+    }
+  }
+  /** Retention removed, or began removing, this job's folders (incident I8). */
+  private expired(claim: ClaimRow, folder: string): boolean {
+    return !existsSync(folder) || !!this.#store.database.connection.prepare("SELECT 1 FROM gotzji_job_events WHERE job_id=? AND event IN ('RETENTION_PRUNED','RETENTION_PRUNE_FAILED')").get(claim.id);
   }
   private recentlyRenewed(worker: WorkerRow): boolean { return this.#now().getTime() - worker.last_renewed < UNOBSERVED_GRACE_MS; }
   private markUncertain(jobId: string): void { this.#store.database.connection.prepare('UPDATE gotzji_operations SET phase=? WHERE job_id=?').run('uncertain', jobId); }

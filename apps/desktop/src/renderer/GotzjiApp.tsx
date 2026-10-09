@@ -137,6 +137,7 @@ export function GotzjiApp(): ReactElement {
   async function readLogs(): Promise<void> {
     const value = await request('logs', { jobId, cursor: logCursor, limit: 4_000 });
     if (!record(value) || typeof value.text !== 'string' || !Number.isSafeInteger(value.nextCursor)) throw new Error('LOG_RESPONSE_INVALID');
+    if (value.expired === true) { setLogs('บันทึกของงานนี้ถูกลบตามระยะเก็บรักษาแล้ว (30 วัน หรือเมื่อรวมกันเกิน 256 MiB) สถานะและประวัติของงานยังอยู่'); return; }
     setLogs((previous) => previous + String(value.text)); setLogCursor(Number(value.nextCursor));
   }
   const available = catalog.filter((item) => item.state === 'available' && item.recipeId === undefined && item.name !== 'library.workflow');
