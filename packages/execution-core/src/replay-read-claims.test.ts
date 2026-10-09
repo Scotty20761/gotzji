@@ -40,7 +40,7 @@ async function until(f: Fixture, predicate: () => Promise<boolean>): Promise<voi
 }
 afterEach(async () => {
   for (const f of fixtures.splice(0)) {
-    const db = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'));
+    const db = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'), { timeout: 5000 });
     const workers = db.prepare('SELECT * FROM gotzji_workers').all() as unknown as WorkerRow[]; db.close();
     for (const worker of workers) await stopWorker(worker);
     try { f.core.close(); } catch { /* detached */ }
@@ -78,7 +78,7 @@ describe('replayed read blocks (incident I2)', () => {
     await until(f, async () => (await f.core.get(f.credential, stale)).status === 'failed');
     expect(await f.core.get(f.credential, stale)).toMatchObject({ status: 'failed', summary: 'FILE_VERSION_CONFLICT' });
     await expect(f.core.readOperationResult(f.credential, stale)).rejects.toMatchObject({ code: 'RESULT_NOT_VERIFIED' });
-    const db = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'));
+    const db = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'), { timeout: 5000 });
     expect(db.prepare('SELECT COUNT(*) AS count FROM gotzji_writers WHERE job_id=?').get(stale.jobId)).toMatchObject({ count: 0 }); db.close();
     const fresh = await submit(f, { requestId: 'fresh-read', projectId: 'one', operation: 'file.read', path: 'source.txt' });
     await f.core.resume(f.credential, fresh);
@@ -90,7 +90,7 @@ describe('replayed read blocks (incident I2)', () => {
     const f = await fixture(); for (const id of ['one', 'two', 'three']) await project(f, id, 20000);
     const doomed = await submit(f, { requestId: 'doomed', projectId: 'three', operation: 'file.read', path: 'source.txt' });
     await f.core.resume(f.credential, doomed);
-    const db = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'));
+    const db = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'), { timeout: 5000 });
     const worker = db.prepare('SELECT * FROM gotzji_workers WHERE job_id=?').get(doomed.jobId) as unknown as WorkerRow; db.close();
     for (let i = 0; i < 100 && (await callWorker(worker, 'status')).state !== 'done'; i++) await new Promise((resolve) => setTimeout(resolve, 30));
     // A crash before the result was recorded: the process is gone, no stopped record, last observation running, no result.

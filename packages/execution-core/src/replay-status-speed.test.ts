@@ -66,7 +66,7 @@ function seedHistory(f: Fixture, jobId: string, count: number): void {
 }
 afterEach(async () => {
   for (const f of fixtures.splice(0)) {
-    const db = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'));
+    const db = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'), { timeout: 5000 });
     const workers = db.prepare('SELECT * FROM gotzji_workers').all() as unknown as WorkerRow[]; db.close();
     // Every worker this test started must be proven stopped; a silent failure here leaks a live process.
     for (const worker of workers) if (!seeded.has(worker.job_id)) expect(await stopWorker(worker)).toBe(true);

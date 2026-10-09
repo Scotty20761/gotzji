@@ -12,12 +12,12 @@ const current = (suffix: string): ProcessIdentity => ({ birth: `birth-${suffix}`
 const reader = (identity: ProcessIdentity | null | 'unknown') => async (pids: readonly number[]): Promise<Record<number, ProcessIdentity | null | 'unknown'>> => Object.fromEntries(pids.map((pid) => [pid, identity]));
 function directory(): string { const value = canonicalTemporaryDirectorySync('gotzji-product-owner-'); directories.push(value); return value; }
 function legacyRow(root: string, pid: number): void {
-  const database = new DatabaseSync(path.join(root, 'core.sqlite'));
+  const database = new DatabaseSync(path.join(root, 'core.sqlite'), { timeout: 5000 });
   try { database.exec('CREATE TABLE gotzji_host_owners (name TEXT PRIMARY KEY, pid INTEGER NOT NULL, nonce TEXT NOT NULL)'); database.prepare('INSERT INTO gotzji_host_owners VALUES (?,?,?)').run('daemon', pid, 'legacy-nonce'); }
   finally { database.close(); }
 }
 function row(root: string): Record<string, unknown> | undefined {
-  const database = new DatabaseSync(path.join(root, 'core.sqlite'), { readOnly: true });
+  const database = new DatabaseSync(path.join(root, 'core.sqlite'), { readOnly: true, timeout: 5000 });
   try { return database.prepare(`SELECT owners.name,owners.pid,owners.nonce,identity.birth,identity.executable,identity.owner_mac
     FROM gotzji_host_owners AS owners LEFT JOIN gotzji_product_host_owner_identities AS identity
       ON identity.name=owners.name AND identity.pid=owners.pid AND identity.nonce=owners.nonce WHERE owners.name=?`).get('daemon') as Record<string, unknown> | undefined; }
@@ -68,7 +68,7 @@ describe('product host OS identity ownership', () => {
     const root = directory(); const identity = current('migration');
     const migrated = await acquireProductHostOwnership(root, secret, reader(identity)); expect(migrated.status).toBe('acquired');
     if (migrated.status === 'acquired') migrated.release();
-    const database = new DatabaseSync(path.join(root, 'core.sqlite'));
+    const database = new DatabaseSync(path.join(root, 'core.sqlite'), { timeout: 5000 });
     try { database.prepare('INSERT INTO gotzji_host_owners VALUES (?,?,?)').run('daemon', 2_147_483_647, 'legacy-after-migration'); }
     finally { database.close(); }
     expect(row(root)).toMatchObject({ pid: 2_147_483_647, nonce: 'legacy-after-migration', birth: null });
@@ -98,7 +98,7 @@ describe('product host OS identity ownership', () => {
     const root = directory(); const identity = current('valid');
     const first = await acquireProductHostOwnership(root, secret, reader(identity)); expect(first.status).toBe('acquired');
     expect(await acquireProductHostOwnership(root, secret, reader('unknown'))).toMatchObject({ status: 'unknown', reason: 'HOST_OWNER_IDENTITY_UNKNOWN' });
-    const database = new DatabaseSync(path.join(root, 'core.sqlite'));
+    const database = new DatabaseSync(path.join(root, 'core.sqlite'), { timeout: 5000 });
     try { database.prepare("UPDATE gotzji_product_host_owner_identities SET birth='' WHERE name=?").run('daemon'); }
     finally { database.close(); }
     expect(await acquireProductHostOwnership(root, secret, reader(identity))).toMatchObject({ status: 'unknown', reason: 'HOST_OWNER_RECORD_INVALID' });
@@ -106,7 +106,7 @@ describe('product host OS identity ownership', () => {
 
     const macRoot = directory();
     const macOwner = await acquireProductHostOwnership(macRoot, secret, reader(identity)); expect(macOwner.status).toBe('acquired');
-    const macDatabase = new DatabaseSync(path.join(macRoot, 'core.sqlite'));
+    const macDatabase = new DatabaseSync(path.join(macRoot, 'core.sqlite'), { timeout: 5000 });
     try { macDatabase.prepare('UPDATE gotzji_product_host_owner_identities SET owner_mac=? WHERE name=?').run('0'.repeat(64), 'daemon'); }
     finally { macDatabase.close(); }
     expect(await acquireProductHostOwnership(macRoot, secret, reader(identity))).toMatchObject({ status: 'unknown', reason: 'HOST_OWNER_RECORD_INVALID' });

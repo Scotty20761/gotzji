@@ -71,7 +71,7 @@ async function cleanupSyntheticWorker(worker:WorkerRow):Promise<void>{
   for(let attempt=0;attempt<100;attempt++){if(alive(ready.pid)===false)return;await new Promise((resolve)=>setTimeout(resolve,20));}
   throw new Error('Fixture cleanup termination unverified: '+worker.directory);
 }
-afterEach(async()=>{const failures:Error[]=[];for(const f of fixtures.splice(0)){let stopped=false;try{const db=new DatabaseSync(path.join(f.root,'state','core.sqlite'));let workers:WorkerRow[];try{workers=db.prepare('SELECT * FROM gotzji_workers').all() as unknown as WorkerRow[];}finally{db.close();}const refused:unknown[]=[];for(const worker of workers){try{await cleanupSyntheticWorker(worker);}catch(error){refused.push(error);}}if(refused.length)throw new AggregateError(refused,'Fixture worker cleanup failed');stopped=true;}catch(error){failures.push(new Error('Fixture evidence retained: '+f.root,{cause:error}));}finally{try{f.core.close();}catch{/* already closed */}}if(stopped)try{await rm(f.root,{recursive:true,force:true});}catch(error){failures.push(new Error('Fixture removal failed: '+f.root,{cause:error}));}}if(failures.length)throw new AggregateError(failures,failures.map((error)=>error.message).join('\n'));});
+afterEach(async()=>{const failures:Error[]=[];for(const f of fixtures.splice(0)){let stopped=false;try{const db=new DatabaseSync(path.join(f.root,'state','core.sqlite'), { timeout: 5000 });let workers:WorkerRow[];try{workers=db.prepare('SELECT * FROM gotzji_workers').all() as unknown as WorkerRow[];}finally{db.close();}const refused:unknown[]=[];for(const worker of workers){try{await cleanupSyntheticWorker(worker);}catch(error){refused.push(error);}}if(refused.length)throw new AggregateError(refused,'Fixture worker cleanup failed');stopped=true;}catch(error){failures.push(new Error('Fixture evidence retained: '+f.root,{cause:error}));}finally{try{f.core.close();}catch{/* already closed */}}if(stopped)try{await rm(f.root,{recursive:true,force:true});}catch(error){failures.push(new Error('Fixture removal failed: '+f.root,{cause:error}));}}if(failures.length)throw new AggregateError(failures,failures.map((error)=>error.message).join('\n'));});
 
 describe('P7 Library runtime',()=>{
   it('reports typed dependency gaps and refuses direct PDF evidence without the canonical provider',async()=>{
@@ -86,14 +86,14 @@ describe('P7 Library runtime',()=>{
     const f=await fixture(true);const preparation=f.core.prepareOperation(f.credential,memoInput('memo-lease-drift'));
     await writeFile(path.join(f.library,'scripts/lib/process_lease.py'),'changed valid Python dependency\n');
     const job=await f.core.submit(f.credential,preparation.preparationId);const binding=f.core.selectLibraryJob(f.credential,'library',job.jobId);f.bindings.push(binding);await f.core.resume(f.credential,binding);
-    const db=new DatabaseSync(path.join(f.root,'state','core.sqlite'));await until(f,()=>!!db.prepare('SELECT 1 FROM gotzji_diagnostics WHERE job_id=?').get(binding.jobId));
+    const db=new DatabaseSync(path.join(f.root,'state','core.sqlite'), { timeout: 5000 });await until(f,()=>!!db.prepare('SELECT 1 FROM gotzji_diagnostics WHERE job_id=?').get(binding.jobId));
     expect((db.prepare('SELECT code FROM gotzji_diagnostics WHERE job_id=?').get(binding.jobId) as {code:string}).code).toMatch(/(?:LIBRARY_SOURCE_CHANGED|PROJECT_POLICY_CHANGED|DEPENDENCIES_CHANGED|BROKER_DENIED|EFFECT_RECONCILIATION_REQUIRED)/u);
     await expect(f.core.resume(f.credential,binding)).rejects.toThrow();expect(await present(path.join(f.library,'team-outputs/memos/TEST_memo_2026-10.md'))).toBe(false);db.close();
   },30000);
 
   it('runs the canonical final memo chain in order and delivers only after explicit user authority',async()=>{
     const f=await fixture(true);const binding=await submit(f,memoInput('memo-success'));await f.core.resume(f.credential,binding);
-    const db=new DatabaseSync(path.join(f.root,'state','core.sqlite'));
+    const db=new DatabaseSync(path.join(f.root,'state','core.sqlite'), { timeout: 5000 });
     try{await until(f,()=>!!db.prepare("SELECT 1 FROM gotzji_recipe_operations WHERE job_id=? AND operation_id='library-step:verify' AND phase='verified'").get(binding.jobId));}
     catch{throw new Error(`memo did not reach verify: ${JSON.stringify(await f.core.get(f.credential,binding))}`);}
     expect((await f.core.get(f.credential,binding)).status).not.toBe('completed');
@@ -108,21 +108,21 @@ describe('P7 Library runtime',()=>{
   },60000);
 
   it('treats Facty BLOCK as terminal before canonical writes or user delivery',async()=>{
-    const f=await fixture(true);const binding=await submit(f,memoInput('memo-block'));await f.core.resume(f.credential,binding);const db=new DatabaseSync(path.join(f.root,'state','core.sqlite'));await until(f,()=>!!db.prepare("SELECT 1 FROM gotzji_recipe_operations WHERE job_id=? AND operation_id='library-step:facty' AND phase='verified'").get(binding.jobId));
+    const f=await fixture(true);const binding=await submit(f,memoInput('memo-block'));await f.core.resume(f.credential,binding);const db=new DatabaseSync(path.join(f.root,'state','core.sqlite'), { timeout: 5000 });await until(f,()=>!!db.prepare("SELECT 1 FROM gotzji_recipe_operations WHERE job_id=? AND operation_id='library-step:facty' AND phase='verified'").get(binding.jobId));
     expect(await present(path.join(f.library,'team-outputs/memos/TEST_memo_2026-10.md'))).toBe(false);expect((await readdir(path.join(f.library,'knowledge-base/atoms'))).filter((name)=>name.startsWith('ATOM-'))).toHaveLength(0);
     expect(db.prepare("SELECT 1 FROM gotzji_recipe_operations WHERE job_id=? AND operation_id='library-step:persist'").get(binding.jobId)).toBeUndefined();db.close();
   },60000);
 
   it('fails closed on changed frozen evidence and on missing canonical index writeback',async()=>{
     const stale=await fixture(true);const input=memoInput('memo-stale');const preparation=stale.core.prepareOperation(stale.credential,input);await writeFile(path.join(stale.library,'team-outputs/filings/TEST_10-Q_2026.md'),'changed after prepare\n');
-    const job=await stale.core.submit(stale.credential,preparation.preparationId);const binding=stale.core.selectLibraryJob(stale.credential,'library',job.jobId);await stale.core.resume(stale.credential,binding);const staleDb=new DatabaseSync(path.join(stale.root,'state','core.sqlite'));await until(stale,()=>!!staleDb.prepare('SELECT 1 FROM gotzji_diagnostics WHERE job_id=?').get(binding.jobId));expect((staleDb.prepare('SELECT code FROM gotzji_diagnostics WHERE job_id=?').get(binding.jobId) as {code:string}).code).toMatch(/(?:BROKER_DENIED|LIBRARY_SOURCE_CHANGED|PROJECT_POLICY_CHANGED|DEPENDENCIES_CHANGED|EFFECT_RECONCILIATION_REQUIRED)/u);staleDb.close();
+    const job=await stale.core.submit(stale.credential,preparation.preparationId);const binding=stale.core.selectLibraryJob(stale.credential,'library',job.jobId);await stale.core.resume(stale.credential,binding);const staleDb=new DatabaseSync(path.join(stale.root,'state','core.sqlite'), { timeout: 5000 });await until(stale,()=>!!staleDb.prepare('SELECT 1 FROM gotzji_diagnostics WHERE job_id=?').get(binding.jobId));expect((staleDb.prepare('SELECT code FROM gotzji_diagnostics WHERE job_id=?').get(binding.jobId) as {code:string}).code).toMatch(/(?:BROKER_DENIED|LIBRARY_SOURCE_CHANGED|PROJECT_POLICY_CHANGED|DEPENDENCIES_CHANGED|EFFECT_RECONCILIATION_REQUIRED)/u);staleDb.close();
     expect(await present(path.join(stale.library,'team-outputs/memos/TEST_memo_2026-10.md'))).toBe(false);
-    const missing=await fixture(true,'omit-index');const missingBinding=await submit(missing,memoInput('memo-no-index'));await missing.core.resume(missing.credential,missingBinding);const missingDb=new DatabaseSync(path.join(missing.root,'state','core.sqlite'));await until(missing,()=>!!missingDb.prepare("SELECT 1 FROM gotzji_recipe_operations WHERE job_id=? AND operation_id='library-step:verify' AND phase='failed'").get(missingBinding.jobId));missingDb.close();
+    const missing=await fixture(true,'omit-index');const missingBinding=await submit(missing,memoInput('memo-no-index'));await missing.core.resume(missing.credential,missingBinding);const missingDb=new DatabaseSync(path.join(missing.root,'state','core.sqlite'), { timeout: 5000 });await until(missing,()=>!!missingDb.prepare("SELECT 1 FROM gotzji_recipe_operations WHERE job_id=? AND operation_id='library-step:verify' AND phase='failed'").get(missingBinding.jobId));missingDb.close();
     expect(await present(path.join(missing.library,'team-outputs/memos/TEST_memo_2026-10.md'))).toBe(true);
   },90000);
 
   it('retains uncertain ownership after a lost atom-gateway response and never allocates a duplicate',async()=>{
-    const f=await fixture(true,'atom-after-write');const binding=await submit(f,memoInput('memo-lost-atom'));await f.core.resume(f.credential,binding);const db=new DatabaseSync(path.join(f.root,'state','core.sqlite'));try{await until(f,()=>!!db.prepare("SELECT 1 FROM gotzji_recipe_operations WHERE job_id=? AND operation_id='library-step:atoms' AND phase='uncertain'").get(binding.jobId));
+    const f=await fixture(true,'atom-after-write');const binding=await submit(f,memoInput('memo-lost-atom'));await f.core.resume(f.credential,binding);const db=new DatabaseSync(path.join(f.root,'state','core.sqlite'), { timeout: 5000 });try{await until(f,()=>!!db.prepare("SELECT 1 FROM gotzji_recipe_operations WHERE job_id=? AND operation_id='library-step:atoms' AND phase='uncertain'").get(binding.jobId));
     const before=(await readdir(path.join(f.library,'knowledge-base/atoms'))).filter((name)=>name.startsWith('ATOM-'));expect(before).toEqual(['ATOM-9000-pending.md']);
     expect(db.prepare('SELECT 1 FROM gotzji_writers WHERE job_id=?').get(binding.jobId)).toBeDefined();
     await expect(f.core.resume(f.credential,binding)).rejects.toThrow();const after=(await readdir(path.join(f.library,'knowledge-base/atoms'))).filter((name)=>name.startsWith('ATOM-'));expect(after).toEqual(before);
@@ -135,7 +135,7 @@ describe('P7 Library runtime',()=>{
   },60000);
 
   it('rejects an unexpected navigation mutation after the signed index receipt',async()=>{
-    const f=await fixture(true);const binding=await submit(f,memoInput('memo-nav-drift'));await f.core.resume(f.credential,binding);const db=new DatabaseSync(path.join(f.root,'state','core.sqlite'));
+    const f=await fixture(true);const binding=await submit(f,memoInput('memo-nav-drift'));await f.core.resume(f.credential,binding);const db=new DatabaseSync(path.join(f.root,'state','core.sqlite'), { timeout: 5000 });
     try{
       await until(f,()=>!!db.prepare("SELECT 1 FROM gotzji_recipe_operations WHERE job_id=? AND operation_id='library-step:verify' AND phase='verified'").get(binding.jobId));
       await writeFile(path.join(f.library,'indexes/tickers/TEST.md'),'unexpected external mutation\n');
@@ -157,7 +157,7 @@ describe('P7 Library runtime',()=>{
   it('waits at each delivery boundary and resumes only after explicit enrolled-route authority',async()=>{
     const f=await fixture(true);const input=codeInput('delivery-wait','normal');input.parameters.expectedSha256=hash(await readFile(path.join(f.library,'source.md')));
     const binding=await submit(f,input);await f.core.resume(f.credential,binding);
-    const db=new DatabaseSync(path.join(f.root,'state','core.sqlite'));
+    const db=new DatabaseSync(path.join(f.root,'state','core.sqlite'), { timeout: 5000 });
     await until(f,()=>!!db.prepare("SELECT 1 FROM gotzji_recipe_operations WHERE job_id=? AND operation_id='library-step:validate' AND phase='verified'").get(binding.jobId));
     expect(await f.core.get(f.credential,binding)).toMatchObject({status:'running'});
     f.core.authorizeLibraryDelivery(f.credential,binding,'commit');
@@ -171,7 +171,7 @@ describe('P7 Library runtime',()=>{
   it('takes its next delivery step after a status call went unanswered between steps: the worker was busy, not lost',async()=>{
     const f=await fixture(true);const input=codeInput('delivery-busy','normal');input.parameters.expectedSha256=hash(await readFile(path.join(f.library,'source.md')));
     const binding=await submit(f,input);await f.core.resume(f.credential,binding);
-    const db=new DatabaseSync(path.join(f.root,'state','core.sqlite'));
+    const db=new DatabaseSync(path.join(f.root,'state','core.sqlite'), { timeout: 5000 });
     await until(f,()=>!!db.prepare("SELECT 1 FROM gotzji_recipe_operations WHERE job_id=? AND operation_id='library-step:validate' AND phase='verified'").get(binding.jobId));
     const worker=db.prepare('SELECT * FROM gotzji_workers WHERE job_id=?').get(binding.jobId) as unknown as WorkerRow;
     const ready=path.join(worker.directory,'ready.json');const proof=await readFile(ready);
@@ -191,7 +191,7 @@ describe('P7 Library runtime',()=>{
 
   it('rejects forged binding, wrong owner, expired lease and changed policy before another effect',async()=>{
     const f=await fixture(true);const input=codeInput('authority','normal');input.parameters.expectedSha256=hash(await readFile(path.join(f.library,'source.md')));const binding=await submit(f,input);await f.core.resume(f.credential,binding);
-    const db=new DatabaseSync(path.join(f.root,'state','core.sqlite'));await until(f,()=>!!db.prepare("SELECT 1 FROM gotzji_recipe_operations WHERE job_id=? AND operation_id='library-step:validate' AND phase='verified'").get(binding.jobId));
+    const db=new DatabaseSync(path.join(f.root,'state','core.sqlite'), { timeout: 5000 });await until(f,()=>!!db.prepare("SELECT 1 FROM gotzji_recipe_operations WHERE job_id=? AND operation_id='library-step:validate' AND phase='verified'").get(binding.jobId));
     const worker=db.prepare('SELECT * FROM gotzji_workers WHERE job_id=?').get(binding.jobId) as unknown as WorkerRow;const config=JSON.parse(await readFile(path.join(worker.directory,'config.json'),'utf8'));
     await expect(executePreparedLibraryOperation({...config,libraryAuthorization:{...config.libraryAuthorization,mac:'0'.repeat(64)}},new AbortController().signal,{verifyLiveAuthority:()=>true})).rejects.toThrow('LIBRARY_BINDING_INVALID');
     await expect(executePreparedLibraryOperation({...config,owner:'stranger'},new AbortController().signal,{verifyLiveAuthority:()=>true})).rejects.toThrow('LIBRARY_BINDING_INVALID');
@@ -202,9 +202,9 @@ describe('P7 Library runtime',()=>{
   it('retains the writer and marks uncertainty after a lost response, while cancellation before delivery is clean',async()=>{
     const f=await fixture(true);let input=codeInput('response-loss','response-loss');input.parameters.expectedSha256=hash(await readFile(path.join(f.library,'source.md')));const lost=await submit(f,input);await f.core.resume(f.credential,lost);
     await until(f,async()=> (await f.core.get(f.credential,lost)).status==='blocked');
-    const db=new DatabaseSync(path.join(f.root,'state','core.sqlite'));expect(db.prepare('SELECT 1 FROM gotzji_writers WHERE job_id=?').get(lost.jobId)).toBeDefined();expect(await readFile(path.join(f.library,'lost-effect.txt'),'utf8')).toBe('once');
+    const db=new DatabaseSync(path.join(f.root,'state','core.sqlite'), { timeout: 5000 });expect(db.prepare('SELECT 1 FROM gotzji_writers WHERE job_id=?').get(lost.jobId)).toBeDefined();expect(await readFile(path.join(f.library,'lost-effect.txt'),'utf8')).toBe('once');
     const secondRoot=await fixture(true);input=codeInput('cancel-wait','normal');input.parameters.expectedSha256=hash(await readFile(path.join(secondRoot.library,'source.md')));const waiting=await submit(secondRoot,input);await secondRoot.core.resume(secondRoot.credential,waiting);
-    const secondDb=new DatabaseSync(path.join(secondRoot.root,'state','core.sqlite'));await until(secondRoot,()=>!!secondDb.prepare("SELECT 1 FROM gotzji_recipe_operations WHERE job_id=? AND operation_id='library-step:validate' AND phase='verified'").get(waiting.jobId));
+    const secondDb=new DatabaseSync(path.join(secondRoot.root,'state','core.sqlite'), { timeout: 5000 });await until(secondRoot,()=>!!secondDb.prepare("SELECT 1 FROM gotzji_recipe_operations WHERE job_id=? AND operation_id='library-step:validate' AND phase='verified'").get(waiting.jobId));
     expect(await secondRoot.core.cancel(secondRoot.credential,waiting)).toMatchObject({status:'cancelled'});expect(secondDb.prepare('SELECT 1 FROM gotzji_writers WHERE job_id=?').get(waiting.jobId)).toBeUndefined();db.close();secondDb.close();
   },30000);
 });

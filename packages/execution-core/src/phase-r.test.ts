@@ -44,7 +44,7 @@ async function jsonLine(child:ChildProcessWithoutNullStreams,request:unknown):Pr
 }
 it('denies a requested deployment before any prepared job or code effect',async()=>{
  const f=await codeFixture();expect(()=>f.core.prepareCodeChange(f.credential,'denied','deploy')).toThrow('DELIVERY_SCOPE_DENIED');
- const db=new DatabaseSync(path.join(f.root,'core','core.sqlite'));try{expect(db.prepare('SELECT COUNT(*) n FROM gotzji_preparations').get()?.n).toBe(0);}finally{db.close();}
+ const db=new DatabaseSync(path.join(f.root,'core','core.sqlite'), { timeout: 5000 });try{expect(db.prepare('SELECT COUNT(*) n FROM gotzji_preparations').get()?.n).toBe(0);}finally{db.close();}
 });
 it('real code repair and asynchronous command produce native gate evidence and the final artifact',async()=>{
  const f=await codeFixture();const p=f.core.prepareCodeChange(f.credential,'actual-code');const job=await f.core.submit(f.credential,p.preparationId);const binding=f.core.select(f.credential,job.jobId);
@@ -53,7 +53,7 @@ it('real code repair and asynchronous command produce native gate evidence and t
   await waitFor(async()=>{await f.core.tick();return (await f.core.get(f.credential,binding)).status==='completed';});
   const view=await f.core.get(f.credential,binding);expect(view.progress?.state).toBe('completed');expect(view.progress?.checks).toBeGreaterThan(5);expect(view.evidenceDigest).toMatch(/^[a-f0-9]{64}$/);
   expect(await f.core.readCodeResult(f.credential,binding)).toMatchObject({content:f.registration.expectedContent});
-  const db=new DatabaseSync(path.join(f.root,'core','core.sqlite'));try{const goal=db.prepare('SELECT engineering_metadata_json FROM goals').get();expect(JSON.parse(String(goal?.engineering_metadata_json)).gates[0].status).toBe('passed');expect(db.prepare('SELECT COUNT(*) n FROM gotzji_outbox WHERE job_id=?').get(job.jobId)?.n).toBe(1);}finally{db.close();}
+  const db=new DatabaseSync(path.join(f.root,'core','core.sqlite'), { timeout: 5000 });try{const goal=db.prepare('SELECT engineering_metadata_json FROM goals').get();expect(JSON.parse(String(goal?.engineering_metadata_json)).gates[0].status).toBe('passed');expect(db.prepare('SELECT COUNT(*) n FROM gotzji_outbox WHERE job_id=?').get(job.jobId)?.n).toBe(1);}finally{db.close();}
  }finally{await f.core.cancel(f.credential,binding);}
 },10000*BUDGET);
 it('observer closure and retry preserve the live command and exactly one effect/job',async()=>{
@@ -67,7 +67,7 @@ it('observer closure and retry preserve the live command and exactly one effect/
   const again=reopened.prepareCodeChange(f.credential,'same-code');expect((await reopened.submit(f.credential,again.preparationId)).jobId).toBe(job.jobId);
   await reopened.resume(f.credential,binding);
   await waitFor(async()=>{await reopened!.tick();return (await reopened!.get(f.credential,binding)).status==='completed';});
-  const db=new DatabaseSync(path.join(f.root,'core','core.sqlite'));try{expect(db.prepare('SELECT COUNT(*) n FROM gotzji_workers WHERE job_id=?').get(job.jobId)?.n).toBe(1);expect(db.prepare('SELECT COUNT(*) n FROM gotzji_claims').get()?.n).toBe(1);}finally{db.close();}
+  const db=new DatabaseSync(path.join(f.root,'core','core.sqlite'), { timeout: 5000 });try{expect(db.prepare('SELECT COUNT(*) n FROM gotzji_workers WHERE job_id=?').get(job.jobId)?.n).toBe(1);expect(db.prepare('SELECT COUNT(*) n FROM gotzji_claims').get()?.n).toBe(1);}finally{db.close();}
   const logs=reopened.logs(f.credential,binding,0,80);expect(Buffer.byteLength(logs.text)).toBeLessThanOrEqual(80);expect(logs.nextCursor).toBeGreaterThan(0);
  }finally{if(reopened){await reopened.cancel(f.credential,binding);reopened.close();}else if(!originalClosed){await f.core.cancel(f.credential,binding);}}
 },10000*BUDGET);
@@ -81,15 +81,15 @@ it('returns the host-authorized delivery boundary with the canonical selected jo
 });
 it('a changed authorization record cannot launch the requested local effect',async()=>{
  const f=await codeFixture();const p=f.core.prepareCodeChange(f.credential,'tampered');const job=await f.core.submit(f.credential,p.preparationId);const binding=f.core.select(f.credential,job.jobId);
- const db=new DatabaseSync(path.join(f.root,'core','core.sqlite'));try{db.prepare('UPDATE gotzji_authorized_jobs SET boundary=? WHERE job_id=?').run('deploy',job.jobId);}finally{db.close();}
+ const db=new DatabaseSync(path.join(f.root,'core','core.sqlite'), { timeout: 5000 });try{db.prepare('UPDATE gotzji_authorized_jobs SET boundary=? WHERE job_id=?').run('deploy',job.jobId);}finally{db.close();}
  await expect(f.core.resume(f.credential,binding)).rejects.toThrow('DELIVERY_AUTHORITY_DENIED');
- const after=new DatabaseSync(path.join(f.root,'core','core.sqlite'));try{expect(after.prepare('SELECT COUNT(*) n FROM gotzji_workers').get()?.n).toBe(0);}finally{after.close();}
+ const after=new DatabaseSync(path.join(f.root,'core','core.sqlite'), { timeout: 5000 });try{expect(after.prepare('SELECT COUNT(*) n FROM gotzji_workers').get()?.n).toBe(0);}finally{after.close();}
 });
 it('cancellation stops the owned validation command and preserves the cancelled job',async()=>{
  const f=await codeFixture(3000);const p=f.core.prepareCodeChange(f.credential,'cancel-code');const job=await f.core.submit(f.credential,p.preparationId);const binding=f.core.select(f.credential,job.jobId);
  await f.core.resume(f.credential,binding);
  await waitFor(async()=>!!(await f.core.get(f.credential,binding)).progress);
- const db=new DatabaseSync(path.join(f.root,'core','core.sqlite'));let directory='';try{directory=String(db.prepare('SELECT directory FROM gotzji_workers WHERE job_id=?').get(job.jobId)?.directory);}finally{db.close();}
+ const db=new DatabaseSync(path.join(f.root,'core','core.sqlite'), { timeout: 5000 });let directory='';try{directory=String(db.prepare('SELECT directory FROM gotzji_workers WHERE job_id=?').get(job.jobId)?.directory);}finally{db.close();}
  expect((await f.core.cancel(f.credential,binding)).status).toBe('cancelled');
  const stopped=JSON.parse(JSON.parse(await readFile(path.join(directory,'stopped.json'),'utf8')).body) as {descendants:number[]};
  expect(stopped.descendants.every((pid)=>alive(pid)===false)).toBe(true);
@@ -102,11 +102,11 @@ it('rejects native gate evidence when the observed run is rebound to another goa
  let originalGoalId='';
  try{
   await waitFor(async()=>((await f.core.get(f.credential,binding)).progress?.state==='completed'));
-  const db=new DatabaseSync(path.join(f.root,'core','core.sqlite'));try{originalGoalId=String(db.prepare('SELECT goal_id FROM gotzji_claims WHERE id=?').get(job.jobId)?.goal_id??'');db.prepare('UPDATE gotzji_claims SET goal_id=? WHERE id=?').run('foreign-goal',job.jobId);}finally{db.close();}
+  const db=new DatabaseSync(path.join(f.root,'core','core.sqlite'), { timeout: 5000 });try{originalGoalId=String(db.prepare('SELECT goal_id FROM gotzji_claims WHERE id=?').get(job.jobId)?.goal_id??'');db.prepare('UPDATE gotzji_claims SET goal_id=? WHERE id=?').run('foreign-goal',job.jobId);}finally{db.close();}
   await expect(f.core.tick()).rejects.toMatchObject({code:'INVALID_INPUT',reason:'job_binding_mismatch'});
   expect((await f.core.get(f.credential,binding)).status).toBe('blocked');
  }finally{
-  if(originalGoalId){const db=new DatabaseSync(path.join(f.root,'core','core.sqlite'));try{db.prepare('UPDATE gotzji_claims SET goal_id=? WHERE id=?').run(originalGoalId,job.jobId);}finally{db.close();}}
+  if(originalGoalId){const db=new DatabaseSync(path.join(f.root,'core','core.sqlite'), { timeout: 5000 });try{db.prepare('UPDATE gotzji_claims SET goal_id=? WHERE id=?').run(originalGoalId,job.jobId);}finally{db.close();}}
   await f.core.cancel(f.credential,binding);
  }
 },10000*BUDGET);
@@ -116,7 +116,7 @@ it('rejects a signed command receipt that does not match the registered validato
  await f.core.resume(f.credential,binding);
  try{
   await waitFor(async()=>((await f.core.get(f.credential,binding)).progress?.state==='running'));
-  const db=new DatabaseSync(path.join(f.root,'core','core.sqlite'));let worker:{directory:string;token:string;epoch:string};try{worker=db.prepare('SELECT directory,token,epoch FROM gotzji_workers WHERE job_id=?').get(job.jobId) as unknown as typeof worker;}finally{db.close();}
+  const db=new DatabaseSync(path.join(f.root,'core','core.sqlite'), { timeout: 5000 });let worker:{directory:string;token:string;epoch:string};try{worker=db.prepare('SELECT directory,token,epoch FROM gotzji_workers WHERE job_id=?').get(job.jobId) as unknown as typeof worker;}finally{db.close();}
   const filename=path.join(worker.directory,'validation.json');
   const envelope=JSON.parse(await readFile(filename,'utf8')) as {body:string;mac:string};
   const receipt=JSON.parse(envelope.body) as {authorizationDigest:string;command:string;commandFingerprint:string;runId:string};
@@ -132,7 +132,7 @@ it('recovers an expired completed code worker only after proving the old process
  let clock=Date.now();const f=await codeFixture(25,()=>new Date(clock));const p=f.core.prepareCodeChange(f.credential,'expired-complete');const job=await f.core.submit(f.credential,p.preparationId);const binding=f.core.select(f.credential,job.jobId);
  await f.core.resume(f.credential,binding);
  await waitFor(async()=>((await f.core.get(f.credential,binding)).progress?.state==='completed'));
- const db=new DatabaseSync(path.join(f.root,'core','core.sqlite'));let directory='';try{directory=String(db.prepare('SELECT directory FROM gotzji_workers WHERE job_id=?').get(job.jobId)?.directory);}finally{db.close();}
+ const db=new DatabaseSync(path.join(f.root,'core','core.sqlite'), { timeout: 5000 });let directory='';try{directory=String(db.prepare('SELECT directory FROM gotzji_workers WHERE job_id=?').get(job.jobId)?.directory);}finally{db.close();}
  clock+=301000;await f.core.tick();
  expect((await f.core.get(f.credential,binding)).status).toBe('completed');
  const stopped=JSON.parse(JSON.parse(await readFile(path.join(directory,'stopped.json'),'utf8')).body) as {pid:number;descendants:number[]};
@@ -143,11 +143,11 @@ it('replays only the read-only validation path after an expired partial code run
  let clock=Date.now();const f=await codeFixture(1500,()=>new Date(clock));const p=f.core.prepareCodeChange(f.credential,'expired-partial');const job=await f.core.submit(f.credential,p.preparationId);const binding=f.core.select(f.credential,job.jobId);
  await f.core.resume(f.credential,binding);
  await waitFor(async()=>((await f.core.get(f.credential,binding)).progress?.state==='running'));
- const db=new DatabaseSync(path.join(f.root,'core','core.sqlite'));let old:WorkerRow;try{old=db.prepare('SELECT * FROM gotzji_workers WHERE job_id=?').get(job.jobId) as unknown as WorkerRow;}finally{db.close();}
+ const db=new DatabaseSync(path.join(f.root,'core','core.sqlite'), { timeout: 5000 });let old:WorkerRow;try{old=db.prepare('SELECT * FROM gotzji_workers WHERE job_id=?').get(job.jobId) as unknown as WorkerRow;}finally{db.close();}
  await waitFor(async()=>{try{await access(path.join(old.directory,'grace-runtime.json'));return true;}catch{return false;}});
  clock+=301000;await f.core.tick();
  await waitFor(async()=>{await f.core.tick();return (await f.core.get(f.credential,binding)).status==='completed';});
- const after=new DatabaseSync(path.join(f.root,'core','core.sqlite'));try{expect(after.prepare('SELECT reason FROM gotzji_worker_history WHERE epoch=?').get(old.epoch)?.reason).toBe('stopped');expect(after.prepare('SELECT epoch FROM gotzji_workers WHERE job_id=?').get(job.jobId)?.epoch).not.toBe(old.epoch);}finally{after.close();}
+ const after=new DatabaseSync(path.join(f.root,'core','core.sqlite'), { timeout: 5000 });try{expect(after.prepare('SELECT reason FROM gotzji_worker_history WHERE epoch=?').get(old.epoch)?.reason).toBe('stopped');expect(after.prepare('SELECT epoch FROM gotzji_workers WHERE job_id=?').get(job.jobId)?.epoch).not.toBe(old.epoch);}finally{after.close();}
  expect(await verifyStoppedWorker(old)).toBe(true);
 },15000*BUDGET);
 
@@ -157,7 +157,7 @@ it('keeps a real nonzero validator result blocked instead of replaying it as an 
  try{
   await waitFor(async()=>((await f.core.get(f.credential,binding)).progress?.state==='running'));
   const verifier=fileURLToPath(new URL('./phase-r-validator.mjs',import.meta.url));const sourceHash=sha256(await readFile(f.registration.sourceFile,'utf8'));const actual=spawnSync(process.execPath,[verifier,f.registration.sourceFile,sourceHash,'0'],{windowsHide:true,encoding:'utf8'});expect(actual.status).toBe(1);expect(actual.stdout).toContain('CODE_ASSERTION_FAILED');
-  const db=new DatabaseSync(path.join(f.root,'core','core.sqlite'));let worker:{directory:string;token:string};try{worker=db.prepare('SELECT directory,token FROM gotzji_workers WHERE job_id=?').get(job.jobId) as unknown as typeof worker;}finally{db.close();}
+  const db=new DatabaseSync(path.join(f.root,'core','core.sqlite'), { timeout: 5000 });let worker:{directory:string;token:string};try{worker=db.prepare('SELECT directory,token FROM gotzji_workers WHERE job_id=?').get(job.jobId) as unknown as typeof worker;}finally{db.close();}
   const filename=path.join(worker.directory,'validation.json');const envelope=JSON.parse(await readFile(filename,'utf8')) as {body:string;mac:string};const receipt=JSON.parse(envelope.body) as Record<string,unknown>;receipt.state='failed';receipt.exitCode=actual.status;receipt.lastProgressAt=new Date().toISOString();const body=JSON.stringify(receipt);await writeFile(filename,JSON.stringify({body,mac:createHmac('sha256',worker.token).update(body).digest('hex')}));
   expect((await f.core.get(f.credential,binding)).progress).toMatchObject({state:'failed'});
   clock+=301000;
@@ -187,7 +187,7 @@ it.each([false,true])('keeps the authenticated live owner when health is permane
   if(permanentlyUnavailable) await expect(response).rejects.toThrow('HOST_RECONCILIATION_REQUIRED');
   else {const reply=await response;expect(reply.error).toBeUndefined();expect(reply.result).toBeDefined();}
   expect(requests).toBeGreaterThanOrEqual(3);
-  const db=new DatabaseSync(path.join(config.directory,'core.sqlite'));try{expect(db.prepare('SELECT pid,nonce FROM gotzji_host_owners WHERE name=?').get('daemon')).toEqual({pid:process.pid,nonce:ownership.nonce});}finally{db.close();}
+  const db=new DatabaseSync(path.join(config.directory,'core.sqlite'), { timeout: 5000 });try{expect(db.prepare('SELECT pid,nonce FROM gotzji_host_owners WHERE name=?').get('daemon')).toEqual({pid:process.pid,nonce:ownership.nonce});}finally{db.close();}
  }finally{
   child.stdin.end();if(child.exitCode===null)await Promise.race([once(child,'exit'),new Promise((resolve)=>setTimeout(resolve,1500))]);
   if(child.exitCode===null){const exited=once(child,'exit');child.kill();await exited;}
@@ -210,7 +210,7 @@ it('admits concurrent and rejoined frontends while data drift blocks only new ef
   expect(responses.every((response)=>!response.error)).toBe(true);
   const readyEnvelope=JSON.parse(await readFile(path.join(directory,'daemon-ready.json'),'utf8')) as {body:string;mac:string};expect(readyEnvelope.mac).toBe(createHmac('sha256',daemonSecret).update(readyEnvelope.body).digest('hex'));
   const ready=JSON.parse(readyEnvelope.body) as {pid:number;ownerNonce?:string;sourceHash?:string;configurationHash?:string};daemonPid=ready.pid;expect(ready.ownerNonce).toMatch(/^[a-f0-9]{48}$/);expect(ready.sourceHash).toMatch(/^[a-f0-9]{64}$/);expect(ready.configurationHash).toMatch(/^[a-f0-9]{64}$/);
-  const ownerDb=new DatabaseSync(path.join(directory,'core.sqlite'));try{expect(ownerDb.prepare('SELECT pid,nonce FROM gotzji_host_owners WHERE name=?').get('daemon')).toEqual({pid:ready.pid,nonce:ready.ownerNonce});}finally{ownerDb.close();}expect(alive(ready.pid)).toBe(true);
+  const ownerDb=new DatabaseSync(path.join(directory,'core.sqlite'), { timeout: 5000 });try{expect(ownerDb.prepare('SELECT pid,nonce FROM gotzji_host_owners WHERE name=?').get('daemon')).toEqual({pid:ready.pid,nonce:ready.ownerNonce});}finally{ownerDb.close();}expect(alive(ready.pid)).toBe(true);
   const initialStatus=await jsonLine(frontends[0]!,{jsonrpc:'2.0',id:11,method:'tools/call',params:{name:'gotzji_job_status',arguments:{jobId}}});expect(initialStatus.result).toMatchObject({structuredContent:{jobId,status:'running'}});
   await writeFile(sourceFile,'export function add(a, b) { return a - b - 1; }\n');await writeFile(path.join(libraryRoot,'KNOWLEDGE_INDEX.md'),'# Current data changed while the job stayed owned.\n');
   const rejoined=spawn(process.execPath,[frontend,configPath],{stdio:['pipe','pipe','pipe'],windowsHide:true});frontends.push(rejoined);const rejoinedInit=await jsonLine(rejoined,{jsonrpc:'2.0',id:20,method:'initialize',params:{protocolVersion:'2025-11-25'}});expect(rejoinedInit.error).toBeUndefined();
@@ -227,7 +227,7 @@ it('admits concurrent and rejoined frontends while data drift blocks only new ef
   const cancelObservations:string[]=[];for(let attempt=0;attempt<3;attempt++){const response=await jsonLine(restarted,{jsonrpc:'2.0',id:40+attempt,method:'tools/call',params:{name:'gotzji_cancel_job',arguments:{jobId}}});cancelObservations.push(JSON.stringify(response));if((response.result as {structuredContent?:{status:string}}|undefined)?.structuredContent?.status==='cancelled')break;expect(JSON.stringify(response)).toMatch(/CLEANUP_RECONCILIATION_REQUIRED|REQUEST_DENIED/);await new Promise((resolve)=>setTimeout(resolve,100));}
   const cancelledStatus=await jsonLine(restarted,{jsonrpc:'2.0',id:49,method:'tools/call',params:{name:'gotzji_job_status',arguments:{jobId}}});expect(cancelledStatus.result,`cancel observations: ${cancelObservations.join(' | ')}`).toMatchObject({structuredContent:{jobId,status:'cancelled'}});
   const stopped=JSON.parse(JSON.parse(await readFile(path.join(workerDirectory,'stopped.json'),'utf8')).body) as {pid:number;descendants:number[]};expect([stopped.pid,...stopped.descendants].every((pid)=>alive(pid)===false)).toBe(true);
-  const changedDb=new DatabaseSync(path.join(directory,'core.sqlite'));try{changedDb.prepare('UPDATE gotzji_meta SET policy=?').run('changed-policy');}finally{changedDb.close();}
+  const changedDb=new DatabaseSync(path.join(directory,'core.sqlite'), { timeout: 5000 });try{changedDb.prepare('UPDATE gotzji_meta SET policy=?').run('changed-policy');}finally{changedDb.close();}
   const changed=spawn(process.execPath,[frontend,configPath],{stdio:['pipe','pipe','pipe'],windowsHide:true});frontends.push(changed);let changedError='';changed.stderr.on('data',(chunk:Buffer)=>{changedError+=chunk.toString('utf8');});await Promise.race([once(changed,'exit'),new Promise((_,reject)=>setTimeout(()=>reject(new Error('policy-tampered frontend did not exit')),10000))]);expect(changed.exitCode).not.toBe(0);expect(changedError).toContain('HOST_BUILD_CHANGED');
 
  }finally{
@@ -240,13 +240,13 @@ it('admits concurrent and rejoined frontends while data drift blocks only new ef
 },30000*BUDGET);
 
 it('serializes competing stale-owner reclaimers and treats an incomplete legacy owner as transient contention',async()=>{
- const root=await canonicalTemporaryDirectory('gotzji-phase-r-host-');const database=new DatabaseSync(path.join(root,'core.sqlite'));database.exec("CREATE TABLE gotzji_host_owners (name TEXT PRIMARY KEY, pid INTEGER NOT NULL, nonce TEXT NOT NULL); INSERT INTO gotzji_host_owners VALUES ('daemon',2147483647,'dead-owner');");database.close();
+ const root=await canonicalTemporaryDirectory('gotzji-phase-r-host-');const database=new DatabaseSync(path.join(root,'core.sqlite'), { timeout: 5000 });database.exec("CREATE TABLE gotzji_host_owners (name TEXT PRIMARY KEY, pid INTEGER NOT NULL, nonce TEXT NOT NULL); INSERT INTO gotzji_host_owners VALUES ('daemon',2147483647,'dead-owner');");database.close();
  const key=randomBytes(32).toString('hex'),barrier=path.join(root,'start');const helper=pathToFileURL(fileURLToPath(new URL('../dist/phase-r-host-identity.mjs',import.meta.url))).href;
  const probe="import{existsSync}from'node:fs';const{acquireHostOwnership}=await import(process.argv[1]);const [root,key,barrier]=process.argv.slice(2);process.stdout.write('waiting\\n');while(!existsSync(barrier))await new Promise(r=>setTimeout(r,5));const owner=acquireHostOwnership(root,key);process.stdout.write((owner?'acquired':'denied')+'\\n');if(owner){await new Promise(r=>setTimeout(r,1000));owner.release();}";
  const children=[0,1].map(()=>spawn(process.execPath,['--input-type=module','-e',probe,helper,root,key,barrier],{stdio:['pipe','pipe','pipe'],windowsHide:true}));
  try{
   await Promise.all(children.map((child)=>nextLine(child)));const outcomes=children.map((child)=>nextLine(child));await writeFile(barrier,'go');expect((await Promise.all(outcomes)).sort()).toEqual(['acquired','denied']);await Promise.all(children.map((child)=>once(child,'exit')));
-  const check=new DatabaseSync(path.join(root,'core.sqlite'));try{expect(check.prepare('SELECT COUNT(*) n FROM gotzji_host_owners').get()?.n).toBe(0);}finally{check.close();}
+  const check=new DatabaseSync(path.join(root,'core.sqlite'), { timeout: 5000 });try{expect(check.prepare('SELECT COUNT(*) n FROM gotzji_host_owners').get()?.n).toBe(0);}finally{check.close();}
   await writeFile(path.join(root,'daemon-owner.json'),'{');expect(acquireHostOwnership(root,key)).toBeNull();await rm(path.join(root,'daemon-owner.json'));const recovered=acquireHostOwnership(root,key);expect(recovered).not.toBeNull();recovered?.release();
  }finally{for(const child of children) if(child.exitCode===null) child.kill();await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:100});}
 },15000*BUDGET);

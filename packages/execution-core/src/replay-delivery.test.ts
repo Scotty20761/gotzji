@@ -30,7 +30,7 @@ async function run(f: Fixture, preparation: Preparation): Promise<TaskBinding> {
 }
 afterEach(async () => {
   for (const f of fixtures.splice(0)) {
-    const db = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'));
+    const db = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'), { timeout: 5000 });
     const workers = db.prepare('SELECT * FROM gotzji_workers').all() as unknown as WorkerRow[]; db.close();
     for (const worker of workers) await stopWorker(worker);
     try { f.core.close(); } catch { /* detached */ }

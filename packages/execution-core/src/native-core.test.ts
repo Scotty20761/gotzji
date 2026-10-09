@@ -34,7 +34,7 @@ async function until(f: Fixture, check: () => Promise<boolean>): Promise<void> {
 }
 afterEach(async () => {
   for (const f of fixtures.splice(0)) {
-    const db = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite')); const workers = db.prepare('SELECT * FROM gotzji_workers').all() as unknown as WorkerRow[]; db.close();
+    const db = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'), { timeout: 5000 }); const workers = db.prepare('SELECT * FROM gotzji_workers').all() as unknown as WorkerRow[]; db.close();
     for (const worker of workers) {
       if (await stopWorker(worker)) continue;
       // The synthetic runner never starts a native application. For this
@@ -60,7 +60,7 @@ describe('native operations through Grace and the shared Goal (explicit no-model
     const repeated = await f.core.prepareOperation(f.credential, input);
     expect((await f.core.submit(f.credential, repeated.preparationId)).jobId).toBe(binding.jobId);
     await expect(f.core.prepareOperation(f.credential, { ...input, values: [['different']] })).rejects.toMatchObject({ code: 'REQUEST_DIGEST_CONFLICT' });
-    const db = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'));
+    const db = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'), { timeout: 5000 });
     expect(db.prepare('SELECT COUNT(*) AS count FROM goals').get()?.count).toBe(1);
     expect(db.prepare('SELECT COUNT(*) AS count FROM gotzji_resource_claims').get()?.count).toBe(0); db.close();
   }, 20000);
@@ -94,6 +94,6 @@ describe('native operations through Grace and the shared Goal (explicit no-model
     await f.core.resume(f.credential, binding);
     await until(f, async () => (await f.core.get(f.credential, binding)).status === 'blocked');
     expect(await f.core.get(f.credential, binding)).toMatchObject({ blockerCode: 'NATIVE_TERMINATION_UNVERIFIED' });
-    const db = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite')); expect(Number(db.prepare('SELECT COUNT(*) AS count FROM gotzji_resource_claims WHERE job_id=?').get(binding.jobId)?.count)).toBeGreaterThanOrEqual(4); db.close();
+    const db = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'), { timeout: 5000 }); expect(Number(db.prepare('SELECT COUNT(*) AS count FROM gotzji_resource_claims WHERE job_id=?').get(binding.jobId)?.count)).toBeGreaterThanOrEqual(4); db.close();
   }, 20000);
 });

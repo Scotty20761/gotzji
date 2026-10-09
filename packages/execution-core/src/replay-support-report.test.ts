@@ -44,7 +44,7 @@ async function until(f: Fixture, predicate: () => Promise<boolean>): Promise<voi
 const status = async (f: Fixture, binding: TaskBinding): Promise<string> => (await f.core.get(f.credential, binding)).status;
 afterEach(async () => {
   for (const f of fixtures.splice(0)) {
-    const db = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'));
+    const db = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'), { timeout: 5000 });
     const workers = db.prepare('SELECT * FROM gotzji_workers').all() as unknown as WorkerRow[]; db.close();
     for (const worker of workers) await stopWorker(worker);
     try { f.core.close(); } catch { /* detached */ }
@@ -93,7 +93,7 @@ describe('replayed support report (incident I8)', () => {
     }
     // Provider text that once reached a code (a path or document name) is withheld, as a summary, a blocker and a count.
     const leaked = "ENOENT: no such file or directory, open 'C:\\Users\\owner\\Client Report.xlsx'";
-    const db = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'));
+    const db = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'), { timeout: 5000 });
     db.prepare('UPDATE goals SET terminal_summary=? WHERE id=(SELECT goal_id FROM gotzji_claims WHERE id=?)').run(leaked, refused.jobId);
     db.prepare('INSERT INTO gotzji_diagnostics VALUES (?,?,?)').run(waiter.jobId, leaked, new Date().toISOString()); db.close();
     const withheld = await f.core.supportReport(f.credential);

@@ -31,7 +31,7 @@ async function submit(f: Fixture, id = 'request-one', operation: QualificationOp
   f.bindings.push(binding);
   return binding;
 }
-function db(f: Fixture): DatabaseSync { return new DatabaseSync(path.join(f.root, 'core.sqlite')); }
+function db(f: Fixture): DatabaseSync { return new DatabaseSync(path.join(f.root, 'core.sqlite'), { timeout: 5000 }); }
 function worker(f: Fixture, binding: TaskBinding): WorkerRow {
   const database = db(f);
   try { return database.prepare('SELECT * FROM gotzji_workers WHERE job_id=?').get(binding.jobId) as unknown as WorkerRow; }
@@ -140,7 +140,7 @@ describe('neutral execution authority — real SQLite, files and owned processes
   });
   it('keeps untrusted display projections separate from authority', async () => {
     const f = await fixture(); const b = await submit(f);
-    const projection = new DatabaseSync(path.join(f.root, 'app-projection.sqlite'));
+    const projection = new DatabaseSync(path.join(f.root, 'app-projection.sqlite'), { timeout: 5000 });
     projection.exec('CREATE TABLE goals(id TEXT,status TEXT);'); projection.prepare('INSERT INTO goals VALUES (?,?)').run(b.jobId, 'completed'); projection.close();
     expect(await f.core.get(f.gotzji, b)).toMatchObject({ status: 'queued', evidenceDigest: null });
     const database = db(f); expect(database.prepare('SELECT count(*) AS n FROM gotzji_workers').get()?.n).toBe(0); database.close();

@@ -22,7 +22,7 @@ async function fixture(): Promise<Fixture> {
   const credential = core.enrollAdapter('gotzji','owner');
   const prepared = core.prepareSourceSnapshot(credential,'snapshot'); const job = await core.submit(credential,prepared.preparationId);
   const binding = core.select(credential,job.jobId); await core.resume(credential,binding);
-  const database = new DatabaseSync(path.join(state,'core.sqlite'));
+  const database = new DatabaseSync(path.join(state,'core.sqlite'), { timeout: 5000 });
   const worker = database.prepare('SELECT * FROM gotzji_workers WHERE job_id=?').get(job.jobId) as unknown as WorkerRow; database.close();
   const config = JSON.parse(await readFile(path.join(worker.directory,'config.json'),'utf8')) as Record<string,unknown>;
   const f = { root,core,credential,profile,jobId:job.jobId,handle:binding.handle,worker,config }; fixtures.push(f);
@@ -64,7 +64,7 @@ describe('Grace broker joins the neutral authority (explicit no-model driver)', 
     expect(()=>brokerCall(f.config,'read_source',{},false)).toThrow('RUNTIME_OR_TOOL_DENIED');
   });
   it('rejects missing canonical pre-work receipt before reading the source', async () => {
-    const f = await fixture(); const database = new DatabaseSync(path.join(f.root,'state','core.sqlite'));
+    const f = await fixture(); const database = new DatabaseSync(path.join(f.root,'state','core.sqlite'), { timeout: 5000 });
     database.prepare('DELETE FROM gotzji_recipe_operations WHERE operation_id=?').run('policy:workflow'); database.close();
     expect(()=>brokerCall(f.config,'read_source',{},true)).toThrow('PREWORK_REQUIRED');
     await expect(f.core.tick()).rejects.toMatchObject({code:'GRACE_OPERATION_EVIDENCE_REQUIRED'});
@@ -75,7 +75,7 @@ describe('Grace broker joins the neutral authority (explicit no-model driver)', 
     expect((await readFile(path.join(f.root,'state','effects',f.jobId,'result.txt'),'utf8'))).toContain('ภาษาไทย');
   });
   it('does not accept a forged check receipt as completion', async () => {
-    const f = await fixture(); const database = new DatabaseSync(path.join(f.root,'state','core.sqlite'));
+    const f = await fixture(); const database = new DatabaseSync(path.join(f.root,'state','core.sqlite'), { timeout: 5000 });
     database.prepare('UPDATE gotzji_recipe_operations SET receipt=? WHERE operation_id=?').run(JSON.stringify({exitCode:0,sha256:'forged',verifierHash:'forged'}),'check_result'); database.close();
     await expect(f.core.tick()).rejects.toMatchObject({code:'GRACE_CHECK_EVIDENCE_REQUIRED'});
   });
@@ -85,7 +85,7 @@ describe('Grace broker joins the neutral authority (explicit no-model driver)', 
     expect(await f.core.get(f.credential,{jobId:f.jobId,handle:f.handle})).toMatchObject({status:'blocked'});
   },15000);
   it('rejects invalid lease expiry and a revised native user intent', async () => {
-    const f=await fixture(); const database=new DatabaseSync(path.join(f.root,'state','core.sqlite'));
+    const f=await fixture(); const database=new DatabaseSync(path.join(f.root,'state','core.sqlite'), { timeout: 5000 });
     try {
       database.prepare("UPDATE goals SET lease_expires_at='invalid'").run();
       expect(()=>brokerCall(f.config,'read_source',{},true)).toThrow('LIVE_AUTHORITY_DENIED');

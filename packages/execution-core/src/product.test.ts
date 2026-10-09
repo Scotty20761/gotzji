@@ -60,7 +60,7 @@ async function until(f: Fixture, predicate: () => Promise<boolean>): Promise<voi
 }
 afterEach(async () => {
   for (const f of fixtures.splice(0)) {
-    const db = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'));
+    const db = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'), { timeout: 5000 });
     const workers = db.prepare('SELECT * FROM gotzji_workers').all() as unknown as WorkerRow[]; db.close();
     for (const worker of workers) await stopWorker(worker);
     try { f.core.close(); } catch { /* detached */ }
@@ -94,7 +94,7 @@ describe('governed product operations — real native Goal, file and process sea
     const second = await submit(f, { requestId: 'second', projectId: 'two', operation: 'command.run', commandId: 'run' });
     const conflicting = await submit(f, { requestId: 'conflict', projectId: 'one', operation: 'command.run', commandId: 'run' });
     await f.core.resume(f.credential, first); await f.core.resume(f.credential, second);
-    const overlap=new DatabaseSync(path.join(f.root,'state','core.sqlite'));expect(overlap.prepare('SELECT COUNT(*) AS count FROM gotzji_workers WHERE job_id IN (?,?)').get(first.jobId,second.jobId)?.count).toBe(2);expect(overlap.prepare('SELECT COUNT(*) AS count FROM gotzji_resource_claims WHERE job_id IN (?,?)').get(first.jobId,second.jobId)?.count).toBe(2);overlap.close();
+    const overlap=new DatabaseSync(path.join(f.root,'state','core.sqlite'), { timeout: 5000 });expect(overlap.prepare('SELECT COUNT(*) AS count FROM gotzji_workers WHERE job_id IN (?,?)').get(first.jobId,second.jobId)?.count).toBe(2);expect(overlap.prepare('SELECT COUNT(*) AS count FROM gotzji_resource_claims WHERE job_id IN (?,?)').get(first.jobId,second.jobId)?.count).toBe(2);overlap.close();
     expect(await f.core.resume(f.credential, conflicting)).toMatchObject({ status: 'queued', waitingReason: 'RESOURCE_HELD' });
     await until(f, async () => f.core.logs(f.credential, first).text.includes('progress-one') && f.core.logs(f.credential, second).text.includes('progress-two'));
     await until(f, async () => (await f.core.get(f.credential, conflicting)).status === 'completed');
@@ -143,7 +143,7 @@ describe('governed product operations — real native Goal, file and process sea
     expect(await f.core.resume(f.credential, dependent)).toMatchObject({ status: 'queued', waitingReason: 'WAITING_FOR_DEPENDENCY' });
     await f.core.cancel(f.credential, dependency);
     expect(await f.core.resume(f.credential, dependent)).toMatchObject({ status: 'failed', waitingReason: 'DEPENDENCY_FAILED' });
-    const db = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'));
+    const db = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'), { timeout: 5000 });
     expect(db.prepare('SELECT 1 FROM gotzji_workers WHERE job_id=?').get(dependent.jobId)).toBeUndefined(); db.close();
   });
   it('declares unqualified native providers and forbids qualification recipes on the product authority', async () => {
@@ -160,14 +160,14 @@ describe('governed product operations — real native Goal, file and process sea
     expect(() => f.core.ensureAdapterEnrollment('desktop', 'stranger', f.credential)).toThrow('ADAPTER_ENROLLMENT_CONFLICT');
     expect(() => f.core.ensureAdapterEnrollment('desktop', 'owner', 'a'.repeat(64))).toThrow('ADAPTER_ENROLLMENT_CONFLICT');
     expect(() => f.core.ensureAdapterEnrollment('different', 'owner', f.credential)).toThrow('ADAPTER_ENROLLMENT_CONFLICT');
-    const db = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'));
+    const db = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'), { timeout: 5000 });
     expect(db.prepare('SELECT COUNT(*) AS count FROM gotzji_adapters').get()?.count).toBe(1); db.close();
   });
   it('rejects invalid lease expiry, changed ownership and broker arguments before a new effect', async () => {
     const f = await fixture(); await project(f, 'one', 3000);
     const binding = await submit(f, { requestId: 'authority', projectId: 'one', operation: 'command.run', commandId: 'run' });
     await f.core.resume(f.credential, binding);
-    const db = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'));
+    const db = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'), { timeout: 5000 });
     const worker = db.prepare('SELECT * FROM gotzji_workers WHERE job_id=?').get(binding.jobId) as unknown as WorkerRow;
     const config = JSON.parse(await readFile(path.join(worker.directory, 'config.json'), 'utf8'));
     expect(() => productBrokerCall(config, 'execute_operation', { command: 'unreviewed' }, true, {})).toThrow('ARGUMENTS_DENIED');
@@ -192,7 +192,7 @@ describe('governed product operations — real native Goal, file and process sea
     const target = path.join(root, 'source.txt');
     const binding = await submit(f, { requestId: 'change', projectId: 'one', operation: 'file.write', path: 'source.txt', expectedSha256: hash(await readFile(target)), content: 'Approved\r\n' });
     await f.core.resume(f.credential, binding);
-    const db = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'));
+    const db = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'), { timeout: 5000 });
     const worker = db.prepare('SELECT * FROM gotzji_workers WHERE job_id=?').get(binding.jobId) as unknown as WorkerRow; db.close();
     for (let i = 0; i < 100 && (await callWorker(worker, 'status')).state !== 'done'; i++) await new Promise((resolve) => setTimeout(resolve, 30));
     await writeFile(target, 'Unexpected external content');
@@ -205,7 +205,7 @@ describe('governed product operations — real native Goal, file and process sea
     const target = path.join(root, 'source.txt');
     const binding = await submit(f, { requestId: 'change', projectId: 'one', operation: 'file.write', path: 'source.txt', expectedSha256: hash(await readFile(target)), content: 'Approved\r\n' });
     await f.core.resume(f.credential, binding);
-    const db = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'));
+    const db = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'), { timeout: 5000 });
     const worker = db.prepare('SELECT * FROM gotzji_workers WHERE job_id=?').get(binding.jobId) as unknown as WorkerRow; db.close();
     for (let i = 0; i < 100 && (await callWorker(worker, 'status')).state !== 'done'; i++) await new Promise((resolve) => setTimeout(resolve, 30));
     await writeFile(target, 'Owner edit after the run');
@@ -217,7 +217,7 @@ describe('governed product operations — real native Goal, file and process sea
     expect(waiting).toMatchObject({ status: 'queued', waitingReason: 'RESOURCE_HELD', blockingJob: binding.jobId }); expect(waiting).not.toHaveProperty('settleDecisions');
     await expect(f.core.settleBlockedJob(f.credential, next, 'no-effect')).rejects.toMatchObject({ code: 'JOB_NOT_SETTLEABLE' });
     expect(await f.core.settleBlockedJob(f.credential, binding, 'effect-present')).toMatchObject({ status: 'cancelled', summary: 'OWNER_SETTLED_EFFECT_PRESENT' });
-    const state = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'));
+    const state = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'), { timeout: 5000 });
     const operation = state.prepare('SELECT phase,receipt FROM gotzji_operations WHERE job_id=?').get(binding.jobId) as { phase: string; receipt: string };
     const events = (state.prepare('SELECT event FROM gotzji_job_events WHERE job_id=?').all(binding.jobId) as { event: string }[]).map((row) => row.event);
     const held = state.prepare('SELECT COUNT(*) AS count FROM gotzji_writers WHERE job_id=?').get(binding.jobId) as { count: number }; state.close();
@@ -239,7 +239,7 @@ describe('governed product operations — real native Goal, file and process sea
     const target = path.join(root, 'source.txt');
     const binding = await submit(f, { requestId: 'change', projectId: 'one', operation: 'file.write', path: 'source.txt', expectedSha256: hash(await readFile(target)), content: 'Approved\r\n' });
     await f.core.resume(f.credential, binding);
-    const db = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'));
+    const db = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'), { timeout: 5000 });
     const worker = db.prepare('SELECT * FROM gotzji_workers WHERE job_id=?').get(binding.jobId) as unknown as WorkerRow; db.close();
     for (let i = 0; i < 100 && (await callWorker(worker, 'status')).state !== 'done'; i++) await new Promise((resolve) => setTimeout(resolve, 30));
     await writeFile(target, 'Owner edit after the run');
@@ -253,9 +253,9 @@ describe('governed product operations — real native Goal, file and process sea
     expect(await f.core.get(f.credential, binding)).toMatchObject({ status: 'blocked' });
     await writeFile(ready, proof);
     // A held job can lack its operation row (interrupted admission); the decision still becomes a durable receipt.
-    const admission = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite')); admission.prepare('DELETE FROM gotzji_operations WHERE job_id=?').run(binding.jobId); admission.close();
+    const admission = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'), { timeout: 5000 }); admission.prepare('DELETE FROM gotzji_operations WHERE job_id=?').run(binding.jobId); admission.close();
     expect(await f.core.settleBlockedJob(f.credential, binding, 'no-effect')).toMatchObject({ status: 'cancelled' });
-    const state = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'));
+    const state = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'), { timeout: 5000 });
     const operation = state.prepare('SELECT phase,receipt FROM gotzji_operations WHERE job_id=?').get(binding.jobId) as { phase: string; receipt: string };
     const events = (state.prepare('SELECT event FROM gotzji_job_events WHERE job_id=?').all(binding.jobId) as { event: string }[]).map((row) => row.event); state.close();
     expect(operation.phase).toBe('settled');
@@ -271,7 +271,7 @@ describe('governed product operations — real native Goal, file and process sea
     await f.core.resume(f.credential, running);
     await until(f, async () => f.core.logs(f.credential, running).text.includes('progress-two'));
     // An owner-wide provider limit from another job and a transient supervision diagnostic both project this live job as blocked.
-    const db = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'));
+    const db = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'), { timeout: 5000 });
     db.prepare('INSERT INTO gotzji_provider_limits VALUES (?,?,?,?)').run('owner', 'f'.repeat(64), null, '{}');
     db.prepare('INSERT INTO gotzji_diagnostics VALUES (?,?,?)').run(running.jobId, 'WORKER_UNAVAILABLE', new Date().toISOString());
     const view = await f.core.get(f.credential, running);
@@ -304,13 +304,13 @@ describe('governed product operations — real native Goal, file and process sea
     const target = path.join(root, 'source.txt');
     const binding = await submit(f, { requestId: 'change', projectId: 'one', operation: 'file.write', path: 'source.txt', expectedSha256: hash(await readFile(target)), content: 'Approved\r\n' });
     await f.core.resume(f.credential, binding);
-    let state = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'));
+    let state = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'), { timeout: 5000 });
     const writer = state.prepare('SELECT root,job_id,epoch FROM gotzji_writers WHERE job_id=?').get(binding.jobId) as { root: string; job_id: string; epoch: string };
     const claims = state.prepare('SELECT resource_key,job_id,epoch FROM gotzji_resource_claims WHERE job_id=?').all(binding.jobId) as { resource_key: string; job_id: string; epoch: string }[]; state.close();
     await until(f, async () => (await f.core.get(f.credential, binding)).status === 'completed');
     const result = await f.core.readOperationResult(f.credential, binding);
     // The window between finishing the goal and releasing the writer, followed by an owner edit that cleanup cannot verify.
-    state = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'));
+    state = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'), { timeout: 5000 });
     state.prepare('INSERT INTO gotzji_writers(root,job_id,epoch) VALUES (?,?,?)').run(writer.root, writer.job_id, writer.epoch);
     for (const claim of claims) state.prepare('INSERT INTO gotzji_resource_claims(resource_key,job_id,epoch) VALUES (?,?,?)').run(claim.resource_key, claim.job_id, claim.epoch);
     state.prepare('UPDATE gotzji_operations SET phase=? WHERE job_id=?').run('uncertain', binding.jobId); state.close();
@@ -319,7 +319,7 @@ describe('governed product operations — real native Goal, file and process sea
     await expect(f.core.settleBlockedJob(f.credential, binding, 'no-effect')).rejects.toMatchObject({ code: 'SETTLE_DECISION_INVALID' });
     expect(await f.core.settleBlockedJob(f.credential, binding, 'effect-present')).toMatchObject({ status: 'completed' });
     expect(await f.core.readOperationResult(f.credential, binding)).toEqual(result);
-    state = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'));
+    state = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'), { timeout: 5000 });
     expect(state.prepare('SELECT COUNT(*) AS count FROM gotzji_writers WHERE job_id=?').get(binding.jobId)).toMatchObject({ count: 0 }); state.close();
   }, 15000);
   it('rejects IPC-style executable/argument enrollment and changed prepared script dependencies', async () => {
@@ -358,7 +358,7 @@ describe('governed product operations — real native Goal, file and process sea
     const binding = await submit(f, { requestId: 'policy', projectId: 'one', operation: 'command.run', commandId: 'run' });
     await f.core.resume(f.credential, binding);
     await until(f, async () => f.core.logs(f.credential, binding).text.includes('progress-one'));
-    const db = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite')); const worker = db.prepare('SELECT * FROM gotzji_workers WHERE job_id=?').get(binding.jobId) as unknown as WorkerRow;
+    const db = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'), { timeout: 5000 }); const worker = db.prepare('SELECT * FROM gotzji_workers WHERE job_id=?').get(binding.jobId) as unknown as WorkerRow;
     const config = JSON.parse(await readFile(path.join(worker.directory, 'config.json'), 'utf8'));
     const policies = Object.keys(JSON.parse(config.text).projectPolicies); expect(policies.length).toBe(2);
     expect(policies.every((id) => !!db.prepare('SELECT 1 FROM gotzji_recipe_operations WHERE job_id=? AND operation_id=? AND phase=?').get(binding.jobId, 'policy:' + id, 'verified'))).toBe(true);
@@ -401,7 +401,7 @@ describe('governed product operations — real native Goal, file and process sea
   it('reconciles a lost create response from exact bytes without repeating the exclusive effect',async()=>{
     const f=await fixture({delayedProductMs:1200});const root=await project(f,'one');const content='created exactly once\n';
     const preparation=f.core.prepareOperation(f.credential,{requestId:'create-response-loss',projectId:'one',operation:'file.write',path:'lost-create.txt',expectedSha256:null,content});const job=await f.core.submit(f.credential,preparation.preparationId);const binding=f.core.select(f.credential,job.jobId);f.bindings.push(binding);await f.core.resume(f.credential,binding);
-    const db=new DatabaseSync(path.join(f.root,'state','core.sqlite'));await until(f,()=>Number(db.prepare("SELECT COUNT(*) AS count FROM gotzji_recipe_operations WHERE job_id=? AND operation_id LIKE 'policy:%' AND phase='verified'").get(binding.jobId)?.count)===4);
+    const db=new DatabaseSync(path.join(f.root,'state','core.sqlite'), { timeout: 5000 });await until(f,()=>Number(db.prepare("SELECT COUNT(*) AS count FROM gotzji_recipe_operations WHERE job_id=? AND operation_id LIKE 'policy:%' AND phase='verified'").get(binding.jobId)?.count)===4);
     const worker=db.prepare('SELECT * FROM gotzji_workers WHERE job_id=?').get(binding.jobId) as unknown as WorkerRow;const config=JSON.parse(await readFile(path.join(worker.directory,'config.json'),'utf8'));const claim=db.prepare('SELECT digest FROM gotzji_claims WHERE id=?').get(binding.jobId);
     const operationDigest=hash(JSON.stringify({name:'execute_operation',args:{},intent:String(claim?.digest),epoch:config.epoch}));db.prepare('INSERT INTO gotzji_recipe_operations VALUES (?,?,?,?,NULL)').run(binding.jobId,'execute_operation',operationDigest,'started');
     await writeFile(path.join(root,'lost-create.txt'),content,{flag:'wx'});await until(f,async()=> (await f.core.get(f.credential,binding)).status==='completed');
@@ -446,7 +446,7 @@ describe('governed product operations — real native Goal, file and process sea
     const f=await fixture();await project(f,'one',4000);await writeFile(path.join(f.root,'public.txt'),'ordinary\n');
     f.core.registerProject(f.credential,{projectId:'broad',displayName:'Broad owner scope',rootPath:f.root});
     const running=await submit(f,{requestId:'private-boundary-worker',projectId:'one',operation:'command.run',commandId:'run'});await f.core.resume(f.credential,running);
-    const db=new DatabaseSync(path.join(f.root,'state','core.sqlite'));const worker=db.prepare('SELECT * FROM gotzji_workers WHERE job_id=?').get(running.jobId) as unknown as WorkerRow;db.close();
+    const db=new DatabaseSync(path.join(f.root,'state','core.sqlite'), { timeout: 5000 });const worker=db.prepare('SELECT * FROM gotzji_workers WHERE job_id=?').get(running.jobId) as unknown as WorkerRow;db.close();
     const relative=path.relative(f.root,path.join(worker.directory,'config.json'));
     const privateHash=hash(await readFile(path.join(worker.directory,'config.json')));
     expect(()=>f.core.prepareOperation(f.credential,{requestId:'private-read',projectId:'broad',operation:'file.read',path:relative})).toThrow('PRIVATE_RUNTIME_SCOPE_DENIED');
@@ -461,7 +461,7 @@ describe('governed product operations — real native Goal, file and process sea
     await f.core.resume(f.credential, binding);
     await until(f, async () => (await f.core.get(f.credential, binding)).blockerCode === 'GRACE_ACCOUNT_LIMIT');
     expect(await f.core.get(f.credential, binding)).toMatchObject({ status: 'blocked', retryAt: new Date(reset * 1000).toISOString(), waitingReason: 'PROVIDER_LIMIT' });
-    const db = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'));
+    const db = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'), { timeout: 5000 });
     expect(db.prepare('SELECT COUNT(*) AS count FROM gotzji_writers').get()?.count).toBe(0);
     expect(db.prepare('SELECT COUNT(*) AS count FROM gotzji_workers').get()?.count).toBe(0);
     expect(db.prepare('SELECT COUNT(*) AS count FROM gotzji_worker_history').get()?.count).toBe(1);
@@ -486,7 +486,7 @@ describe('governed product operations — real native Goal, file and process sea
     const originalResult = await f.core.readOperationResult(f.credential, binding);
     const predecessor = f.core.authority();
     const filename = path.join(f.root, 'state', 'core.sqlite');
-    const db = new DatabaseSync(filename);
+    const db = new DatabaseSync(filename, { timeout: 5000 });
     const records = (): string => JSON.stringify(['gotzji_claims','gotzji_preparations','gotzji_operations','gotzji_authorized_jobs'].map((table) => db.prepare(`SELECT * FROM ${table}`).all()));
     const before = records();
     f.core.close();

@@ -28,7 +28,7 @@ async function fixture(grace = false, options: {now?:()=>Date} = {}): Promise<{r
   const credential=core.enrollAdapter('review','owner');
   return {root,core,credential,sourceFile,...(registration?{registration}:{})};
 }
-function db(root:string):DatabaseSync { return new DatabaseSync(path.join(root,'core.sqlite')); }
+function db(root:string):DatabaseSync { return new DatabaseSync(path.join(root,'core.sqlite'), { timeout: 5000 }); }
 function worker(root:string,jobId:string):WorkerRow { const database=db(root); try{return database.prepare('SELECT * FROM gotzji_workers WHERE job_id=?').get(jobId) as unknown as WorkerRow;} finally{database.close();} }
 async function job(core:ExecutionCore,credential:string,id:string,operation:'fixture.hold'|'fixture.write'='fixture.hold'):Promise<TaskBinding> {
   const prepared=core.prepare(credential,{requestId:id,operation,text:'verified source'}); const created=await core.submit(credential,prepared.preparationId); return core.select(credential,created.jobId);
