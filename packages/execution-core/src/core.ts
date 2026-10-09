@@ -22,6 +22,10 @@ import { PRODUCT_BROWSER_OPERATIONS, prepareProductBrowserOperation, type Produc
 
 const WORKSPACE = 'gotzji-qualification-library';
 const MUTATION_QUEUES = new Map<string, Promise<unknown>>();
+// Engineering defaults: two write-class Grace jobs (multi-job spec) plus one more slot that only reads can reach, so a
+// version-pinned read never waits behind long commands while total model sessions stay bounded.
+const GRACE_SLOTS = 3;
+const WRITE_SLOTS = 2;
 const SETTLE_REFUSALS = {
   SETTLE_UNSUPPORTED: 'Only project file and command jobs can be settled by the owner',
   JOB_NOT_SETTLEABLE: 'Only a blocked job that still holds its project can be settled',
@@ -458,6 +462,7 @@ export class ExecutionCore {
         if (observation === 'unknown') throw new CoreError('WORKER_RECONCILIATION_REQUIRED');
         if (observation === 'running') { await this.reconcile(claim, worker); return this.view(claim); }
         // The process is proven absent; inspect before any new epoch or replay.
+        if (this.isRead(claim)) { await this.finishAbsentRead(claim, worker); return this.view(claim); }
         if (this.verifyEffect(claim)) {
           await this.reacquire(claim, worker);
           await this.complete(claim, this.requireWorker(claim.id));
@@ -498,7 +503,7 @@ export class ExecutionCore {
           return this.view(claim);
         }
         if (limit) this.#store.database.connection.prepare('DELETE FROM gotzji_provider_limits WHERE owner=?').run(claim.owner);
-        const earlier = this.orderedQueue().find((candidate) => this.queueReady(candidate));
+        const earlier = this.orderedQueue().find((candidate) => this.isRead(candidate) === this.isRead(claim) && this.queueReady(candidate));
         if (earlier && earlier.id !== claim.id) {
           this.#store.database.connection.prepare('UPDATE gotzji_product_jobs SET waiting_reason=?,blocking_job=? WHERE job_id=?').run('PRIORITY_WAIT', earlier.id, claim.id);
           return this.view(claim);
@@ -514,10 +519,13 @@ export class ExecutionCore {
           const resources = this.resourceKeys(claim);
           const occupied = resources.map((key) => ({ key, row: database.prepare('SELECT job_id FROM gotzji_resource_claims WHERE resource_key=?').get(key) ?? database.prepare('SELECT job_id FROM gotzji_writers WHERE root=?').get(key) })).find((entry) => !!entry.row);
           const held = occupied?.row;
-          const count = database.prepare('SELECT COUNT(*) AS count FROM gotzji_writers').get();
-          if (held || (product && Number(count?.count) >= 2)) {
+          const read = this.isRead(claim);
+          const total = Number(database.prepare('SELECT COUNT(*) AS count FROM gotzji_writers').get()?.count);
+          const writes = Number(database.prepare("SELECT COUNT(*) AS count FROM gotzji_writers WHERE root NOT LIKE 'read:%'").get()?.count);
+          if (held || (product && (total >= GRACE_SLOTS || (!read && writes >= WRITE_SLOTS)))) {
             if (!product) throw new CoreError('LIBRARY_WRITER_HELD');
-            const capacityOwner = database.prepare('SELECT job_id FROM gotzji_writers ORDER BY rowid LIMIT 1').get();
+            // Name a job of the class whose slots are full: a write cap waits on writes, the shared cap frees fastest with reads.
+            const capacityOwner = database.prepare(`SELECT job_id FROM gotzji_writers WHERE root ${!read && writes >= WRITE_SLOTS ? 'NOT ' : ''}LIKE 'read:%' ORDER BY rowid LIMIT 1`).get() ?? database.prepare('SELECT job_id FROM gotzji_writers ORDER BY rowid LIMIT 1').get();
             database.prepare('UPDATE gotzji_product_jobs SET waiting_reason=?,blocking_resource=?,blocking_job=? WHERE job_id=?').run(held ? 'RESOURCE_HELD' : 'WORKER_CAPACITY', occupied?.key ?? scope, String(held?.job_id ?? capacityOwner?.job_id ?? ''), claim.id);
             database.exec('COMMIT;');
             return this.view(claim);
@@ -773,7 +781,15 @@ export class ExecutionCore {
     return projected.status === 'blocked' && !this.settleRefusal(claim, 'blocked', goal.status === 'active') ? { ...projected, settleDecisions: goal.status === 'completed' ? ['effect-present'] : ['effect-present', 'no-effect'] } : projected;
   }
   private effectRoot(jobId: string): string { return path.join(this.#root, 'effects', jobId); }
+  /** A basic project read is version-pinned, so it claims only its own scope and never a project. */
+  private isRead(claim: ClaimRow): boolean {
+    const input = this.#store.input(claim);
+    if (input.operation !== 'grace.product-operation') return false;
+    const prepared = JSON.parse(input.text) as PreparedProductOperation;
+    return (prepared.kind === undefined || prepared.kind === 'basic') && prepared.input.operation === 'file.read';
+  }
   private resourceScope(claim: ClaimRow): string {
+    if (this.isRead(claim)) return `read:${claim.id}`;
     const product = this.#store.database.connection.prepare('SELECT resource_key FROM gotzji_product_jobs WHERE job_id=?').get(claim.id);
     return product ? `project:${String(product.resource_key)}` : this.#root;
   }
@@ -968,6 +984,7 @@ export class ExecutionCore {
     const observed = await observeWorker(worker);
     if (observed === 'unknown') { this.markUncertain(claim.id); throw new CoreError('WORKER_RECONCILIATION_REQUIRED'); }
     if (observed === 'absent') {
+      if (this.isRead(claim)) { await this.finishAbsentRead(claim, worker); return; }
       if (!this.verifyEffect(claim)) { this.markUncertain(claim.id); throw new CoreError('EFFECT_RECONCILIATION_REQUIRED'); }
       await this.reacquire(claim, worker);
       await this.complete(claim, this.requireWorker(claim.id));
@@ -982,6 +999,11 @@ export class ExecutionCore {
       if (this.#store.operation(claim.id)?.phase === 'reserved') await this.startReserved(claim, worker);
       else throw new CoreError('EFFECT_RECONCILIATION_REQUIRED');
     } else if (observation.state === 'done') {
+      if (this.isRead(claim)) {
+        const code = this.readFailure(claim);
+        if (code) await this.failRead(claim, worker, code, hash(code)); else await this.complete(claim, worker);
+        return;
+      }
       if (this.verifyEffect(claim)) await this.complete(claim, worker);
       else {this.markUncertain(claim.id);throw new CoreError('EFFECT_RECONCILIATION_REQUIRED');}
     } else if (observation.state === 'failed' || observation.state === 'cancelled') {
@@ -1030,7 +1052,9 @@ export class ExecutionCore {
           return;
         }
         const incident = signed<{ code: string; field?: string }>(worker, 'broker-error.json');
+        if (incident && this.isRead(claim)) { await this.failRead(claim, worker, incident.code, hash(JSON.stringify(incident))); return; }
         if (incident) { this.markUncertain(claim.id); throw new CoreError(incident.code, 'Inspect the selected operation before retrying', incident.field); }
+        if (this.isRead(claim)) { await this.failRead(claim, worker, 'READ_FAILED', hash('READ_FAILED')); return; }
       }
       this.markUncertain(claim.id);
       throw new CoreError('EFFECT_RECONCILIATION_REQUIRED');
@@ -1038,6 +1062,27 @@ export class ExecutionCore {
       await this.validateWorker(claim, worker);
       await this.checkpoint(claim, worker, 'running');
     }
+  }
+  /** The failure code when a read's result cannot be verified; undefined when it can. */
+  private readFailure(claim: ClaimRow): string | undefined {
+    try { return this.verifyEffect(claim) ? undefined : 'READ_RESULT_MISSING'; }
+    catch (error) { return error instanceof CoreError ? error.code : 'READ_RESULT_INVALID'; }
+  }
+  /** A read whose worker is proven gone completes from its verified result or ends failed; it never keeps its slot. */
+  private async finishAbsentRead(claim: ClaimRow, worker: WorkerRow): Promise<void> {
+    const code = this.readFailure(claim);
+    await this.reacquire(claim, worker);
+    const current = this.requireWorker(claim.id);
+    if (code) await this.failRead(claim, current, code, hash(code)); else await this.complete(claim, current);
+  }
+  /** A read has no effect: any failure ends it failed and frees its slot instead of holding the job for the owner. */
+  private async failRead(claim: ClaimRow, worker: WorkerRow, code: string, evidence: string): Promise<void> {
+    if (!await stopWorker(worker)) throw new CoreError('CLEANUP_RECONCILIATION_REQUIRED');
+    const current = await this.snapshot(claim);
+    unwrap(await this.#service.finishGoal(this.actor(claim, worker.session), { goalId: current.goalId, leaseToken: worker.lease, expectedRevision: current.revision, status: 'failed', summary: code, evidence: [{ kind: 'hash', value: evidence }] }));
+    this.#store.event(claim.id, code, this.#now().toISOString());
+    this.#store.database.connection.prepare('UPDATE gotzji_operations SET phase=?,receipt=? WHERE job_id=?').run('verified', JSON.stringify({ verifier: 'host-read-no-effect-failure-v1', failure: code }), claim.id);
+    this.releaseWriter(claim.id, worker.epoch);
   }
   private async reacquire(claim: ClaimRow, worker: WorkerRow): Promise<void> {
     if (await observeWorker(worker) !== 'absent') throw new CoreError('WORKER_RECONCILIATION_REQUIRED');
@@ -1157,6 +1202,7 @@ export class ExecutionCore {
     const input = this.#store.input(claim);
     const codeRunBefore=input.operation==='grace.code-check'?this.codeRun(claim,worker):undefined;
     if (!await stopWorker(worker)) throw new CoreError('CLEANUP_RECONCILIATION_REQUIRED');
+    if (this.isRead(claim)) { await this.finishAbsentRead(claim, worker); this.#store.clearDiagnostic(claim.id); return; }
     const operation = this.#store.operation(claim.id);
     if (!operation || operation.digest !== this.operationDigest(claim) || operation.phase === 'revoked' || operation.phase === 'uncertain') throw new CoreError('EFFECT_RECONCILIATION_REQUIRED');
     const filename = path.join(this.effectRoot(claim.id),'result.txt');

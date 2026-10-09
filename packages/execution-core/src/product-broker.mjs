@@ -76,7 +76,9 @@ export function productBrokerCall(config, name, args, runtimeApproved, runner) {
         result = runner.start();
       } else {
         const target = targetIsCurrent(operation,config);
-        const current = existsSync(target) ? digest(readFileSync(target)) : null;
+        // A read returns exactly the bytes whose hash matched the prepared version; reading again could return another version.
+        const observed = existsSync(target) ? readFileSync(target) : null;
+        const current = observed ? digest(observed) : null;
         if (previous?.phase === 'started' && operation.input.operation === 'file.write' && current === operation.afterSha256) {
           // The exact approved target proves a lost write response; never write twice.
         } else if (current !== operation.beforeSha256) throw new Error('FILE_VERSION_CONFLICT');
@@ -92,7 +94,7 @@ export function productBrokerCall(config, name, args, runtimeApproved, runner) {
             catch (error) { if (existsSync(temporary)) unlinkSync(temporary); throw error; }
           }
         }
-        const bytes = readFileSync(target);
+        const bytes = operation.input.operation === 'file.read' ? observed : readFileSync(target);
         result = { operation: operation.input.operation, projectId: operation.project.projectId, path: operation.input.path, sha256: digest(bytes), beforeSha256: operation.beforeSha256, ...(operation.input.operation === 'file.read' ? { content: bytes.toString('utf8') } : { bytes: bytes.length }), state: 'completed' };
         writeFileSync(path.join(config.effectRoot, 'result.txt'), JSON.stringify(result), { mode: 0o600 });
       }

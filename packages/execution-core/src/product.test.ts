@@ -210,7 +210,8 @@ describe('governed product operations — real native Goal, file and process sea
     await writeFile(target, 'Owner edit after the run');
     await expect(f.core.tick()).rejects.toMatchObject({ code: 'ARTIFACT_CHANGED' });
     expect(await f.core.get(f.credential, binding)).toMatchObject({ status: 'blocked', blockerCode: 'ARTIFACT_CHANGED', settleDecisions: ['effect-present', 'no-effect'] });
-    const next = await submit(f, { requestId: 'next', projectId: 'one', operation: 'file.read', path: 'source.txt' });
+    // A write-class job: reads no longer wait on project claims (incident I2).
+    const next = await submit(f, { requestId: 'next', projectId: 'one', operation: 'command.run', commandId: 'run' });
     const waiting = await f.core.resume(f.credential, next);
     expect(waiting).toMatchObject({ status: 'queued', waitingReason: 'RESOURCE_HELD', blockingJob: binding.jobId }); expect(waiting).not.toHaveProperty('settleDecisions');
     await expect(f.core.settleBlockedJob(f.credential, next, 'no-effect')).rejects.toMatchObject({ code: 'JOB_NOT_SETTLEABLE' });
