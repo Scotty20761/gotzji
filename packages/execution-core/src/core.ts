@@ -26,6 +26,9 @@ const MUTATION_QUEUES = new Map<string, Promise<unknown>>();
 // version-pinned read never waits behind long commands while total model sessions stay bounded.
 const GRACE_SLOTS = 3;
 const WRITE_SLOTS = 2;
+// A live worker that misses a status call is busy (a synchronous SQLite wait, a file retry), not lost. Healthy checks
+// renew it every 30 s; only one left unrenewed this long is treated as unobservable.
+const UNOBSERVED_GRACE_MS = 90_000;
 const SETTLE_REFUSALS = {
   SETTLE_UNSUPPORTED: 'Only project file and command jobs can be settled by the owner',
   JOB_NOT_SETTLEABLE: 'Only a blocked job that still holds its project can be settled',
@@ -1067,26 +1070,21 @@ export class ExecutionCore {
   }
   private async reconcile(claim: ClaimRow, worker: WorkerRow): Promise<void> {
     const observed = await observeWorker(worker);
-    if (observed === 'unknown') { this.markUncertain(claim.id); throw new CoreError('WORKER_RECONCILIATION_REQUIRED'); }
-    if (observed === 'absent') {
-      if (this.isRead(claim)) { await this.finishAbsentRead(claim, worker); return; }
-      if (!this.verifyEffect(claim)) { this.markUncertain(claim.id); throw new CoreError('EFFECT_RECONCILIATION_REQUIRED'); }
-      await this.reacquire(claim, worker);
-      await this.complete(claim, this.requireWorker(claim.id));
-      return;
-    }
+    if (observed === 'unknown') { if (this.recentlyRenewed(worker)) return; this.markUncertain(claim.id); throw new CoreError('WORKER_RECONCILIATION_REQUIRED'); }
+    if (observed === 'absent') { await this.finishAbsent(claim, worker); return; }
     const goal = await this.snapshot(claim);
     if (!goal.leaseExpiresAt || !Number.isFinite(Date.parse(goal.leaseExpiresAt)) || Date.parse(goal.leaseExpiresAt) <= this.#now().getTime()) {
       await this.recoverExpired(claim, worker); return;
     }
-    const observation = await callWorker(worker, 'status');
+    const observation = await callWorker(worker, 'status').catch((error: unknown) => { if (this.recentlyRenewed(worker)) return undefined; throw error; });
+    if (!observation) return;
     if (observation.state === 'ready') {
       if (this.#store.operation(claim.id)?.phase === 'reserved') await this.startReserved(claim, worker);
       else throw new CoreError('EFFECT_RECONCILIATION_REQUIRED');
     } else if (observation.state === 'done') {
       if (this.isRead(claim)) {
         const code = this.readFailure(claim);
-        if (code) await this.failRead(claim, worker, code, hash(code)); else await this.complete(claim, worker);
+        if (code) await this.failNoEffect(claim, worker, { code, evidence: hash(code) }); else await this.complete(claim, worker);
         return;
       }
       if (this.verifyEffect(claim)) await this.complete(claim, worker);
@@ -1137,9 +1135,11 @@ export class ExecutionCore {
           return;
         }
         const incident = signed<{ code: string; field?: string }>(worker, 'broker-error.json');
-        if (incident && this.isRead(claim)) { await this.failRead(claim, worker, incident.code, hash(JSON.stringify(incident))); return; }
+        // Only basic jobs can prove they changed nothing; native, Library and browser workers stay for the owner to inspect.
+        if (incident && this.isBasic(claim)) { await this.failNoEffect(claim, worker, { code: incident.code, evidence: hash(JSON.stringify(incident)), ...(incident.field ? { field: incident.field } : {}) }); return; }
         if (incident) { this.markUncertain(claim.id); throw new CoreError(incident.code, 'Inspect the selected operation before retrying', incident.field); }
-        if (this.isRead(claim)) { await this.failRead(claim, worker, 'READ_FAILED', hash('READ_FAILED')); return; }
+        if (this.isRead(claim)) { await this.failNoEffect(claim, worker, { code: 'READ_FAILED', evidence: hash('READ_FAILED') }); return; }
+        if (this.isBasic(claim)) { await this.failNoEffect(claim, worker, { code: 'OPERATION_FAILED_BEFORE_EFFECT', evidence: hash('OPERATION_FAILED_BEFORE_EFFECT'), uncertain: 'EFFECT_RECONCILIATION_REQUIRED' }); return; }
       }
       this.markUncertain(claim.id);
       throw new CoreError('EFFECT_RECONCILIATION_REQUIRED');
@@ -1158,16 +1158,54 @@ export class ExecutionCore {
     const code = this.readFailure(claim);
     await this.reacquire(claim, worker);
     const current = this.requireWorker(claim.id);
-    if (code) await this.failRead(claim, current, code, hash(code)); else await this.complete(claim, current);
+    if (code) await this.failNoEffect(claim, current, { code, evidence: hash(code) }); else await this.complete(claim, current);
   }
-  /** A read has no effect: any failure ends it failed and frees its slot instead of holding the job for the owner. */
-  private async failRead(claim: ClaimRow, worker: WorkerRow, code: string, evidence: string): Promise<void> {
+  /** A job whose worker is proven gone completes from its verified effect, ends failed if it provably changed nothing, or waits for the owner. */
+  private async finishAbsent(claim: ClaimRow, worker: WorkerRow): Promise<void> {
+    if (this.isRead(claim)) { await this.finishAbsentRead(claim, worker); return; }
+    let verified = false; let failure: unknown;
+    try { verified = this.verifyEffect(claim); } catch (error) { failure = error; }
+    if (verified || this.noEffect(claim, worker)) {
+      await this.reacquire(claim, worker);
+      const current = this.requireWorker(claim.id);
+      if (verified) await this.complete(claim, current); else await this.failNoEffect(claim, current, { code: 'WORKER_ENDED_BEFORE_EFFECT', evidence: hash('WORKER_ENDED_BEFORE_EFFECT') });
+      return;
+    }
+    if (failure) throw failure;
+    this.markUncertain(claim.id); throw new CoreError('EFFECT_RECONCILIATION_REQUIRED');
+  }
+  /** End a failed job that changed nothing and free its claim: a read always (I2), another basic job when noEffect proves it (I1b); otherwise it waits for the owner. */
+  private async failNoEffect(claim: ClaimRow, worker: WorkerRow, failure: { readonly code: string; readonly evidence: string; readonly field?: string; readonly uncertain?: string }): Promise<void> {
     if (!await stopWorker(worker)) throw new CoreError('CLEANUP_RECONCILIATION_REQUIRED');
+    // Proved after the stop, so nothing can start between the proof and the release (incident I1b).
+    const read = this.isRead(claim);
+    if (!read && !this.noEffect(claim, worker)) { this.markUncertain(claim.id); throw new CoreError(failure.uncertain ?? failure.code, 'Inspect the selected operation before retrying', failure.field); }
     const current = await this.snapshot(claim);
-    unwrap(await this.#service.finishGoal(this.actor(claim, worker.session), { goalId: current.goalId, leaseToken: worker.lease, expectedRevision: current.revision, status: 'failed', summary: code, evidence: [{ kind: 'hash', value: evidence }] }));
-    this.#store.event(claim.id, code, this.#now().toISOString());
-    this.#store.database.connection.prepare('UPDATE gotzji_operations SET phase=?,receipt=? WHERE job_id=?').run('verified', JSON.stringify({ verifier: 'host-read-no-effect-failure-v1', failure: code }), claim.id);
+    unwrap(await this.#service.finishGoal(this.actor(claim, worker.session), { goalId: current.goalId, leaseToken: worker.lease, expectedRevision: current.revision, status: 'failed', summary: failure.code, evidence: [{ kind: 'hash', value: failure.evidence }] }));
+    this.#store.event(claim.id, failure.code, this.#now().toISOString());
+    this.#store.database.connection.prepare('UPDATE gotzji_operations SET phase=?,receipt=? WHERE job_id=?').run('verified', JSON.stringify({ verifier: read ? 'host-read-no-effect-failure-v1' : 'host-no-effect-failure-v1', failure: failure.code }), claim.id);
     this.releaseWriter(claim.id, worker.epoch);
+  }
+  /**
+   * Whether a basic job provably changed nothing (incident I1b). A command's runner records its run before it spawns,
+   * so no run record means it never started. A file write left its target at the prepared before-state with no
+   * temporary file of this epoch beside it. Anything else is not provable and stays with the owner.
+   */
+  private noEffect(claim: ClaimRow, worker: WorkerRow): boolean {
+    if (!this.isBasic(claim)) return false;
+    const prepared = JSON.parse(this.#store.input(claim).text) as ProductOperation;
+    try {
+      if (prepared.input.operation === 'command.run') return !existsSync(path.join(worker.directory, 'product-run.json'));
+      if (prepared.input.operation !== 'file.write' || !prepared.target || existsSync(`${prepared.target}.gotzji-${worker.epoch}`)) return false;
+      if (!existsSync(prepared.target)) return prepared.beforeSha256 === null;
+      return !lstatSync(prepared.target).isSymbolicLink() && hash(readFileSync(prepared.target)) === prepared.beforeSha256;
+    } catch { return false; }
+  }
+  private isBasic(claim: ClaimRow): boolean {
+    const input = this.#store.input(claim);
+    if (input.operation !== 'grace.product-operation') return false;
+    const prepared = JSON.parse(input.text) as PreparedProductOperation;
+    return prepared.kind === undefined || prepared.kind === 'basic';
   }
   private async reacquire(claim: ClaimRow, worker: WorkerRow): Promise<void> {
     if (await observeWorker(worker) !== 'absent') throw new CoreError('WORKER_RECONCILIATION_REQUIRED');
@@ -1323,6 +1361,7 @@ export class ExecutionCore {
     try { database.prepare('DELETE FROM gotzji_resource_claims WHERE job_id=? AND epoch=?').run(jobId, epoch); database.prepare('DELETE FROM gotzji_writers WHERE job_id=? AND epoch=?').run(jobId, epoch); database.exec('COMMIT;'); }
     catch (error) { database.exec('ROLLBACK;'); throw error; }
   }
+  private recentlyRenewed(worker: WorkerRow): boolean { return this.#now().getTime() - worker.last_renewed < UNOBSERVED_GRACE_MS; }
   private markUncertain(jobId: string): void { this.#store.database.connection.prepare('UPDATE gotzji_operations SET phase=? WHERE job_id=?').run('uncertain', jobId); }
   private async serial<T>(jobId: string, action: () => Promise<T>): Promise<T> {
     const key = `${this.#root}\0${jobId}`;

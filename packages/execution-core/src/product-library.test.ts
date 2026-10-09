@@ -168,6 +168,20 @@ describe('P7 Library runtime',()=>{
     expect((await f.core.readOperationResult(f.credential,binding)).output).toMatchObject({state:'completed',workflowId:'library.code-qa'});db.close();
   },25000);
 
+  it('takes its next delivery step after a status call went unanswered between steps: the worker was busy, not lost',async()=>{
+    const f=await fixture(true);const input=codeInput('delivery-busy','normal');input.parameters.expectedSha256=hash(await readFile(path.join(f.library,'source.md')));
+    const binding=await submit(f,input);await f.core.resume(f.credential,binding);
+    const db=new DatabaseSync(path.join(f.root,'state','core.sqlite'));
+    await until(f,()=>!!db.prepare("SELECT 1 FROM gotzji_recipe_operations WHERE job_id=? AND operation_id='library-step:validate' AND phase='verified'").get(binding.jobId));
+    const worker=db.prepare('SELECT * FROM gotzji_workers WHERE job_id=?').get(binding.jobId) as unknown as WorkerRow;
+    const ready=path.join(worker.directory,'ready.json');const proof=await readFile(ready);
+    // Restore the status channel even if a tick throws, so teardown can still stop this worker.
+    await writeFile(ready,'{}');try{for(let n=0;n<3;n++)await f.core.tick();}finally{await writeFile(ready,proof);}
+    expect(await f.core.get(f.credential,binding)).toMatchObject({status:'running'});
+    f.core.authorizeLibraryDelivery(f.credential,binding,'commit');f.core.authorizeLibraryDelivery(f.credential,binding,'push');
+    await until(f,async()=> (await f.core.get(f.credential,binding)).status==='completed');db.close();
+  },25000);
+
   it('allows the same owned job to be selected through an explicitly enrolled legacy Library route',async()=>{
     const f=await fixture();const binding=await submit(f,{requestId:'cross-route',projectId:'library',operation:'library.workflow',workflowId:'library.read',workflowVersion:1,parameters:{paths:JSON.stringify(['source.md'])}});
     const legacy=f.core.enrollAdapter('legacy','owner');f.core.enrollLibraryRoute(legacy,{projectId:'library',route:'lnwjud-library'});

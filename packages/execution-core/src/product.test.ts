@@ -277,12 +277,19 @@ describe('governed product operations — real native Goal, file and process sea
     expect(view.status).toBe('blocked'); expect(view).not.toHaveProperty('settleDecisions');
     await expect(f.core.settleBlockedJob(f.credential, running, 'no-effect')).rejects.toMatchObject({ code: 'JOB_STILL_RUNNING' });
     db.prepare('DELETE FROM gotzji_provider_limits').run(); db.prepare('DELETE FROM gotzji_diagnostics').run();
-    // One failed status check marks live work uncertain for the rest of its run; that alone must not make it settleable.
-    const worker = db.prepare('SELECT * FROM gotzji_workers WHERE job_id=?').get(running.jobId) as unknown as WorkerRow; db.close();
+    // A worker that misses a status call is busy, not lost: within the grace window nothing about the job changes.
+    const worker = db.prepare('SELECT * FROM gotzji_workers WHERE job_id=?').get(running.jobId) as unknown as WorkerRow;
     const ready = path.join(worker.directory, 'ready.json'); const proof = await readFile(ready);
+    // Restore the status channel even if an expectation fails, so teardown can still stop this worker.
     await writeFile(ready, '{}');
-    await expect(f.core.tick()).rejects.toMatchObject({ code: 'WORKER_RECONCILIATION_REQUIRED' });
-    await writeFile(ready, proof);
+    try {
+      await f.core.tick();
+      expect((await f.core.get(f.credential, running)).status).toBe('running');
+      expect(db.prepare('SELECT phase FROM gotzji_operations WHERE job_id=?').get(running.jobId)).toMatchObject({ phase: 'started' });
+      // Unobservable past the grace window, it is marked uncertain; that alone must not make it settleable.
+      db.prepare('UPDATE gotzji_workers SET last_renewed=? WHERE job_id=?').run(Date.now() - 120_000, running.jobId);
+      await expect(f.core.tick()).rejects.toMatchObject({ code: 'WORKER_RECONCILIATION_REQUIRED' });
+    } finally { db.close(); await writeFile(ready, proof); }
     await f.core.tick();
     const uncertain = await f.core.get(f.credential, running);
     expect(uncertain.status).toBe('blocked'); expect(uncertain).not.toHaveProperty('settleDecisions');
@@ -323,8 +330,26 @@ describe('governed product operations — real native Goal, file and process sea
     await writeFile(path.join(root, 'job.mjs'), 'console.log("unreviewed-change");');
     const job = await f.core.submit(f.credential, prepared.preparationId); const binding = f.core.select(f.credential, job.jobId); f.bindings.push(binding);
     await f.core.resume(f.credential, binding);
-    await until(f, async () => (await f.core.get(f.credential, binding)).blockerCode === 'COMMAND_DEPENDENCIES_CHANGED');
+    // Refused before the command started, so it ends failed and frees its project instead of holding it (incident I1b).
+    await until(f, async () => (await f.core.get(f.credential, binding)).status === 'failed');
+    expect(await f.core.get(f.credential, binding)).toMatchObject({ summary: 'COMMAND_DEPENDENCIES_CHANGED' });
     expect(f.core.logs(f.credential, binding).text).not.toContain('unreviewed-change');
+    const state = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'), { readOnly: true, timeout: 5000 });
+    expect(state.prepare('SELECT COUNT(*) AS count FROM gotzji_writers WHERE job_id=?').get(binding.jobId)).toMatchObject({ count: 0 }); state.close();
+  }, 15000);
+  it('ends a write refused before it touched the file as failed and frees its project (incident I1b)', async () => {
+    const f = await fixture(); const root = await project(f, 'one');
+    await writeFile(path.join(root, 'notes.txt'), 'Original\n');
+    const prepared = f.core.prepareOperation(f.credential, { requestId: 'policy-drift', projectId: 'one', operation: 'file.write', path: 'notes.txt', expectedSha256: hash('Original\n'), content: 'Changed\n' });
+    // A rule added after the write was prepared makes the broker refuse before writing.
+    await writeFile(path.join(root, 'CLAUDE.md'), 'Rules added after preparation\n');
+    const job = await f.core.submit(f.credential, prepared.preparationId); const binding = f.core.select(f.credential, job.jobId); f.bindings.push(binding);
+    await f.core.resume(f.credential, binding);
+    await until(f, async () => (await f.core.get(f.credential, binding)).status === 'failed');
+    expect(await f.core.get(f.credential, binding)).toMatchObject({ summary: 'PROJECT_POLICY_CHANGED' });
+    expect(await readFile(path.join(root, 'notes.txt'), 'utf8')).toBe('Original\n');
+    const state = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'), { readOnly: true, timeout: 5000 });
+    expect(state.prepare('SELECT COUNT(*) AS count FROM gotzji_writers WHERE job_id=?').get(binding.jobId)).toMatchObject({ count: 0 }); state.close();
   }, 15000);
   it('requires frozen project and ancestor policy reads and rejects changed or newly added rules', async () => {
     const f = await fixture(); const root = await project(f, 'one', 3000);
