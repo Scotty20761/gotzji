@@ -13,7 +13,7 @@ import { CoreStore, hash, secret, type AdapterRow, type ClaimRow, type WorkerRow
 import { callWorker, launchWorker, observeWorker, stopWorker, workerFingerprint } from './managed-worker.js';
 import { signed } from './managed-worker.js';
 import { assertGraceProfile, graceProfile, productGraceProfile, type GraceProfile, type GraceRegistration, type ProductGraceRegistration } from './grace-profile.js';
-import { PRODUCT_CATALOG, registeredProject, productOperation, reviewedRecipe } from './product-projects.js';
+import { PRODUCT_CATALOG, claimsOverlap, folderClaim, registeredProject, productOperation, reviewedRecipe } from './product-projects.js';
 import { CoreError, type JobView, type SettleDecision, type Preparation, type RequestInput, type TaskBinding, type CodeRunReceipt, type RegisteredProject, type ProjectRegistration, type ProductOperationInput, type BasicProductOperationInput, type ProductOperation, type PreparedProductOperation, type CatalogEntry, type ReviewedCommandRegistration } from './types.js';
 import { PRODUCT_NATIVE_OPERATIONS, prepareProductNativeOperation, type ProductNativeInput, type TrustedProductNativeOptions, type ProductNativeOperationName } from './product-native.js';
 import { libraryRoute, libraryCatalog, prepareLibraryOperation, verifiedLibraryNavigationEvolution, type ProductLibraryInput, type TrustedLibraryOptions } from './product-library.js';
@@ -218,12 +218,12 @@ export class ExecutionCore {
     return [...new Set([...project.recipeIds, ...this.boundRecipeIds(adapter.owner, project.projectId)])];
   }
   /** What the owner approved, for the app only: the catalog the model reads never carries local paths. */
-  public recipeReview(credential: string, recipeId: string): { readonly recipeId: string; readonly executable: string; readonly executableSha256: string; readonly args: readonly string[]; readonly timeoutMs: number; readonly dependencies: readonly { readonly path: string; readonly pinned: 'at-approval' | 'each-run'; readonly sha256?: string }[] } {
+  public recipeReview(credential: string, recipeId: string): { readonly recipeId: string; readonly executable: string; readonly executableSha256: string; readonly args: readonly string[]; readonly timeoutMs: number; readonly writeScope: 'project' | 'workspace'; readonly dependencies: readonly { readonly path: string; readonly pinned: 'at-approval' | 'each-run'; readonly sha256?: string }[] } {
     const adapter = this.authorize(credential);
     const row = this.#store.database.connection.prepare('SELECT recipe FROM gotzji_reviewed_recipes WHERE owner=? AND recipe_id=?').get(adapter.owner, recipeId);
     if (!row) throw new CoreError('RECIPE_NOT_REGISTERED', 'Choose a recipe from the server catalog', 'recipeId');
     const recipe = JSON.parse(String(row.recipe)) as ReturnType<typeof reviewedRecipe>;
-    return { recipeId: recipe.recipeId, executable: recipe.executable, executableSha256: recipe.executableHash, args: recipe.args, timeoutMs: recipe.timeoutMs,
+    return { recipeId: recipe.recipeId, executable: recipe.executable, executableSha256: recipe.executableHash, args: recipe.args, timeoutMs: recipe.timeoutMs, writeScope: recipe.writeScope ?? 'workspace',
       dependencies: recipe.dependencies.map((item) => { const fixed = item.includes('${projectRoot}') ? undefined : recipe.fixedDependencies.find((entry) => entry.path === path.resolve(item)); return fixed ? { path: item, pinned: 'at-approval' as const, sha256: fixed.hash } : { path: item, pinned: 'each-run' as const }; }) };
   }
   private boundRecipeIds(owner: string, projectId: string): readonly string[] {
@@ -532,9 +532,9 @@ export class ExecutionCore {
           return this.view(claim);
         }
         if (limit) this.#store.database.connection.prepare('DELETE FROM gotzji_provider_limits WHERE owner=?').run(claim.owner);
-        const earlier = this.orderedQueue().find((candidate) => this.isRead(candidate) === this.isRead(claim) && this.queueReady(candidate));
-        if (earlier && earlier.id !== claim.id) {
-          this.#store.database.connection.prepare('UPDATE gotzji_product_jobs SET waiting_reason=?,blocking_job=? WHERE job_id=?').run('PRIORITY_WAIT', earlier.id, claim.id);
+        const ahead = this.queueAhead(claim);
+        if (ahead) {
+          this.#store.database.connection.prepare('UPDATE gotzji_product_jobs SET waiting_reason=?,blocking_resource=?,blocking_job=? WHERE job_id=?').run('PRIORITY_WAIT', ahead.key ?? null, ahead.jobId, claim.id);
           return this.view(claim);
         }
       }
@@ -546,8 +546,8 @@ export class ExecutionCore {
         try {
           const scope = this.resourceScope(claim);
           const resources = this.resourceKeys(claim);
-          const occupied = resources.map((key) => ({ key, row: database.prepare('SELECT job_id FROM gotzji_resource_claims WHERE resource_key=?').get(key) ?? database.prepare('SELECT job_id FROM gotzji_writers WHERE root=?').get(key) })).find((entry) => !!entry.row);
-          const held = occupied?.row;
+          const occupied = resources.map((key) => this.holders(key)[0]).find((entry) => entry !== undefined);
+          const held = occupied ? { job_id: occupied.jobId } : undefined;
           const read = this.isRead(claim);
           const total = Number(database.prepare('SELECT COUNT(*) AS count FROM gotzji_writers').get()?.count);
           const writes = Number(database.prepare("SELECT COUNT(*) AS count FROM gotzji_writers WHERE root NOT LIKE 'read:%'").get()?.count);
@@ -820,7 +820,34 @@ export class ExecutionCore {
   private resourceScope(claim: ClaimRow): string {
     if (this.isRead(claim)) return `read:${claim.id}`;
     const product = this.#store.database.connection.prepare('SELECT resource_key FROM gotzji_product_jobs WHERE job_id=?').get(claim.id);
-    return product ? `project:${String(product.resource_key)}` : this.#root;
+    if (!product) return this.#root;
+    const folder = this.writtenFolder(claim);
+    return folder ? folderClaim(String(product.resource_key), folder) : `project:${String(product.resource_key)}`;
+  }
+  /** The folder a basic file write or a project-scoped command writes in (incident I3); other jobs hold their whole workspace. */
+  private writtenFolder(claim: ClaimRow): string | undefined {
+    const prepared = JSON.parse(this.#store.input(claim).text) as PreparedProductOperation;
+    if (prepared.kind !== undefined && prepared.kind !== 'basic') return undefined;
+    if (prepared.input.operation === 'file.write' && prepared.target) return path.dirname(prepared.target);
+    return prepared.input.operation === 'command.run' && prepared.command?.writeScope === 'project' ? prepared.project.rootPath : undefined;
+  }
+  /** The jobs holding `key` or a claim colliding with it (claimsOverlap): a whole workspace and the folders in it exclude each other. */
+  private holders(key: string): readonly { readonly key: string; readonly jobId: string }[] {
+    const database = this.#store.database.connection;
+    const exact = database.prepare('SELECT job_id FROM gotzji_resource_claims WHERE resource_key=?').get(key) ?? database.prepare('SELECT job_id FROM gotzji_writers WHERE root=?').get(key);
+    const held = exact ? [{ key, jobId: String(exact.job_id) }] : [];
+    const group = /^(?:project|folder):([^:]+)/u.exec(key)?.[1];
+    if (!group) return held;
+    const folders = `folder:${group}:`;
+    return [...held, ...database.prepare('SELECT resource_key,job_id FROM gotzji_resource_claims WHERE resource_key=? OR substr(resource_key,1,?)=?').all(`project:${group}`, folders.length, folders)
+      .filter((entry) => String(entry.resource_key) !== key && claimsOverlap(key, String(entry.resource_key))).map((entry) => ({ key: String(entry.resource_key), jobId: String(entry.job_id) }))];
+  }
+  /** A holder that is still working. One with a diagnostic, an uncertain effect, an ended goal or an expired lease waits for the owner or for recovery. */
+  private progressing(jobId: string): boolean {
+    const database = this.#store.database.connection;
+    if (database.prepare('SELECT 1 FROM gotzji_diagnostics WHERE job_id=?').get(jobId) || database.prepare("SELECT 1 FROM gotzji_operations WHERE job_id=? AND phase='uncertain'").get(jobId)) return false;
+    const goal = database.prepare('SELECT g.status,g.lease_expires_at FROM gotzji_claims c JOIN goals g ON g.id=c.goal_id WHERE c.id=?').get(jobId);
+    return goal?.status === 'active' && !(goal.lease_expires_at && Date.parse(String(goal.lease_expires_at)) <= this.#now().getTime());
   }
   private privateRuntimeRoots(): readonly string[] { return [...new Set([...this.#privateRuntimeRoots,...(this.#browser?[path.dirname(this.#browser.manifestPath),this.#browser.session.profilePath]:[])])]; }
   private resourceKeys(claim: ClaimRow): readonly string[] {
@@ -833,13 +860,34 @@ export class ExecutionCore {
     }
     return [this.resourceScope(claim)];
   }
-  private queueReady(claim: ClaimRow): boolean {
-    if (claim.policy !== this.#policy) return false;
+  /** Why a queued job cannot start: a held resource, or 'other' for its policy, a provider limit, a diagnostic or an unfinished dependency. */
+  private queueBlock(claim: ClaimRow): 'resource' | 'other' | undefined {
+    if (claim.policy !== this.#policy) return 'other';
     const limit = this.#store.database.connection.prepare('SELECT retry_at FROM gotzji_provider_limits WHERE owner=?').get(claim.owner);
-    if (limit && (limit.retry_at === null || Number(limit.retry_at) > this.#now().getTime())) return false;
-    if (this.resourceKeys(claim).some((resource) => this.#store.database.connection.prepare('SELECT 1 FROM gotzji_resource_claims WHERE resource_key=?').get(resource) || this.#store.database.connection.prepare('SELECT 1 FROM gotzji_writers WHERE root=?').get(resource)) || this.#store.database.connection.prepare('SELECT 1 FROM gotzji_diagnostics WHERE job_id=?').get(claim.id)) return false;
+    if (limit && (limit.retry_at === null || Number(limit.retry_at) > this.#now().getTime())) return 'other';
+    if (this.#store.database.connection.prepare('SELECT 1 FROM gotzji_diagnostics WHERE job_id=?').get(claim.id)) return 'other';
     const prepared = JSON.parse(this.#store.input(claim).text) as ProductOperation;
-    return (prepared.input.dependsOn ?? []).every((id) => this.#store.database.connection.prepare('SELECT g.status FROM gotzji_claims c JOIN goals g ON g.id=c.goal_id WHERE c.id=?').get(id)?.status === 'completed');
+    if (!(prepared.input.dependsOn ?? []).every((id) => this.#store.database.connection.prepare('SELECT g.status FROM gotzji_claims c JOIN goals g ON g.id=c.goal_id WHERE c.id=?').get(id)?.status === 'completed')) return 'other';
+    return this.resourceKeys(claim).some((resource) => this.holders(resource).length > 0) ? 'resource' : undefined;
+  }
+  /**
+   * The earlier job of the same class this one lets go first: the first ready one, or an earlier write waiting for a
+   * held resource this one would also take, so folder jobs never overtake and starve a whole-workspace job (I3 review M1).
+   */
+  private queueAhead(claim: ClaimRow): { readonly jobId: string; readonly key?: string } | undefined {
+    const reserved: { readonly key: string; readonly jobId: string }[] = [];
+    for (const candidate of this.orderedQueue()) {
+      if (this.isRead(candidate) !== this.isRead(claim)) continue;
+      const keys = this.resourceKeys(candidate);
+      const reservation = reserved.find((entry) => keys.some((key) => claimsOverlap(key, entry.key)));
+      if (candidate.id === claim.id) return reservation;
+      const block = this.queueBlock(candidate);
+      if (!block && !reservation) return { jobId: candidate.id };
+      // Reserve only keys that are held, and only behind holders that are still working: a stalled holder waits for the
+      // owner, and reserving behind it would freeze every folder of its workspace (I3 implementation review M1).
+      if (block === 'resource') for (const key of keys) { const owners = this.holders(key); if (owners.length && owners.every((owner) => this.progressing(owner.jobId))) reserved.push({ key, jobId: candidate.id }); }
+    }
+    return undefined;
   }
   private authorization(claim:ClaimRow,intentRevision?:number):string {
     const row=this.#store.database.connection.prepare('SELECT * FROM gotzji_authorized_jobs WHERE job_id=?').get(claim.id);

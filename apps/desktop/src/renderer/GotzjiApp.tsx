@@ -167,6 +167,8 @@ export function GotzjiApp(): ReactElement {
             <input disabled={busy} value={recipeForm[field]} onChange={(event) => setRecipeForm({ ...recipeForm, [field]: event.target.value })} /></label>)}
           {(['args', 'dependencies'] as const).map((field) => <label key={field}>{field === 'args' ? 'อาร์กิวเมนต์ (บรรทัดละหนึ่ง)' : 'ไฟล์ที่คำสั่งใช้ (บรรทัดละหนึ่ง)'}
             <textarea disabled={busy} value={recipeForm[field]} onChange={(event) => setRecipeForm({ ...recipeForm, [field]: event.target.value })} /></label>)}
+          <label><input type="checkbox" disabled={busy} checked={recipeForm.projectOnly} onChange={(event) => setRecipeForm({ ...recipeForm, projectOnly: event.target.checked })} />
+            เขียนเฉพาะในโฟลเดอร์ของโครงการ: เลือกเมื่อคำสั่งนี้ไม่เขียนนอกโฟลเดอร์ของโครงการ และไม่รัน Git หรือ build ทั้งคลัง งานในโฟลเดอร์อื่นของเวิร์กสเปซเดียวกันจะทำพร้อมกันได้ ถ้าไม่เลือก คำสั่งนี้จะถือทั้งเวิร์กสเปซจนจบ</label>
           <button disabled={busy || !recipeForm.recipeId || !recipeForm.executable} onClick={() => void act(async () => { setRecipeReview(recipeReviewLines(await request('registerRecipe', { ...recipeRequest(recipeForm) }))); await refresh(); })}>อนุมัติคำสั่งนี้</button>
           {recipeReview.length > 0 && <pre>{recipeReview.join('\n')}</pre>}
           <label>ผูกกับโครงการ<select disabled={busy} value={recipeBinding.projectId} onChange={(event) => setRecipeBinding({ ...recipeBinding, projectId: event.target.value })}><option value="">เลือกโครงการ</option>

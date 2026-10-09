@@ -29,6 +29,7 @@ export function reviewedRecipe(registration: ReviewedCommandRegistration): Revie
   if (/^[\\/]{2}/u.test(executable)) invalid('executable', 'Use an executable on a local disk, not a network path');
   const timeoutMs = registration.timeoutMs ?? 120000;
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 7200000) invalid('timeoutMs', 'Use a budget between 100 ms and two hours');
+  if (registration.writeScope !== undefined && registration.writeScope !== 'project') invalid('writeScope', 'Declare project, or leave it out when the command may write anywhere in its workspace');
   const fixedDependencies = registration.dependencies.filter((item) => !item.includes('${projectRoot}')).map((item) => fingerprint(item));
   if (fixedDependencies.some((entry) => /^[\\/]{2}/u.test(entry.path))) invalid('dependencies', 'Pin files on a local disk, not a network path');
   // A file the command is given must be declared: absolute and projectRoot paths are dependencies, and a relative or
@@ -40,6 +41,26 @@ export function reviewedRecipe(registration: ReviewedCommandRegistration): Revie
     else if (!candidate.includes('://') && (/[\\/]/u.test(candidate) || /\.(?:py|pyw|ps1|psm1|bat|cmd|js|mjs|cjs|ts|sh|rb|pl)$/iu.test(candidate))) invalid('args', 'Write project files as ${projectRoot}/… and declare them in dependencies');
   }
   return { ...registration, executable, args: [...registration.args], dependencies: [...registration.dependencies], timeoutMs, executableHash: hash(filesystem('executable', () => readFileSync(executable))), fixedDependencies };
+}
+/**
+ * Claim key for a folder inside a workspace (incident I3): lower-cased, ending in exactly one separator, so a drive or
+ * share root is keyed once and `a\` never matches `ab\`.
+ */
+export function folderClaim(resourceKey: string, folder: string): string {
+  const key = folder.toLowerCase();
+  return `folder:${resourceKey}:${key.endsWith(path.sep) ? key : key + path.sep}`;
+}
+function claimParts(key: string): { readonly group: string; readonly folder?: string } | undefined {
+  if (key.startsWith('project:')) return { group: key.slice('project:'.length) };
+  const end = key.startsWith('folder:') ? key.indexOf(':', 'folder:'.length) : -1;
+  return end < 0 ? undefined : { group: key.slice('folder:'.length, end), folder: key.slice(end + 1) };
+}
+/** Two claims collide when they are equal, when one holds the whole workspace the other's folder is in, or when one folder contains the other. */
+export function claimsOverlap(left: string, right: string): boolean {
+  if (left === right) return true;
+  const a = claimParts(left); const b = claimParts(right);
+  if (!a || !b || a.group !== b.group) return false;
+  return !a.folder || !b.folder || a.folder.startsWith(b.folder) || b.folder.startsWith(a.folder);
 }
 export function registeredProject(owner: string, registration: ProjectRegistration): RegisteredProject {
   if (!registration || Object.keys(registration).some((key) => !['projectId','displayName','rootPath','kind','recipeIds'].includes(key))) invalid('registration', 'Projects select server recipe IDs; executables and argument arrays are not accepted');
@@ -102,7 +123,7 @@ export function productOperation(project: RegisteredProject, input: BasicProduct
     const dependencies = recipe.dependencies.map((item) => fingerprint(substitute(item)));
     for (const previous of recipe.fixedDependencies) if (!dependencies.some((entry) => entry.path === previous.path && entry.hash === previous.hash)) throw new CoreError('COMMAND_DEPENDENCIES_CHANGED', 'A reviewed fixed script/config changed; enroll a new trusted recipe', 'commandId', 'recipe', 'Have the host review the changed dependency');
     if (hash(readFileSync(recipe.executable)) !== recipe.executableHash) throw new CoreError('COMMAND_DEPENDENCIES_CHANGED', undefined, 'commandId');
-    const command: ReviewedCommand & { executableHash: string } = { commandId: recipe.recipeId, executable: recipe.executable, executableHash: recipe.executableHash, args: recipe.args.map(substitute), timeoutMs: recipe.timeoutMs, dependencies };
+    const command: ReviewedCommand & { executableHash: string } = { commandId: recipe.recipeId, executable: recipe.executable, executableHash: recipe.executableHash, args: recipe.args.map(substitute), timeoutMs: recipe.timeoutMs, dependencies, ...(recipe.writeScope ? { writeScope: recipe.writeScope } : {}) };
     const targetDirectories = dependencies.filter((entry) => !path.relative(project.rootPath, entry.path).startsWith('..')).map((entry) => path.dirname(entry.path));
     return { input: { ...input }, project, command, ...discoverPolicies(project.rootPath, targetDirectories) };
   }

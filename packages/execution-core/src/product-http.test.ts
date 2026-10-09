@@ -49,7 +49,8 @@ describe('governed product HTTP and MCP boundary', () => {
       expect(await app('registerRecipe', { recipeId: 'bad id', executable: 'C:/Python/python.exe', args: [], dependencies: [] })).toBe(false);
       expect(await app('registerRecipe', { recipeId: 'phase-tests', executable: 'C:/Python/python.exe', args: [7], dependencies: [] })).toBe(false);
       expect(await app('registerRecipe', { recipeId: 'phase-tests', executable: 'C:/Python/python.exe', args: ['-I'], dependencies: [], shell: true })).toBe(false);
-      expect(await app('registerRecipe', { recipeId: 'phase-tests', displayName: 'Phase 2 checks', executable: 'C:/Python/python.exe', args: ['-I'], dependencies: [], timeoutMs: 600000 })).toBe(true);
+      expect(await app('registerRecipe', { recipeId: 'phase-tests', executable: 'C:/Python/python.exe', args: ['-I'], dependencies: [], writeScope: 'workspace' })).toBe(false);
+      expect(await app('registerRecipe', { recipeId: 'phase-tests', displayName: 'Phase 2 checks', executable: 'C:/Python/python.exe', args: ['-I'], dependencies: [], timeoutMs: 600000, writeScope: 'project' })).toBe(true);
       expect(await app('bindProjectRecipe', { projectId: 'test', recipeId: 'phase-tests', extra: true })).toBe(false);
       expect(await app('bindProjectRecipe', { projectId: 'test', recipeId: 'phase-tests' })).toBe(true);
       expect(calls).toEqual(['registerProject', 'settleJob', 'registerRecipe', 'bindProjectRecipe']);

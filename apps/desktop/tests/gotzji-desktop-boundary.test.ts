@@ -98,9 +98,10 @@ describe('gotzji desktop governed boundary', () => {
       response.end(JSON.stringify({ ok: true, value: { accepted: true } }));
     });
     const client = new GotzjiHostClient(async () => ({ endpoint, token: 'secret', ownerId: 'owner' }));
-    const recipe = { recipeId: 'phase-tests', displayName: 'Phase 2 checks', executable: 'C:/Python/python.exe', args: ['-I', '${projectRoot}/validation/test_phase2.py'], dependencies: ['${projectRoot}/validation/test_phase2.py'], timeoutMs: 600000 };
+    const recipe = { recipeId: 'phase-tests', displayName: 'Phase 2 checks', executable: 'C:/Python/python.exe', args: ['-I', '${projectRoot}/validation/test_phase2.py'], dependencies: ['${projectRoot}/validation/test_phase2.py'], timeoutMs: 600000, writeScope: 'project' };
     await expect(client.request({ method: 'registerRecipe', input: recipe })).resolves.toEqual({ accepted: true });
     await expect(client.request({ method: 'registerRecipe', input: { ...recipe, shell: true } })).rejects.toThrow('INVALID_GOTZJI_REQUEST');
+    await expect(client.request({ method: 'registerRecipe', input: { ...recipe, writeScope: 'workspace' } })).rejects.toThrow('INVALID_GOTZJI_REQUEST');
     await expect(client.request({ method: 'registerRecipe', input: { ...recipe, args: [1] } })).rejects.toThrow('INVALID_GOTZJI_REQUEST');
     await expect(client.request({ method: 'registerRecipe', input: { ...recipe, executable: '' } })).rejects.toThrow('INVALID_GOTZJI_REQUEST');
     await expect(client.request({ method: 'bindProjectRecipe', input: { projectId: 'project', recipeId: 'phase-tests' } })).resolves.toEqual({ accepted: true });

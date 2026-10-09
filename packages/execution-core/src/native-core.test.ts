@@ -71,6 +71,22 @@ describe('native operations through Grace and the shared Goal (explicit no-model
     expect(await f.core.resume(f.credential, second)).toMatchObject({ status: 'queued', waitingReason: 'RESOURCE_HELD', blockingResource: 'globalui:windows', blockingJob: first.jobId });
     await until(f, async () => (await f.core.get(f.credential, second)).status === 'completed');
   }, 20000);
+  it('queues behind a waiting native job only for the resource it waits on, so other projects keep the shared UI (incident I3)', async () => {
+    const f = await fixture();
+    await writeFile(path.join(f.root, 'one', 'job.mjs'), "import { existsSync } from 'node:fs';\nconsole.log('begin');\nconst t = setInterval(() => { console.log('progress'); if (existsSync(new URL('./release', import.meta.url))) { clearInterval(t); console.log('end'); } }, 50);\n");
+    f.core.registerReviewedCommand(f.credential, { recipeId: 'hold', executable: process.execPath, args: ['${projectRoot}/job.mjs'], dependencies: ['${projectRoot}/job.mjs'], timeoutMs: 30000, writeScope: 'project' });
+    f.core.bindProjectRecipe(f.credential, { projectId: 'one', recipeId: 'hold' });
+    const hold = await job(f, { requestId: 'hold', projectId: 'one', operation: 'command.run', commandId: 'hold' } as unknown as ProductNativeInput);
+    await f.core.resume(f.credential, hold);
+    await until(f, async () => f.core.logs(f.credential, hold).text.includes('progress'));
+    const waiting = await job(f, { requestId: 'native-one', projectId: 'one', operation: 'excel.range.write', path: 'source.xlsx', outputPath: 'output.xlsx', sheet: 'Sheet1', range: 'A1', values: [['one']] });
+    expect(await f.core.resume(f.credential, waiting)).toMatchObject({ waitingReason: 'RESOURCE_HELD', blockingJob: hold.jobId });
+    const other = await job(f, { requestId: 'native-two', projectId: 'two', operation: 'excel.range.write', path: 'source.xlsx', outputPath: 'output.xlsx', sheet: 'Sheet1', range: 'A1', values: [['two']] });
+    expect(await f.core.resume(f.credential, other)).not.toHaveProperty('waitingReason');
+    await until(f, async () => (await f.core.get(f.credential, other)).status === 'completed');
+    await writeFile(path.join(f.root, 'one', 'release'), '');
+    await until(f, async () => (await f.core.get(f.credential, waiting)).status === 'completed');
+  }, 30000);
   it('retains every resource on uncertain native effects and refuses fabricated provider/script/grant arguments', async () => {
     const f = await fixture();
     await expect(f.core.prepareOperation(f.credential, { requestId: 'forged', projectId: 'one', operation: 'excel.range.read', path: 'source.xlsx', sheet: 'Sheet1', range: 'A1', scriptPath: 'caller.ps1' } as never)).rejects.toMatchObject({ code: 'NATIVE_INPUT_INVALID' });

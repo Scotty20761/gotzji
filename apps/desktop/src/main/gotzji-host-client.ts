@@ -43,8 +43,8 @@ export function parseGotzjiRequest(value: unknown): GotzjiRequest {
   if (method === 'registerRecipe') {
     requiredText(value.input, 'recipeId'); requiredText(value.input, 'executable');
     const strings = (item: unknown): boolean => Array.isArray(item) && item.every((entry) => typeof entry === 'string');
-    if (Object.keys(value.input).some((key) => !['recipeId', 'displayName', 'executable', 'args', 'dependencies', 'timeoutMs'].includes(key)) || !strings(value.input.args) || !strings(value.input.dependencies)
-      || (value.input.timeoutMs !== undefined && !Number.isSafeInteger(value.input.timeoutMs))) throw new GotzjiHostError('INVALID_GOTZJI_REQUEST');
+    if (Object.keys(value.input).some((key) => !['recipeId', 'displayName', 'executable', 'args', 'dependencies', 'timeoutMs', 'writeScope'].includes(key)) || !strings(value.input.args) || !strings(value.input.dependencies)
+      || (value.input.timeoutMs !== undefined && !Number.isSafeInteger(value.input.timeoutMs)) || (value.input.writeScope !== undefined && value.input.writeScope !== 'project')) throw new GotzjiHostError('INVALID_GOTZJI_REQUEST');
   }
   if (method === 'bindProjectRecipe') {
     requiredText(value.input, 'projectId'); requiredText(value.input, 'recipeId');

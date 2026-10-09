@@ -69,6 +69,9 @@ export interface ReviewedCommandRegistration {
   readonly args: readonly string[];
   readonly timeoutMs?: number;
   readonly dependencies: readonly string[];
+  /** Owner-declared (incident I3): the command writes only inside the selected project folder and runs no Git or
+   * whole-repository build. Absent means it may write anywhere in its workspace. */
+  readonly writeScope?: 'project';
 }
 export interface FileFingerprint { readonly path: string; readonly hash: string }
 export interface ReviewedCommand {
@@ -77,6 +80,7 @@ export interface ReviewedCommand {
   readonly args: readonly string[];
   readonly timeoutMs?: number;
   readonly dependencies: readonly FileFingerprint[];
+  readonly writeScope?: 'project';
 }
 export interface RegisteredProject extends ProjectRegistration {
   readonly owner: string;
