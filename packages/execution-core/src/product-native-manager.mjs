@@ -3,7 +3,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { createHash } from 'node:crypto';
 import { writeFileSync, existsSync, appendFileSync } from 'node:fs';
 import path from 'node:path';
-import { assertProductDependencies } from './product-security.mjs';
+import { assertProductDependencies, providerFailureCode } from './product-security.mjs';
 import { assertProfile } from './grace-broker.mjs';
 const hash = (value) => createHash('sha256').update(value).digest('hex');
 
@@ -38,7 +38,7 @@ export function productNativeManager(config, directory, callbacks) {
       }).catch((error) => {
         const state = readPreparedNativeState?.(config);
         const uncertain = state?.outcome === 'unknown' || state?.state === 'started' || state?.state === 'uncertain';
-        current = { ...current, state: uncertain ? 'uncertain' : 'failed', code: typeof error?.code === 'string' ? error.code : error.message ?? 'NATIVE_PROVIDER_FAILED', elapsedMs: Date.now() - started, lastProgressAt: new Date().toISOString() };
+        current = { ...current, state: uncertain ? 'uncertain' : 'failed', code: providerFailureCode(error, 'NATIVE_PROVIDER_FAILED'), elapsedMs: Date.now() - started, lastProgressAt: new Date().toISOString() };
         persist(); callbacks.finished(current);
       });
       return current;

@@ -10,6 +10,19 @@ export interface Preparation {
 }
 export type JobStatus = 'queued' | 'running' | 'verifying' | 'blocked' | 'completed' | 'cancelled' | 'failed';
 export type SettleDecision = 'effect-present' | 'no-effect';
+/** The owner's support report (incident I8): reasons, holders, queue and providers, with no paths, URLs or contents. */
+export interface SupportReport {
+  readonly schemaVersion: 1;
+  readonly generatedAt: string;
+  readonly policy: string;
+  readonly counts: { readonly jobsByGoalStatus: Readonly<Record<string, number>>; readonly failuresBySummary: Readonly<Record<string, number>>; readonly diagnosticsByCode: Readonly<Record<string, number>> };
+  readonly jobs: readonly { readonly jobId: string; readonly requestIdHash: string; readonly operation?: string; readonly projectId?: string; readonly status: string; readonly summary?: string; readonly blockerCode?: string; readonly waitingReason?: string; readonly blockingResource?: string; readonly blockingJob?: string; readonly phase?: string; readonly events: readonly { readonly event: string; readonly at: string }[] }[];
+  readonly holders: readonly { readonly kind: 'writer' | 'claim'; readonly resource: string; readonly jobId: string; readonly epoch: string }[];
+  readonly queue: readonly { readonly jobId: string; readonly waitingReason?: string; readonly blockingJob?: string; readonly blockingResource?: string }[];
+  readonly providers: { readonly native: readonly { readonly name: string; readonly state: 'available' | 'unsupported' }[]; readonly browserConfigured: boolean; readonly libraryConfigured: boolean };
+  readonly host: Readonly<Record<string, unknown>>;
+  readonly reportMs: number;
+}
 export interface JobView {
   readonly jobId: string;
   readonly requestId?: string;

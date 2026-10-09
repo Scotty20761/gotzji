@@ -56,7 +56,15 @@ describe('governed product HTTP and MCP boundary', () => {
       expect(await app('registerRecipe', { recipeId: 'phase-tests', displayName: 'Phase 2 checks', executable: 'C:/Python/python.exe', args: ['-I'], dependencies: [], timeoutMs: 600000, writeScope: 'project', delivery: true })).toBe(true);
       expect(await app('bindProjectRecipe', { projectId: 'test', recipeId: 'phase-tests', extra: true })).toBe(false);
       expect(await app('bindProjectRecipe', { projectId: 'test', recipeId: 'phase-tests' })).toBe(true);
-      expect(calls).toEqual(['registerProject', 'settleJob', 'registerRecipe', 'bindProjectRecipe']);
+      // The owner's support report (incident I8): app only, no input, never a model tool.
+      expect(list.result.tools.map((tool) => tool.name).filter((name) => /support|report/iu.test(name))).toEqual([]);
+      for (const name of ['supportReport', 'gotzji_supportReport']) {
+        const overMcp = await fetch(mcp, { method: 'POST', body: JSON.stringify({ jsonrpc: '2.0', id: 11, method: 'tools/call', params: { name, arguments: {} } }) });
+        expect((await overMcp.json()).result.isError).toBe(true);
+      }
+      expect(await app('supportReport', { jobId: 'job' })).toBe(false);
+      expect(await app('supportReport', {})).toBe(true);
+      expect(calls).toEqual(['registerProject', 'settleJob', 'registerRecipe', 'bindProjectRecipe', 'supportReport']);
     } finally { await host.close(); }
   });
 
@@ -152,5 +160,11 @@ describe('governed product HTTP and MCP boundary', () => {
     const source = await readFile(fileURLToPath(new URL('./product-server.mjs', import.meta.url)), 'utf8');
     expect(source.match(/core\.prepareOperation\(/gu)).toHaveLength(1);
     expect(source).toContain("core.prepareOperation(credential, input, { ownerRun: surface === 'app' })");
+    // The support report (incident I8) is the owner's alone too.
+    expect(source.match(/core\.supportReport\(/gu)).toHaveLength(1);
+    expect(source).toContain("case 'supportReport': if (surface !== 'app') throw new CoreError('SUPPORT_REPORT_DENIED'); return core.supportReport(credential, hostMetrics());");
+    // It works when the host is control-only (after a refused upgrade), and says so.
+    expect(source).toMatch(/const controls = new Set\(\[[^\]]*'supportReport'/u);
+    expect(source).toContain("mode: startupControlOnly ? 'control-only' : 'full'");
   });
 });

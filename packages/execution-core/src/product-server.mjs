@@ -2,6 +2,7 @@
 import path from 'node:path';
 import { existsSync, lstatSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { createHmac, randomBytes } from 'node:crypto';
+import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { fileURLToPath } from 'node:url';
 import { ExecutionCore } from './core.js';
 import { CoreError } from './types.js';
@@ -88,10 +89,18 @@ if (!startupControlOnly) {
 const configurationIdentity = productConfigurationIdentity(config);
 const runtimeVersion = existsSync(manifestPath) ? JSON.parse(readFileSync(manifestPath, 'utf8')).version : 'development';
 const allowCurrentWork = () => { try { return !startupControlOnly && productRuntimeIdentity(entry, runtimeOptions) === buildIdentity; } catch { return false; } };
-const controls = new Set(['health', 'list', 'inspectQueue', 'status', 'logs', 'result', 'cancel', 'settleJob', 'connectionStatus', 'stopConnection', 'browserSession', 'stopBrowserSession', 'libraryChannelStatus', 'stopLibraryConnection', ...(testSecretFixture ? ['testOnlyE2eShutdown'] : [])]);
+const controls = new Set(['health', 'list', 'inspectQueue', 'supportReport', 'status', 'logs', 'result', 'cancel', 'settleJob', 'connectionStatus', 'stopConnection', 'browserSession', 'stopBrowserSession', 'libraryChannelStatus', 'stopLibraryConnection', ...(testSecretFixture ? ['testOnlyE2eShutdown'] : [])]);
 let connection;
 const browser = config.browser && !startupControlOnly ? new ProductBrowserService({ directory, ownerId: config.ownerId, credential, core, ...config.browser, prerequisite: productBrowserPrerequisite(path.join(path.dirname(entry), 'product-browser-broker.mjs')) }) : undefined;
 const libraryChannel = new ProductLibraryChannel({ directory, ownerId: config.ownerId, primaryCredential: credential, core, version: runtimeVersion, allowWork: allowCurrentWork, ...(config.tunnel ? { tunnel: config.tunnel } : {}) });
+// One event-loop delay meter for this host process (incident I8: lnwjud's load meter read 0 in every sample).
+// Each support report reads it and starts a fresh window.
+const loopDelay = monitorEventLoopDelay({ resolution: 20 }); loopDelay.enable();
+const hostMetrics = () => {
+  const ms = (ns) => Math.round(ns / 1e4) / 100;
+  const metrics = { mode: startupControlOnly ? 'control-only' : 'full', uptimeSeconds: Math.round(process.uptime()), rssBytes: process.memoryUsage().rss, eventLoopDelayMs: { p50: ms(loopDelay.percentile(50)), p99: ms(loopDelay.percentile(99)), max: ms(loopDelay.max) }, browserState: browser?.projection()?.state ?? 'unavailable' };
+  loopDelay.reset(); return metrics;
+};
 const binding = (input) => {
   if (typeof input.jobId !== 'string' || !input.jobId) throw new CoreError('JOB_ID_REQUIRED');
   return core.select(credential, input.jobId);
@@ -131,6 +140,7 @@ const listener = await startProductHttp({ token: config.daemonSecret, mcpPathSec
     case 'submit': return core.submit(credential, input.preparationId);
     case 'list': return core.list(credential);
     case 'inspectQueue': return core.inspectQueue(credential);
+    case 'supportReport': if (surface !== 'app') throw new CoreError('SUPPORT_REPORT_DENIED'); return core.supportReport(credential, hostMetrics());
     case 'reprioritize': return core.reprioritize(credential, input);
     case 'status': return core.get(credential, binding(input));
     case 'logs': return core.logs(credential, binding(input), input.cursor ?? 0, input.limit ?? 4000);

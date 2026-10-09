@@ -6,10 +6,11 @@ export const gotzjiIpcChannels = {
   openConnectionSetup: 'gotzji:open-connection-setup',
   startupStatus: 'gotzji:startup-status',
   setStartup: 'gotzji:set-startup',
+  exportSupportReport: 'gotzji:export-support-report',
 } as const;
 
 export const gotzjiMethods = [
-  'listProjects', 'registerProject', 'registerRecipe', 'bindProjectRecipe', 'listCatalog', 'prepareOperation', 'submit',
+  'listProjects', 'registerProject', 'registerRecipe', 'bindProjectRecipe', 'supportReport', 'listCatalog', 'prepareOperation', 'submit',
   'listJobs', 'status', 'logs', 'result', 'cancel', 'settleJob', 'resume', 'inspectQueue', 'reprioritize',
   'connectionStatus', 'configureConnection', 'startConnection', 'stopConnection',
   'startBrowserSession', 'browserSession', 'stopBrowserSession', 'authorizeLibraryDelivery',
@@ -37,4 +38,6 @@ export interface GotzjiApi {
   openConnectionSetup(page: 'tunnels' | 'keys' | 'connectors'): Promise<void>;
   startupStatus(): Promise<{ available: boolean; enabled: boolean; mode: 'inspect-and-resume'; reason?: string }>;
   setStartup(enabled: boolean): Promise<{ available: boolean; enabled: boolean; mode: 'inspect-and-resume'; reason?: string }>;
+  /** Saves the owner's support report where the owner chooses; nothing is uploaded. */
+  exportSupportReport(): Promise<{ readonly exported: boolean; readonly cancelled: boolean }>;
 }

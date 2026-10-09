@@ -3,6 +3,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { createHash } from 'node:crypto';
 import { appendFileSync, existsSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
+import { providerFailureCode } from './product-security.mjs';
 const hash=(value)=>createHash('sha256').update(value).digest('hex');
 
 /** Durable Library workflow execution under the same owned worker/lease as Grace. */
@@ -27,7 +28,7 @@ export function productLibraryManager(config,directory,callbacks){
         const receipt=await backend.executePreparedLibraryOperation(config,controller.signal,{verifyLiveAuthority});
         writeFileSync(path.join(config.effectRoot,'result.txt'),JSON.stringify(receipt),{mode:0o600});
         current={...current,state:receipt.state==='completed'?'completed':'failed',code:receipt.state==='blocked'?'LIBRARY_FACTY_BLOCKED':undefined,elapsedMs:Date.now()-started,checks:receipt.steps?.length??0,lastProgressAt:new Date().toISOString()};persist();callbacks.finished(current);
-      }).catch((error)=>{const state=recordedState();const uncertain=state?.outcome==='unknown'||state?.state==='uncertain';current={...current,state:uncertain?'uncertain':'failed',code:typeof error?.code==='string'?error.code:error.message??'LIBRARY_EXECUTION_FAILED',elapsedMs:Date.now()-started,lastProgressAt:new Date().toISOString()};persist();callbacks.finished(current);}).finally(()=>{running=undefined;});
+      }).catch((error)=>{const state=recordedState();const uncertain=state?.outcome==='unknown'||state?.state==='uncertain';current={...current,state:uncertain?'uncertain':'failed',code:providerFailureCode(error,'LIBRARY_EXECUTION_FAILED'),elapsedMs:Date.now()-started,lastProgressAt:new Date().toISOString()};persist();callbacks.finished(current);}).finally(()=>{running=undefined;});
       return current;
     },
     stop:async()=>{

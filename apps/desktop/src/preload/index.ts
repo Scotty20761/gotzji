@@ -1681,6 +1681,11 @@ const gotzjiApi: GotzjiApi = {
   openConnectionSetup: async (page) => { await invoke(gotzjiIpcChannels.openConnectionSetup, page); },
   startupStatus: async () => parseGotzjiStartup(await invoke(gotzjiIpcChannels.startupStatus)),
   setStartup: async (enabled) => parseGotzjiStartup(await invoke(gotzjiIpcChannels.setStartup, enabled)),
+  exportSupportReport: async () => {
+    const value: unknown = await invoke(gotzjiIpcChannels.exportSupportReport);
+    if (!isRecord(value) || typeof value.exported !== 'boolean' || typeof value.cancelled !== 'boolean') throw new Error('Invalid gotzji support report response');
+    return { exported: value.exported, cancelled: value.cancelled };
+  },
 };
 if (gotzjiProductEnabled) contextBridge.exposeInMainWorld('gotzji', gotzjiApi);
 function parseGotzjiStartup(value: unknown): { available: boolean; enabled: boolean; mode: 'inspect-and-resume'; reason?: string } {

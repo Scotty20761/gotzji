@@ -53,6 +53,26 @@ describe('gotzji desktop governed boundary', () => {
     expect(calls).toHaveLength(2);
   });
 
+  it('exports the owner support report through main into a file the owner chooses (incident I8)', async () => {
+    const calls: { method: string; input: Record<string, unknown> }[] = [];
+    const endpoint = await serve(async (request, response) => {
+      let text = ''; for await (const chunk of request) text += String(chunk);
+      calls.push(JSON.parse(text) as { method: string; input: Record<string, unknown> });
+      response.end(JSON.stringify({ ok: true, value: { schemaVersion: 1, jobs: [] } }));
+    });
+    const client = new GotzjiHostClient(async () => ({ endpoint, token: 'secret', ownerId: 'owner' }));
+    const handlers = new Map<string, (event: { trusted: boolean }, payload?: unknown) => Promise<unknown>>(); const saved: string[] = [];
+    registerGotzjiIpcHandlers({ handle: (channel, handler) => { handlers.set(channel, handler); } }, client, (event) => { if (!event.trusted) throw new Error('UNTRUSTED_RENDERER'); },
+      undefined, undefined, { save: async (content) => { saved.push(content); return { exported: true, cancelled: false }; } });
+    const exportReport = handlers.get(gotzjiIpcChannels.exportSupportReport)!;
+    await expect(exportReport({ trusted: true })).resolves.toEqual({ exported: true, cancelled: false });
+    expect(JSON.parse(saved[0]!)).toEqual({ schemaVersion: 1, jobs: [] });
+    await expect(exportReport({ trusted: false })).rejects.toThrow('UNTRUSTED_RENDERER');
+    await expect(exportReport({ trusted: true }, { jobId: 'job' })).rejects.toThrow('INVALID_GOTZJI_REQUEST');
+    await expect(handlers.get(gotzjiIpcChannels.request)!({ trusted: true }, { method: 'supportReport', input: { projectId: 'project' } })).rejects.toThrow('INVALID_GOTZJI_REQUEST');
+    expect(calls).toEqual([{ method: 'supportReport', input: {} }]);
+  });
+
   it('preserves control-only health and sends the selected build identity privately', async () => {
     let build: string | string[] | undefined;
     const endpoint = await serve(async (request, response) => {

@@ -61,7 +61,7 @@ export function parseGotzjiRequest(value: unknown): GotzjiRequest {
     requiredText(value.input, 'jobId');
     if (Object.keys(value.input).some((key) => key !== 'jobId' && key !== 'priority') || !Number.isInteger(value.input.priority) || Number(value.input.priority) < 0 || Number(value.input.priority) > 3) throw new GotzjiHostError('INVALID_GOTZJI_REQUEST', 'priority');
   }
-  if (method === 'inspectQueue' && Object.keys(value.input).length > 0) throw new GotzjiHostError('INVALID_GOTZJI_REQUEST');
+  if ((method === 'inspectQueue' || method === 'supportReport') && Object.keys(value.input).length > 0) throw new GotzjiHostError('INVALID_GOTZJI_REQUEST');
   if (method === 'registerProject') {
     if (Object.keys(value.input).some((key) => !['projectId', 'displayName', 'rootPath', 'kind', 'recipeIds'].includes(key))) throw new GotzjiHostError('INVALID_GOTZJI_REQUEST', 'arguments');
     requiredText(value.input, 'projectId');
@@ -112,7 +112,7 @@ export class GotzjiHostClient {
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${descriptor.token}`, ...(descriptor.buildIdentity === undefined ? {} : { 'x-gotzji-build': descriptor.buildIdentity }) },
         body: JSON.stringify({ method: hostMethod, input }),
         // A control-call timeout never cancels or resubmits an independently owned job.
-        signal: AbortSignal.timeout(10_000),
+        signal: AbortSignal.timeout(hostMethod === 'supportReport' ? 60_000 : 10_000),
       });
     } catch {
       throw new GotzjiHostError('HOST_CONNECTION_LOST');

@@ -14,7 +14,7 @@ import { callWorker, launchWorker, observeWorker, stopWorker, workerFingerprint 
 import { signed } from './managed-worker.js';
 import { assertGraceProfile, graceProfile, productGraceProfile, type GraceProfile, type GraceRegistration, type ProductGraceRegistration } from './grace-profile.js';
 import { PRODUCT_CATALOG, claimsOverlap, folderClaim, registeredProject, productOperation, reviewedRecipe } from './product-projects.js';
-import { CoreError, type JobView, type SettleDecision, type Preparation, type RequestInput, type TaskBinding, type CodeRunReceipt, type RegisteredProject, type ProjectRegistration, type ProductOperationInput, type BasicProductOperationInput, type ProductOperation, type PreparedProductOperation, type CatalogEntry, type ReviewedCommandRegistration, type PrepareOptions } from './types.js';
+import { CoreError, type JobView, type SettleDecision, type Preparation, type RequestInput, type TaskBinding, type CodeRunReceipt, type RegisteredProject, type ProjectRegistration, type ProductOperationInput, type BasicProductOperationInput, type ProductOperation, type PreparedProductOperation, type CatalogEntry, type ReviewedCommandRegistration, type PrepareOptions, type SupportReport } from './types.js';
 import { PRODUCT_NATIVE_OPERATIONS, prepareProductNativeOperation, type ProductNativeInput, type TrustedProductNativeOptions, type ProductNativeOperationName } from './product-native.js';
 import { libraryRoute, libraryCatalog, prepareLibraryOperation, verifiedLibraryNavigationEvolution, type ProductLibraryInput, type TrustedLibraryOptions } from './product-library.js';
 import type { LibraryRouteKind, LibraryDeliveryScope } from './library-workflow-contract.js';
@@ -40,6 +40,16 @@ export interface CoreNativeOptions extends TrustedProductNativeOptions {
   readonly testRunnerModule?: string;
 }
 export interface CoreBrowserOptions extends TrustedProductBrowserOptions { readonly testTransportModule?: string }
+/** A resource key with its class kept and the rest reduced to 12 hex characters, so no path, URL or document name leaves in a report (I8). */
+function supportResource(key: string): string {
+  if (key.startsWith('read:') || key === 'globalui:windows') return key;
+  const prefix = /^([a-z][a-z-]*):/u.exec(key)?.[1];
+  return prefix ? `${prefix}:${hash(key.slice(prefix.length + 1)).slice(0, 12)}` : `opaque:${hash(key).slice(0, 12)}`;
+}
+/** A code or one of the core's plain sentences; text with paths, quotes or URLs (old provider messages) is withheld (I8). */
+function reportText(value: string): string {
+  return /^[A-Z][A-Z0-9_]{1,79}$/u.test(value) || /^[A-Za-z0-9 ,.()-]{1,160}$/u.test(value) ? value : 'PROVIDER_FAILURE_REDACTED';
+}
 function unwrap<T>(result: Result<T>): T { if (!result.ok) {const reason=result.error.details?.reason;throw new CoreError(result.error.code,isEngineeringGateEvidenceFailureReason(reason)?reason:undefined);} return result.value; }
 
 /** Foundation host. Only fixed qualification recipes are executable in this version. */
@@ -374,6 +384,38 @@ export class ExecutionCore {
   public async inspectQueue(credential: string): Promise<readonly JobView[]> {
     const adapter = this.authorize(credential);
     return Promise.all(this.orderedQueue(adapter.owner).map((claim) => this.view(claim)));
+  }
+  /** The owner's support report (incident I8). App-only: the server refuses every other surface. `host` comes from the product server. */
+  public async supportReport(credential: string, host: Readonly<Record<string, unknown>> = {}): Promise<SupportReport> {
+    const started = performance.now();
+    const adapter = this.authorize(credential);
+    const database = this.#store.database.connection;
+    const tally = (sql: string): Record<string, number> => {
+      const counts: Record<string, number> = {};
+      for (const row of database.prepare(sql).all(adapter.owner)) { const key = reportText(String(row.key ?? 'none')); counts[key] = (counts[key] ?? 0) + Number(row.count); }
+      return counts;
+    };
+    const jobs: SupportReport['jobs'][number][] = [];
+    for (const claim of database.prepare('SELECT * FROM gotzji_claims WHERE owner=? AND goal_id IS NOT NULL ORDER BY rowid DESC LIMIT 200').all(adapter.owner) as unknown as ClaimRow[]) {
+      const view = await this.view(claim);
+      const events = (database.prepare('SELECT event,observed_at FROM gotzji_job_events WHERE job_id=? ORDER BY seq DESC LIMIT 20').all(claim.id)).reverse().map((row) => ({ event: String(row.event), at: String(row.observed_at) }));
+      const phase = this.#store.operation(claim.id)?.phase;
+      jobs.push({ jobId: claim.id, requestIdHash: hash(claim.request_id).slice(0, 12), operation: view.requestedOperation ?? view.operation, status: view.status, events,
+        ...(view.projectId ? { projectId: view.projectId } : {}), ...(view.summary ? { summary: reportText(view.summary) } : {}), ...(view.blockerCode ? { blockerCode: reportText(view.blockerCode) } : {}), ...(view.waitingReason ? { waitingReason: view.waitingReason } : {}),
+        ...(view.blockingResource ? { blockingResource: supportResource(view.blockingResource) } : {}), ...(view.blockingJob ? { blockingJob: view.blockingJob } : {}), ...(phase ? { phase } : {}) });
+    }
+    const queue = (await Promise.all(this.orderedQueue(adapter.owner).map((claim) => this.view(claim)))).map((view) => ({ jobId: view.jobId, ...(view.waitingReason ? { waitingReason: view.waitingReason } : {}), ...(view.blockingJob ? { blockingJob: view.blockingJob } : {}), ...(view.blockingResource ? { blockingResource: supportResource(view.blockingResource) } : {}) }));
+    const holders = database.prepare("SELECT 'writer' AS kind,w.root AS resource,w.job_id,w.epoch FROM gotzji_writers w JOIN gotzji_claims c ON c.id=w.job_id WHERE c.owner=? UNION ALL SELECT 'claim',r.resource_key,r.job_id,r.epoch FROM gotzji_resource_claims r JOIN gotzji_claims c ON c.id=r.job_id WHERE c.owner=?").all(adapter.owner, adapter.owner)
+      .map((row) => ({ kind: String(row.kind) as 'writer' | 'claim', resource: supportResource(String(row.resource)), jobId: String(row.job_id), epoch: String(row.epoch) }));
+    return { schemaVersion: 1, generatedAt: this.#now().toISOString(), policy: this.#policy.slice(0, 12),
+      counts: {
+        jobsByGoalStatus: tally('SELECT g.status AS key,COUNT(*) AS count FROM gotzji_claims c JOIN goals g ON g.id=c.goal_id WHERE c.owner=? GROUP BY g.status'),
+        failuresBySummary: tally("SELECT g.terminal_summary AS key,COUNT(*) AS count FROM gotzji_claims c JOIN goals g ON g.id=c.goal_id WHERE c.owner=? AND g.status='failed' GROUP BY g.terminal_summary"),
+        diagnosticsByCode: tally('SELECT d.code AS key,COUNT(*) AS count FROM gotzji_diagnostics d JOIN gotzji_claims c ON c.id=d.job_id WHERE c.owner=? GROUP BY d.code'),
+      },
+      jobs, holders, queue,
+      providers: { native: PRODUCT_NATIVE_OPERATIONS.map((name) => ({ name, state: this.nativeAvailable(name) ? 'available' as const : 'unsupported' as const })), browserConfigured: this.#browser !== null, libraryConfigured: this.#library !== null },
+      host, reportMs: Math.round(performance.now() - started) };
   }
   public async reprioritize(credential: string, input: { readonly jobId: string; readonly priority: number }): Promise<JobView> {
     const adapter = this.authorize(credential);

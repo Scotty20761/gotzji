@@ -3,7 +3,7 @@ import { randomBytes } from 'node:crypto';
 import path from 'node:path';
 import os from 'node:os';
 import { performance } from 'node:perf_hooks';
-import { access, lstat, readFile, realpath } from 'node:fs/promises';
+import { access, lstat, readFile, realpath, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { autoUpdater } from 'electron-updater';
 import {
@@ -2613,7 +2613,15 @@ function bootstrapGotzjiDesktop(): void {
         const urls = { tunnels: 'https://platform.openai.com/settings/organization/tunnels', keys: 'https://platform.openai.com/settings/organization/api-keys', connectors: 'https://chatgpt.com/#settings/Connectors' };
         await shell.openExternal(urls[page]);
       },
-    }, gotzjiStartupController(app, { packaged: app.isPackaged, platform: process.platform, executable: process.execPath }));
+    }, gotzjiStartupController(app, { packaged: app.isPackaged, platform: process.platform, executable: process.execPath }), {
+      save: async (content): Promise<{ exported: boolean; cancelled: boolean }> => {
+        const options = { title: 'Export gotzji support report', defaultPath: `gotzji-support-report-${new Date().toISOString().replace(/[:.]/gu, '-')}.json`, filters: [{ name: 'JSON', extensions: ['json'] }] };
+        const result = mainWindow ? await dialog.showSaveDialog(mainWindow, options) : await dialog.showSaveDialog(options);
+        if (result.canceled || !result.filePath) return { exported: false, cancelled: true };
+        await writeFile(result.filePath, content, 'utf8');
+        return { exported: true, cancelled: false };
+      },
+    });
     configureDesktopSessionDiagnostics(dataPath);
     createDesktopWindow();
     createDesktopTray();

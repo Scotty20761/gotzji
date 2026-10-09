@@ -20,6 +20,14 @@ export function replaceFileSync(temporary, target, options = {}) {
   }
 }
 /** Deliberately excludes unknown variables, NODE_OPTIONS and provider secrets. */
+/**
+ * A provider failure's code for status, receipts and reports: an error code or a code-shaped message, never free
+ * text, which can carry paths or document names (incident I8).
+ */
+export function providerFailureCode(error, fallback) {
+  const code = typeof error?.code === 'string' ? error.code : error?.message;
+  return typeof code === 'string' && /^[A-Z][A-Z0-9_]{1,79}$/u.test(code) ? code : fallback;
+}
 export function childEnvironment(source = process.env) {
   // PSModuleAnalysisCachePath names a prebuilt module cache; without it Windows PowerShell 5.1 re-analyzes every
   // installed module before its first cmdlet, which took over 25 s on the hosted runner.
