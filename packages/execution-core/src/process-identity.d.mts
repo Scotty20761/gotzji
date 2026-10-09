@@ -18,7 +18,7 @@ export interface WindowsPowerShellSession {
   close(): void;
 }
 export function createWindowsPowerShellSession(options: {
-  program: string; role?: 'identity' | 'dpapi'; idleMs?: number; outputLimit?: number;
+  program: string; role?: 'identity' | 'dpapi'; idleMs?: number; outputLimit?: number; startupMs?: number;
   spawn?: (command: string, args: readonly string[], options: object) => import('node:child_process').ChildProcess;
 }): WindowsPowerShellSession;
 export function windowsPowerShellSession(program: string, role?: 'identity' | 'dpapi'): WindowsPowerShellSession;

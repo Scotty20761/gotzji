@@ -147,7 +147,7 @@ describe('owned Windows PowerShell session', () => {
   it('ends the session on a timeout, malformed, unmatched or oversized reply, and starts a fresh one for the next request', async () => {
     let mode: 'silent' | 'garbage' | 'unmatched' | 'overflow' | 'ok' = 'silent';
     const fake = fakePowerShell((request) => mode === 'unmatched' ? { id: request.id + 1000, ok: true, result: {} } : mode === 'ok' ? ok(request) : mode);
-    const session = createWindowsPowerShellSession({ program: 'pwsh.exe', spawn: fake.spawn, outputLimit: 1024 });
+    const session = createWindowsPowerShellSession({ program: 'pwsh.exe', spawn: fake.spawn, outputLimit: 1024, startupMs: 0 });
     await expect(session.identity([101], 20)).rejects.toMatchObject({ code: 'POWERSHELL_SESSION_TIMEOUT' });
     mode = 'garbage'; await expect(session.identity([101])).rejects.toMatchObject({ code: 'POWERSHELL_SESSION_INVALID_RESPONSE' });
     mode = 'unmatched'; await expect(session.identity([101])).rejects.toMatchObject({ code: 'POWERSHELL_SESSION_INVALID_RESPONSE' });
@@ -155,6 +155,23 @@ describe('owned Windows PowerShell session', () => {
     mode = 'ok'; expect(await session.identity([101])).toEqual({ 101: identity('first') });
     expect(fake.spawn).toHaveBeenCalledTimes(5);
     expect(fake.children.slice(0, 4).map((child) => child.killed)).toEqual([true, true, true, true]);
+    session.close();
+  });
+
+  it('gives a starting session time to start, then holds later requests to their own budget', async () => {
+    const held: Request[] = [];
+    const fake = fakePowerShell((request) => { held.push(request); return 'silent'; });
+    const session = createWindowsPowerShellSession({ program: 'powershell.exe', spawn: fake.spawn, startupMs: 2000 });
+    // The first reply arrives after the request's own budget but within the start allowance: a slow start is not a hang.
+    const first = session.identity([101], 30);
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    fake.children[0]!.stdout.write(`${JSON.stringify({ id: held[0]!.id, ok: true, result: { 101: identity('first') } })}\n`);
+    expect(await first).toEqual({ 101: identity('first') });
+    // Once the session has answered, a silent request times out on its own budget.
+    const started = performance.now();
+    await expect(session.identity([102], 30)).rejects.toMatchObject({ code: 'POWERSHELL_SESSION_TIMEOUT' });
+    expect(performance.now() - started).toBeLessThan(1000);
+    expect(fake.spawn).toHaveBeenCalledTimes(1);
     session.close();
   });
 

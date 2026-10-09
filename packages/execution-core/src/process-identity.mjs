@@ -135,8 +135,11 @@ export function createWindowsPowerShellSession(options) {
   const start = options.spawn ?? spawn;
   const idleMs = options.idleMs ?? 15_000;
   const outputLimit = options.outputLimit ?? 262_144;
+  // Windows PowerShell can take seconds to start on a cold or loaded machine. Requests sent before a session's first
+  // reply also get this allowance; otherwise a slow start times out, restarts cold and never answers.
+  const startupMs = options.startupMs ?? 20_000;
   const waiting = new Map();
-  let child; let buffer = ''; let next = 1; let idle;
+  let child; let buffer = ''; let next = 1; let idle; let answered = false;
   const failure = (code) => Object.assign(new Error(code), { code });
   const fail = (code) => { for (const entry of waiting.values()) { clearTimeout(entry.timer); entry.reject(failure(code)); } waiting.clear(); };
   // Any anomaly ends this session and fails every outstanding request, so no reply can be matched to a later one.
@@ -172,18 +175,18 @@ export function createWindowsPowerShellSession(options) {
         try { reply = JSON.parse(line); } catch { stop('POWERSHELL_SESSION_INVALID_RESPONSE'); return; }
         const entry = waiting.get(reply?.id);
         if (!entry) { stop('POWERSHELL_SESSION_INVALID_RESPONSE'); return; }
-        waiting.delete(reply.id); clearTimeout(entry.timer);
+        waiting.delete(reply.id); clearTimeout(entry.timer); answered = true;
         if (reply.ok === true) entry.resolve(reply.result); else entry.reject(failure('POWERSHELL_SESSION_DENIED'));
       }
       if (!waiting.size) release();
     });
-    buffer = ''; child = current;
+    buffer = ''; answered = false; child = current;
   };
   const send = (line, timeoutMs) => new Promise((resolve, reject) => {
     clearTimeout(idle);
     try { if (!child) launch(); } catch { reject(failure('POWERSHELL_SESSION_UNAVAILABLE')); return; }
     const id = next++;
-    waiting.set(id, { resolve, reject, timer: setTimeout(() => stop('POWERSHELL_SESSION_TIMEOUT'), timeoutMs) });
+    waiting.set(id, { resolve, reject, timer: setTimeout(() => stop('POWERSHELL_SESSION_TIMEOUT'), timeoutMs + (answered ? 0 : startupMs)) });
     child.stdin.write(`${line(id)}\n`);
   });
   const invalid = () => Promise.reject(failure('POWERSHELL_SESSION_REQUEST_INVALID'));
