@@ -56,8 +56,16 @@ export function hostConfigurationIdentity(config){
 function alive(pid){try{process.kill(pid,0);return true;}catch(e){return e.code==='ESRCH'?false:undefined;}}
 function envelope(file,key){
  if(!existsSync(file)) return null;
- if(lstatSync(file).isSymbolicLink()) throw new Error('HOST_IDENTITY_INVALID');
- const value=JSON.parse(readFileSync(file,'utf8'));
+ let raw;
+ try{
+  if(lstatSync(file).isSymbolicLink()) throw new Error('HOST_IDENTITY_INVALID');
+  raw=readFileSync(file,'utf8');
+ }catch(error){
+  // publishHostReady renames the previous record away before renaming the new one in: between the two, nothing is published.
+  if(error?.code==='ENOENT') return null;
+  throw error;
+ }
+ const value=JSON.parse(raw);
  if(typeof value?.body!=='string'||value.mac!==createHmac('sha256',key).update(value.body).digest('hex')) throw new Error('HOST_IDENTITY_INVALID');
  return {body:value.body,value:JSON.parse(value.body)};
 }
