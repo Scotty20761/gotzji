@@ -71,6 +71,16 @@ const stoppedTunnel: TunnelStatus = {
 const temporaryRoots: string[] = [];
 
 describe('production desktop IPC acceptance', () => {
+  it('denies hidden inherited work IPC before invoking a provider in governed gotzji mode', async () => {
+    const services = desktopServices();
+    registerIpcHandlers(() => ({}) as never, services, { governedGotzji: true });
+    const event = { senderFrame: { url: pathToFileURL(getRendererEntryPath()).href } };
+    await expect(requiredHandler(ipcChannels.startMcp)(event, { workspaceId: 'workspace-production' })).rejects.toThrow('GRACE_GOVERNED_OPERATION_REQUIRED');
+    await expect(requiredHandler(ipcChannels.startTunnel)(event)).rejects.toThrow('GRACE_GOVERNED_OPERATION_REQUIRED');
+    await expect(requiredHandler(ipcChannels.getGitDiff)(event, { workspaceId: 'workspace-production', path: 'file.txt' })).rejects.toThrow('GRACE_GOVERNED_OPERATION_REQUIRED');
+    expect(services.startMcp).not.toHaveBeenCalled();
+    expect(services.startTunnel).not.toHaveBeenCalled();
+  });
   beforeEach(() => {
     electronHarness.handlers.clear();
     electronHarness.quit.mockClear();

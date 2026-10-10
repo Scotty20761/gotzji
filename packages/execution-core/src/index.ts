@@ -1,4 +1,10 @@
 export { ExecutionCore } from './core.js';
+export type { CoreNativeOptions, CoreBrowserOptions } from './core.js';
 export { CoreError } from './types.js';
 export type { JobView, RequestInput, Preparation, TaskBinding } from './types.js';
 export type { GraceRegistration } from './grace-profile.js';
+export type { ProductGraceRegistration } from './grace-profile.js';
+export type { ProductOperationInput, ProjectRegistration, ReviewedCommand, ReviewedCommandRegistration, RegisteredProject, CatalogEntry } from './types.js';
+export type { ProductLibraryInput, TrustedLibraryOptions } from './product-library.js';
+export type { ProductBrowserInput, ProductBrowserPublicBinding, TrustedProductBrowserOptions } from './product-browser.js';
+export type { CoreUpgrade } from './store.js';

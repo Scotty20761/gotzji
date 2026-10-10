@@ -6,6 +6,8 @@ import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 import { verifyCapabilityBridgeArtifacts } from './verify-capability-bridge-artifacts.mjs';
 import { validateMacosSigningPolicyEvidence } from './inspect-macos-signing-policy.mjs';
+import { productIdentity, validateReleaseTrustDeclaration } from './release-trust-policy.mjs';
+import { validateGotzjiRuntimeProvenance, verifyGotzjiRuntimeDirectory } from './verify-gotzji-runtime.mjs';
 
 const desktopRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const runtimeDependencies = JSON.parse(await readFile(path.join(desktopRoot, 'src', 'main', 'runtime-dependencies.json'), 'utf8'));
@@ -23,7 +25,8 @@ const provenance = JSON.parse(await readFile(provenancePath, 'utf8'));
 const sumsText = await readFile(sumsPath, 'utf8');
 const sums = parseSums(sumsText);
 
-if (provenance?.schemaVersion !== 1 || provenance.product !== 'lnwjud') throw new Error('PROVENANCE.json schema/product is invalid');
+if (provenance?.schemaVersion !== 1 || provenance.product !== productIdentity.name) throw new Error('PROVENANCE.json schema/product is invalid');
+validateReleaseTrustDeclaration(provenance);
 if (provenance.version !== packageJson.version) throw new Error(`Provenance version mismatch: ${String(provenance.version)} != ${String(packageJson.version)}`);
 if (!isPlatform(provenance.platform)) throw new Error('Provenance platform is invalid');
 let macSigning = null;
@@ -110,8 +113,15 @@ for (const runtime of provenance.runtime) {
   }
 }
 if (requiredRuntime.size > 0) throw new Error(`Runtime provenance is incomplete: ${[...requiredRuntime].join(', ')}`);
+if (provenance.platform === 'win32') {
+  validateGotzjiRuntimeProvenance(provenance.gotzjiCore, provenance.runtime, provenance.version);
+  if (!releaseArtifactOnly) {
+    const actual = await verifyGotzjiRuntimeDirectory(path.join(installerDirectory, 'win-unpacked', 'resources', 'gotzji-core'), provenance.version);
+    if (actual.manifestSha256 !== provenance.gotzjiCore.manifestSha256) throw new Error('Packaged gotzji core manifest differs from release provenance');
+  }
+}
 if (macSigning) {
-  const rootExecutable = provenance.runtime.find((entry) => entry.relativePath === 'Contents/MacOS/lnwjud');
+  const rootExecutable = provenance.runtime.find((entry) => entry.relativePath === 'Contents/MacOS/gotzji');
   validateMacosSigningPolicyEvidence(macSigning.policy, {
     mode: macSigning.mode,
     arch: provenance.arch,
@@ -120,7 +130,7 @@ if (macSigning) {
   process.stdout.write(`macOS effective signing evidence verified: ${macSigning.mode}, ${macSigning.policy.inspectedNestedCodeCount} nested targets\n`);
 }
 
-process.stdout.write(`Release evidence verified for lnwjud ${provenance.version} ${provenance.platform}/${String(provenance.arch)} commit ${provenance.source.commit}\n`);
+process.stdout.write(`Release evidence verified for ${productIdentity.name} ${provenance.version} ${provenance.platform}/${String(provenance.arch)} commit ${provenance.source.commit}\n`);
 
 function isPlatform(value) {
   return value === 'win32' || value === 'darwin' || value === 'linux';
@@ -128,14 +138,14 @@ function isPlatform(value) {
 
 function expectedArtifactNames(platform, version, arch) {
   if (platform === 'win32') return [
-    `lnwjud-Setup-${version}.exe`,
-    `lnwjud-Setup-${version}.exe.blockmap`,
-    `lnwjud-Portable-${version}.exe`,
+    `gotzji-Setup-${version}.exe`,
+    `gotzji-Setup-${version}.exe.blockmap`,
+    `gotzji-Portable-${version}.exe`,
     'latest.yml',
     'portable.yml',
   ];
-  if (platform === 'darwin') return [`lnwjud-${version}-${normalizeArtifactArch(arch)}.dmg`, `lnwjud-${version}-${normalizeArtifactArch(arch)}.zip`, 'latest-mac.yml'];
-  return [`lnwjud-${version}-${normalizeArtifactArch(arch)}.AppImage`, `lnwjud-${version}-${normalizeArtifactArch(arch)}.deb`, linuxUpdateMetadataName(arch)];
+  if (platform === 'darwin') return [`gotzji-${version}-${normalizeArtifactArch(arch)}.dmg`, `gotzji-${version}-${normalizeArtifactArch(arch)}.zip`, 'latest-mac.yml'];
+  return [`gotzji-${version}-${normalizeArtifactArch(arch)}.AppImage`, `gotzji-${version}-${normalizeArtifactArch(arch)}.deb`, linuxUpdateMetadataName(arch)];
 }
 
 function linuxUpdateMetadataName(arch) {
@@ -153,8 +163,13 @@ function requiredRuntimePaths(platform, arch) {
   const tunnelPrefix = `tunnel-client-v${BUNDLED_TUNNEL_CLIENT_VERSION}-${releaseTarget}-${releaseArch}`;
   const paths = platform === 'win32'
     ? [
-      'lnwjud.exe',
-      'lnwjud-mcp-stdio.cmd',
+      'gotzji.exe',
+      'gotzji-mcp-stdio.cmd',
+      'resources/licenses/lnwjud-MIT.txt',
+      'resources/licenses/THIRD_PARTY_NOTICES.md',
+      'resources/licenses/Prompt-OFL.txt',
+      'resources/licenses/dependencies/npm-NOTICES.txt',
+      'resources/licenses/dependencies/DEPENDENCY_LICENSES.json',
       'resources/windows-capability-bridge.ps1',
       'resources/windows-capability-bridge.sha256',
       'resources/windows-capability-bridge.integrity.json',
@@ -169,8 +184,8 @@ function requiredRuntimePaths(platform, arch) {
       `resources/tunnel-client/tunnel-client-v${BUNDLED_TUNNEL_CLIENT_VERSION}-provenance.sigstore.json`,
     ]
     : platform === 'darwin'
-      ? ['Contents/MacOS/lnwjud', 'Contents/Resources/lnwjud-mcp-stdio', 'Contents/Resources/runtime-tools/ripgrep/rg', 'Contents/Resources/runtime-tools/ripgrep/BUNDLED_RIPGREP.json', 'Contents/Resources/tunnel-client/tunnel-client', 'Contents/Resources/tunnel-client/BUNDLED_TUNNEL_CLIENT.json', `Contents/Resources/tunnel-client/${tunnelPrefix}-licenses.txt`, `Contents/Resources/tunnel-client/${tunnelPrefix}.spdx.json`, `Contents/Resources/tunnel-client/tunnel-client-v${BUNDLED_TUNNEL_CLIENT_VERSION}-provenance.sigstore.json`, `Contents/Resources/native-host/macos/${provenance.arch}/lnwjud-macos-host`, `Contents/Resources/native-host/macos/${provenance.arch}/NATIVE_HOST.json`]
-      : ['lnwjud', 'lnwjud-mcp-stdio', 'resources/runtime-tools/ripgrep/rg', 'resources/runtime-tools/ripgrep/BUNDLED_RIPGREP.json', 'resources/tunnel-client/tunnel-client', 'resources/tunnel-client/BUNDLED_TUNNEL_CLIENT.json', `resources/tunnel-client/${tunnelPrefix}-licenses.txt`, `resources/tunnel-client/${tunnelPrefix}.spdx.json`, `resources/tunnel-client/tunnel-client-v${BUNDLED_TUNNEL_CLIENT_VERSION}-provenance.sigstore.json`, `resources/native-host/linux/${provenance.arch}/lnwjud-linux-host`, `resources/native-host/linux/${provenance.arch}/NATIVE_HOST.json`];
+      ? ['Contents/MacOS/gotzji', 'Contents/Resources/gotzji-mcp-stdio', 'Contents/Resources/runtime-tools/ripgrep/rg', 'Contents/Resources/runtime-tools/ripgrep/BUNDLED_RIPGREP.json', 'Contents/Resources/tunnel-client/tunnel-client', 'Contents/Resources/tunnel-client/BUNDLED_TUNNEL_CLIENT.json', `Contents/Resources/tunnel-client/${tunnelPrefix}-licenses.txt`, `Contents/Resources/tunnel-client/${tunnelPrefix}.spdx.json`, `Contents/Resources/tunnel-client/tunnel-client-v${BUNDLED_TUNNEL_CLIENT_VERSION}-provenance.sigstore.json`, `Contents/Resources/native-host/macos/${provenance.arch}/lnwjud-macos-host`, `Contents/Resources/native-host/macos/${provenance.arch}/NATIVE_HOST.json`]
+      : ['gotzji', 'gotzji-mcp-stdio', 'resources/runtime-tools/ripgrep/rg', 'resources/runtime-tools/ripgrep/BUNDLED_RIPGREP.json', 'resources/tunnel-client/tunnel-client', 'resources/tunnel-client/BUNDLED_TUNNEL_CLIENT.json', `resources/tunnel-client/${tunnelPrefix}-licenses.txt`, `resources/tunnel-client/${tunnelPrefix}.spdx.json`, `resources/tunnel-client/tunnel-client-v${BUNDLED_TUNNEL_CLIENT_VERSION}-provenance.sigstore.json`, `resources/native-host/linux/${provenance.arch}/lnwjud-linux-host`, `resources/native-host/linux/${provenance.arch}/NATIVE_HOST.json`];
   return new Set(paths);
 }
 

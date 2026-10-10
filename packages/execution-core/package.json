@@ -1,9 +1,16 @@
 {
   "name": "@gotzji/execution-core",
-  "version": "5.7.3",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
   "exports": {
+    "./product-host": {
+      "types": "./src/product-host.ts",
+      "import": {
+        "development": "./src/product-host.ts",
+        "default": "./dist/product-host.js"
+      }
+    },
     ".": {
       "types": "./src/index.ts",
       "import": {
@@ -13,19 +20,25 @@
     }
   },
   "dependencies": {
+    "@lnwjud/audit": "workspace:*",
     "@lnwjud/application": "workspace:*",
     "@lnwjud/domain": "workspace:*",
     "@lnwjud/mcp-server": "workspace:*",
     "@lnwjud/storage": "workspace:*",
-    "@lnwjud/workspace": "workspace:*"
+    "@lnwjud/workspace": "workspace:*",
+    "@lnwjud/capabilities": "workspace:*"
   },
   "scripts": {
     "build": "tsc --outDir dist && node scripts/copy-worker.mjs",
+    "bundle:host": "node scripts/bundle-host.mjs",
     "pretest": "tsc --outDir dist && node scripts/copy-worker.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --fileParallelism=false",
     "qualify": "node dist/qualification.js",
     "qualify:grace": "node dist/grace-qualification.js"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.12"
   },
   "license": "MIT"
 }

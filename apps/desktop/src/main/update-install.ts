@@ -108,6 +108,7 @@ export class UpdateInstallCoordinator {
   private timer: ReturnType<typeof setTimeout> | null = null;
   private quietUntil = 0;
   private quietRevision = '';
+  private quietDeadlineConfirmed = false;
   private forceInstallAt = 0;
   private evaluating = false;
 
@@ -155,6 +156,7 @@ export class UpdateInstallCoordinator {
     }
     this.quietUntil = Date.now() + this.quietPeriodMs;
     this.quietRevision = activity.revision;
+    this.quietDeadlineConfirmed = false;
     void this.waitForQuietPeriod();
   }
 
@@ -171,6 +173,14 @@ export class UpdateInstallCoordinator {
     }
     const remaining = this.quietUntil - Date.now();
     if (remaining <= 0) {
+      // A shared transition can land after the snapshot read but before this
+      // deadline check. Require one later identical observation so that race
+      // restarts the quiet period instead of installing through active work.
+      if (!this.quietDeadlineConfirmed) {
+        this.quietDeadlineConfirmed = true;
+        this.schedule(this.pollIntervalMs, () => { void this.waitForQuietPeriod(); });
+        return;
+      }
       this.pending = false;
       this.options.install();
       return;

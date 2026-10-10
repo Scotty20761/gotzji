@@ -14,11 +14,11 @@ const ponytailSkillNames = [
 ] as const;
 
 describe('cross-platform desktop packaging', () => {
-  it('[version-contract] pins the product release to v5.7.3', async () => {
+  it('[version-contract] pins the product release to v1.0.0', async () => {
     const rootPackage = JSON.parse(await readFile(path.join(repositoryRoot, 'package.json'), 'utf8')) as { version?: unknown };
     const desktopPackage = JSON.parse(await readFile(path.join(desktopRoot, 'package.json'), 'utf8')) as { version?: unknown };
-    expect(rootPackage.version).toBe('5.7.3');
-    expect(desktopPackage.version).toBe('5.7.3');
+    expect(rootPackage.version).toBe('1.0.0');
+    expect(desktopPackage.version).toBe('1.0.0');
   });
 
   it('[version-contract] keeps every workspace package and runtime version aligned', async () => {
@@ -41,12 +41,12 @@ describe('cross-platform desktop packaging', () => {
     }
     for (const packagePath of packagePaths) {
       const packageJson = JSON.parse(await readFile(packagePath, 'utf8')) as { version?: unknown };
-      expect(packageJson.version, packagePath).toBe('5.7.3');
+      expect(packageJson.version, packagePath).toBe('1.0.0');
     }
     const ipcContracts = await readFile(path.join(repositoryRoot, 'packages', 'ipc-contracts', 'src', 'index.ts'), 'utf8');
     const shared = await readFile(path.join(repositoryRoot, 'packages', 'shared', 'src', 'index.ts'), 'utf8');
-    expect(ipcContracts).toContain("APP_VERSION = '5.7.3'");
-    expect(shared).toContain("APP_VERSION = '5.7.3'");
+    expect(ipcContracts).toContain("APP_VERSION = '1.0.0'");
+    expect(shared).toContain("APP_VERSION = '1.0.0'");
   });
 
   it('[version-contract] keeps source-version and latest-published documentation explicit and aligned', async () => {
@@ -54,24 +54,31 @@ describe('cross-platform desktop packaging', () => {
     const version = String(rootPackage.version);
     const readme = await readFile(path.join(repositoryRoot, 'README.md'), 'utf8');
     const fullReadme = await readFile(path.join(repositoryRoot, 'FULL_README.md'), 'utf8');
-    expect(fullReadme).toContain(`apps/desktop/dist/installers/lnwjud-Setup-${version}.exe`);
-    expect(fullReadme).toContain(`apps/desktop/dist/installers/lnwjud-Portable-${version}.exe`);
+    const plugin = JSON.parse(await readFile(path.join(repositoryRoot, 'plugins', 'gotzji', 'plugin.json'), 'utf8')) as { version?: string };
+    expect(plugin.version).toBe(version);
+    expect(fullReadme).toContain(`apps/desktop/dist/installers/gotzji-Setup-${version}.exe`);
+    expect(fullReadme).toContain(`apps/desktop/dist/installers/gotzji-Portable-${version}.exe`);
 
     const usageTh = await readFile(path.join(repositoryRoot, 'docs', 'USAGE_TH.md'), 'utf8');
     expect(readme).toContain(`## Current source version: v${version}`);
     expect(fullReadme).toContain(`## Current source version: v${version}`);
-    expect(usageTh).toContain(`lnwjud v${version} (ภาษาไทย)`);
+    expect(usageTh).toContain(`gotzji v${version} (ภาษาไทย)`);
 
     const publishedVersion = readme.match(/Latest published release: \*\*v([0-9.]+)\*\*/)?.[1];
-    expect(publishedVersion).toBeTruthy();
-    expect(fullReadme).toContain(`Latest published release: **v${publishedVersion}**`);
-    expect(usageTh).toContain(`public release \`v${publishedVersion}\``);
+    if (publishedVersion) {
+      expect(fullReadme).toContain(`Latest published release: **v${publishedVersion}**`);
+      expect(usageTh).toContain(`public release \`v${publishedVersion}\``);
+    } else {
+      expect(fullReadme).toContain('Latest published release: **none**');
+      expect(usageTh).toContain('ยังไม่มีรุ่นที่เผยแพร่อย่างเป็นทางการ');
+      expect(usageTh).not.toContain('/releases/tag/');
+    }
 
     const expectedReferences: ReadonlyArray<readonly [string, string]> = [
       ['docs/INSTALL_MACOS.md', `v${version} native macOS release target`],
       ['.github/RELEASE_CHECKLIST.md', `**Current version:** \`v${version}\``],
       ['docs/development/PACKAGING_WINDOWS.md', `current v${version} packaging contract`],
-      ['docs/LNWJUD_CAPABILITIES.md', `lnwjud v${version}`],
+      ['docs/LNWJUD_CAPABILITIES.md', `gotzji v${version}`],
       ['docs/architecture/MULTI_WORKSPACE_CONCURRENCY.md', `current v${version} runtime contract`],
       ['docs/architecture/TOOL_CONTRACT.md', `snapshot synchronized for \`v${version}\``],
       ['docs/architecture/UPGRADE_ARCHITECTURE.md', `checkpoint synchronized for \`v${version}\``],
@@ -83,13 +90,14 @@ describe('cross-platform desktop packaging', () => {
     }
   });
 
-  it('pins Electron 45 alpha.7 and exposes the Windows WER helper in the installed runtime', async () => {
+  it('pins maintained Electron 44.6.0 and verifies the installed runtime version', async () => {
     const desktopPackage = JSON.parse(await readFile(path.join(desktopRoot, 'package.json'), 'utf8')) as {
       devDependencies?: Record<string, string>;
     };
-    expect(desktopPackage.devDependencies?.electron).toBe('45.0.0-alpha.7');
+    expect(desktopPackage.devDependencies?.electron).toBe('44.6.0');
     if (process.platform === 'win32') {
-      await access(path.join(desktopRoot, 'node_modules', 'electron', 'dist', 'electron_wer.dll'));
+      await access(path.join(desktopRoot, 'node_modules', 'electron', 'dist', 'electron.exe'));
+      expect((await readFile(path.join(desktopRoot, 'node_modules', 'electron', 'dist', 'version'), 'utf8')).trim()).toBe('44.6.0');
     }
   });
 
@@ -101,26 +109,39 @@ describe('cross-platform desktop packaging', () => {
       repository?: { type?: unknown; url?: unknown };
     };
 
-    expect(desktopPackage.description).toBe('Cross-platform local AI-agent runtime and MCP gateway with 279 total tool definitions.');
-    expect(desktopPackage.author).toBe('Adisorn');
-    expect(desktopPackage.homepage).toBe('https://github.com/engasnm111/lnwjud#readme');
-    expect(desktopPackage.repository).toEqual({ type: 'git', url: 'https://github.com/engasnm111/lnwjud.git' });
+    expect(desktopPackage.description).toBe('Grace-governed Windows control app and MCP gateway with durable project jobs.');
+    expect(desktopPackage.author).toBe('Scotty20761');
+    expect(desktopPackage.homepage).toBe('https://github.com/Scotty20761/gotzji#readme');
+    expect(desktopPackage.repository).toEqual({ type: 'git', url: 'https://github.com/Scotty20761/gotzji.git' });
   });
 
-  it('declares lnwjud x64 NSIS and portable packaging with built runtime bundles', async () => {
+  it('declares gotzji x64 NSIS and portable packaging with built runtime bundles', async () => {
     const configPath = path.join(desktopRoot, 'electron-builder.yml');
     const config = await readFile(configPath, 'utf8');
     const desktopPackage = JSON.parse(await readFile(path.join(desktopRoot, 'package.json'), 'utf8')) as { scripts?: Record<string, string>; dependencies?: Record<string, string> };
 
-    expect(config).toContain('productName: lnwjud');
+    expect(config).toContain('productName: gotzji');
     expect(config).toContain('output: dist/installers');
     expect(config).toContain('target: nsis');
     expect(config).toContain('target: portable');
     expect(config).toContain('- x64');
-    expect(config).toContain('artifactName: lnwjud-Setup-${version}.${ext}');
+    expect(config).toContain('artifactName: gotzji-Setup-${version}.${ext}');
     expect(config).toContain('portable:');
-    expect(config).toContain('artifactName: lnwjud-Portable-${version}.${ext}');
+    expect(config).toContain('artifactName: gotzji-Portable-${version}.${ext}');
     expect(desktopPackage.scripts?.['package:windows']).toContain('--filter @lnwjud/desktop... build');
+    expect(desktopPackage.scripts?.['package:windows']).toContain('--filter @gotzji/execution-core bundle:host');
+    expect(desktopPackage.scripts?.['package:windows']).toContain('../../scripts/package-gotzji-plugin.mjs --output-dir dist/installers');
+    expect(desktopPackage.scripts?.['package:windows']?.indexOf('package-gotzji-plugin.mjs')).toBeLessThan(
+      desktopPackage.scripts?.['package:windows']?.indexOf('electron-builder') ?? -1,
+    );
+    const packageWrapper = await readFile(path.join(repositoryRoot, 'scripts', 'package-windows.ps1'), 'utf8');
+    const releaseGate = await readFile(path.join(repositoryRoot, 'scripts', 'verify-release.ps1'), 'utf8');
+    for (const asset of ['gotzji-plugin-$($rootPackage.version)-unbound.zip', 'PLUGIN_PROVENANCE.json']) {
+      expect(packageWrapper).toContain(asset);
+      expect(releaseGate).toContain(asset);
+    }
+    expect(config).toContain('from: ../../packages/execution-core/dist/product-runtime');
+    expect(config).toContain('to: gotzji-core');
     expect(desktopPackage.scripts?.['package:windows']).toContain('--win nsis portable --x64');
     expect(desktopPackage.scripts?.['package:windows']).toContain('write-portable-update-manifest.mjs');
     expect(desktopPackage.scripts?.build).toContain('write-capability-integrity.mjs && corepack pnpm@10.15.0 --filter @lnwjud/capabilities build && tsc');
@@ -129,8 +150,12 @@ describe('cross-platform desktop packaging', () => {
     expect(desktopPackage.scripts?.['build:main']).not.toContain('stage-main-native-bindings.mjs');
     expect(desktopPackage.scripts?.['test:e2e']).not.toContain('stage-main-native-bindings.mjs');
     expect(desktopPackage.scripts?.build).toContain('--external:unzipper');
+    expect(desktopPackage.scripts?.build).toContain('--define:__GOTZJI_PRODUCT__=true');
     expect(desktopPackage.scripts?.['build:main']).toContain('--external:unzipper');
+    expect(desktopPackage.scripts?.['build:main']).toContain('--define:__GOTZJI_PRODUCT__=true');
     expect(desktopPackage.scripts?.['test:e2e']).toContain('--external:unzipper');
+    expect(desktopPackage.scripts?.['test:e2e']).toContain('--define:__GOTZJI_PRODUCT__=false');
+    expect(desktopPackage.scripts?.['test:e2e']?.match(/--define:__GOTZJI_PRODUCT__=true/g)).toHaveLength(2);
     expect(config).not.toContain('asarUnpack:');
     expect(config).not.toContain('dist/main/*.node');
     expect(desktopPackage.dependencies?.unzipper).toBe('0.12.5');
@@ -153,7 +178,7 @@ describe('cross-platform desktop packaging', () => {
     const tunnelControllerSource = await readFile(path.join(desktopRoot, 'src', 'main', 'tunnel-controller.ts'), 'utf8');
     expect(tunnelControllerSource).not.toContain("'Downloads', 'tunnel', 'tunnel-client.exe'");
     const installerScript = await readFile(path.join(desktopRoot, 'build', 'installer.nsh'), 'utf8');
-    expect(installerScript).toContain('CreateShortCut "$SMPROGRAMS\\lnwjud.lnk" "$INSTDIR\\lnwjud.exe"');
+    expect(installerScript).toContain('CreateShortCut "$SMPROGRAMS\\gotzji.lnk" "$INSTDIR\\gotzji.exe"');
     expect(installerScript).toContain('SetOutPath "$INSTDIR"');
     expect(installerScript).not.toMatch(/[A-Z]:\\Users\\[^\r\n]+/i);
     expect(config).toContain('extraResources:');
@@ -167,9 +192,9 @@ describe('cross-platform desktop packaging', () => {
     expect(config).toContain('linux:');
     // Linux otherwise derives @lnwjuddesktop from the scoped package name,
     // breaking the lnwjud executable expected by the launcher and evidence.
-    expect(config).toMatch(/linux:\r?\n\s+executableName: lnwjud(?:\r?\n|$)/);
-    expect(config).toContain('maintainer: Adisorn <engasnm111@users.noreply.github.com>');
-    expect(config).toContain('artifactName: lnwjud-${version}-${env.LNWJUD_RUNTIME_ARCH}.${ext}');
+    expect(config).toMatch(/linux:\r?\n\s+executableName: gotzji(?:\r?\n|$)/);
+    expect(config).toContain('maintainer: Scotty20761 <Scotty20761@users.noreply.github.com>');
+    expect(config).toContain('artifactName: gotzji-${version}-${env.LNWJUD_RUNTIME_ARCH}.${ext}');
     expect(config).toContain('target: dmg');
     expect(config).toContain('target: zip');
     expect(config).toContain('hardenedRuntime: true');
@@ -181,7 +206,7 @@ describe('cross-platform desktop packaging', () => {
     expect(config).toMatch(/target: AppImage[\s\S]*?arch:\s*\n\s*- x64\s*\n\s*- arm64/);
     expect(config).toMatch(/target: deb[\s\S]*?arch:\s*\n\s*- x64\s*\n\s*- arm64/);
     expect(config).toContain('category: Development');
-    expect(config).toContain('artifactName: lnwjud-${version}-${arch}.${ext}');
+    expect(config).toContain('artifactName: gotzji-${version}-${arch}.${ext}');
     expect(config).toContain('build/runtime-tools');
     expect(config).toContain('to: runtime-tools');
     expect(config).toContain('from: build/tunnel-client');
@@ -236,11 +261,11 @@ describe('cross-platform desktop packaging', () => {
     const registerOcr = await readFile(path.join(repositoryRoot, 'scripts', 'register-windows-ocr.ps1'), 'utf8');
     expect(registerOcr).toContain("GetEnvironmentVariable('ProgramFiles(x86)')");
     expect(registerOcr).not.toContain('C:\\Program Files (x86)\\Windows Kits');
-    const stdioLauncher = await readFile(path.join(desktopRoot, 'build', 'lnwjud-mcp-stdio.cmd'), 'utf8');
-    expect(stdioLauncher).toContain('set "APP=%BASE%lnwjud.exe"');
+    const stdioLauncher = await readFile(path.join(desktopRoot, 'build', 'gotzji-mcp-stdio.cmd'), 'utf8');
+    expect(stdioLauncher).toContain('set "APP=%BASE%gotzji.exe"');
     expect(stdioLauncher).toContain('--mcp-stdio');
     expect(stdioLauncher).not.toContain('lnwjud-node.exe');
-    const posixLauncher = await readFile(path.join(desktopRoot, 'build', 'lnwjud-mcp-stdio.sh'), 'utf8');
+    const posixLauncher = await readFile(path.join(desktopRoot, 'build', 'gotzji-mcp-stdio.sh'), 'utf8');
     expect(posixLauncher).toContain('exec "$APP" --mcp-stdio "$@"');
     expect(stdioLauncher).not.toContain(path.win32.join('%ProgramFiles%', 'nodejs'));
     expect(stdioLauncher).not.toContain(path.win32.join('%LOCALAPPDATA%', 'Programs', 'nodejs'));
@@ -351,7 +376,7 @@ describe('cross-platform desktop packaging', () => {
 
   it('defines a dedicated Portable update manifest instead of reusing the Installer feed', async () => {
     const manifestScript = await readFile(path.join(desktopRoot, 'scripts', 'write-portable-update-manifest.mjs'), 'utf8');
-    expect(manifestScript).toContain('lnwjud-Portable-${version}.exe');
+    expect(manifestScript).toContain('gotzji-Portable-${version}.exe');
     expect(manifestScript).toContain("createHash('sha512')");
     expect(manifestScript).toContain('size: ${metadata.size}');
     expect(manifestScript).toContain("'portable.yml'");

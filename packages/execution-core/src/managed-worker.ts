@@ -6,10 +6,14 @@ import path from 'node:path';
 import { CoreError, type WorkerObservation } from './types.js';
 import { hash, secret, type WorkerRow } from './store.js';
 import type { GraceProfile } from './grace-profile.js';
+import { processIdentities, sameProcessIdentity, type ProcessIdentity } from './process-identity.mjs';
+import { signPreparedNativeOperation, type PreparedProductNativeOperation } from './product-native.js';
+import { signLibraryBinding } from './product-library.js';
+import { signPreparedBrowserOperation, type PreparedProductBrowserOperation } from './product-browser.js';
 
 export const WORKER_FILE = fileURLToPath(new URL('./fixture-worker.mjs', import.meta.url));
 export function workerFingerprint(): string {
-  return hash(['fixture-worker','grace-broker','grace-runtime','grace-stdio','grace-verifier','fingerprints','phase-r-runner','phase-r-validator','phase-r-host-identity'].map((name) => hash(readFileSync(new URL(`./${name}.mjs`, import.meta.url)))).join(':'));
+  return hash([...['fixture-worker','grace-broker','grace-runtime','grace-stdio','grace-verifier','fingerprints','phase-r-runner','phase-r-validator','phase-r-host-identity','product-broker','product-runner','product-security','process-identity','test-worker-cleanup','product-native-broker','product-native-manager','product-browser-broker','product-browser-manager','product-library-broker','product-library-manager','product-library-final-memo'].map((name) => hash(readFileSync(new URL(`./${name}.mjs`, import.meta.url)))),hash(readFileSync(new URL('./product-library-weekly-wrapper.py',import.meta.url)))].join(':'));
 }
 export function alive(pid: number): boolean | 'unknown' {
   try { process.kill(pid, 0); return true; }
@@ -24,7 +28,40 @@ export function signed<T>(worker: WorkerRow, name: string): T | undefined {
   if (result.epoch !== worker.epoch) throw new CoreError('WORKER_EPOCH_INVALID');
   return result;
 }
-interface Ready { epoch: string; pid: number; port: number }
+interface Ready { epoch: string; pid: number; port: number; identity?: ProcessIdentity }
+export async function ownedProcessAlive(pid: number, expected: ProcessIdentity | undefined, reader: typeof processIdentities = processIdentities): Promise<boolean | 'unknown'> {
+  if (alive(pid) === false) return false;
+  if (!expected) return 'unknown';
+  const observed = (await reader([pid]))[pid];
+  if (observed === 'unknown' || observed === undefined) return 'unknown';
+  return observed === null ? false : sameProcessIdentity(expected, observed);
+}
+function stoppedEntries(worker: WorkerRow, observation: WorkerObservation): { pid: number; expected: ProcessIdentity | undefined }[] | undefined {
+  const ready = signed<Ready>(worker, 'ready.json');
+  if (!ready || observation.state !== 'cancelled' || observation.pid !== ready.pid) return undefined;
+  return [
+    { pid: observation.pid, expected: ready.identity ?? observation.identities?.[observation.pid] },
+    ...observation.descendants
+      .filter((pid) => !observation.closedDescendants?.includes(pid))
+      .map((pid) => ({ pid, expected: observation.identities?.[pid] })),
+  ];
+}
+async function stoppedOwnership(worker: WorkerRow, observation: WorkerObservation, liveness: typeof alive = alive, reader: typeof processIdentities = processIdentities): Promise<boolean> {
+  const entries = stoppedEntries(worker, observation);
+  if (!entries) return false;
+  const live = entries.filter((entry) => liveness(entry.pid) !== false);
+  if (!live.length) return true;
+  const identities = await reader(live.map((entry) => entry.pid));
+  return live.every(({ pid, expected }) => {
+    if (!expected) return false;
+    const observed = identities[pid];
+    return observed === null || (observed !== 'unknown' && observed !== undefined && !sameProcessIdentity(expected, observed));
+  });
+}
+export async function verifyStoppedWorker(worker: WorkerRow): Promise<boolean> {
+  const observation = signed<WorkerObservation>(worker, 'stopped.json');
+  return !!observation && await stoppedOwnership(worker, observation);
+}
 export async function callWorker(worker: WorkerRow, action: 'status' | 'start' | 'cancel'): Promise<WorkerObservation> {
   const ready = signed<Ready>(worker, 'ready.json');
   if (!ready || !Number.isInteger(ready.port) || ready.port < 1 || ready.port > 65535) throw new CoreError('WORKER_UNAVAILABLE');
@@ -43,16 +80,18 @@ export async function observeWorker(worker: WorkerRow): Promise<'running' | 'abs
   catch {
     try {
       const ready = signed<Ready>(worker, 'ready.json');
-      if (!ready || alive(ready.pid) !== false) return 'unknown';
+      if (!ready) return 'unknown';
       const observation = signed<WorkerObservation>(worker, 'observation.json');
       const stopped = signed<WorkerObservation>(worker, 'stopped.json');
+      if (await ownedProcessAlive(ready.pid, ready.identity ?? observation?.identities?.[ready.pid]) !== false) return 'unknown';
       // A dead parent is not proof that its descendants are gone. Unknown
       // enrollment during a hold/spawn also retains ownership for inspection.
       const config = JSON.parse(readFileSync(path.join(worker.directory, 'config.json'), 'utf8')) as { operation: string };
       if (config.operation === 'fixture.hold' && observation?.state === 'running' && !stopped && observation.descendants.length !== 2) return 'unknown';
       if (config.operation.startsWith('grace.') && observation?.state === 'running' && !stopped && observation.descendants.length < 1) return 'unknown';
-      const descendants = stopped?.descendants ?? observation?.descendants ?? [];
-      return descendants.every((pid) => alive(pid) === false) ? 'absent' : 'unknown';
+      if (stopped) return await stoppedOwnership(worker, stopped) ? 'absent' : 'unknown';
+      for (const pid of observation?.descendants ?? []) if (!observation?.closedDescendants?.includes(pid) && await ownedProcessAlive(pid, observation?.identities?.[pid]) !== false) return 'unknown';
+      return 'absent';
     } catch { return 'unknown'; }
   }
 }
@@ -60,23 +99,42 @@ export async function stopWorker(worker: WorkerRow): Promise<boolean> {
   const observed = await observeWorker(worker);
   if (observed === 'absent') return true;
   if (observed === 'unknown') return false;
-  try { await callWorker(worker, 'cancel'); } catch { /* Lost response still needs independent exit evidence. */ }
+  // A refusal the worker answered needs no long wait. An accepted cancel, or one whose answer was lost, still needs
+  // independent exit evidence and gets time to produce it on a slow machine.
+  let patient = true;
+  try { await callWorker(worker, 'cancel'); } catch (error) { patient = !(error instanceof CoreError); }
+  return await awaitStoppedOwnership(worker, { patient });
+}
+/** The signed worker receipt remains the authority; injected observations only support focused stop-proof tests. */
+export async function awaitStoppedOwnership(worker: WorkerRow, dependencies: { alive?: typeof alive; identities?: typeof processIdentities; delay?: () => Promise<void>; patient?: boolean } = {}): Promise<boolean> {
+  const liveness = dependencies.alive ?? alive;
+  const reader = dependencies.identities ?? processIdentities;
   for (let n = 0; n < 100; n++) {
     const stopped = signed<WorkerObservation>(worker, 'stopped.json');
-    if (stopped && [stopped.pid, ...stopped.descendants].every((pid) => alive(pid) === false)) return true;
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    const entries = stopped ? stoppedEntries(worker, stopped) : undefined;
+    if (entries && entries.every((entry) => liveness(entry.pid) === false)) return true;
+    // A quick stop is seen within the first second. A patient wait gives a slow machine about 16 s (macOS identity
+    // probes alone can take seconds before the worker writes stopped.json).
+    await (dependencies.delay?.() ?? new Promise((resolve) => setTimeout(resolve, dependencies.patient && n >= 50 ? 300 : 20)));
   }
-  return false;
+  const stopped = signed<WorkerObservation>(worker, 'stopped.json');
+  return !!stopped && await stoppedOwnership(worker, stopped, liveness, reader);
 }
-export async function launchWorker(worker: WorkerRow, effectRoot: string, operation: string, text: string, binding: { jobId: string; owner: string; policy: string; database: string; intentRevision: number; authorizationDigest?: string; grace: GraceProfile | null }): Promise<void> {
+export async function launchWorker(worker: WorkerRow, effectRoot: string, operation: string, text: string, binding: { jobId: string; owner: string; policy: string; database: string; intentRevision: number; authorizationDigest?: string; grace: GraceProfile | null; privateRuntimeRoots: readonly string[]; nativeTestRunner?: { readonly path: string; readonly sha256: string }; libraryTestRunner?: { readonly path: string; readonly sha256: string }; browserTestTransport?: { readonly path:string; readonly sha256:string } }): Promise<void> {
   if (realpathSync(effectRoot) !== effectRoot) throw new CoreError('EFFECT_ROOT_CHANGED');
   const config = path.join(worker.directory, 'config.json');
-  writeFileSync(config, JSON.stringify({ ...binding, epoch: worker.epoch, token: worker.token, effectRoot, operation, text, generation: worker.generation, session: worker.session, lease: worker.lease }), { mode: 0o600, flag: 'wx' });
+  const configuration = { ...binding, authorizationDigest: binding.authorizationDigest ?? '', epoch: worker.epoch, token: worker.token, effectRoot, operation, text, generation: worker.generation, session: worker.session, lease: worker.lease };
+  const prepared = operation === 'grace.product-operation' ? JSON.parse(text) as { kind?: string } : null;
+  const nativeAuthorization = prepared?.kind === 'native' && configuration.grace ? signPreparedNativeOperation({ ...configuration, grace: configuration.grace, authorizationDigest: configuration.authorizationDigest ?? '' }, prepared as PreparedProductNativeOperation) : undefined;
+  const libraryAuthorization = prepared?.kind === 'library' && configuration.grace ? signLibraryBinding(configuration) : undefined;
+  const browserAuthorization = prepared?.kind === 'browser' && configuration.grace ? signPreparedBrowserOperation({ ...configuration, grace: configuration.grace },prepared as PreparedProductBrowserOperation) : undefined;
+  const libraryWrapper = prepared?.kind === 'library' ? { path:fileURLToPath(new URL('./product-library-weekly-wrapper.py',import.meta.url)),sha256:hash(readFileSync(new URL('./product-library-weekly-wrapper.py',import.meta.url))) } : undefined;
+  writeFileSync(config, JSON.stringify({ ...configuration, ...(nativeAuthorization ? { nativeAuthorization } : {}), ...(libraryAuthorization ? { libraryAuthorization } : {}), ...(libraryWrapper ? { libraryWrapper } : {}), ...(browserAuthorization ? { browserAuthorization } : {}) }), { mode: 0o600, flag: 'wx' });
   const child = spawn(process.execPath, [WORKER_FILE, config], { windowsHide: true, detached: true, stdio: 'ignore' });
   const failed = new Promise<never>((_resolve, reject) => child.once('error', () => reject(new CoreError('WORKER_LAUNCH_FAILED'))));
   child.unref();
   await Promise.race([failed, (async (): Promise<void> => {
-    for (let n = 0; n < 150; n++) {
+    for (let n = 0; n < 600; n++) {
       if (signed(worker, 'ready.json')) { await callWorker(worker, 'status'); return; }
       await new Promise((resolve) => setTimeout(resolve, 20));
     }

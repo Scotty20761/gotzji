@@ -1,3 +1,4 @@
+/* global process, URL */
 import { DatabaseSync } from 'node:sqlite';
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, writeFileSync, realpathSync, lstatSync } from 'node:fs';
@@ -5,11 +6,13 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { verifyFingerprint } from './fingerprints.mjs';
+import { PRODUCT_TOOLS, productTools, productBrokerCall } from './product-broker.mjs';
+import { assertProductDependencies } from './product-security.mjs';
 export const SERVER = 'gotzji_task';
 export const TOOL_NAMES = ['read_policy', 'read_source', 'save_result', 'check_result'];
 export const FULL_TOOLS = TOOL_NAMES.map((name) => `mcp__${SERVER}__${name}`);
 export const CODE_TOOLS = ['read_policy','read_source','check_before','apply_change','start_validation','validation_status'];
-export function toolNames(config){return config?.grace?.recipe==='code-check'?CODE_TOOLS:TOOL_NAMES;}
+export function toolNames(config){return config?.grace?.recipe==='product'?PRODUCT_TOOLS:config?.grace?.recipe==='code-check'?CODE_TOOLS:TOOL_NAMES;}
 export function fullTools(config){return toolNames(config).map((name)=>`mcp__${SERVER}__${name}`);}
 export function digest(bytes) { return createHash('sha256').update(bytes).digest('hex'); }
 export function assertProfile(profile) {
@@ -18,6 +21,7 @@ export function assertProfile(profile) {
   }
 }
 export function tools(config) {
+  if (config?.grace?.recipe === 'product') return productTools(config);
   return toolNames(config).map((name) => ({ name, description: {
     read_policy: 'Read one current canonical prepared policy document. Read rules, agents, workflow and index before the source.',
     read_source: 'Read the one host-prepared public project source after canonical pre-work.',
@@ -35,6 +39,7 @@ function keys(argumentsValue, expected) {
 }
 /** Trusted host broker; the Claude process never has a database/native-file tool. */
 export function brokerCall(config, name, args, runtimeApproved, validatorManager) {
+  if (config.grace?.recipe === 'product') { assertProductDependencies(config); assertProfile(config.grace); return productBrokerCall(config, name, args, runtimeApproved, validatorManager); }
   if (!runtimeApproved || !toolNames(config).includes(name)) throw new Error('RUNTIME_OR_TOOL_DENIED');
   // Reject malformed model arguments before expensive dependency hashing and
   // before reserving anything. Valid shapes still require the full live gate.

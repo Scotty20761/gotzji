@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import {
   ipcChannels,
+  gotzjiIpcChannels,
   isIncidentClassification,
   pushChannels,
   type AddWorkspaceRequest,
@@ -37,6 +38,8 @@ import {
   type InFlightWorkItem,
   type InstallActivitySnapshot,
   type LnwjudApi,
+  type GotzjiApi,
+  type GotzjiHostStatus,
   type LoadLogSessionHistoryRequest,
   type LoadLogSessionHistoryResult,
   type LogLine,
@@ -85,6 +88,9 @@ import {
   type WorkspaceSummary,
 } from '@lnwjud/ipc-contracts';
 import { parseLogCorrelation } from './log-parser.js';
+
+declare const __GOTZJI_PRODUCT__: boolean | undefined;
+const gotzjiProductEnabled = typeof __GOTZJI_PRODUCT__ === 'boolean' ? __GOTZJI_PRODUCT__ : true;
 
 function invoke(channel: string, payload?: unknown): Promise<unknown> {
   return payload === undefined ? ipcRenderer.invoke(channel) : ipcRenderer.invoke(channel, payload);
@@ -1656,3 +1662,33 @@ const api: LnwjudApi = {
 };
 
 contextBridge.exposeInMainWorld('lnwjud', api);
+const gotzjiApi: GotzjiApi = {
+  hostStatus: async () => {
+    const value: unknown = await invoke(gotzjiIpcChannels.hostStatus);
+    if (!isRecord(value) || value.product !== 'gotzji' || (value.state !== 'ready' && value.state !== 'control-only' && value.state !== 'unavailable')
+      || value.controller !== 'grace' || value.automaticUpdates !== false
+      || (value.ownerId !== null && typeof value.ownerId !== 'string')) throw new Error('Invalid gotzji host response');
+    return value as unknown as GotzjiHostStatus;
+  },
+  request: (request) => invoke(gotzjiIpcChannels.request, request),
+  connectionSetupDefaults: async () => {
+    const value: unknown = await invoke(gotzjiIpcChannels.connectionSetupDefaults);
+    if (!isRecord(value) || Object.keys(value).some((key) => !['tunnelId', 'organizationId'].includes(key))
+      || value.tunnelId !== undefined && (typeof value.tunnelId !== 'string' || !/^tunnel_[a-z0-9]{32}$/u.test(value.tunnelId))
+      || value.organizationId !== undefined && (typeof value.organizationId !== 'string' || !/^org[-_][A-Za-z0-9_-]{1,160}$/u.test(value.organizationId))) throw new Error('Invalid gotzji connection setup');
+    return { ...(typeof value.tunnelId === 'string' ? { tunnelId: value.tunnelId } : {}), ...(typeof value.organizationId === 'string' ? { organizationId: value.organizationId } : {}) };
+  },
+  openConnectionSetup: async (page) => { await invoke(gotzjiIpcChannels.openConnectionSetup, page); },
+  startupStatus: async () => parseGotzjiStartup(await invoke(gotzjiIpcChannels.startupStatus)),
+  setStartup: async (enabled) => parseGotzjiStartup(await invoke(gotzjiIpcChannels.setStartup, enabled)),
+  exportSupportReport: async () => {
+    const value: unknown = await invoke(gotzjiIpcChannels.exportSupportReport);
+    if (!isRecord(value) || typeof value.exported !== 'boolean' || typeof value.cancelled !== 'boolean') throw new Error('Invalid gotzji support report response');
+    return { exported: value.exported, cancelled: value.cancelled };
+  },
+};
+if (gotzjiProductEnabled) contextBridge.exposeInMainWorld('gotzji', gotzjiApi);
+function parseGotzjiStartup(value: unknown): { available: boolean; enabled: boolean; mode: 'inspect-and-resume'; reason?: string } {
+  if (!isRecord(value) || typeof value.available !== 'boolean' || typeof value.enabled !== 'boolean' || value.mode !== 'inspect-and-resume' || value.reason !== undefined && typeof value.reason !== 'string') throw new Error('Invalid gotzji startup state');
+  return { available: value.available, enabled: value.enabled, mode: 'inspect-and-resume', ...(typeof value.reason === 'string' ? { reason: value.reason } : {}) };
+}

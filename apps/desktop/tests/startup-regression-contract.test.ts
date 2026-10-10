@@ -77,7 +77,7 @@ describe('desktop packaged startup regression contract', () => {
   it('turns startup rejection into a reported quit instead of a ghost process', () => {
     const desktop = section('function bootstrapDesktop', 'function bootstrapLogViewerOnly');
     expect(desktop).toContain(".catch((error: unknown) => handleDesktopStartupFailure('desktop', error))");
-    expect(source).toContain("dialog.showErrorBox('lnwjud failed to start'");
+    expect(source).toContain('dialog.showErrorBox(`${GOTZJI_APP_NAME} failed to start`');
     expect(source).toContain('app.quit();');
   });
 

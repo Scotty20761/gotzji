@@ -1,10 +1,16 @@
 {
   "name": "@lnwjud/mcp-server",
-  "version": "5.7.3",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
   "exports": {
-    "./engineering-evidence-verifier": {"types":"./src/engineering-evidence-verifier.ts","import":{"development":"./src/engineering-evidence-verifier.ts","default":"./dist/engineering-evidence-verifier.js"}},
+    "./engineering-evidence-verifier": {
+      "types": "./src/engineering-evidence-verifier.ts",
+      "import": {
+        "development": "./src/engineering-evidence-verifier.ts",
+        "default": "./dist/engineering-evidence-verifier.js"
+      }
+    },
     ".": {
       "types": "./src/index.ts",
       "import": {

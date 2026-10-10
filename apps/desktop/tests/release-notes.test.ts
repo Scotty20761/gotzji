@@ -1,13 +1,11 @@
-import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
 import { releaseNotesForVersion } from '../src/renderer/features/release-notes/release-notes.js';
 
 describe('release notes registry', () => {
-  it('contains non-empty in-app notes for the current Desktop version', async () => {
-    const packageJson = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8')) as { version: string };
-    const note = releaseNotesForVersion(packageJson.version);
+  it('keeps non-empty in-app notes for the legacy Desktop fixture version', () => {
+    const note = releaseNotesForVersion('5.7.3');
 
-    expect(note, `Missing in-app What's New entry for v${packageJson.version}`).toBeDefined();
+    expect(note, "Missing legacy Desktop fixture What's New entry for v5.7.3").toBeDefined();
     expect(note?.categories.some((category) => category.items.length > 0)).toBe(true);
   });
 

@@ -1,0 +1,152 @@
+import type { LibraryPolicySource, LibraryWorkflowDefinition, LibraryWorkflowStep } from './library-workflow-contract.js';
+
+const BASE_POLICY: readonly LibraryPolicySource[] = [
+  { id: 'rules', relativePath: 'CLAUDE.md' },
+  { id: 'agents', relativePath: 'AGENTS.md' },
+  { id: 'knowledge-workflow', relativePath: 'references/agent-knowledge-workflow.md' },
+  { id: 'master-index', relativePath: 'KNOWLEDGE_INDEX.md' },
+];
+const step = (value: LibraryWorkflowStep): LibraryWorkflowStep => value;
+
+export const LIBRARY_WORKFLOW_REGISTRY: readonly LibraryWorkflowDefinition[] = [
+  {
+    id: 'library.read', version: 1, title: 'Read selected Library Markdown/code with canonical pre-work', privacy: 'project-policy',
+    allowedParameters: ['paths'], requiredParameters: ['paths'], sources: BASE_POLICY,
+    steps: [step({ id: 'read', operation: 'library.source.read', effect: 'read', dependsOn: [], cancellation: 'none', actor: 'grace', requiredObligations: ['index-first','privacy-boundary'] })],
+  },
+  {
+    id: 'library.code-qa', version: 2, title: 'Governed scoped code edit and local QA', privacy: 'project-policy',
+    allowedParameters: ['intent','paths','expectedSha256','content'], requiredParameters: ['intent','paths','expectedSha256','content'],
+    sources: [...BASE_POLICY, { id: 'engineering', relativePath: '.claude/skills/karpathy-guidelines/SKILL.md' }, { id: 'debug', relativePath: '.claude/skills/debug-mantra/SKILL.md' }, { id: 'audit-script', relativePath: 'scripts/audit_orphan_md.py' }, { id: 'validate-script', relativePath: 'scripts/validate.py' }],
+    steps: [
+      step({ id: 'inspect', operation: 'library.source.read', effect: 'read', dependsOn: [], cancellation: 'none', actor: 'grace', requiredObligations: ['index-first','privacy-boundary'] }),
+      step({ id: 'apply', operation: 'library.code.apply', effect: 'write', dependsOn: ['inspect'], cancellation: 'stop-owned', actor: 'grace', requiredObligations: ['index-first','privacy-boundary'] }),
+      step({ id: 'audit', operation: 'library.qa.audit-orphans', effect: 'read', dependsOn: ['apply'], cancellation: 'stop-owned', actor: 'grace', requiredObligations: ['index-first'] }),
+      step({ id: 'validate', operation: 'library.qa.validate', effect: 'read', dependsOn: ['audit'], cancellation: 'stop-owned', actor: 'grace', requiredObligations: ['index-first'] }),
+      step({ id: 'commit', operation: 'library.delivery.commit', effect: 'delivery', dependsOn: ['validate'], cancellation: 'revoke-future', actor: 'grace', deliveryScope: 'commit', requiredObligations: ['source-build-live-separation'] }),
+      step({ id: 'push', operation: 'library.delivery.push', effect: 'delivery', dependsOn: ['commit'], cancellation: 'stop-owned', actor: 'grace', deliveryScope: 'push', requiredObligations: ['source-build-live-separation'] }),
+    ],
+  },
+  {
+    id: 'library.weekly-reading', version: 2, title: 'Governed selection, synthesis and reading-room build', privacy: 'project-policy',
+    allowedParameters: ['force'], requiredParameters: [], sources: [...BASE_POLICY, { id: 'weekly-command', relativePath: '.claude/commands/weekly-reading.md' }, { id: 'weekly-selector', relativePath: 'scripts/weekly_reading_synthesis.py' }, { id: 'summary-helper', relativePath: 'scripts/lib/article_summary.py' }, { id: 'reading-room-builder', relativePath: 'scripts/build_reading_room.py' }],
+    steps: [
+      step({ id: 'select', operation: 'library.weekly-reading.select', effect: 'read', dependsOn: [], cancellation: 'none', actor: 'grace', requiredObligations: ['index-first','source-priority','privacy-boundary'] }),
+      step({ id: 'synthesize', operation: 'library.weekly-reading.synthesize', effect: 'write', dependsOn: ['select'], cancellation: 'stop-owned', actor: 'grace', requiredObligations: ['source-priority','privacy-boundary'] }),
+      step({ id: 'build', operation: 'library.weekly-reading.build', effect: 'write', dependsOn: ['synthesize'], cancellation: 'stop-owned', actor: 'grace', requiredObligations: ['privacy-boundary'] }),
+      step({ id: 'verify', operation: 'library.weekly-reading.verify', effect: 'read', dependsOn: ['build'], cancellation: 'none', actor: 'grace', requiredObligations: ['privacy-boundary','source-build-live-separation'] }),
+      step({ id: 'commit', operation: 'library.delivery.commit', effect: 'delivery', dependsOn: ['verify'], cancellation: 'revoke-future', actor: 'grace', deliveryScope: 'commit', requiredObligations: ['source-build-live-separation'] }),
+      step({ id: 'deploy', operation: 'library.website.deploy', effect: 'delivery', dependsOn: ['commit'], cancellation: 'stop-owned', actor: 'grace', deliveryScope: 'deploy', requiredObligations: ['source-build-live-separation','live-verification'] }),
+    ],
+  },
+  {
+    id: 'library.memo-review', version: 1, title: 'Private Mammos draft and independent Facty runtime audit', privacy: 'private',
+    allowedParameters: ['ticker','evidencePeriod','paths'], requiredParameters: ['ticker','paths'],
+    sources: [...BASE_POLICY, { id: 'source-priority', relativePath: 'references/source-priority.md' }, { id: 'mammos', relativePath: '.claude/agents/mammos.md' }, { id: 'facty', relativePath: '.claude/agents/facty.md' }],
+    steps: [
+      step({ id: 'preflight', operation: 'library.source.read', effect: 'read', dependsOn: [], cancellation: 'none', actor: 'grace', requiredObligations: ['index-first','source-priority','privacy-boundary'] }),
+      step({ id: 'mammos', operation: 'library.spoke.mammos', effect: 'write', dependsOn: ['preflight'], cancellation: 'stop-owned', actor: 'mammos', requiresSpokeProof: true, requiredObligations: ['source-priority','privacy-boundary'] }),
+      step({ id: 'facty', operation: 'library.spoke.facty', effect: 'read', dependsOn: ['mammos'], cancellation: 'stop-owned', actor: 'facty', requiresSpokeProof: true, requiredObligations: ['facty-audit','source-priority','privacy-boundary'] }),
+    ],
+  },
+  {
+    id: 'library.code-qa', version: 1, title: 'Governed code change and QA', privacy: 'project-policy',
+    allowedParameters: ['intent', 'paths'], requiredParameters: ['intent'],
+    sources: [...BASE_POLICY,
+      { id: 'delegation', relativePath: 'references/delegation-template.md' },
+      { id: 'audit-script', relativePath: 'scripts/audit_orphan_md.py' },
+      { id: 'validate-script', relativePath: 'scripts/validate.py' },
+    ],
+    steps: [
+      step({ id: 'inspect', operation: 'library.code.inspect', effect: 'read', dependsOn: [], cancellation: 'none', actor: 'grace', requiredObligations: ['index-first'] }),
+      step({ id: 'apply', operation: 'library.code.apply', effect: 'write', dependsOn: ['inspect'], cancellation: 'revoke-future', actor: 'grace', requiredObligations: ['index-first', 'privacy-boundary'] }),
+      step({ id: 'audit', operation: 'library.qa.audit-orphans', effect: 'read', dependsOn: ['apply'], cancellation: 'none', actor: 'grace', requiredObligations: ['index-first'] }),
+      step({ id: 'validate', operation: 'library.qa.validate', effect: 'read', dependsOn: ['audit'], cancellation: 'stop-owned', actor: 'grace', requiredObligations: ['index-first'] }),
+      step({ id: 'commit', operation: 'library.delivery.commit', effect: 'delivery', dependsOn: ['validate'], cancellation: 'revoke-future', actor: 'grace', deliveryScope: 'commit', requiredObligations: ['handoff', 'index-writeback'] }),
+      step({ id: 'push', operation: 'library.delivery.push', effect: 'delivery', dependsOn: ['commit'], cancellation: 'stop-owned', actor: 'grace', deliveryScope: 'push', requiredObligations: ['source-build-live-separation'] }),
+    ],
+  },
+  {
+    id: 'library.weekly-reading', version: 1, title: 'Weekly reading synthesis with separate delivery', privacy: 'project-policy',
+    allowedParameters: ['force'], requiredParameters: [],
+    sources: [...BASE_POLICY,
+      { id: 'weekly-command', relativePath: '.claude/commands/weekly-reading.md' },
+      { id: 'weekly-builder', relativePath: 'scripts/weekly_reading_synthesis.py' },
+      { id: 'reading-room-builder', relativePath: 'scripts/build_reading_room.py' },
+      { id: 'website-release', relativePath: 'references/website-release-standard.md' },
+    ],
+    steps: [
+      step({ id: 'select', operation: 'library.weekly-reading.select', effect: 'read', dependsOn: [], cancellation: 'none', actor: 'grace', requiredObligations: ['index-first', 'source-priority'] }),
+      step({ id: 'build', operation: 'library.weekly-reading.build', effect: 'write', dependsOn: ['select'], cancellation: 'stop-owned', actor: 'grace', requiredObligations: ['handoff', 'privacy-boundary'] }),
+      step({ id: 'verify', operation: 'library.weekly-reading.verify', effect: 'read', dependsOn: ['build'], cancellation: 'none', actor: 'grace', requiredObligations: ['handoff', 'index-writeback'] }),
+      step({ id: 'commit', operation: 'library.delivery.commit', effect: 'delivery', dependsOn: ['verify'], cancellation: 'revoke-future', actor: 'grace', deliveryScope: 'commit', requiredObligations: ['index-writeback', 'source-build-live-separation'] }),
+      step({ id: 'deploy', operation: 'library.website.deploy', effect: 'delivery', dependsOn: ['commit'], cancellation: 'stop-owned', actor: 'grace', deliveryScope: 'deploy', requiredObligations: ['source-build-live-separation', 'live-verification'] }),
+    ],
+  },
+  {
+    id: 'library.final-memo', version: 1, title: 'Final Investment Memo through Mammos, Grace and Facty', privacy: 'project-policy',
+    allowedParameters: ['ticker', 'evidencePeriod'], requiredParameters: ['ticker'],
+    sources: [...BASE_POLICY,
+      { id: 'source-priority', relativePath: 'references/source-priority.md' },
+      { id: 'wiring-map', relativePath: 'references/index-wiring-map.md' },
+      { id: 'memo-workflow', relativePath: 'references/workflow-memo.md' },
+      { id: 'mammos-spec', relativePath: 'Team/memo.md' },
+      { id: 'facty-spec', relativePath: 'Team/fact-check.md' },
+      { id: 'user-profile', relativePath: 'user-profile.md' },
+    ],
+    steps: [
+      step({ id: 'preflight', operation: 'library.memo.preflight', effect: 'read', dependsOn: [], cancellation: 'none', actor: 'grace', requiredObligations: ['index-first', 'source-priority', 'privacy-boundary'] }),
+      step({ id: 'mammos', operation: 'library.spoke.mammos', effect: 'write', dependsOn: ['preflight'], cancellation: 'stop-owned', actor: 'mammos', requiresSpokeProof: true, requiredObligations: ['source-priority', 'privacy-boundary'] }),
+      step({ id: 'persist', operation: 'library.memo.persist', effect: 'write', dependsOn: ['mammos'], cancellation: 'revoke-future', actor: 'grace', requiredObligations: ['handoff', 'index-writeback', 'pipeline', 'atoms', 'privacy-boundary'] }),
+      step({ id: 'facty', operation: 'library.spoke.facty', effect: 'read', dependsOn: ['persist'], cancellation: 'stop-owned', actor: 'facty', requiresSpokeProof: true, requiredObligations: ['facty-audit', 'source-priority', 'privacy-boundary'] }),
+      step({ id: 'deliver', operation: 'library.memo.deliver', effect: 'delivery', dependsOn: ['facty'], cancellation: 'none', actor: 'grace', deliveryScope: 'user-delivery', requiredObligations: ['facty-audit', 'privacy-boundary'] }),
+    ],
+  },
+  {
+    id: 'library.final-memo', version: 2, title: 'Canonical audited Investment Memo through Mammos, Facty and Indie', privacy: 'private',
+    allowedParameters: ['ticker', 'evidencePeriod', 'paths'], requiredParameters: ['ticker'],
+    sources: [...BASE_POLICY,
+      { id: 'source-priority', relativePath: 'references/source-priority.md' },
+      { id: 'wiring-map', relativePath: 'references/index-wiring-map.md' },
+      { id: 'memo-workflow', relativePath: 'references/workflow-memo.md' },
+      { id: 'mammos-spec', relativePath: 'Team/memo.md' },
+      { id: 'facty-spec', relativePath: 'Team/fact-check.md' },
+      { id: 'mammos-agent', relativePath: '.claude/agents/mammos.md' },
+      { id: 'facty-agent', relativePath: '.claude/agents/facty.md' },
+      { id: 'indie-agent', relativePath: '.claude/agents/indie.md' },
+      { id: 'user-profile', relativePath: 'user-profile.md' },
+      { id: 'pipeline-gateway', relativePath: 'scripts/pipeline_dashboard.py' },
+      { id: 'pipeline-parser', relativePath: 'scripts/lib/pipeline_parse.py' },
+      { id: 'control-lock', relativePath: 'scripts/lib/control_lock.py' },
+      { id: 'process-lease', relativePath: 'scripts/lib/process_lease.py' },
+      { id: 'atom-gateway', relativePath: 'scripts/save_atom.py' },
+      { id: 'index-gateway', relativePath: 'scripts/build_indexes_from_frontmatter.py' },
+      { id: 'index-source-siblings', relativePath: 'scripts/lib/source_siblings.py' },
+      { id: 'index-design-export', relativePath: 'scripts/lib/design_export.py' },
+      { id: 'index-asset-bump', relativePath: 'scripts/lib/asset_bump.py' },
+      { id: 'ticker-map', relativePath: 'scripts/lib/ticker_company_map.json' },
+      { id: 'privacy-gateway', relativePath: 'scripts/audit_portfolio_private.py' },
+      { id: 'streaming-files', relativePath: 'scripts/lib/streaming_files.py' },
+      { id: 'audit-script', relativePath: 'scripts/audit_orphan_md.py' },
+      { id: 'validate-script', relativePath: 'scripts/validate.py' },
+    ],
+    steps: [
+      step({ id: 'preflight', operation: 'library.memo.preflight', effect: 'read', dependsOn: [], cancellation: 'none', actor: 'grace', requiredObligations: ['index-first', 'source-priority', 'privacy-boundary'] }),
+      step({ id: 'mammos', operation: 'library.spoke.mammos', effect: 'write', dependsOn: ['preflight'], cancellation: 'stop-owned', actor: 'mammos', requiresSpokeProof: true, requiredObligations: ['source-priority', 'handoff', 'privacy-boundary'] }),
+      step({ id: 'facty', operation: 'library.spoke.facty', effect: 'read', dependsOn: ['mammos'], cancellation: 'stop-owned', actor: 'facty', requiresSpokeProof: true, requiredObligations: ['facty-audit', 'source-priority', 'privacy-boundary'] }),
+      step({ id: 'persist', operation: 'library.memo.persist-audited', effect: 'write', dependsOn: ['facty'], cancellation: 'revoke-future', actor: 'grace', requiredObligations: ['handoff', 'index-writeback', 'privacy-boundary'] }),
+      step({ id: 'pipeline', operation: 'library.memo.pipeline', effect: 'write', dependsOn: ['persist'], cancellation: 'revoke-future', actor: 'grace', requiredObligations: ['pipeline', 'privacy-boundary'] }),
+      step({ id: 'indie', operation: 'library.spoke.indie', effect: 'read', dependsOn: ['persist'], cancellation: 'stop-owned', actor: 'indie', requiresSpokeProof: true, requiredObligations: ['atoms', 'privacy-boundary'] }),
+      step({ id: 'atoms', operation: 'library.memo.persist-atoms', effect: 'write', dependsOn: ['pipeline', 'indie'], cancellation: 'revoke-future', actor: 'grace', requiredObligations: ['atoms', 'index-writeback', 'privacy-boundary'] }),
+      step({ id: 'index', operation: 'library.memo.index', effect: 'write', dependsOn: ['atoms'], cancellation: 'revoke-future', actor: 'grace', requiredObligations: ['index-writeback', 'privacy-boundary'] }),
+      step({ id: 'verify', operation: 'library.memo.verify', effect: 'read', dependsOn: ['index'], cancellation: 'none', actor: 'grace', requiredObligations: ['handoff', 'index-writeback', 'pipeline', 'atoms', 'facty-audit', 'privacy-boundary'] }),
+      step({ id: 'deliver', operation: 'library.memo.deliver', effect: 'delivery', dependsOn: ['verify'], cancellation: 'none', actor: 'grace', deliveryScope: 'user-delivery', requiredObligations: ['facty-audit', 'handoff', 'index-writeback', 'pipeline', 'atoms', 'privacy-boundary'] }),
+    ],
+  },
+];
+
+export function libraryWorkflow(workflowId: string, version: number): LibraryWorkflowDefinition {
+  const definition = LIBRARY_WORKFLOW_REGISTRY.find((entry) => entry.id === workflowId && entry.version === version);
+  if (!definition) throw new Error('LIBRARY_WORKFLOW_NOT_REGISTERED');
+  return definition;
+}

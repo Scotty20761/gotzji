@@ -77,13 +77,19 @@ describe('public repository hygiene', () => {
 
     const publishedVersion = readme.match(/^## Current published version: v([0-9.]+)$/m)?.[1]
       ?? readme.match(/^## What's new in v([0-9.]+)$/m)?.[1];
-    expect(publishedVersion).toBeTruthy();
-    expect(expandedReadme).toContain(`## Current published version: v${publishedVersion}`);
-    expect(usageTh).toContain(`public release \`v${publishedVersion}\``);
-    expect(packagingWindows).toContain(`lnwjud-Setup-${version}.exe`);
-    expect(packagingWindows).toContain(`lnwjud-Portable-${version}.exe`);
-    expect(packagingWindows).toContain(`apps/desktop/dist/installers/lnwjud-Setup-${version}.exe`);
-    expect(packagingWindows).toContain(`apps/desktop/dist/installers/lnwjud-Portable-${version}.exe`);
+    if (publishedVersion) {
+      expect(expandedReadme).toContain(`## Current published version: v${publishedVersion}`);
+      expect(usageTh).toContain(`public release \`v${publishedVersion}\``);
+    } else {
+      expect(readme).toContain('No official gotzji installer release has been published');
+      expect(expandedReadme).toContain('Latest published release: **none**');
+      expect(usageTh).toContain('ยังไม่มีรุ่นที่เผยแพร่อย่างเป็นทางการ');
+      expect(usageTh).not.toContain('/releases/tag/');
+    }
+    expect(packagingWindows).toContain(`gotzji-Setup-${version}.exe`);
+    expect(packagingWindows).toContain(`gotzji-Portable-${version}.exe`);
+    expect(packagingWindows).toContain(`apps/desktop/dist/installers/gotzji-Setup-${version}.exe`);
+    expect(packagingWindows).toContain(`apps/desktop/dist/installers/gotzji-Portable-${version}.exe`);
     expect(readme).not.toContain('current source/release candidate is');
     expect(readme).not.toContain('pending publication');
   });
@@ -98,24 +104,21 @@ describe('public repository hygiene', () => {
     expect(await readFile(packagePath, 'utf8')).toBe(before);
   });
 
-  it('documents the live tool catalog instead of a hand-maintained count', async () => {
-    const { ToolRegistry } = await import('@lnwjud/mcp-server');
-    const readme = await readFile(path.join(repositoryRoot, 'README.md'), 'utf8');
-    const actor = { clientId: 'public-repo-hygiene', clientName: 'public-repo-hygiene' };
-    const defaultRegistry = new ToolRegistry({}, actor);
-    const fullRegistry = new ToolRegistry({ agentSwarm: {} as never }, actor, { codexToolsEnabled: true });
-    const totalDefinitions = fullRegistry.listAll().length;
-    const defaultAdvertised = defaultRegistry.list().length;
-    const fullAdvertised = fullRegistry.list().length;
-    expect(readme).toContain(`${totalDefinitions} total tool definitions`);
-    expect(readme).toContain(`${defaultAdvertised} are advertised by default`);
-    expect(readme).toContain(`all ${fullAdvertised} when Codex delegation plus Agent Swarm is enabled`);
-    expect(readme).not.toContain(['Verify the ', '184-tool catalog'].join(''));
-    expect(readme).not.toContain(['current v3.0.0 catalog contains ', '184 tools'].join(''));
-    expect(readme).not.toContain('packaged v3.0.0 build');
-    expect(readme).not.toContain('127.0.0.1:39200/mcp');
+  it('documents the actual governed catalog rather than inherited upstream tools', async () => {
+    const { PRODUCT_MCP_TOOLS } = await import('../../packages/execution-core/src/product-http.js');
+    const [readme, expandedReadme] = await Promise.all([
+      readFile(path.join(repositoryRoot, 'README.md'), 'utf8'),
+      readFile(path.join(repositoryRoot, 'FULL_README.md'), 'utf8'),
+    ]);
+    expect(readme).toContain('FULL_README.md#mcp-control-catalog');
+    for (const tool of PRODUCT_MCP_TOOLS) {
+      expect(expandedReadme).toContain(`| ${tool.name} |`);
+      if (tool.readOnly) expect(expandedReadme).toContain(`| ${tool.name} | READ |`);
+    }
+    expect(PRODUCT_MCP_TOOLS.some((tool) => ['workspace_list', 'run_command', 'configureConnection', 'registerProject'].includes(tool.name))).toBe(false);
+    expect(readme).not.toContain('total tool definitions');
+    expect(readme).not.toContain('all 279');
   });
-
   it('does not link README readers to ignored local documentation', async () => {
     const readme = await readFile(path.join(repositoryRoot, 'README.md'), 'utf8');
     const tracked = new Set(await trackedFiles());
@@ -154,13 +157,19 @@ describe('public repository hygiene', () => {
     expect(settingsPage).not.toContain('placeholder="C:\\tools\\tunnel-client.exe"');
   });
 
-  it('does not retain stale permission examples in the detailed README guide', async () => {
+  it('documents permission boundaries of the owned product', async () => {
     const readme = await readFile(path.join(repositoryRoot, 'FULL_README.md'), 'utf8');
-    expect(readme).not.toMatch(/^\| (?:\d+ \| `)?workspace_list`? \| (?:EXECUTE|DANGEROUS) \|/m);
-    expect(readme).toMatch(/^\| 1 \| `workspace_list` \| READ \|/m);
-    expect(readme).toContain('| workspace_list | READ |');
+    const compatibilityMarker = '<!-- BEGIN GENERATED README TOOL REGISTRY -->';
+    const compatibilityStart = readme.indexOf(compatibilityMarker);
+    expect(compatibilityStart).toBeGreaterThan(0);
+    const productDocumentation = readme.slice(0, compatibilityStart);
+    expect(productDocumentation).not.toMatch(/^\| (?:\d+ \| `)?workspace_list`? \|/m);
+    expect(productDocumentation).toContain('| gotzji_status | READ |');
+    expect(productDocumentation).toContain('| gotzji_cancel | CONTROL |');
+    expect(productDocumentation).toContain('Project/recipe/connection enrollment stays in the local app');
+    expect(productDocumentation).toContain('not the public gotzji MCP surface');
+    expect(readme.slice(compatibilityStart)).toMatch(/^\| 1 \| `workspace_list` \|/m);
   });
-
   it('keeps release documentation canonical instead of preserving stale candidate instructions', async () => {
     const readme = await readFile(path.join(repositoryRoot, 'README.md'), 'utf8');
     const legacyChecklist = await readFile(path.join(repositoryRoot, 'docs', 'development', 'RELEASE_CHECKLIST.md'), 'utf8');

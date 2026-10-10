@@ -1,6 +1,7 @@
 import { createServer } from 'node:http';
 import { describe, expect, it, vi } from 'vitest';
 import type { McpHttpServerHandle, McpHttpServerOptions } from '@lnwjud/mcp-server';
+import { APP_NAME } from '@lnwjud/shared';
 import { checkConfiguredMcpPort } from '../src/main/desktop-services.js';
 import { DesktopMcpLifecycle, type McpHttpServerStarter } from '../src/main/mcp-lifecycle.js';
 
@@ -153,7 +154,7 @@ describe('DesktopMcpLifecycle', () => {
   it('Doctor retries a transient MCP identity transport failure before reporting a false negative', async () => {
     const fetchMock = vi.fn()
       .mockRejectedValueOnce(new Error('connection reset'))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ product: 'lnwjud', service: 'desktop-mcp', protocol: 1 }), {
+      .mockResolvedValueOnce(new Response(JSON.stringify({ product: APP_NAME, service: 'desktop-mcp', protocol: 1 }), {
         status: 200,
         headers: { 'content-type': 'application/json', 'x-lnwjud-service': 'desktop-mcp' },
       }));
@@ -185,7 +186,7 @@ describe('DesktopMcpLifecycle', () => {
     expect(probed).toEqual(['http://127.0.0.1:43123']);
   });
 
-  it('Doctor still fails a fallback listener when its lnwjud identity cannot be verified', async () => {
+  it('Doctor still fails a fallback listener when its product identity cannot be verified', async () => {
     const result = await checkConfiguredMcpPort(
       { running: true, url: 'http://127.0.0.1:43123/mcp', lastStartError: null, workspaceId: null },
       18765,
@@ -195,7 +196,7 @@ describe('DesktopMcpLifecycle', () => {
     expect(result.message).toContain('identity');
   });
 
-  it('Doctor rejects a reported running listener when the lnwjud identity probe does not match', async () => {
+  it('Doctor rejects a reported running listener when the product identity probe does not match', async () => {
     const result = await checkConfiguredMcpPort(
       { running: true, url: 'http://127.0.0.1:18765/mcp', lastStartError: null, workspaceId: null },
       18765,
@@ -220,7 +221,7 @@ describe('DesktopMcpLifecycle', () => {
       if (address === null || typeof address === 'string') throw new Error('Expected TCP address');
       const result = await checkConfiguredMcpPort({ running: false, url: null, lastStartError: null, workspaceId: null }, address.port);
       expect(result.status).toBe('fail');
-      expect(result.message).toContain('not an lnwjud Desktop MCP');
+      expect(result.message).toContain(`not a ${APP_NAME} Desktop MCP`);
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }

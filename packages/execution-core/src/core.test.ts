@@ -1,20 +1,23 @@
-import { mkdtemp, readFile, writeFile, rm, stat, rename } from 'node:fs/promises';
+import { readFile, readdir, writeFile, rm, stat, rename } from 'node:fs/promises';
 import path from 'node:path';
-import os from 'node:os';
+import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { afterEach, describe, expect, it } from 'vitest';
 import { ExecutionCore } from './core.js';
-import { alive, callWorker, signed, stopWorker } from './managed-worker.js';
+import { alive, callWorker, signed, stopWorker, ownedProcessAlive, verifyStoppedWorker } from './managed-worker.js';
+import { processIdentities } from './process-identity.mjs';
+import { createHmac } from 'node:crypto';
 import { type WorkerRow } from './store.js';
 import type { TaskBinding, QualificationOperation } from './types.js';
+import { canonicalTemporaryDirectory } from './test-fixtures.js';
 
 interface Fixture { root: string; core: ExecutionCore; gotzji: string; lnwjud: string; foreign: string; bindings: TaskBinding[] }
 const fixtures: Fixture[] = [];
 const cores: ExecutionCore[] = [];
 const unrelated: ChildProcess[] = [];
 async function fixture(options: { now?: () => Date } = {}): Promise<Fixture> {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'gotzji-core-'));
+  const root = await canonicalTemporaryDirectory('gotzji-core-');
   const core = await ExecutionCore.open(root, options);
   cores.push(core);
   const value = { root, core, gotzji: core.enrollAdapter('gotzji', 'owner-one'), lnwjud: core.enrollAdapter('lnwjud-library', 'owner-one'), foreign: core.enrollAdapter('foreign', 'owner-two'), bindings: [] };
@@ -28,7 +31,7 @@ async function submit(f: Fixture, id = 'request-one', operation: QualificationOp
   f.bindings.push(binding);
   return binding;
 }
-function db(f: Fixture): DatabaseSync { return new DatabaseSync(path.join(f.root, 'core.sqlite')); }
+function db(f: Fixture): DatabaseSync { return new DatabaseSync(path.join(f.root, 'core.sqlite'), { timeout: 5000 }); }
 function worker(f: Fixture, binding: TaskBinding): WorkerRow {
   const database = db(f);
   try { return database.prepare('SELECT * FROM gotzji_workers WHERE job_id=?').get(binding.jobId) as unknown as WorkerRow; }
@@ -52,6 +55,32 @@ afterEach(async () => {
 });
 
 describe('neutral execution authority — real SQLite, files and owned processes', () => {
+  it('does not cancel an unrelated live process that occupies a recorded old PID with a different birth identity', async () => {
+    const f = await fixture(); const binding = await submit(f, 'identity-reuse');
+    await f.core.resume(f.gotzji, binding); await f.core.tick();
+    const w = worker(f, binding);
+    const child = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], { windowsHide: true, stdio: 'ignore' }); unrelated.push(child);
+    await new Promise<void>((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); });
+    const pid = child.pid!; const identity = (await processIdentities([pid]))[pid];
+    expect(identity && typeof identity === 'object').toBe(true);
+    if (!identity || typeof identity !== 'object') throw new Error('Actual process birth probe unavailable');
+    const previousIdentity = { ...identity, birth: 'different-recorded-previous-birth' };
+    expect(await ownedProcessAlive(pid, previousIdentity)).toBe(false);
+    const rewrite = async (name: string, transform: (value: Record<string, unknown>) => Record<string, unknown>): Promise<void> => {
+      const filename = path.join(w.directory, name); const record = JSON.parse(await readFile(filename, 'utf8')) as { body: string };
+      const body = JSON.stringify(transform(JSON.parse(record.body) as Record<string, unknown>));
+      await writeFile(filename, JSON.stringify({ body, mac: createHmac('sha256', w.token).update(body).digest('hex') }));
+    };
+    await rewrite('ready.json', (value) => ({ ...value, pid, identity: undefined }));
+    await rewrite('stopped.json', (value) => ({ ...value, pid, identities: {}, descendants: [], closedDescendants: [] }));
+    expect(await verifyStoppedWorker(w)).toBe(false);
+    // Model the old signed record after OS PID reuse. The current process has
+    // real independently observed birth/executable data and is not our worker.
+    await rewrite('ready.json', (value) => ({ ...value, pid, identity: previousIdentity }));
+    await rewrite('stopped.json', (value) => ({ ...value, pid, identities: { [pid]: previousIdentity }, descendants: [], closedDescendants: [] }));
+    expect(await stopWorker(w)).toBe(true);
+    expect(alive(pid)).toBe(true); expect(child.exitCode).toBeNull();
+  }, 15000);
   it('persists one native Goal and returns the same claim on concurrent duplicate submit', async () => {
     const f = await fixture();
     const p = f.core.prepare(f.gotzji, { requestId: 'same', operation: 'fixture.write', text: 'one' });
@@ -111,7 +140,7 @@ describe('neutral execution authority — real SQLite, files and owned processes
   });
   it('keeps untrusted display projections separate from authority', async () => {
     const f = await fixture(); const b = await submit(f);
-    const projection = new DatabaseSync(path.join(f.root, 'app-projection.sqlite'));
+    const projection = new DatabaseSync(path.join(f.root, 'app-projection.sqlite'), { timeout: 5000 });
     projection.exec('CREATE TABLE goals(id TEXT,status TEXT);'); projection.prepare('INSERT INTO goals VALUES (?,?)').run(b.jobId, 'completed'); projection.close();
     expect(await f.core.get(f.gotzji, b)).toMatchObject({ status: 'queued', evidenceDigest: null });
     const database = db(f); expect(database.prepare('SELECT count(*) AS n FROM gotzji_workers').get()?.n).toBe(0); database.close();
@@ -235,6 +264,32 @@ describe('neutral execution authority — real SQLite, files and owned processes
     try { await expect(ExecutionCore.open(f.root)).rejects.toMatchObject({ code: 'CORE_DATABASE_MISSING' }); }
     finally { await rename(filename + '.saved', filename); }
   });
+
+  it('waits for another connection holding the database instead of failing to reopen', async () => {
+    const f = await fixture(); f.core.close(); const filename = path.join(f.root, 'core.sqlite');
+    // A worker's last connection closing checkpoints the WAL under an exclusive lock; this child holds one for 400 ms.
+    const holder = spawn(process.execPath, ['--no-warnings', '--input-type=module', '-e', `import { DatabaseSync } from 'node:sqlite'; const db = new DatabaseSync(${JSON.stringify(filename)}); db.exec('PRAGMA locking_mode=EXCLUSIVE; BEGIN EXCLUSIVE; UPDATE gotzji_meta SET version=version;'); console.log('locked'); setTimeout(() => { db.exec('COMMIT;'); db.close(); }, 400);`], { stdio: ['ignore', 'pipe', 'inherit'] });
+    try {
+      await new Promise<void>((resolve, reject) => { holder.stdout?.on('data', (data: Buffer) => { if (String(data).includes('locked')) resolve(); }); holder.once('exit', (code) => reject(new Error(`holder exited ${String(code)}`))); });
+      const reopened = await ExecutionCore.open(f.root); cores.push(reopened);
+      expect(reopened.enrollAdapter('after-lock', 'owner-one')).toBeTypeOf('string');
+    } finally {
+      if (holder.exitCode === null) await new Promise((resolve) => holder.once('exit', resolve));
+    }
+  });
+
+  it('opens every core database connection with a busy timeout', async () => {
+    // Without one a connection fails at once while another process holds the database (CI: reopen, phase-r frontend).
+    const directory = path.dirname(fileURLToPath(import.meta.url));
+    const sources = (await readdir(directory)).filter((name) => /\.(?:ts|mjs)$/u.test(name) && !name.endsWith('.test.ts'));
+    const missing: string[] = [];
+    for (const name of sources) {
+      const text = await readFile(path.join(directory, name), 'utf8');
+      for (const match of text.matchAll(/new DatabaseSync\(/gu)) if (!(text.slice(match.index, match.index + 300).split(');')[0] ?? '').includes('timeout')) missing.push(`${name}:${text.slice(0, match.index).split('\n').length}`);
+    }
+    expect(sources.length).toBeGreaterThan(10);
+    expect(missing).toEqual([]);
+  });
   it('accepts the declared payload boundary without dropping bytes and rejects overflow', async () => {
     const f = await fixture(); const text = 'a'.repeat(65536); const b = await submit(f, 'large', 'fixture.write', text);
     await f.core.resume(f.gotzji, b); await f.core.tick();
@@ -259,5 +314,12 @@ describe('neutral execution authority — real SQLite, files and owned processes
       for (const pid of observation.descendants) if (alive(pid) === true) process.kill(pid);
       await until(async () => observation.descendants.every((pid) => alive(pid) === false));
     }
+  });
+
+  it('keeps owner settlement to the owning adapter, product project jobs and the two named decisions', async () => {
+    const f = await fixture(); const b = await submit(f);
+    await expect(f.core.settleBlockedJob(f.gotzji, b, 'released' as never)).rejects.toMatchObject({ code: 'SETTLE_DECISION_INVALID', field: 'decision' });
+    await expect(f.core.settleBlockedJob(f.foreign, b, 'no-effect')).rejects.toMatchObject({ code: 'TASK_AUTHORITY_DENIED' });
+    await expect(f.core.settleBlockedJob(f.gotzji, b, 'no-effect')).rejects.toMatchObject({ code: 'SETTLE_UNSUPPORTED', field: 'operation' });
   });
 });

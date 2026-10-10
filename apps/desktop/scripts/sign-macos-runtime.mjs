@@ -53,7 +53,7 @@ export async function signPackagedMacosRuntime(configuration, {
   // explicitly requested certificate signing must never silently downgrade.
   if (adHoc && requireCertificate) throw new Error('Certificate signing was requested but no certificate identity was resolved');
   if (!adHoc && (typeof identity !== 'string' || !/^[0-9a-f]{40}$/i.test(identity))) throw new Error('macOS signing requires a resolved certificate fingerprint');
-  if (configuration.platform !== 'darwin' || path.basename(app) !== 'lnwjud.app') throw new Error('Unsupported macOS signing bundle');
+  if (configuration.platform !== 'darwin' || path.basename(app) !== 'gotzji.app') throw new Error('Unsupported macOS signing bundle');
   const resources = path.join(app, 'Contents', 'Resources');
   const ripgrepManifest = JSON.parse(await readFile(path.join(resources, 'runtime-tools', 'ripgrep', 'BUNDLED_RIPGREP.json'), 'utf8'));
   const arch = ripgrepManifest.arch;

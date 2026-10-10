@@ -1,6 +1,7 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { App } from './App.js';
+import { GotzjiApp } from './GotzjiApp.js';
 import { StandaloneLogViewer } from './features/live/StandaloneLogViewer.js';
 import './styles.css';
 import './settings-extra.css';
@@ -12,6 +13,6 @@ const isLogViewer = window.location.hash === '#log-viewer';
 
 createRoot(root).render(
   <StrictMode>
-    {isLogViewer ? <StandaloneLogViewer /> : <App />}
+    {window.gotzji === undefined ? (isLogViewer ? <StandaloneLogViewer /> : <App />) : <GotzjiApp />}
   </StrictMode>,
 );

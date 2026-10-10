@@ -61,45 +61,25 @@ describe('MVP release verification gate', () => {
     expect(script).toContain("'latest.yml'");
     expect(script).toContain("'portable.yml'");
     expect(script).toContain('git diff --check');
-    expect(script).toContain('lnwjud-Setup-$($rootPackage.version).exe');
-    expect(script).toContain('lnwjud-Portable-$($rootPackage.version).exe');
+    expect(script).toContain('gotzji-Setup-$($rootPackage.version).exe');
+    expect(script).toContain('gotzji-Portable-$($rootPackage.version).exe');
   });
 
-  it('documents the acceptance evidence and clean-machine limitations', async () => {
+  it('requires every owned release gate and names external installed/account evidence', async () => {
     const checklist = await readFile(path.join(repositoryRoot, '.github', 'RELEASE_CHECKLIST.md'), 'utf8');
-    for (const evidence of [
-      'traversal',
-      'junction',
-      'secret',
-      'MCP local HTTP',
-      'multi-workspace',
-      'multi-session',
-      'process ownership',
-      'output limit',
-      'fake Codex',
-      'packaged-app smoke',
-      'real Codex',
-      'git diff --check',
-    ]) {
-      expect(checklist.toLowerCase()).toContain(evidence.toLowerCase());
-    }
+    for (let index = 1; index <= 20; index++) expect(checklist).toContain(`G${String(index).padStart(2, '0')}`);
+    for (const requirement of ['BLOCKED_EXTERNAL', 'candidate', 'Grace', 'Plus', 'Pro', 'Windows restart', 'migration', 'rollback', 'pilot']) expect(checklist).toContain(requirement);
+    expect(checklist).toContain('A component test does not close a runtime gate');
   });
 
-  it('keeps public safety copy aligned with the exact mutation policy', async () => {
-    const readme = await readFile(path.join(repositoryRoot, 'README.md'), 'utf8');
-    const checklist = await readFile(path.join(repositoryRoot, '.github', 'RELEASE_CHECKLIST.md'), 'utf8');
-    const publicCopy = `${readme}\n${checklist}`;
-
-    expect(publicCopy).toContain('exact `delete_file`');
-    expect(publicCopy).toMatch(/only.*auto-approv|auto-approv.*only/i);
-    expect(publicCopy).toContain('Recovery Trash');
-    expect(publicCopy).toContain('Active Project');
-    expect(publicCopy).toMatch(/host.*approval|native.*approval/i);
-    expect(publicCopy).toMatch(/standalone|headless/i);
-    expect(publicCopy).not.toMatch(/Git delete\/discard commands.*can be enabled independently/i);
-    expect(publicCopy).not.toMatch(/opt in independently to scoped `delete_file`, `git rm`, `git clean`/i);
+  it('describes the owned mutation and enrollment boundaries without inherited raw-tool claims', async () => {
+    const readme = await readFile(path.join(repositoryRoot, 'FULL_README.md'), 'utf8');
+    expect(readme).toContain('Grace controls work');
+    expect(readme).toContain('Policies and file versions are checked before an effect');
+    expect(readme).toContain('Project/recipe/connection enrollment stays in the local app');
+    expect(readme).toContain('uncertain termination preserves its fence');
+    expect(readme).not.toContain('exact `delete_file`');
   });
-
   it('installs the Electron runtime before clean-machine desktop execution', async () => {
     const rootPackage = JSON.parse(await readFile(path.join(repositoryRoot, 'package.json'), 'utf8')) as { scripts?: Record<string, string> };
     const desktopPackage = JSON.parse(
@@ -240,17 +220,19 @@ describe('MVP release verification gate', () => {
     expect(release).toContain('candidate="$(find_ci_run workflow_dispatch)"');
     expect(release).toContain('gh run download');
     expect(release).toContain('windows-release-$sha');
-    expect(release).toContain('native-darwin-arm64-$sha');
-    expect(release).toContain('native-darwin-x64-$sha');
-    expect(release).toContain('native-linux-x64-$sha');
-    expect(release).toContain('native-linux-arm64-$sha');
+    expect(release).not.toContain('native-darwin-arm64-$sha');
+    expect(release).not.toContain('native-darwin-x64-$sha');
+    expect(release).not.toContain('native-linux-x64-$sha');
+    expect(release).not.toContain('native-linux-arm64-$sha');
     expect(release).toContain('ci_wait_deadline=$((SECONDS + 3600))');
     expect(release).toContain('while [[ -z "$run_id" ]]');
     expect(release).toContain('Waiting for main CI to appear for exact commit');
     expect(release).toContain('Exact-commit CI run $candidate_id completed with conclusion');
     expect(release).toContain('sleep 20');
     expect(release).toContain('LNWJUD_RELEASE_INSTALLER_DIRECTORY');
-    expect(release).toContain('node scripts/collect-release-assets.mjs');
+    expect(release).toContain('node scripts/collect-release-assets.mjs --windows-only');
+    expect(release).toContain('verify-candidate-qualification.mjs');
+    expect(release.indexOf('Require reviewed acceptance')).toBeLessThan(release.indexOf('Publish qualified gotzji Windows release assets'));
     expect(release).toContain('release-assets/*');
     expect(releaseNotes).toContain('`RELEASE_MANIFEST.json`');
     expect(release).toContain('Generate and validate user-facing release notes');
@@ -259,9 +241,9 @@ describe('MVP release verification gate', () => {
     expect(release).toContain('body_path: release-notes.md');
     expect(release).not.toContain('generate_release_notes: true');
     expect(release).toContain("LNWJUD_RELEASE_ARTIFACT_ONLY: '1'");
-    expect(release.indexOf('Download verified target-native CI artifacts')).toBeLessThan(release.indexOf('Verify each downloaded release evidence bundle'));
-    expect(release.indexOf('Generate and validate user-facing release notes')).toBeLessThan(release.indexOf('Download verified target-native CI artifacts'));
-    expect(release.indexOf('Verify each downloaded release evidence bundle')).toBeLessThan(release.indexOf('Aggregate target-native artifacts and update feeds'));
+    expect(release.indexOf('Download the Windows CI artifact')).toBeLessThan(release.indexOf('Verify each downloaded release evidence bundle'));
+    expect(release.indexOf('Generate and validate user-facing release notes')).toBeLessThan(release.indexOf('Download the Windows CI artifact'));
+    expect(release.indexOf('Verify each downloaded release evidence bundle')).toBeLessThan(release.indexOf('Aggregate the same qualified Windows bytes'));
     expect(release).not.toContain('verify-release.ps1');
     expect(release).not.toContain('package:windows');
     expect(release).not.toContain('Install ripgrep for E2E search');
@@ -339,7 +321,7 @@ describe('MVP release verification gate', () => {
     expect(controller).not.toContain("'--sample', 'sample_mcp_stdio_local'");
     expect(services).toContain('getMcpServerUrl: async ()');
     expect(services).toContain('await mcpLifecycle.start()');
-    expect(readme).toContain('Desktop loopback HTTP MCP');
-    expect(readme).toContain('sample_mcp_remote_no_auth');
+    expect(readme).toContain('authenticated loopback forwarding');
+    expect(readme).toContain('Windows CurrentUser DPAPI');
   });
 });
