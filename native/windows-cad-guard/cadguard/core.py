@@ -453,9 +453,15 @@ class Guard:
         return {"success": True, "unknown": unknown, "incidents": incidents, "systemWindowsNeedingAttention": stuck, "leftoverHelpers": updaters}
 
     def sweep(self) -> list[dict]:
-        """Release system windows idle for two hours; one window's failure never stops the others or the caller."""
+        """Settle windows whose process is gone, and release system windows idle for two hours; one window's failure
+        never stops the others or the caller."""
         released = []
         for record in self.ledger.snapshot().values():
+            if record.get("state") in (L.OPENING, L.READY, L.CLOSING, L.HANDED_OVER) and self.platform.birth(record["pid"]) != record["birth"]:
+                # The same transitions status makes; a window that died while opening is otherwise never asked about again.
+                was = record["state"]
+                self._transition(record["windowId"], (was,), state=L.FAILED if was == L.OPENING else L.CLOSED)
+                continue
             if record.get("kind") != L.SYSTEM or record.get("state") not in (L.READY, L.CLOSING, L.HANDED_OVER):
                 continue
             if self.clock() - record.get("lastActivity", 0) <= IDLE_RELEASE_SECONDS:

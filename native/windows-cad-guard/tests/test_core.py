@@ -639,6 +639,18 @@ class GuardTest(unittest.TestCase):
         self.assertTrue(self.app(opened).quit)
         self.assertEqual([i["kind"] for i in self.ledger.get(broken["windowId"])["incidents"]], ["sweepFailed"])
 
+    def test_the_sweep_settles_windows_whose_process_is_gone_at_once(self) -> None:
+        starting = self.guard.open()
+        ready = self.open_ready()
+        alive = self.open_ready()
+        self.app(starting).quit = True  # died on its splash screen: nobody will poll its status again
+        self.app(ready).quit = True
+        self.guard.sweep()
+        self.assertEqual(self.ledger.get(starting["windowId"])["state"], L.FAILED)
+        self.assertEqual(self.ledger.get(ready["windowId"])["state"], L.CLOSED)
+        self.assertEqual(self.ledger.get(alive["windowId"])["state"], L.READY)
+        self.assertFalse(self.app(alive).quit)
+
     # ----- report ----------------------------------------------------------------------------------------------
     def test_report_names_every_window_no_record_explains(self) -> None:
         self.platform.add_process(41640, birth=3, command='"E:\\ZWCAD\\ZWCAD.exe" /Automation -Embedding')
