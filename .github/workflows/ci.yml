@@ -85,6 +85,36 @@ jobs:
         shell: bash
         run: bash tests/packaging/linux-release-layout.sh
 
+  cad-guard-tests:
+    name: cad-guard Python Tests (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows
+            os: windows-latest
+          - name: Linux
+            os: ubuntu-24.04
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v7
+
+      # The same minor version as the stock multiCAD venv the guard runs in.
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      # Standard library only: COM, Win32 and stock multiCAD are faked. The Windows-local contract test against the real
+      # stock multiCAD and the CAD-thread test (needs fastmcp) skip here and run on the owner's machine.
+      - name: Run cad-guard unit tests
+        shell: bash
+        run: |
+          python --version
+          python -m unittest discover -s native/windows-cad-guard/tests -t native/windows-cad-guard/tests -v
+
   desktop-test-shards:
     name: Desktop Test Shard (${{ matrix.name }}, ${{ matrix.shard_index }}/${{ matrix.shard_total }})
     timeout-minutes: 20
