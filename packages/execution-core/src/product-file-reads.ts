@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
-import { constants } from 'node:fs';
-import { lstat, open, opendir, realpath } from 'node:fs/promises';
+import { constants, realpathSync } from 'node:fs';
+import { lstat, open, opendir } from 'node:fs/promises';
 import path from 'node:path';
 import { CoreError, type ProjectFileResult, type ProjectListResult, type ProjectSearchResult, type RegisteredProject } from './types.js';
 import { projectTarget } from './product-projects.js';
@@ -17,7 +17,7 @@ function exceedsResponse(result: unknown): boolean { return Buffer.byteLength(JS
 async function directoryTarget(project: RegisteredProject, relativePath: string, privateRoots: readonly string[]): Promise<string> {
   const target = projectTarget(project, relativePath, privateRoots, true);
   const info = await lstat(target);
-  if (info.isSymbolicLink() || !info.isDirectory() || await realpath(target) !== target) invalidPath('Select an ordinary project directory without redirected paths');
+  if (info.isSymbolicLink() || !info.isDirectory() || realpathSync(target) !== target) invalidPath('Select an ordinary project directory without redirected paths');
   return target;
 }
 function relativeName(project: RegisteredProject, target: string): string { return path.relative(project.rootPath, target).split(path.sep).join('/'); }
@@ -31,7 +31,7 @@ async function readFileSnapshot(project: RegisteredProject, relativePath: string
   try {
     const target = projectTarget(project, relativePath, privateRoots);
     const before = await lstat(target, { bigint: true });
-    if (before.isSymbolicLink() || !before.isFile() || await realpath(target) !== target) invalidPath('Redirected paths and non-file objects cannot be read');
+    if (before.isSymbolicLink() || !before.isFile() || realpathSync(target) !== target) invalidPath('Redirected paths and non-file objects cannot be read');
     if (before.nlink > 1n) throw new CoreError('FILE_LINK_SCOPE_DENIED', 'Multi-link files may alias private runtime data and cannot be read', 'path');
     const file = await open(target, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
     try {
@@ -54,7 +54,7 @@ async function readFileSnapshot(project: RegisteredProject, relativePath: string
       if (after.size !== BigInt(length) || after.mtimeNs !== pinned.mtimeNs) throw new CoreError('FILE_VERSION_CONFLICT', 'The file changed while being read; read the current version again', 'path');
       // A gotzji atomic replacement may leave this handle on the complete old version. A redirected path is never accepted.
       projectTarget(project, relativePath, privateRoots);
-      if (await realpath(target) !== target || (await lstat(target)).isSymbolicLink()) invalidPath('The path was redirected during the read');
+      if (realpathSync(target) !== target || (await lstat(target)).isSymbolicLink()) invalidPath('The path was redirected during the read');
       const bytes = buffer.subarray(0, length);
       const content = bytes.toString('utf8');
       if (!Buffer.from(content, 'utf8').equals(bytes) || bytes.some((byte) => byte < 9 || byte === 11 || byte > 13 && byte < 32 || byte === 127)) throw new CoreError('FILE_ENCODING_UNSUPPORTED', 'Select UTF-8 text without binary control bytes; binary files need their qualified provider', 'path');
@@ -90,7 +90,7 @@ export async function searchProjectFiles(project: RegisteredProject, relativePat
           try {
             const selected = projectTarget(project, name, privateRoots);
             const info = await lstat(selected);
-            if (info.isSymbolicLink() || await realpath(selected) !== selected) invalidPath('Redirected entries are not searched');
+            if (info.isSymbolicLink() || realpathSync(selected) !== selected) invalidPath('Redirected entries are not searched');
             if (info.isDirectory()) { pending.push(name); continue; }
             if (!info.isFile()) { incomplete(result, 'NON_FILE_ENTRY', true); continue; }
             if (info.nlink > 1) throw new CoreError('FILE_LINK_SCOPE_DENIED', 'Multi-link files cannot be searched', 'path');
@@ -127,7 +127,7 @@ export async function listProjectFiles(project: RegisteredProject, relativePath:
       try {
         const selected = projectTarget(project, name, privateRoots);
         const info = await lstat(selected);
-        if (info.isSymbolicLink() || (!info.isFile() && !info.isDirectory()) || await realpath(selected) !== selected) invalidPath('Redirected entries are not listed');
+        if (info.isSymbolicLink() || (!info.isFile() && !info.isDirectory()) || realpathSync(selected) !== selected) invalidPath('Redirected entries are not listed');
         if (info.isFile() && info.nlink > 1) throw new CoreError('FILE_LINK_SCOPE_DENIED', 'Multi-link files cannot be listed', 'path');
         if (result.entries.length === 500) { incomplete(result, 'ENTRY_LIMIT'); break; }
         result.entries.push({ path: name, type: info.isDirectory() ? 'directory' : 'file' });
