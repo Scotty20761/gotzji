@@ -8,3 +8,4 @@ export type { ProductOperationInput, ProjectRegistration, ReviewedCommand, Revie
 export type { ProductLibraryInput, TrustedLibraryOptions } from './product-library.js';
 export type { ProductBrowserInput, ProductBrowserPublicBinding, TrustedProductBrowserOptions } from './product-browser.js';
 export type { CoreUpgrade } from './store.js';
+export type { ProjectReadInput, ProjectFileResult, ProjectListInput, ProjectListResult, ProjectSearchInput, ProjectSearchResult, ProjectReadCoverage } from './types.js';

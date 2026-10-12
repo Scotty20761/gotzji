@@ -2,6 +2,7 @@ import { existsSync, lstatSync, readFileSync, realpathSync } from 'node:fs';
 import path from 'node:path';
 import { CoreError, type ProjectRegistration, type RegisteredProject, type BasicProductOperationInput, type ProductOperation, type CatalogEntry, type ReviewedCommandRegistration, type ReviewedCommand, type FileFingerprint } from './types.js';
 import { hash } from './store.js';
+import { projectFileBytesSync } from './project-file-snapshot.mjs';
 
 function invalid(field: string, reason: string): never { throw new CoreError('INVALID_REQUEST', reason, field, 'request', 'Correct the named field and prepare again'); }
 export function filesystem<T>(field: string, action: () => T): T {
@@ -107,6 +108,16 @@ export function assertOutsidePrivateRuntime(target: string, privateRoots: readon
   const normalized=path.resolve(target).toLowerCase();
   for(const root of privateRoots){const protectedRoot=path.resolve(root).toLowerCase();const relative=path.relative(protectedRoot,normalized);if(!relative||(!relative.startsWith('..')&&!path.isAbsolute(relative)))throw new CoreError('PRIVATE_RUNTIME_SCOPE_DENIED','Server authority/config/receipt files are outside project file operations','path','authority','Select an ordinary project file');}
 }
+/** Shared lexical project boundary; callers also verify the actual file/directory before use. */
+export function projectTarget(project: RegisteredProject, relativePath: string, privateRoots: readonly string[], allowRoot = false): string {
+  if (filesystem('rootPath', () => realpathSync(project.rootPath)) !== project.rootPath) throw new CoreError('PROJECT_ROOT_CHANGED', undefined, 'rootPath');
+  if (typeof relativePath !== 'string' || !relativePath || path.isAbsolute(relativePath) || relativePath.includes('\0')) invalid('path', 'Use a relative project path');
+  const target = path.resolve(project.rootPath, relativePath);
+  const relative = path.relative(project.rootPath, target);
+  if ((!relative && !allowRoot) || relative.startsWith('..') || path.isAbsolute(relative)) invalid('path', 'The path must be inside the selected project');
+  assertOutsidePrivateRuntime(target, privateRoots);
+  return target;
+}
 export function productOperation(project: RegisteredProject, input: BasicProductOperationInput, recipe?: ReturnType<typeof reviewedRecipe>, options: { readonly privateRuntimeRoots?: readonly string[]; readonly boundRecipeIds?: readonly string[] } = {}): ProductOperation {
   if (!input || !/^[a-zA-Z0-9_-]{1,100}$/.test(input.requestId)) invalid('requestId', 'Use 1–100 letters, digits, underscores or hyphens');
   if (input.projectId !== project.projectId) invalid('projectId', 'Select an enrolled project');
@@ -128,11 +139,7 @@ export function productOperation(project: RegisteredProject, input: BasicProduct
     const targetDirectories = dependencies.filter((entry) => !path.relative(project.rootPath, entry.path).startsWith('..')).map((entry) => path.dirname(entry.path));
     return { input: { ...input }, project, command, ...discoverPolicies(project.rootPath, targetDirectories) };
   }
-  if (typeof input.path !== 'string' || !input.path || path.isAbsolute(input.path) || input.path.includes('\0')) invalid('path', 'Use a relative file path');
-  const target = path.resolve(project.rootPath, input.path);
-  const relative = path.relative(project.rootPath, target);
-  if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) invalid('path', 'The file must be inside the selected project');
-  assertOutsidePrivateRuntime(target,options.privateRuntimeRoots??[]);
+  const target = projectTarget(project, input.path!, options.privateRuntimeRoots ?? []);
   const create = input.operation === 'file.write' && input.expectedSha256 === null;
   if (create) {
     const parent=path.dirname(target);
@@ -144,7 +151,9 @@ export function productOperation(project: RegisteredProject, input: BasicProduct
   }
   const bytes = filesystem('path', () => {
     if (lstatSync(target).isSymbolicLink() || !lstatSync(target).isFile() || realpathSync(target) !== target) invalid('path', 'Select a regular file without redirected paths');
-    return readFileSync(target);
+    if (lstatSync(target).nlink > 1) throw new CoreError('FILE_LINK_SCOPE_DENIED', 'Multi-link files may alias private runtime data', 'path');
+    try { return projectFileBytesSync(target); }
+    catch (error) { const code = (error as NodeJS.ErrnoException).code; if (code && /^FILE_/u.test(code)) throw new CoreError(code, 'The selected file changed or is not a safe project file', 'path'); throw error; }
   });
   if (bytes.length > 1024 * 1024) invalid('path', 'Files above 1 MiB require a bounded range operation');
   const beforeSha256 = hash(bytes);
@@ -159,7 +168,10 @@ export function productOperation(project: RegisteredProject, input: BasicProduct
   return { input: { ...input }, project, target, beforeSha256, ...policies };
 }
 export const PRODUCT_CATALOG: readonly CatalogEntry[] = [
-  { name: 'file.read', state: 'available', description: 'Grace reads an explicitly selected UTF-8 file after actual project-policy pre-work.', controller: 'grace' },
+  { name: 'file.read.direct', state: 'available', description: 'gotzji_read_file returns project UTF-8 content and SHA-256 directly without Claude or a job.', controller: 'host' },
+  { name: 'file.list', state: 'available', description: 'gotzji_list_files lists one project directory with explicit bounded coverage.', controller: 'host' },
+  { name: 'file.search', state: 'available', description: 'gotzji_search_files searches project literal text with explicit bounded coverage.', controller: 'host' },
+  { name: 'file.read', state: 'available', description: 'Legacy Grace-controlled file read job; prefer gotzji_read_file for immediate reads.', controller: 'grace' },
   { name: 'file.write', state: 'available', description: 'Grace changes exact approved UTF-8 bytes with before/after SHA-256 and retained original.', controller: 'grace' },
   { name: 'command.run', state: 'available', description: 'Grace starts a host-reviewed immutable recipe with frozen script/config dependencies.', controller: 'grace' },
   ...['browser','excel','word','powerpoint','cad','library.workflow'].map((name): CatalogEntry => ({ name, state: 'unsupported', description: 'Provider-specific governed operation', controller: 'grace', reason: 'PROVIDER_NOT_QUALIFIED' })),

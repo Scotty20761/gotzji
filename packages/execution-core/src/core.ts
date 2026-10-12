@@ -19,6 +19,8 @@ import { CoreError, type JobView, type SettleDecision, type Preparation, type Re
 import { PRODUCT_NATIVE_OPERATIONS, prepareProductNativeOperation, type ProductNativeInput, type TrustedProductNativeOptions, type ProductNativeOperationName } from './product-native.js';
 import { libraryRoute, libraryCatalog, prepareLibraryOperation, verifiedLibraryNavigationEvolution, type ProductLibraryInput, type TrustedLibraryOptions } from './product-library.js';
 import type { LibraryRouteKind, LibraryDeliveryScope } from './library-workflow-contract.js';
+import { readProjectFile, listProjectFiles, searchProjectFiles } from './product-file-reads.js';
+import type { ProjectReadInput, ProjectFileResult, ProjectListInput, ProjectListResult, ProjectSearchInput, ProjectSearchResult } from './types.js';
 import { PRODUCT_BROWSER_OPERATIONS, prepareProductBrowserOperation, type ProductBrowserInput, type ProductBrowserOperationName, type TrustedProductBrowserOptions } from './product-browser.js';
 
 const WORKSPACE = 'gotzji-qualification-library';
@@ -325,6 +327,39 @@ export class ExecutionCore {
     if (claim.owner !== adapter.owner || prepared.kind !== 'library' || prepared.project.projectId !== projectId
       || !this.#store.database.connection.prepare('SELECT 1 FROM gotzji_library_routes WHERE adapter=? AND project_id=?').get(adapter.id, projectId)) throw new CoreError('LIBRARY_ROUTE_AUTHORITY_DENIED');
     return this.select(credential, jobId);
+  }
+  public async readProjectFile(credential: string, input: ProjectReadInput): Promise<ProjectFileResult> {
+    if (!input || Object.keys(input).sort().join(',') !== 'path,projectId') throw new CoreError('PRODUCT_SCHEMA_INVALID', 'Select a project and a relative file path');
+    const project = this.readProject(credential, input.projectId);
+    const result = await readProjectFile(project, input.path, this.privateRuntimeRoots());
+    this.assertReadProjectCurrent(credential, project);
+    return result;
+  }
+  public async listProjectFiles(credential: string, input: ProjectListInput): Promise<ProjectListResult> {
+    if (!input || !Object.hasOwn(input, 'projectId') || Object.keys(input).some((key) => !['projectId', 'path'].includes(key))) throw new CoreError('PRODUCT_SCHEMA_INVALID', 'Select a project and an optional directory');
+    const project = this.readProject(credential, input.projectId);
+    const result = await listProjectFiles(project, input.path ?? '.', this.privateRuntimeRoots());
+    this.assertReadProjectCurrent(credential, project);
+    return result;
+  }
+  public async searchProjectFiles(credential: string, input: ProjectSearchInput): Promise<ProjectSearchResult> {
+    if (!input || !Object.hasOwn(input, 'projectId') || !Object.hasOwn(input, 'query') || Object.keys(input).some((key) => !['projectId', 'path', 'query'].includes(key))) throw new CoreError('PRODUCT_SCHEMA_INVALID', 'Select a project, a literal query and an optional directory');
+    const project = this.readProject(credential, input.projectId);
+    const result = await searchProjectFiles(project, input.path ?? '.', input.query, this.privateRuntimeRoots());
+    this.assertReadProjectCurrent(credential, project);
+    return result;
+  }
+  private assertReadProjectCurrent(credential: string, project: RegisteredProject): void {
+    if (JSON.stringify(this.readProject(credential, project.projectId)) !== JSON.stringify(project)) throw new CoreError('PROJECT_REGISTRATION_CHANGED');
+  }
+  private readProject(credential: string, projectId: string): RegisteredProject {
+    const adapter = this.authorize(credential);
+    if (typeof projectId !== 'string' || !/^[a-zA-Z0-9_-]{1,64}$/.test(projectId)) throw new CoreError('PRODUCT_SCHEMA_INVALID', 'Select a registered project identifier', 'projectId');
+    if (this.#controlOnly) throw new CoreError('CONTROL_ONLY');
+    if (this.#grace?.recipe !== 'product') throw new CoreError('PRODUCT_PROFILE_REQUIRED');
+    const row = this.#store.database.connection.prepare('SELECT registration FROM gotzji_projects WHERE owner=? AND project_id=?').get(adapter.owner, projectId);
+    if (!row) throw new CoreError('PROJECT_NOT_REGISTERED', 'Select a project enrolled by this owner', 'projectId');
+    return JSON.parse(String(row.registration)) as RegisteredProject;
   }
   public catalog(credential: string): readonly CatalogEntry[] {
     const adapter = this.authorize(credential);
@@ -849,7 +884,7 @@ export class ExecutionCore {
   private policyFingerprintComponents(): Record<string, unknown> {
     const source = (name: string): URL => { const authored = new URL(`../src/${name}.ts`, import.meta.url); return existsSync(authored) ? authored : new URL(`./${name}.js`, import.meta.url); };
     const libraryContracts = ['product-library','library-workflow-contract','library-workflow-adapter','library-workflow-registry'].map((name) => hash(readFileSync(source(name))));
-    return { version: 8, root: this.#root,privateRuntimeRoots:this.#privateRuntimeRoots, control:hash(readFileSync(source('core'))), productContract:hash(readFileSync(source('product-projects'))), ledger:hash(readFileSync(source('store'))), nativeContract:hash(readFileSync(source('product-native'))), browserContract:hash(readFileSync(source('product-browser'))), libraryContracts, finalMemoContract:hash(readFileSync(new URL('./product-library-final-memo.mjs',import.meta.url))),
+    return { version: 8, root: this.#root,privateRuntimeRoots:this.#privateRuntimeRoots, control:hash(readFileSync(source('core'))), readContract:hash(readFileSync(source('product-file-reads'))), productContract:hash(readFileSync(source('product-projects'))), ledger:hash(readFileSync(source('store'))), nativeContract:hash(readFileSync(source('product-native'))), browserContract:hash(readFileSync(source('product-browser'))), libraryContracts, finalMemoContract:hash(readFileSync(new URL('./product-library-final-memo.mjs',import.meta.url))),
       nativeOptions:this.#native, nativeTestRunnerHash:this.#native?.testRunnerModule?hash(readFileSync(this.#native.testRunnerModule)):null,
       libraryOptions:this.#library?{pythonExecutable:this.#library.pythonExecutable,pythonSha256:this.#library.pythonSha256}:null, libraryTestRunnerHash:this.#library?.testRunnerModule?hash(readFileSync(this.#library.testRunnerModule)):null,
       browserRuntimeEnrollment:'private-pinned-session',browserTestTransportHash:this.#browser?.testTransportModule?hash(readFileSync(this.#browser.testTransportModule)):null,

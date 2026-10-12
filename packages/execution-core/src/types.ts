@@ -66,6 +66,13 @@ export interface BasicProductOperationInput {
   readonly priority?: number;
 }
 export type ProductOperationInput = BasicProductOperationInput | import('./product-native.js').ProductNativeInput | import('./product-browser.js').ProductBrowserInput | import('./product-library.js').ProductLibraryInput;
+export interface ProjectReadInput { readonly projectId: string; readonly path: string }
+export interface ProjectFileResult { readonly content: string; readonly sha256: string }
+export interface ProjectListInput { readonly projectId: string; readonly path?: string }
+export interface ProjectReadCoverage { readonly truncated: boolean; readonly incompleteReasons: readonly string[]; readonly skippedCount: number }
+export interface ProjectListResult extends ProjectReadCoverage { readonly entries: readonly { path: string; type: 'file' | 'directory' }[] }
+export interface ProjectSearchInput extends ProjectListInput { readonly query: string }
+export interface ProjectSearchResult extends ProjectReadCoverage { readonly matches: readonly { path: string; line: number; text: string }[] }
 /** Command/project enrollment is trusted host setup, never a model-controlled executable. */
 export interface ProjectRegistration {
   readonly projectId: string;
@@ -121,7 +128,7 @@ export interface CatalogEntry {
   readonly name: string;
   readonly state: 'available' | 'unsupported';
   readonly description: string;
-  readonly controller: 'grace' | 'owner';
+  readonly controller: 'grace' | 'owner' | 'host';
   readonly reason?: string;
   readonly recipeId?: string;
   readonly workflowId?: string;

@@ -20,7 +20,7 @@ afterEach(async () => {
 });
 async function fixture(): Promise<{ project: RegisteredProject; scriptPath: string; scriptSha256: string; config: AuthorizedNativeWorkerConfig }> {
   await mkdir(qualificationRoot, { recursive: true }); qualificationRoot = await realpath(qualificationRoot);
-  const root = await mkdtemp(path.join(qualificationRoot, 'product-native-test-')); roots.push(root);
+  const root = await realpath(await mkdtemp(path.join(qualificationRoot, 'product-native-test-'))); qualificationRoot = path.dirname(root); roots.push(root);
   const projectRoot = path.join(root, 'project'); const effects = path.join(root, 'effects');
   await mkdir(projectRoot); await mkdir(effects); await writeFile(path.join(projectRoot, 'source.xlsx'), 'original');
   await writeFile(path.join(projectRoot, 'AGENTS.md'), '# Explicit native project rule\n');

@@ -206,7 +206,7 @@ async function bootGotzjiProductHost(options: ProductHostOptions, directory: str
   }
   let config = await readProductConfiguration(directory, protector);
   const initialIdentity = productConfigurationIdentity(config);
-  if (config.libraryRoot === path.join(directory, 'workspace')) ensureProductControlDocuments(config.libraryRoot);
+  // Existing generic policy is validated/upgraded by the daemon after it owns the host lock.
   if (!config.credential) config = { ...config, credential: randomBytes(32).toString('hex') };
   const officeCandidates = options.nativeScriptPath ? [options.nativeScriptPath] : options.packaged ? [path.join(options.resourcesPath, 'gotzji-native-office.ps1')] : [path.resolve(process.cwd(), 'apps/desktop/build/gotzji-native-office.ps1'), path.resolve(process.cwd(), 'build/gotzji-native-office.ps1')];
   const cadCandidates = options.cadScriptPath ? [options.cadScriptPath] : options.packaged ? [path.join(options.resourcesPath, 'gotzji-cad-session-provider.ps1')] : [path.resolve(process.cwd(), 'apps/desktop/build/gotzji-cad-session-provider.ps1'), path.resolve(process.cwd(), 'build/gotzji-cad-session-provider.ps1')];

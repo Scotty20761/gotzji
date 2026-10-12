@@ -13,6 +13,7 @@ import { ProductBrowserService, productBrowserPrerequisite } from './product-bro
 import { ProductLibraryChannel } from './product-library-channel.js';
 import { acquireProductHostOwnership } from './product-host-ownership.mjs';
 import { UNPACKAGED_E2E_PROCESS_BIRTH } from './process-identity.mjs';
+import { ensureProductControlDocuments } from './product-control-policy.js';
 
 const directory = path.resolve(process.argv[2]);
 const entry = fileURLToPath(import.meta.url);
@@ -33,6 +34,7 @@ if (ownership.status !== 'acquired') {
   process.exit(0);
 }
 process.once('exit', () => ownership.release());
+if (config.libraryRoot === path.join(directory, 'workspace')) ensureProductControlDocuments(config.libraryRoot, { stateDirectory: directory, authority: config.authority });
 if (!config.credential) {
   config = { ...config, credential: randomBytes(32).toString('hex') };
   await writeProductConfiguration(config, testSecretProtector);
@@ -132,6 +134,9 @@ const listener = await startProductHttp({ token: config.daemonSecret, mcpPathSec
     }
     case 'registerProject': { if (surface !== 'app') throw new CoreError('PROJECT_REGISTRATION_DENIED'); const project = core.registerProject(credential, input); if (project.kind === 'library') core.enrollLibraryRoute(credential, { projectId: project.projectId, route: 'gotzji-library' }); return project; }
     case 'listProjects': return core.listProjects(credential).map((project) => ({ ...project, recipeIds: core.projectRecipeIds(credential, project) }));
+    case 'readProjectFile': return core.readProjectFile(credential, input);
+    case 'listProjectFiles': return core.listProjectFiles(credential, input);
+    case 'searchProjectFiles': return core.searchProjectFiles(credential, input);
     case 'registerRecipe': { if (surface !== 'app') throw new CoreError('RECIPE_REGISTRATION_DENIED'); const entry = core.registerReviewedCommand(credential, input); return { ...entry, review: core.recipeReview(credential, entry.recipeId) }; }
     case 'bindProjectRecipe': if (surface !== 'app') throw new CoreError('RECIPE_REGISTRATION_DENIED'); return core.bindProjectRecipe(credential, input);
     case 'catalog': { const session = browser?.projection(); return core.catalog(credential).map((entry) => entry.name.startsWith('browser.') && session?.state === 'ready' ? { ...entry, browserSession: session } : entry); }

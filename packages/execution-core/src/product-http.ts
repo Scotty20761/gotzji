@@ -9,6 +9,9 @@ export const PRODUCT_MCP_TOOLS = [
   { name: 'gotzji_health', method: 'health', readOnly: true, description: 'Inspect the gotzji host control availability. This does not start a model turn.' },
   { name: 'gotzji_projects', method: 'listProjects', readOnly: true, description: 'List projects already enrolled by the owner in the gotzji app.' },
   { name: 'gotzji_tools', method: 'catalog', readOnly: true, description: 'List typed operations and provider readiness.' },
+  { name: 'gotzji_read_file', method: 'readProjectFile', readOnly: true, description: 'Read one enrolled project UTF-8 file and its SHA-256 directly, without a Claude session or job. Prefer this over a legacy file.read job.' },
+  { name: 'gotzji_list_files', method: 'listProjectFiles', readOnly: true, description: 'List a selected enrolled project directory directly. Reports incomplete results; never follows redirected paths.' },
+  { name: 'gotzji_search_files', method: 'searchProjectFiles', readOnly: true, description: 'Search literal case-sensitive text recursively in an enrolled project without Claude. Reports bounded or skipped results.' },
   { name: 'gotzji_prepare_operation', method: 'prepareOperation', readOnly: false, description: 'Prepare a typed Grace-controlled file, reviewed command, native object or registered Library workflow in an enrolled project.' },
   { name: 'gotzji_submit', method: 'submit', readOnly: false, description: 'Submit a prepared request and return its durable job identity promptly.' },
   { name: 'gotzji_jobs', method: 'list', readOnly: true, description: 'List this owner’s newest jobs (25 by default, up to 500); pass before = the last jobId to page back. Select the intended job explicitly.' },
@@ -20,7 +23,7 @@ export const PRODUCT_MCP_TOOLS = [
   { name: 'gotzji_resume', method: 'resume', readOnly: false, description: 'Inspect and resume a selected admitted job without submitting it again.' },
   { name: 'gotzji_cancel', method: 'cancel', readOnly: false, description: 'Cancel only the explicitly selected owner job and inspect its termination result.' },
 ] as const;
-const ALLOWED_APP_METHODS = new Set(['health', 'registerProject', 'registerRecipe', 'bindProjectRecipe', 'supportReport', 'listProjects', 'catalog', 'prepareOperation', 'submit', 'list', 'inspectQueue', 'reprioritize', 'status', 'logs', 'result', 'cancel', 'settleJob', 'resume', 'connectionStatus', 'configureConnection', 'startConnection', 'stopConnection', 'startBrowserSession', 'browserSession', 'stopBrowserSession', 'authorizeLibraryDelivery', 'enrollLibraryChannel', 'libraryChannelStatus', 'configureLibraryConnection', 'startLibraryConnection', 'stopLibraryConnection', 'testOnlyE2eShutdown']);
+const ALLOWED_APP_METHODS = new Set(['health', 'registerProject', 'registerRecipe', 'bindProjectRecipe', 'supportReport', 'listProjects', 'catalog', 'readProjectFile', 'listProjectFiles', 'searchProjectFiles', 'prepareOperation', 'submit', 'list', 'inspectQueue', 'reprioritize', 'status', 'logs', 'result', 'cancel', 'settleJob', 'resume', 'connectionStatus', 'configureConnection', 'startConnection', 'stopConnection', 'startBrowserSession', 'browserSession', 'stopBrowserSession', 'authorizeLibraryDelivery', 'enrollLibraryChannel', 'libraryChannelStatus', 'configureLibraryConnection', 'startLibraryConnection', 'stopLibraryConnection', 'testOnlyE2eShutdown']);
 type Schema = Record<string, unknown>;
 const text = { type: 'string', minLength: 1 };
 const priority = { type: 'integer', minimum: 0, maximum: 3 };
@@ -40,6 +43,9 @@ const fields: Record<string, Schema> = {
 };
 /** One advertised schema is enforced on both app and MCP before core dispatch. */
 export function productControlSchema(method: string): Schema {
+  if (['readProjectFile', 'listProjectFiles', 'searchProjectFiles'].includes(method)) {
+    return objectSchema({ projectId: { ...text, pattern: '^[a-zA-Z0-9_-]{1,64}$' }, path: { ...text, maxLength: 4096 }, ...(method === 'searchProjectFiles' ? { query: { ...text, maxLength: 1024, pattern: '^[^\\r\\n]+$' } } : {}) }, ['projectId', ...(method === 'readProjectFile' ? ['path'] : method === 'searchProjectFiles' ? ['query'] : [])]);
+  }
   if (method === 'testOnlyE2eShutdown') return objectSchema({ nonce: { type: 'string', pattern: '^[a-f0-9]{64}$' } }, ['nonce']);
   if (method === 'startBrowserSession') return objectSchema({ projectId: text, startUrl: text, allowedOrigins: { type: 'array', minItems: 1, maxItems: 8, uniqueItems: true, items: text } }, ['projectId', 'startUrl']);
   if (['browserSession', 'stopBrowserSession'].includes(method)) return objectSchema({ projectId: text }, ['projectId']);
@@ -122,7 +128,7 @@ export async function startProductHttp(options: { token: string; mcpPathSecret: 
       requestId = id ?? null;
       if (parsed.jsonrpc !== '2.0' || typeof method !== 'string' || id !== undefined && id !== null && typeof id !== 'string' && typeof id !== 'number') throw new CoreError('MCP_REQUEST_INVALID');
       if (id === undefined && method.startsWith('notifications/')) { response.writeHead(202); response.end(); return; }
-      if (method === 'initialize') { reply(200, { jsonrpc: '2.0', id, result: { protocolVersion: '2025-03-26', capabilities: { tools: {} }, serverInfo: { name: options.serverName ?? 'gotzji', version: options.version ?? 'development' }, instructions: 'Use enrolled projects and explicit job IDs. Every work operation is controlled by Grace. Status/log/result polling never submits a new job.' } }); return; }
+      if (method === 'initialize') { reply(200, { jsonrpc: '2.0', id, result: { protocolVersion: '2025-03-26', capabilities: { tools: {} }, serverInfo: { name: options.serverName ?? 'gotzji', version: options.version ?? 'development' }, instructions: 'Use enrolled projects. Project file read/list/search tools return directly from the host without Claude or a job. Mutating work remains controlled by Grace; legacy file.read jobs remain supported. Select explicit job IDs for status/log/result polling, which never submits another job.' } }); return; }
       if (method === 'ping') { reply(200, { jsonrpc: '2.0', id, result: {} }); return; }
       if (method === 'tools/list') { reply(200, { jsonrpc: '2.0', id, result: { tools: PRODUCT_MCP_TOOLS.map((tool) => ({ name: tool.name, description: tool.description, inputSchema: options.inputSchema?.(tool.method) ?? productControlSchema(tool.method), annotations: { readOnlyHint: tool.readOnly, destructiveHint: tool.method === 'cancel', idempotentHint: true, openWorldHint: false } })) } }); return; }
       if (method !== 'tools/call' || !record(params) || !record(params.arguments)) throw new CoreError('MCP_METHOD_DENIED');

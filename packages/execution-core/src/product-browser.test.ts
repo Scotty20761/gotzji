@@ -17,7 +17,7 @@ afterEach(async () => {
 });
 async function fixture(): Promise<{ project: RegisteredProject; options: TrustedProductBrowserOptions; input: ProductBrowserInput; prepared: PreparedProductBrowserOperation; config: AuthorizedBrowserWorkerConfig; transport: GotzjiBrowserTransport; effectRoot: string; modulePath: string }> {
   await mkdir(qualificationRoot, { recursive: true }); qualificationRoot = await realpath(qualificationRoot);
-  const root = await mkdtemp(path.join(qualificationRoot, 'product-browser-test-')); roots.push(root);
+  const root = await realpath(await mkdtemp(path.join(qualificationRoot, 'product-browser-test-'))); qualificationRoot = path.dirname(root); roots.push(root);
   const projectRoot = path.join(root, 'project'); const effectRoot = path.join(root, 'effects'); const profilePath = path.join(root, 'gotzji-browser-provider-owned');
   await mkdir(projectRoot); await mkdir(effectRoot); await mkdir(profilePath);
   await writeFile(path.join(projectRoot, 'AGENTS.md'), '# Browser fixture rules\n');

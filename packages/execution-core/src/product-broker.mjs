@@ -2,7 +2,8 @@ import { DatabaseSync } from 'node:sqlite';
 import { createHash } from 'node:crypto';
 import { existsSync, lstatSync, readFileSync, realpathSync, writeFileSync, renameSync, unlinkSync } from 'node:fs';
 import path from 'node:path';
-import { assertProductDependencies } from './product-security.mjs';
+import { assertProductDependencies, replaceFileSync } from './product-security.mjs';
+import { projectFileBytesSync } from './project-file-snapshot.mjs';
 const digest = (value) => createHash('sha256').update(value).digest('hex');
 export const PRODUCT_TOOLS = ['read_policy', 'execute_operation', 'operation_status'];
 export function productTools(config) {
@@ -33,6 +34,7 @@ function targetIsCurrent(operation, config) {
   for (const root of config.privateRuntimeRoots ?? []) { const protectedRoot=path.resolve(root); const protectedRelative=path.relative(protectedRoot,target); if(!protectedRelative||(!protectedRelative.startsWith('..')&&!path.isAbsolute(protectedRelative))) throw new Error('PRIVATE_RUNTIME_SCOPE_DENIED'); }
   if(operation.beforeSha256===null){const parent=path.dirname(target);if(realpathSync(parent)!==parent||lstatSync(parent).isSymbolicLink()||!lstatSync(parent).isDirectory())throw new Error('FILE_SCOPE_CHANGED');}
   else if(realpathSync(target)!==target||lstatSync(target).isSymbolicLink())throw new Error('FILE_SCOPE_CHANGED');
+  if(operation.beforeSha256!==null&&lstatSync(target).nlink>1)throw new Error('FILE_LINK_SCOPE_DENIED');
   return target;
 }
 export function productBrokerCall(config, name, args, runtimeApproved, runner) {
@@ -77,7 +79,8 @@ export function productBrokerCall(config, name, args, runtimeApproved, runner) {
       } else {
         const target = targetIsCurrent(operation,config);
         // A read returns exactly the bytes whose hash matched the prepared version; reading again could return another version.
-        const observed = existsSync(target) ? readFileSync(target) : null;
+        const observed = existsSync(target) ? projectFileBytesSync(target) : null;
+        targetIsCurrent(operation, config);
         const current = observed ? digest(observed) : null;
         if (previous?.phase === 'started' && operation.input.operation === 'file.write' && current === operation.afterSha256) {
           // The exact approved target proves a lost write response; never write twice.
@@ -87,14 +90,21 @@ export function productBrokerCall(config, name, args, runtimeApproved, runner) {
           if(operation.beforeSha256===null) writeFileSync(target,operation.input.content,{flag:'wx',mode:0o600});
           else {
             const before = path.join(config.effectRoot, 'before.bin');
-            if (!existsSync(before)) writeFileSync(before, readFileSync(target), { flag: 'wx', mode: 0o600 });
+            if (!existsSync(before)) writeFileSync(before, observed, { flag: 'wx', mode: 0o600 });
             if (lstatSync(before).isSymbolicLink() || digest(readFileSync(before)) !== operation.beforeSha256) throw new Error('EFFECT_UNKNOWN');
             const temporary = target + '.gotzji-' + config.epoch;
-            try { writeFileSync(temporary, operation.input.content, { flag: 'wx', mode: lstatSync(target).mode }); renameSync(temporary, target); }
+            try {
+              writeFileSync(temporary, operation.input.content, { flag: 'wx', mode: lstatSync(target).mode });
+              replaceFileSync(temporary, target, { rename: (source, destination) => {
+                targetIsCurrent(operation, config);
+                if (digest(projectFileBytesSync(destination)) !== operation.beforeSha256) throw new Error('FILE_VERSION_CONFLICT');
+                renameSync(source, destination);
+              } });
+            }
             catch (error) { if (existsSync(temporary)) unlinkSync(temporary); throw error; }
           }
         }
-        const bytes = operation.input.operation === 'file.read' ? observed : readFileSync(target);
+        const bytes = operation.input.operation === 'file.read' ? observed : projectFileBytesSync(target);
         result = { operation: operation.input.operation, projectId: operation.project.projectId, path: operation.input.path, sha256: digest(bytes), beforeSha256: operation.beforeSha256, ...(operation.input.operation === 'file.read' ? { content: bytes.toString('utf8') } : { bytes: bytes.length }), state: 'completed' };
         writeFileSync(path.join(config.effectRoot, 'result.txt'), JSON.stringify(result), { mode: 0o600 });
       }

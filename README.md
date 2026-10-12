@@ -1,6 +1,6 @@
 # gotzji
 
-An open-source Windows MCP app for ChatGPT, with Grace controlling typed operations and durable workflows. Derived from [lnwjud](https://github.com/engasnm111/lnwjud); upstream MIT copyright and third-party notices are retained.
+An open-source Windows MCP app for ChatGPT, with direct project reads and Grace controlling typed mutations and durable workflows. Derived from [lnwjud](https://github.com/engasnm111/lnwjud); upstream MIT copyright and third-party notices are retained.
 
 ## Current source version: v1.0.0
 
@@ -9,7 +9,8 @@ The Git history retains the upstream v5.7.3 baseline. The current source is the 
 ## Product design
 
 - One independently owned local host and native Goal ledger serve the app and MCP. App views cannot launch another job engine.
-- Grace executes user work through a task-bound typed broker and the existing Claude subscription. No paid inference API fallback is introduced.
+- Project file read/list/search tools answer directly from the enrolled host without Claude or a job. They retain owner/project scope, exclude private runtime paths, and report incomplete listing/search coverage.
+- Grace executes mutations and durable workflows through a task-bound typed broker and the existing Claude subscription. Legacy file.read jobs remain supported; prefer gotzji_read_file for immediate reads. No paid inference API fallback is introduced.
 - Enrolled projects, reviewed server recipes, exact-byte edits, durable logs/results, explicit job selection and selective cancellation.
 - Independent jobs use resource-aware scheduling; conflicting project, document and interactive resources wait.
 - Private state and credentials stay on the local machine. Original lnwjud data and jobs are not silently adopted.

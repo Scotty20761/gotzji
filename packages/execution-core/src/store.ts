@@ -61,18 +61,7 @@ export class CoreStore {
         database.exec('COMMIT;'); return;
       }
       if (meta.policy !== expected.expectedPolicy) throw new CoreError('UPGRADE_POLICY_CONFLICT');
-      if (database.prepare("SELECT 1 FROM sqlite_master WHERE name='gotzji_resource_claims'").get() && database.prepare('SELECT 1 FROM gotzji_resource_claims LIMIT 1').get()) throw new CoreError('UPGRADE_RECONCILIATION_REQUIRED');
-      if (database.prepare('SELECT 1 FROM gotzji_writers LIMIT 1').get() || database.prepare("SELECT 1 FROM gotzji_operations WHERE phase IN ('started','uncertain') LIMIT 1").get() || database.prepare("SELECT 1 FROM gotzji_claims c LEFT JOIN goals g ON g.id=c.goal_id WHERE c.goal_id IS NULL OR g.id IS NULL OR g.goal_key<>c.goal_key LIMIT 1").get() || database.prepare("SELECT 1 FROM gotzji_workers w JOIN gotzji_claims c ON c.id=w.job_id JOIN goals g ON g.id=c.goal_id WHERE g.status='active' LIMIT 1").get()) throw new CoreError('UPGRADE_RECONCILIATION_REQUIRED', 'Finish or inspect active/uncertain jobs before changing the runtime policy');
-      for (const row of database.prepare('SELECT * FROM gotzji_workers').all()) {
-        const worker = row as unknown as WorkerRow;
-        // A finished job's worker recorded as stopped or proven gone (incident I8) cannot write stopped.json after a crash.
-        if (database.prepare("SELECT 1 FROM gotzji_worker_history WHERE epoch=? AND job_id=? AND reason IN ('stopped','absent')").get(worker.epoch, worker.job_id)) continue;
-        const filename = path.join(worker.directory, 'stopped.json');
-        if (!existsSync(filename) || lstatSync(filename).isSymbolicLink()) throw new CoreError('UPGRADE_RECONCILIATION_REQUIRED');
-        const record = JSON.parse(readFileSync(filename, 'utf8')) as { body: string; mac: string };
-        const body = JSON.parse(record.body) as { epoch: string; state: string };
-        if (createHmac('sha256', worker.token).update(record.body).digest('hex') !== record.mac || body.epoch !== worker.epoch || body.state !== 'cancelled') throw new CoreError('UPGRADE_RECONCILIATION_REQUIRED');
-      }
+      CoreStore.assertQuiescentUpgrade(database);
       const current = statSync(filename, { bigint: true });
       if (identity.dev !== current.dev || identity.ino !== current.ino || identity.birthtimeNs !== current.birthtimeNs) throw new CoreError('CORE_DATABASE_REPLACED');
       database.prepare('UPDATE gotzji_meta SET policy=? WHERE policy=? AND authority_id=?').run(policy, expected.expectedPolicy, expected.expectedAuthorityId);
@@ -92,6 +81,21 @@ export class CoreStore {
       if (meta?.version !== 1 || meta.authority_id !== anchor.authority || typeof meta.policy !== 'string') throw new CoreError('CORE_VERSION_OR_POLICY_CHANGED');
       return meta.policy;
     } finally { database.close(); }
+  }
+  /** Shared upgrade fence. Generated-document changes also wait for queued/admitted jobs. */
+  public static assertQuiescentUpgrade(database: DatabaseSync, requireNoPendingJobs = false): void {
+    if (requireNoPendingJobs && database.prepare("SELECT 1 FROM goals WHERE status='active' LIMIT 1").get()) throw new CoreError('UPGRADE_RECONCILIATION_REQUIRED', 'Finish admitted jobs before changing the generated control policy');
+    if (database.prepare("SELECT 1 FROM sqlite_master WHERE name='gotzji_resource_claims'").get() && database.prepare('SELECT 1 FROM gotzji_resource_claims LIMIT 1').get()) throw new CoreError('UPGRADE_RECONCILIATION_REQUIRED');
+    if (database.prepare('SELECT 1 FROM gotzji_writers LIMIT 1').get() || database.prepare("SELECT 1 FROM gotzji_operations WHERE phase IN ('started','uncertain') LIMIT 1").get() || database.prepare("SELECT 1 FROM gotzji_claims c LEFT JOIN goals g ON g.id=c.goal_id WHERE c.goal_id IS NULL OR g.id IS NULL OR g.goal_key<>c.goal_key LIMIT 1").get() || database.prepare("SELECT 1 FROM gotzji_workers w JOIN gotzji_claims c ON c.id=w.job_id JOIN goals g ON g.id=c.goal_id WHERE g.status='active' LIMIT 1").get()) throw new CoreError('UPGRADE_RECONCILIATION_REQUIRED', 'Finish or inspect active/uncertain jobs before changing the runtime policy');
+    for (const row of database.prepare('SELECT * FROM gotzji_workers').all()) {
+      const worker = row as unknown as WorkerRow;
+      if (database.prepare("SELECT 1 FROM gotzji_worker_history WHERE epoch=? AND job_id=? AND reason IN ('stopped','absent')").get(worker.epoch, worker.job_id)) continue;
+      const stoppedFile = path.join(worker.directory, 'stopped.json');
+      if (!existsSync(stoppedFile) || lstatSync(stoppedFile).isSymbolicLink()) throw new CoreError('UPGRADE_RECONCILIATION_REQUIRED');
+      const record = JSON.parse(readFileSync(stoppedFile, 'utf8')) as { body: string; mac: string };
+      const body = JSON.parse(record.body) as { epoch: string; state: string };
+      if (createHmac('sha256', worker.token).update(record.body).digest('hex') !== record.mac || body.epoch !== worker.epoch || body.state !== 'cancelled') throw new CoreError('UPGRADE_RECONCILIATION_REQUIRED');
+    }
   }
   public constructor(filename: string, policy: string, upgrade?: CoreUpgrade) {
     this.#filename = filename;

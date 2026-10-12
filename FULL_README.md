@@ -6,7 +6,9 @@ Latest published release: **none**. The source is being developed toward gotzji 
 
 ## App and jobs
 
-The desktop is a client of one independent local host. Closing the window does not transfer ownership or create another job engine. The host uses a native Goal ledger and stores request, operation, job, worker epoch, receipts and retained logs. Grace controls work; the app and ChatGPT inspect and cancel the same selected job.
+The desktop is a client of one independent local host. Closing the window does not transfer ownership or create another job engine. The host uses a native Goal ledger and stores request, operation, job, worker epoch, receipts and retained logs. Grace controls mutations and durable workflows; the app and ChatGPT inspect and cancel the same selected job. Project file reads execute directly in that host.
+
+Use `gotzji_read_file(projectId,path)` for UTF-8 text up to 1 MiB and its exact SHA-256; `gotzji_list_files(projectId,path?)` for one directory; and `gotzji_search_files(projectId,path?,query)` for recursive case-sensitive literal search. These calls start no Claude session or job. Text excludes NUL and binary control bytes (ordinary tab/newline/carriage return/form feed are allowed). Search queries are nonempty, single-line literals up to 1024 characters. Listings stop at 500 entries; searches stop at 100 matches, 10,000 scanned entries, 32 MiB of reads or a two-second processing budget. Listing/search responses stay within 64 KiB and report `truncated`, `incompleteReasons` and `skippedCount`; narrow the selected directory when coverage is incomplete. Redirected paths, multi-link files and private runtime/profile files are excluded. Generated all-Grace policy is upgraded only from exact known bytes with the sealed authority and no admitted/uncertain work; edited policy is preserved and refused.
 
 A project is registered locally. Model-visible tools cannot choose executables or enroll another owner. Reviewed command IDs resolve to server-owned executable, arguments and dependency hashes. Policies and file versions are checked before an effect. Writes preserve originals or create a backup. Conflicting project/document/provider resources wait; uncertain termination preserves its fence.
 
@@ -47,6 +49,9 @@ The host advertises the definitions in packages/execution-core/src/product-http.
 | gotzji_health | READ | Host/readiness |
 | gotzji_projects | READ | Enrolled projects |
 | gotzji_tools | READ | Current operation availability |
+| gotzji_read_file | READ | Immediate project UTF-8 content and SHA-256, no Claude/job |
+| gotzji_list_files | READ | Immediate bounded project directory listing |
+| gotzji_search_files | READ | Immediate bounded literal project-text search |
 | gotzji_prepare_operation | WORK | Prepare typed work |
 | gotzji_submit | WORK | Admit prepared work |
 | gotzji_jobs | READ | Select owner jobs |
