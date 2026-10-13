@@ -8,6 +8,7 @@ export function GotzjiConnectionPanel({ disabled }: { readonly disabled: boolean
   const [tunnelId, setTunnelId] = useState(''); const [runtimeKey, setRuntimeKey] = useState('');
   const [organizationId, setOrganizationId] = useState('');
   const [busy, setBusy] = useState(false); const [error, setError] = useState<string | null>(null);
+  const connectionError = error ?? connection?.errorCode;
   const request = useCallback(async (method: GotzjiMethod, input: Record<string, unknown> = {}): Promise<void> => {
     const result = await window.gotzji.request({ method, input });
     if (result === null || typeof result !== 'object' || !('state' in result)) throw new Error('CONNECTION_RESPONSE_INVALID');
@@ -22,7 +23,7 @@ export function GotzjiConnectionPanel({ disabled }: { readonly disabled: boolean
     finally { if (method === 'configureConnection') setRuntimeKey(''); setBusy(false); }
   }
   return <section><h3>เชื่อมต่อ ChatGPT</h3><p>{states[connection?.state ?? 'unavailable'] ?? 'กำลังตรวจ'} · OpenAI Secure MCP Tunnel</p>
-    {connection?.tunnelId && <p>{connection.tunnelId}</p>}{(error ?? connection?.errorCode) && <p role="alert">{error ?? connection?.errorCode}</p>}
+    {connection?.tunnelId && <p>{connection.tunnelId}</p>}{connectionError && <p role="alert">{connectionError.includes('CONNECTION_RUNTIME_KEY_INVALID') ? 'กุญแจที่บันทึกไว้มีรูปแบบไม่ถูกต้อง กรุณากรอก Runtime API key ของ gotzji โดยตรงในแอป แล้วบันทึกใหม่' : connectionError}</p>}
     <p>สร้างการเชื่อมต่อสำหรับ gotzji ในหน้า OpenAI Tunnels แล้วเพิ่มใน ChatGPT ด้วยบัญชีของคุณ</p>
     <div className="gotzji-actions"><button onClick={() => void window.gotzji.openConnectionSetup('tunnels')}>เปิดหน้า OpenAI Tunnels</button><button onClick={() => void window.gotzji.openConnectionSetup('keys')}>เปิดหน้า Runtime API keys</button><button onClick={() => void window.gotzji.openConnectionSetup('connectors')}>เปิดการเชื่อมต่อใน ChatGPT</button></div>
     <details open={!connection?.configured}><summary>ตั้งค่าการเชื่อมต่อของ gotzji</summary><label>รหัส Tunnel<input autoComplete="off" disabled={busy || disabled} value={tunnelId} onChange={(event) => setTunnelId(event.target.value)} placeholder="tunnel_…" /></label>

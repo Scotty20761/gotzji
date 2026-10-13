@@ -1,13 +1,13 @@
 import { execFile, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createServer, type RequestListener, type Server } from 'node:http';
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { afterEach, describe, expect, it } from 'vitest';
 import { GotzjiConnectionService, productTunnelProfile, startProductTunnelBridge } from './product-connection.js';
-import { windowsProductSecretProtector } from './product-host.js';
+import { testOnlyProductSecretProtector, windowsProductSecretProtector } from './product-host.js';
 import { processIdentities, sameProcessIdentity } from './process-identity.mjs';
 
 const exec = promisify(execFile);
@@ -20,6 +20,35 @@ async function serve(handler: RequestListener): Promise<number> {
   const address = server.address(); if (!address || typeof address === 'string') throw new Error('fixture address missing'); return address.port;
 }
 describe('owned Secure MCP Tunnel transport', () => {
+  it('rejects a non-key clipboard value before saving the connection', async () => {
+    const directory = realpathSync(mkdtempSync(path.join(os.tmpdir(), 'gotzji-key-shape-configure-')));
+    try {
+      const service = new GotzjiConnectionService({ directory, ownerId: 'owner', executable: path.join(directory, 'absent-client.exe'), executableSha256: 'a'.repeat(64), mcpTarget: (): string => `http://127.0.0.1:1/mcp/${'a'.repeat(64)}`, protector: testOnlyProductSecretProtector() });
+      await expect(service.configure({ tunnelId: 'tunnel_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', runtimeKey: 'org-not-an-api-key-clipboard-value' })).rejects.toThrow('CONNECTION_CONFIGURATION_INVALID');
+      expect(existsSync(path.join(directory, 'product-tunnel.sealed.json'))).toBe(false);
+      expect(await service.status()).toMatchObject({ state: 'not-configured', configured: false });
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  });
+  it('refuses a legacy saved non-key before bridge or spawn while keeping Stop and reconfiguration usable', async () => {
+    const directory = realpathSync(mkdtempSync(path.join(os.tmpdir(), 'gotzji-key-shape-legacy-')));
+    try {
+      const protector = testOnlyProductSecretProtector();
+      const service = new GotzjiConnectionService({ directory, ownerId: 'owner', executable: path.join(directory, 'absent-client.exe'), executableSha256: 'a'.repeat(64), mcpTarget: (): string => `http://127.0.0.1:1/mcp/${'a'.repeat(64)}`, protector });
+      await service.configure({ tunnelId: 'tunnel_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', runtimeKey: 'sk-synthetic-never-real-api-key' });
+      const filename = path.join(directory, 'product-tunnel.sealed.json');
+      const envelope = JSON.parse(readFileSync(filename, 'utf8')) as { payload: string };
+      const legacy = JSON.parse(await protector.unprotect(envelope.payload)) as Record<string, unknown>;
+      legacy.runtimeKey = 'org-not-an-api-key-clipboard-value';
+      const unchanged = JSON.stringify({ schemaVersion: 1, payload: await protector.protect(JSON.stringify(legacy)) });
+      writeFileSync(filename, unchanged);
+      await expect(service.start()).rejects.toThrow('CONNECTION_RUNTIME_KEY_INVALID');
+      expect(existsSync(path.join(directory, 'gotzji-tunnel', 'gotzji.json'))).toBe(false);
+      expect(readFileSync(filename, 'utf8')).toBe(unchanged);
+      expect(await service.status()).toMatchObject({ state: 'stopped', configured: true, errorCode: 'CONNECTION_RUNTIME_KEY_INVALID' });
+      expect(await service.stop()).toMatchObject({ state: 'stopped', configured: true });
+      expect(await service.configure({ tunnelId: 'tunnel_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', runtimeKey: '  sk-replacement-synthetic-api-key  ' })).toMatchObject({ state: 'stopped', configured: true });
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  });
   it('requires dedicated bearer authority and cannot expose the app RPC or redirect to arbitrary hosts', async () => {
     const paths: string[] = [];
     const port = await serve((request, response) => { paths.push(request.url ?? ''); response.setHeader('Content-Type', 'application/json'); response.end(JSON.stringify({ jsonrpc: '2.0', id: 1, result: {} })); });
@@ -39,7 +68,7 @@ describe('owned Secure MCP Tunnel transport', () => {
   });
   it.runIf(process.platform === 'win32')('seals owner-only runtime credentials with actual DPAPI and projects no secret values', async () => {
     const directory = mkdtempSync(path.join(os.tmpdir(), 'gotzji-connection-proof-'));
-    const runtimeKey = 'owner-only-test-runtime-key';
+    const runtimeKey = 'sk-owner-only-test-runtime-key';
     const options = { directory, ownerId: 'owner', executable: process.execPath, executableSha256: createHash('sha256').update(readFileSync(process.execPath)).digest('hex'), mcpTarget: (): string => `http://127.0.0.1:1/mcp/${'a'.repeat(64)}` };
     const service = new GotzjiConnectionService(options);
     expect(await service.status()).toMatchObject({ state: 'not-configured', configured: false });
@@ -55,6 +84,7 @@ describe('owned Secure MCP Tunnel transport', () => {
     // Unknown recorded liveness is retained as a fence; the service must never
     // claim ownership of the test runner process or terminate it.
     sealed.process = { pid: process.pid, executableSha256: options.executableSha256 };
+    sealed.runtimeKey = 'legacy-non-key-with-unknown-live-process';
     writeFileSync(path.join(directory, 'product-tunnel.sealed.json'), JSON.stringify({ schemaVersion: 1, payload: await protector.protect(JSON.stringify(sealed)) }));
     expect(await service.status()).toMatchObject({ state: 'reconciliation-required', errorCode: 'CONNECTION_PROCESS_UNKNOWN' });
     await expect(service.start()).rejects.toThrow('CONNECTION_RECONCILIATION_REQUIRED');

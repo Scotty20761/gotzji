@@ -27,6 +27,7 @@ export interface ProductConnectionOptions {
 const hash = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 const exec = promisify(execFile);
 const equal = (expected: string, observed: string | undefined): boolean => { const left = Buffer.from(expected); const right = Buffer.from(observed ?? ''); return left.length === right.length && timingSafeEqual(left, right); };
+const isRuntimeApiKey = (value: unknown): value is string => typeof value === 'string' && value.trim().startsWith('sk-') && value.trim().length >= 20 && value.length <= 1024 && !/[\r\n\0]/u.test(value);
 
 /** Trusted host composition only; no caller URL, credential or command inputs. */
 export function productTunnelProfile(tunnelId: string, bridgePort: number, healthFile: string, organizationId?: string): object {
@@ -90,7 +91,7 @@ export class GotzjiConnectionService {
     return { ...base, state: 'connecting', ...(this.errorCode ? { errorCode: this.errorCode } : {}) };
   }
   public configure(input: { tunnelId: string; runtimeKey: string; organizationId?: string }): Promise<ProductConnectionStatus> { return this.serial(async () => {
-    if (!input || Object.keys(input).some((key) => !['tunnelId', 'runtimeKey', 'organizationId'].includes(key)) || !/^tunnel_[a-z0-9]{32}$/u.test(input.tunnelId) || typeof input.runtimeKey !== 'string' || input.runtimeKey.trim().length < 20 || input.runtimeKey.length > 1024 || /[\r\n\0]/u.test(input.runtimeKey) || input.organizationId !== undefined && !/^org[-_][A-Za-z0-9_-]{1,160}$/u.test(input.organizationId)) throw new CoreError('CONNECTION_CONFIGURATION_INVALID');
+    if (!input || Object.keys(input).some((key) => !['tunnelId', 'runtimeKey', 'organizationId'].includes(key)) || !/^tunnel_[a-z0-9]{32}$/u.test(input.tunnelId) || !isRuntimeApiKey(input.runtimeKey) || input.organizationId !== undefined && !/^org[-_][A-Za-z0-9_-]{1,160}$/u.test(input.organizationId)) throw new CoreError('CONNECTION_CONFIGURATION_INVALID');
     const current = await this.status();
     if (['connecting', 'ready', 'reconciliation-required'].includes(current.state)) throw new CoreError('CONNECTION_STOP_REQUIRED');
     await this.write({ schemaVersion: 1, ownerId: this.options.ownerId, channel: this.options.channel ?? 'product', tunnelId: input.tunnelId, ...(input.organizationId ? { organizationId: input.organizationId } : {}), runtimeKey: input.runtimeKey.trim(), bridgeSecret: randomBytes(32).toString('hex'), desiredActive: false });
@@ -100,6 +101,7 @@ export class GotzjiConnectionService {
     const config = await this.read(); if (!config) throw new CoreError('CONNECTION_CONFIGURATION_REQUIRED');
     const current = await this.status(); if (current.state === 'ready' || current.state === 'connecting') return current;
     if (current.state === 'reconciliation-required') throw new CoreError('CONNECTION_RECONCILIATION_REQUIRED');
+    if (!isRuntimeApiKey(config.runtimeKey)) { this.errorCode = 'CONNECTION_RUNTIME_KEY_INVALID'; throw new CoreError(this.errorCode); }
     this.assertClient();
     this.bridge = await startProductTunnelBridge(this.options.mcpTarget(), config.bridgeSecret);
     const generation = randomUUID(); this.healthFile = path.join(this.profileDirectory(), `health-${generation}.url`);
