@@ -1,7 +1,7 @@
 /* global setTimeout */
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createHash, createHmac, randomUUID } from 'node:crypto';
-import { link, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, link, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { GotzjiNativeError } from '@lnwjud/capabilities/gotzji-native-contract';
@@ -12,7 +12,7 @@ import type { RegisteredProject } from './types.js';
 
 const digest = (value: string | Buffer): string => createHash('sha256').update(value).digest('hex');
 let qualificationRoot = path.resolve(process.env.LOCALAPPDATA ?? process.cwd(), 'gotzji', 'qualification');
-interface OwnedChild { readonly child: ChildProcess; identity?: ProcessIdentity }
+interface OwnedChild { readonly child: ChildProcess; identity?: ProcessIdentity; noProcess?: true }
 const roots: string[] = []; const children: OwnedChild[] = [];
 afterEach(async () => {
   let cleanupProved = true;
@@ -46,13 +46,21 @@ async function journal(f: Awaited<ReturnType<typeof fixture>>, identities: reado
   }
   await writeFile(binding.journal, `${lines.join('\n')}\n`);
 }
-async function ownedNode(): Promise<OwnedChild> {
-  const child = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], { windowsHide: true, stdio: 'ignore' }); const owned: OwnedChild = { child }; children.push(owned);
-  const identity = await processIdentities([child.pid!]); const value = identity[child.pid!];
-  if (!value || value === 'unknown') throw new Error('Synthetic child identity unavailable');
-  owned.identity = value; return owned;
+async function ownedNode(executable = process.execPath): Promise<OwnedChild> {
+  const child = spawn(executable, ['-e', 'setInterval(()=>{},1000)'], { windowsHide: true, stdio: 'ignore' }); const owned: OwnedChild = { child }; children.push(owned);
+  try { await new Promise<void>((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); }); }
+  catch (error) { owned.noProcess = true; throw error; }
+  for (let attempt = 0; attempt < 200; attempt++) {
+    if (!Number.isSafeInteger(child.pid) || child.pid! < 1) throw new Error('Synthetic child PID unavailable after spawn');
+    const value = (await processIdentities([child.pid!]))[child.pid!];
+    if (value && value !== 'unknown') { owned.identity = value; return owned; }
+    if (child.exitCode !== null) throw new Error('Synthetic child exited before identity proof');
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error('Synthetic child identity unavailable within bounded acquisition');
 }
 async function stop(owned: OwnedChild): Promise<void> {
+  if (owned.noProcess) return;
   if (!owned.identity) {
     const current = (await processIdentities([owned.child.pid!]))[owned.child.pid!];
     if (current === null) return;
@@ -114,6 +122,14 @@ describe('native process stop evidence', () => {
     await writeFile(binding.journal, `${JSON.stringify({ body: wrongProvider, mac })}\n`);
     await expect(reconcilePreparedNativeStop(f.config)).resolves.toMatchObject({ outcome: 'unknown', stopEvidence: { observed: 'unknown', reason: 'binding' } });
   });
+  it.runIf(process.platform !== 'win32')('preserves mixed-case POSIX executable identity when proving a live child', async () => {
+    const f = await fixture(); const mixedDirectory = path.join(f.root, 'MixedCaseBin'); const executable = path.join(mixedDirectory, 'NodeFixture');
+    await mkdir(mixedDirectory); await copyFile(process.execPath, executable); await chmod(executable, 0o755);
+    const owned = await ownedNode(executable); expect(owned.identity!.executable).toContain('MixedCaseBin');
+    await journal(f, [owned.identity!], [owned.child.pid!]);
+    await expect(reconcilePreparedNativeStop(f.config)).resolves.toMatchObject({ outcome: 'unknown', stopEvidence: { observed: 'alive', identityCount: 1 } });
+    await stop(owned); children.splice(children.indexOf(owned), 1);
+  }, 20_000);
   it.runIf(process.platform === 'win32')('rejects a hard-linked journal snapshot without changing its outside owner bytes', async () => {
     const f = await fixture(); const outside = path.join(f.root, 'owner-evidence.txt'); const binding = evidenceBinding(f);
     await writeFile(outside, 'outside owner evidence must remain exact'); await link(outside, binding.journal);

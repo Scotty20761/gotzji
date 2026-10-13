@@ -132,36 +132,51 @@ describe('native operations through Grace and the shared Goal (explicit no-model
   }, 20000);
   for (const changed of ['source', 'output'] as const) {
     it(`stops a signed pre-dispatch refusal with changed ${changed} bytes for owner settlement only`, async () => {
-      const f = await fixture('unknown');
-      const first = await job(f, { requestId: `pre-dispatch-${changed}`, projectId: 'one', operation: 'excel.range.write', path: 'source.xlsx', outputPath: 'output.xlsx', sheet: 'Sheet1', range: 'C1', values: [['new']] });
-      await f.core.resume(f.credential, first);
-      await until(f, async () => { try { return await readFile(path.join(f.root, 'native-started'), 'utf8') === 'started'; } catch { return false; } });
-      await expect(f.core.cancel(f.credential, first)).rejects.toMatchObject({ code: 'CLEANUP_RECONCILIATION_REQUIRED' });
-      const db = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'), { timeout: 5000 });
-      const worker = db.prepare('SELECT * FROM gotzji_workers WHERE job_id=?').get(first.jobId) as unknown as WorkerRow; db.close();
-      const config = JSON.parse(await readFile(path.join(worker.directory, 'config.json'), 'utf8')) as { effectRoot: string };
-      const filename = path.join(config.effectRoot, 'native-operation.json');
-      const envelope = JSON.parse(await readFile(filename, 'utf8')) as { body: string };
-      // Consumer fixture: the synthetic Node runner created no native app. The broker's production producer is
-      // checked independently; here the host-signed tuple reaches the actual worker/Core cancellation boundary.
-      const state = JSON.parse(envelope.body) as Record<string, unknown>;
-      state.dispatch = 'pre-dispatch'; state.dispatchAttempt = 0; state.state = 'uncertain'; state.outcome = 'unknown';
-      state.stopEvidence = { schemaVersion: 1, observed: 'pre-dispatch', identityCount: 0, identityDigest: null, verifier: 'host-signed-pre-dispatch-v1' };
-      const body = JSON.stringify(state);
-      await writeFile(filename, JSON.stringify({ body, mac: createHmac('sha256', worker.token).update(body).digest('hex') }));
-      expect(JSON.parse((JSON.parse(await readFile(filename, 'utf8')) as { body: string }).body)).toMatchObject({ dispatch: 'pre-dispatch', dispatchAttempt: 0,
-        stopEvidence: { schemaVersion: 1, observed: 'pre-dispatch', identityCount: 0, identityDigest: null, verifier: 'host-signed-pre-dispatch-v1' } });
-      const target = path.join(f.root, 'one', changed === 'source' ? 'source.xlsx' : 'output.xlsx');
-      await writeFile(target, 'independent owner bytes');
-      await expect(f.core.cancel(f.credential, first)).rejects.toMatchObject({ code: changed === 'source' ? 'NATIVE_ORIGINAL_CHANGED' : 'NATIVE_EFFECT_RECONCILIATION_REQUIRED' });
-      expect(await observeWorker(worker)).toBe('absent');
-      expect((await f.core.get(f.credential, first)).settleDecisions).toContain('effect-present');
-      expect(await f.core.settleBlockedJob(f.credential, first, 'effect-present')).toMatchObject({ status: 'cancelled' });
-      expect(await readFile(target, 'utf8')).toBe('independent owner bytes');
-      await expect(f.core.readOperationResult(f.credential, first)).rejects.toMatchObject({ code: 'RESULT_NOT_VERIFIED' });
-      const next = await job(f, { requestId: `after-pre-dispatch-${changed}`, projectId: 'two', operation: 'excel.range.read', path: 'source.xlsx', sheet: 'Sheet1', range: 'A1' });
-      expect(await f.core.resume(f.credential, next)).not.toHaveProperty('waitingReason');
-      await until(f, async () => (await f.core.get(f.credential, next)).status === 'completed');
+      const started = performance.now(); let phase = 'fixture'; let failure: unknown;
+      const stages: Record<string, number> = {}; let last = started;
+      const mark = (next: string): void => { const now = performance.now(); stages[phase] = Math.round((now - last) * 100) / 100; last = now; phase = next; };
+      try {
+        const f = await fixture();
+        const first = await job(f, { requestId: `pre-dispatch-${changed}`, projectId: 'one', operation: 'excel.range.write', path: 'source.xlsx', outputPath: 'output.xlsx', sheet: 'Sheet1', range: 'Z1', values: [['new']] });
+        mark('resume'); await f.core.resume(f.credential, first);
+        // This consumer setup has already ended. Failed-cancel retries are covered separately.
+        mark('awaitBlocked'); await until(f, async () => (await f.core.get(f.credential, first)).status === 'blocked');
+        mark('injectHostProof');
+        const db = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'), { timeout: 5000 });
+        const worker = db.prepare('SELECT * FROM gotzji_workers WHERE job_id=?').get(first.jobId) as unknown as WorkerRow; db.close();
+        const config = JSON.parse(await readFile(path.join(worker.directory, 'config.json'), 'utf8')) as { effectRoot: string };
+        const filename = path.join(config.effectRoot, 'native-operation.json');
+        const envelope = JSON.parse(await readFile(filename, 'utf8')) as { body: string };
+        // Consumer fixture: the synthetic Node runner created no native app. The broker's production producer is
+        // checked independently; here the host-signed tuple reaches the actual worker/Core cancellation boundary.
+        const state = JSON.parse(envelope.body) as Record<string, unknown>;
+        state.dispatch = 'pre-dispatch'; state.dispatchAttempt = 0; state.state = 'uncertain'; state.outcome = 'unknown';
+        state.stopEvidence = { schemaVersion: 1, observed: 'pre-dispatch', identityCount: 0, identityDigest: null, verifier: 'host-signed-pre-dispatch-v1' };
+        const body = JSON.stringify(state);
+        await writeFile(filename, JSON.stringify({ body, mac: createHmac('sha256', worker.token).update(body).digest('hex') }));
+        expect(JSON.parse((JSON.parse(await readFile(filename, 'utf8')) as { body: string }).body)).toMatchObject({ dispatch: 'pre-dispatch', dispatchAttempt: 0,
+          stopEvidence: { schemaVersion: 1, observed: 'pre-dispatch', identityCount: 0, identityDigest: null, verifier: 'host-signed-pre-dispatch-v1' } });
+        const target = path.join(f.root, 'one', changed === 'source' ? 'source.xlsx' : 'output.xlsx');
+        await writeFile(target, 'independent owner bytes');
+        mark('cancelWithProof'); await expect(f.core.cancel(f.credential, first)).rejects.toMatchObject({ code: changed === 'source' ? 'NATIVE_ORIGINAL_CHANGED' : 'NATIVE_EFFECT_RECONCILIATION_REQUIRED' });
+        mark('proveWorkerAbsent'); expect(await observeWorker(worker)).toBe('absent');
+        expect((await f.core.get(f.credential, first)).settleDecisions).toContain('effect-present');
+        const held = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'), { timeout: 5000 });
+        try { expect(Number(held.prepare('SELECT COUNT(*) AS count FROM gotzji_resource_claims WHERE job_id=?').get(first.jobId)?.count)).toBeGreaterThan(0); } finally { held.close(); }
+        mark('ownerSettle'); expect(await f.core.settleBlockedJob(f.credential, first, 'effect-present')).toMatchObject({ status: 'cancelled' });
+        const released = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'), { timeout: 5000 });
+        try { expect(Number(released.prepare('SELECT COUNT(*) AS count FROM gotzji_resource_claims WHERE job_id=?').get(first.jobId)?.count)).toBe(0); } finally { released.close(); }
+        expect(await readFile(target, 'utf8')).toBe('independent owner bytes');
+        await expect(f.core.readOperationResult(f.credential, first)).rejects.toMatchObject({ code: 'RESULT_NOT_VERIFIED' });
+        mark('nextProject'); const next = await job(f, { requestId: `after-pre-dispatch-${changed}`, projectId: 'two', operation: 'excel.range.read', path: 'source.xlsx', sheet: 'Sheet1', range: 'A1' });
+        expect(await f.core.resume(f.credential, next)).not.toHaveProperty('waitingReason');
+        await until(f, async () => (await f.core.get(f.credential, next)).status === 'completed');
+        mark('done');
+      } catch (error) { failure = error; throw error; }
+      finally {
+        const elapsedMs = Math.round((performance.now() - started) * 100) / 100;
+        if (elapsedMs > 10_000 || failure !== undefined) process.stderr.write(`[native-pre-dispatch-timing] ${JSON.stringify({ changed, phase, elapsedMs, stages, failure: failure instanceof Error ? failure.name : failure === undefined ? null : typeof failure })}\n`);
+      }
     }, 20000);
     it(`retains cancelled native claims when its no-effect result conflicts with ${changed} bytes`, async () => {
       const f = await fixture('none');

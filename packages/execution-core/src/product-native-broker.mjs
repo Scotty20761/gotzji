@@ -1,4 +1,4 @@
-/* global setTimeout */
+/* global process, setTimeout */
 import { createHmac, createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import { Buffer } from 'node:buffer';
 import { closeSync, existsSync, fstatSync, lstatSync, openSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
@@ -169,7 +169,7 @@ function readNativeIdentityJournal(binding) {
       || typeof body.invocationId !== 'string' || !/^[0-9a-f-]{36}$/u.test(body.invocationId) || invocations.has(body.invocationId)
       || !Number.isSafeInteger(body.pid) || body.pid < 1 || typeof body.birth !== 'string' || !body.birth || body.birth.length > 256
       || typeof body.executable !== 'string' || !path.isAbsolute(body.executable) || body.executable.includes('\0')) throw evidenceError('binding');
-    invocations.add(body.invocationId); identities.push({ pid: body.pid, birth: body.birth, executable: body.executable.toLowerCase() });
+    invocations.add(body.invocationId); identities.push({ pid: body.pid, birth: body.birth, executable: process.platform === 'win32' ? body.executable.toLowerCase() : body.executable });
   }
   return { identities, digest: digest(bytes) };
 }

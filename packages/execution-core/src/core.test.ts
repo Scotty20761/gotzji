@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { spawn, type ChildProcess } from 'node:child_process';
+import { performance } from 'node:perf_hooks';
 import { afterEach, describe, expect, it } from 'vitest';
 import { ExecutionCore } from './core.js';
 import { alive, callWorker, signed, stopWorker, ownedProcessAlive, verifyStoppedWorker } from './managed-worker.js';
@@ -125,11 +126,42 @@ describe('neutral execution authority — real SQLite, files and owned processes
     await expect(f.core.submit(f.lnwjud, p.preparationId)).rejects.toMatchObject({ code: 'PREPARATION_DENIED' });
   });
   it('reconciles the interrupted claim-to-Goal mapping before starting work', async () => {
-    const f = await fixture(); const b = await submit(f);
-    const database = db(f); database.prepare('UPDATE gotzji_claims SET goal_id=NULL').run(); database.close();
-    const p = f.core.prepare(f.gotzji, { requestId: 'request-one', operation: 'fixture.write', text: 'ทดสอบ gotzji' });
-    expect((await f.core.submit(f.gotzji, p.preparationId)).jobId).toBe(b.jobId);
-    const check = db(f); expect(check.prepare('SELECT count(*) AS n FROM goals').get()?.n).toBe(1); check.close();
+    const started = performance.now(); let previous = started;
+    const stages: Record<string, number> = {};
+    const mark = (name: string): void => { const observed = performance.now(); stages[name] = Math.round((observed - previous) * 100) / 100; previous = observed; };
+    let f: Fixture | undefined; let b: TaskBinding | undefined; let databaseClosed = false; let failure: unknown;
+    try {
+      f = await fixture(); mark('fixture');
+      b = await submit(f); mark('firstSubmit');
+      const database = db(f);
+      try { database.prepare('UPDATE gotzji_claims SET goal_id=NULL').run(); }
+      finally { database.close(); databaseClosed = true; }
+      mark('interruptMapping');
+      const p = f.core.prepare(f.gotzji, { requestId: 'request-one', operation: 'fixture.write', text: 'ทดสอบ gotzji' });
+      expect((await f.core.submit(f.gotzji, p.preparationId)).jobId).toBe(b.jobId); mark('repairSubmit');
+      const check = db(f); try { expect(check.prepare('SELECT count(*) AS n FROM goals').get()?.n).toBe(1); } finally { check.close(); }
+      mark('inspect');
+    } catch (error) { failure = error; throw error; }
+    finally {
+      const elapsedMs = Math.round((performance.now() - started) * 100) / 100;
+      if (elapsedMs > 2_000 || failure !== undefined) {
+        let counts: Record<string, number | string> = { diagnostic: 'fixture-unavailable' };
+        if (f && b) {
+          let diagnostic: DatabaseSync | undefined;
+          try {
+            diagnostic = new DatabaseSync(path.join(f.root, 'core.sqlite'), { readOnly: true, timeout: 100 });
+            counts = {
+              goals: Number(diagnostic.prepare('SELECT count(*) AS n FROM goals').get()?.n),
+              nullMappings: Number(diagnostic.prepare('SELECT count(*) AS n FROM gotzji_claims WHERE goal_id IS NULL').get()?.n),
+              mutationGuards: Number(diagnostic.prepare('SELECT count(*) AS n FROM gotzji_mutation_guards WHERE job_id=?').get(b.jobId)?.n),
+              workers: Number(diagnostic.prepare('SELECT count(*) AS n FROM gotzji_workers WHERE job_id=?').get(b.jobId)?.n),
+            };
+          } catch (error) { counts = { diagnostic: typeof (error as { code?: unknown })?.code === 'string' ? String((error as { code: string }).code) : 'unavailable' }; }
+          finally { try { diagnostic?.close(); } catch { /* diagnostics never replace the test result */ } }
+        }
+        process.stderr.write(`[core-mapping-timing] ${JSON.stringify({ elapsedMs, stages, databaseClosed, failure: failure instanceof Error ? failure.name : failure === undefined ? null : typeof failure, counts })}\n`);
+      }
+    }
   });
   it('verifies the actual effect and cleanup before native completion', async () => {
     const f = await fixture(); const b = await submit(f);
