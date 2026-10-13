@@ -40,6 +40,7 @@ if (mode !== 'worker') {
   const directory = path.dirname(configPath);
   const authorizeSyntheticCleanup = syntheticCleanupAuthorizer(config, directory, fileURLToPath(import.meta.url));
   const descendants = [];
+  let stopAttempt;
   const identities = {};
   const closedDescendants = [];
   const ownedChildren = new Map();
@@ -191,7 +192,7 @@ if (mode !== 'worker') {
                  const run = operation.kind === 'native' ? native.status() : operation.kind === 'library' ? library.status() : operation.kind === 'browser' ? browser.status() : product.state();
                  state = !receipt ? 'failed' : !['native','library','browser'].includes(operation.kind) && operation.input.operation !== 'command.run' ? 'done' : !run ? 'failed' : run.state === 'completed' ? 'done' : ['failed','cancelled','uncertain'].includes(run.state) ? 'failed' : 'running';
                  // Best-effort abort only; a stop with proof still goes through /cancel, so a rejection here must not crash the worker.
-                 if (!receipt) { if (operation.kind === 'library') void library.stop().catch(() => undefined); else if (operation.kind === 'browser') void browser.stop().catch(() => undefined); else void product.stop().catch(() => undefined); }
+                 if (!receipt) { if (operation.kind === 'native') void native.stop().catch(() => undefined); else if (operation.kind === 'library') void library.stop().catch(() => undefined); else if (operation.kind === 'browser') void browser.stop().catch(() => undefined); else void product.stop().catch(() => undefined); }
               } else if(config.grace.recipe==='code-check'){
                 const run=validator.status();state=!receipt||!run?'failed':run.state==='completed'?'done':run.state==='failed'?'failed':'running';
                 if(!receipt) void validator.stop().catch(() => undefined);
@@ -204,22 +205,24 @@ if (mode !== 'worker') {
       res.end(JSON.stringify(snapshot()));
       return;
     }
-    if (req.method === 'POST' && url.pathname === '/cancel' && !stopping) {
+    if (req.method === 'POST' && url.pathname === '/cancel') {
       stopping = true;
       // A stop that throws is refused like one that returns false: no receipt, and the worker stays alive for inspection.
-      try {
-        if (config.operation === 'grace.product-operation' && JSON.parse(config.text).kind === 'native' && !await native.stop()) { res.writeHead(409).end(); return; }
-        if (config.operation === 'grace.product-operation' && JSON.parse(config.text).kind === 'library' && !await library.stop()) { res.writeHead(409).end(); return; }
-        if (config.operation === 'grace.product-operation' && JSON.parse(config.text).kind === 'browser' && !await browser.stop()) { res.writeHead(409).end(); return; }
-        if (config.grace?.recipe === 'product' && !['native','library','browser'].includes(JSON.parse(config.text).kind) && !await product.stop()) { res.writeHead(409).end(); return; }
+      const attempt = stopAttempt ??= (async () => {
+        if (config.operation === 'grace.product-operation' && JSON.parse(config.text).kind === 'native' && !await native.stop()) return false;
+        if (config.operation === 'grace.product-operation' && JSON.parse(config.text).kind === 'library' && !await library.stop()) return false;
+        if (config.operation === 'grace.product-operation' && JSON.parse(config.text).kind === 'browser' && !await browser.stop()) return false;
+        if (config.grace?.recipe === 'product' && !['native','library','browser'].includes(JSON.parse(config.text).kind) && !await product.stop()) return false;
         await validator.stop();
-      } catch { res.writeHead(409).end(); return; }
-      if (child) {
-        await new Promise((resolve) => { if (child.exitCode !== null) resolve(); else { child.once('exit', resolve); if (config.grace) child.kill(); else child.send('stop'); } });
-      }
-      await Promise.allSettled([...pendingIdentityProbes]);
-      state = 'cancelled';
-      persist('stopped.json', snapshot());
+        if (child) {
+          await new Promise((resolve) => { if (child.exitCode !== null || child.signalCode !== null) resolve(); else { child.once('exit', resolve); if (config.grace) child.kill(); else child.send('stop'); } });
+        }
+        await Promise.allSettled([...pendingIdentityProbes]);
+        state = 'cancelled';
+        persist('stopped.json', snapshot());
+        return true;
+      })().catch(() => false);
+      if (!await attempt) { if (stopAttempt === attempt) stopAttempt = undefined; res.writeHead(409).end(); return; }
       res.end(JSON.stringify(snapshot()));
       server.close(() => process.exit(0));
       return;

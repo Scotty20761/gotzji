@@ -82,8 +82,8 @@ The service layer is mostly ready for concurrency:
 3. **Transport actors are too coarse.**
    Desktop HTTP uses a shared actor such as `desktop-mcp-http`; STDIO uses `cli-mcp-stdio`. Process ownership therefore separates different workspaces, but two sessions operating in the same workspace are not isolated from each other by actor identity.
 
-4. **STDIO starts with one primary workspace.**
-   CLI and packaged desktop STDIO bootstrap a single workspace and close `activeProjectProvider` over it. Registered workspaces can exist, but the destructive-scope identity remains single-workspace.
+4. **The retained source-compatibility STDIO path starts with one primary workspace.**
+   CLI and legacy Desktop STDIO source paths bootstrap a single workspace and close `activeProjectProvider` over it. gotzji v1 does not package this route. Registered workspaces can exist, but the destructive-scope identity remains single-workspace.
 
 5. **Shared activity snapshot is single-owner.**
    `lnwjud.mcp.activity.json` stores one process owner and one active count. Multiple simultaneous STDIO MCP processes can overwrite one another, which can make update quiet-time accounting incorrect.
@@ -543,7 +543,7 @@ Add a dedicated concurrency acceptance test instead of relying only on unit test
 - destructive auto-approval now requires an explicit non-empty `workspaceId` on the invocation and resolves that workspace through the registered `workspaceInfo` service;
 - resolver failures, missing workspace IDs, unknown workspaces, cross-workspace absolute targets, machine-root scopes, wildcards, recursive deletes, and protected critical targets all fail closed to normal confirmation;
 - added optional `workspaceId` to the `shell` schema for backwards compatibility; confirmed shell execution remains available without it, but destructive auto-approval does not;
-- Desktop HTTP, packaged Desktop STDIO, and CLI STDIO no longer close destructive authorization over a startup/selected workspace;
+- Desktop HTTP and the source-retained legacy Desktop/CLI STDIO paths no longer close destructive authorization over a startup/selected workspace; gotzji v1 does not package the STDIO paths;
 - kept `activeProjectProvider` as deprecated internal API compatibility only; current lnwjud runtimes no longer use it;
 - updated destructive tool descriptions and regenerated the 214-tool catalog;
 - verification: MCP targeted tests 29/29, CLI STDIO runtime 4/4, Desktop persistence 7/7, MCP/CLI/Desktop typechecks, targeted ESLint, and `docs:tools:check` all passed.

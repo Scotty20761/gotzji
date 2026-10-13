@@ -20,12 +20,13 @@ const TARGETS = Object.freeze({
   win32: Object.freeze({
     required: Object.freeze([
       ['gotzji.exe', 'gotzji.exe'],
-      ['gotzji-mcp-stdio.cmd', 'gotzji-mcp-stdio.cmd'],
       ['lnwjud-MIT.txt', 'resources/licenses/lnwjud-MIT.txt'],
       ['third-party-notices', 'resources/licenses/THIRD_PARTY_NOTICES.md'],
       ['prompt-ofl', 'resources/licenses/Prompt-OFL.txt'],
       ['npm-notices', 'resources/licenses/dependencies/npm-NOTICES.txt'],
       ['dependency-licenses', 'resources/licenses/dependencies/DEPENDENCY_LICENSES.json'],
+      ['gotzji-native-office.ps1', 'resources/gotzji-native-office.ps1'],
+      ['gotzji-cad-session-provider.ps1', 'resources/gotzji-cad-session-provider.ps1'],
       ['windows-capability-bridge.ps1', 'resources/windows-capability-bridge.ps1'],
       ['windows-capability-bridge.sha256', 'resources/windows-capability-bridge.sha256'],
       ['windows-capability-bridge.integrity.json', 'resources/windows-capability-bridge.integrity.json'],
@@ -39,7 +40,6 @@ const TARGETS = Object.freeze({
   darwin: Object.freeze({
     required: Object.freeze([
       ['gotzji', 'Contents/MacOS/gotzji'],
-      ['gotzji-mcp-stdio', 'Contents/Resources/gotzji-mcp-stdio'],
       ['rg', 'Contents/Resources/runtime-tools/ripgrep/rg'],
       ['rg-manifest', 'Contents/Resources/runtime-tools/ripgrep/BUNDLED_RIPGREP.json'],
       ['tunnel-client', 'Contents/Resources/tunnel-client/tunnel-client'],
@@ -51,7 +51,6 @@ const TARGETS = Object.freeze({
   linux: Object.freeze({
     required: Object.freeze([
       ['gotzji', 'gotzji'],
-      ['gotzji-mcp-stdio', 'gotzji-mcp-stdio'],
       ['rg', 'resources/runtime-tools/ripgrep/rg'],
       ['rg-manifest', 'resources/runtime-tools/ripgrep/BUNDLED_RIPGREP.json'],
       ['tunnel-client', 'resources/tunnel-client/tunnel-client'],
@@ -174,7 +173,7 @@ function resolvePackagedPath(appOutDir, platform, relativePath) {
 }
 
 function isExecutablePath(relativePath) {
-  return ['gotzji', 'gotzji-mcp-stdio', 'rg', 'tunnel-client', 'lnwjud-macos-host', 'lnwjud-linux-host']
+  return ['gotzji', 'rg', 'tunnel-client', 'lnwjud-macos-host', 'lnwjud-linux-host']
     .includes(path.posix.basename(relativePath));
 }
 

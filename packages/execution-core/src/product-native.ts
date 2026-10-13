@@ -77,7 +77,7 @@ export async function prepareProductNativeOperation(project: RegisteredProject, 
   const scriptPath = await pinnedNativeFile(selectedProvider.scriptPath, selectedProvider.scriptSha256, 'scriptPath');
   const cad = provider === 'cad-session' ? { executable: await pinnedNativeFile(options.cad!.executable, options.cad!.executableSha256, 'executable'), executableSha256: options.cad!.executableSha256 } : undefined;
   const policies = discoverPolicies(root, [path.dirname(target), ...('outputPath' in plan.input ? [path.dirname(plan.input.outputPath)] : [])]);
-  return deepFreeze({ kind: 'native', input: structuredClone(publicInput) as unknown as ProductNativeInput, project: structuredClone(project), target, beforeSha256, ...policies,
+  return deepFreeze({ kind: 'native', input: structuredClone(publicInput) as unknown as ProductNativeInput, project: structuredClone(project), target: plan.input.filePath, beforeSha256, ...policies,
     native: { input: structuredClone(plan.input), planDigest: plan.digest, adapterResourceKeys: plan.resourceKeys, resourceKeys: productNativeResources(project, plan), scriptPath, scriptSha256: selectedProvider.scriptSha256, provider, ...(cad ? { cad } : {}) } });
 }
 export interface NativeWorkerBinding {

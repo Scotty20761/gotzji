@@ -86,14 +86,14 @@ credentials.
 Connection paths are deliberately separated:
 
 ```text
-Codex CLI / local MCP host -> packaged lnwjud-mcp-stdio.cmd -> direct Node MCP stdio
-ChatGPT web / Secure Tunnel -> tunnel-client -> lnwjud Desktop loopback HTTP MCP
+ChatGPT web / Secure Tunnel -> tunnel-client -> gotzji Desktop loopback HTTP MCP
+Codex or Claude packaged stdio -> not shipped by gotzji v1
 ```
 
 Secure Tunnel uses the Desktop runtime so the host-selected Active Project and
-native exact-action approval remain authoritative. Direct local stdio remains a
-separate headless path and intentionally fails closed when a mutation requires a
-trusted interactive host approval provider.
+native exact-action approval remain authoritative. Standalone direct stdio is
+retained as source compatibility, not as a packaged gotzji product route, and
+fails closed when a mutation requires a trusted interactive host approval provider.
 
 ## Multi-workspace / multi-session concurrency upgrade
 

@@ -164,12 +164,13 @@ function requiredRuntimePaths(platform, arch) {
   const paths = platform === 'win32'
     ? [
       'gotzji.exe',
-      'gotzji-mcp-stdio.cmd',
       'resources/licenses/lnwjud-MIT.txt',
       'resources/licenses/THIRD_PARTY_NOTICES.md',
       'resources/licenses/Prompt-OFL.txt',
       'resources/licenses/dependencies/npm-NOTICES.txt',
       'resources/licenses/dependencies/DEPENDENCY_LICENSES.json',
+      'resources/gotzji-native-office.ps1',
+      'resources/gotzji-cad-session-provider.ps1',
       'resources/windows-capability-bridge.ps1',
       'resources/windows-capability-bridge.sha256',
       'resources/windows-capability-bridge.integrity.json',
@@ -184,8 +185,8 @@ function requiredRuntimePaths(platform, arch) {
       `resources/tunnel-client/tunnel-client-v${BUNDLED_TUNNEL_CLIENT_VERSION}-provenance.sigstore.json`,
     ]
     : platform === 'darwin'
-      ? ['Contents/MacOS/gotzji', 'Contents/Resources/gotzji-mcp-stdio', 'Contents/Resources/runtime-tools/ripgrep/rg', 'Contents/Resources/runtime-tools/ripgrep/BUNDLED_RIPGREP.json', 'Contents/Resources/tunnel-client/tunnel-client', 'Contents/Resources/tunnel-client/BUNDLED_TUNNEL_CLIENT.json', `Contents/Resources/tunnel-client/${tunnelPrefix}-licenses.txt`, `Contents/Resources/tunnel-client/${tunnelPrefix}.spdx.json`, `Contents/Resources/tunnel-client/tunnel-client-v${BUNDLED_TUNNEL_CLIENT_VERSION}-provenance.sigstore.json`, `Contents/Resources/native-host/macos/${provenance.arch}/lnwjud-macos-host`, `Contents/Resources/native-host/macos/${provenance.arch}/NATIVE_HOST.json`]
-      : ['gotzji', 'gotzji-mcp-stdio', 'resources/runtime-tools/ripgrep/rg', 'resources/runtime-tools/ripgrep/BUNDLED_RIPGREP.json', 'resources/tunnel-client/tunnel-client', 'resources/tunnel-client/BUNDLED_TUNNEL_CLIENT.json', `resources/tunnel-client/${tunnelPrefix}-licenses.txt`, `resources/tunnel-client/${tunnelPrefix}.spdx.json`, `resources/tunnel-client/tunnel-client-v${BUNDLED_TUNNEL_CLIENT_VERSION}-provenance.sigstore.json`, `resources/native-host/linux/${provenance.arch}/lnwjud-linux-host`, `resources/native-host/linux/${provenance.arch}/NATIVE_HOST.json`];
+      ? ['Contents/MacOS/gotzji', 'Contents/Resources/runtime-tools/ripgrep/rg', 'Contents/Resources/runtime-tools/ripgrep/BUNDLED_RIPGREP.json', 'Contents/Resources/tunnel-client/tunnel-client', 'Contents/Resources/tunnel-client/BUNDLED_TUNNEL_CLIENT.json', `Contents/Resources/tunnel-client/${tunnelPrefix}-licenses.txt`, `Contents/Resources/tunnel-client/${tunnelPrefix}.spdx.json`, `Contents/Resources/tunnel-client/tunnel-client-v${BUNDLED_TUNNEL_CLIENT_VERSION}-provenance.sigstore.json`, `Contents/Resources/native-host/macos/${provenance.arch}/lnwjud-macos-host`, `Contents/Resources/native-host/macos/${provenance.arch}/NATIVE_HOST.json`]
+      : ['gotzji', 'resources/runtime-tools/ripgrep/rg', 'resources/runtime-tools/ripgrep/BUNDLED_RIPGREP.json', 'resources/tunnel-client/tunnel-client', 'resources/tunnel-client/BUNDLED_TUNNEL_CLIENT.json', `resources/tunnel-client/${tunnelPrefix}-licenses.txt`, `resources/tunnel-client/${tunnelPrefix}.spdx.json`, `resources/tunnel-client/tunnel-client-v${BUNDLED_TUNNEL_CLIENT_VERSION}-provenance.sigstore.json`, `resources/native-host/linux/${provenance.arch}/lnwjud-linux-host`, `resources/native-host/linux/${provenance.arch}/NATIVE_HOST.json`];
   return new Set(paths);
 }
 

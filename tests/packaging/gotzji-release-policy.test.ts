@@ -60,9 +60,10 @@ async function releaseFixture(): Promise<{ root: string; provenance: ReleaseFixt
   }));
   const prefix = `tunnel-client-v${tunnelVersion}-windows-amd64`;
   const runtimePaths = [
-    'gotzji.exe', 'gotzji-mcp-stdio.cmd', 'resources/licenses/lnwjud-MIT.txt',
+    'gotzji.exe', 'resources/licenses/lnwjud-MIT.txt',
     'resources/licenses/THIRD_PARTY_NOTICES.md', 'resources/licenses/Prompt-OFL.txt',
     'resources/licenses/dependencies/npm-NOTICES.txt', 'resources/licenses/dependencies/DEPENDENCY_LICENSES.json',
+    'resources/gotzji-native-office.ps1', 'resources/gotzji-cad-session-provider.ps1',
     'resources/windows-capability-bridge.ps1', 'resources/windows-capability-bridge.sha256', 'resources/windows-capability-bridge.integrity.json',
     'resources/windows-secret-migrator/lnwjud-windows-secret-migrator.exe', 'resources/windows-secret-migrator/lnwjud-windows-secret-migrator.sha256',
     'resources/runtime-tools/ripgrep/rg.exe', 'resources/runtime-tools/ripgrep/BUNDLED_RIPGREP.json',

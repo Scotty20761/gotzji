@@ -390,6 +390,42 @@ export class SqliteGoalRepository implements GoalRepository, ScheduledContinuati
     });
   }
 
+  /** Trusted host only: preserve an expired lease after it independently proves the exact owned work is still live. */
+  public async renewExpiredOwnedLease(request: {
+    readonly goalId: string; readonly ownerClientId: string; readonly ownerSessionId: string; readonly leaseTokenHash: string;
+    readonly expectedRevision: number; readonly expectedUserIntentRevision: number; readonly expectedGeneration: number;
+    readonly expectedActivitySeq: number; readonly expectedHeartbeat: string | undefined; readonly expectedExpiry: string;
+    readonly now: string;
+  }): Promise<GoalRecord> {
+    return this.transaction(() => {
+      const current = this.requireById(request.goalId);
+      this.assertOwner(current, request.ownerClientId);
+      if (current.status !== 'active' || current.leaseOwnerClientId !== request.ownerClientId
+        || current.leaseOwnerSessionId !== request.ownerSessionId || current.leaseTokenHash !== request.leaseTokenHash
+        || current.revision !== request.expectedRevision || current.userIntentRevision !== request.expectedUserIntentRevision
+        || current.leaseGeneration !== request.expectedGeneration || current.leaseActivitySeq !== request.expectedActivitySeq
+        || current.leaseHeartbeatAt !== request.expectedHeartbeat || current.leaseExpiresAt !== request.expectedExpiry) {
+        throw new GoalStateError('conflict', 'Owned lease changed before live-work renewal');
+      }
+      if (!current.leaseExpiresAt || parseIso(current.leaseExpiresAt, 'lease expiry') > parseIso(request.now, 'request time')
+        || !Number.isSafeInteger(current.leaseDurationSeconds) || current.leaseDurationSeconds! <= 0
+        || this.selectLiveScheduledContinuation(current.id) !== undefined) {
+        throw new GoalStateError('lease_invalid', 'Only an expired unscheduled owned lease may be renewed');
+      }
+      const changed = this.database.connection.prepare(`
+        UPDATE goals SET lease_activity_seq=lease_activity_seq+1,lease_heartbeat_at=?,lease_expires_at=?,updated_at=?
+        WHERE id=? AND status='active' AND owner_client_id=? AND lease_owner_client_id=? AND lease_owner_session_id=?
+          AND lease_token_hash=? AND revision=? AND user_intent_revision=? AND lease_generation=? AND lease_activity_seq=?
+          AND lease_heartbeat_at IS ? AND lease_expires_at=?
+      `).run(request.now, addSeconds(request.now, current.leaseDurationSeconds!), request.now, request.goalId,
+        request.ownerClientId, request.ownerClientId, request.ownerSessionId, request.leaseTokenHash,
+        request.expectedRevision, request.expectedUserIntentRevision, request.expectedGeneration, request.expectedActivitySeq,
+        request.expectedHeartbeat ?? null, request.expectedExpiry);
+      if (Number(changed.changes) !== 1) throw new GoalStateError('conflict', 'Owned lease renewal lost the compare-and-swap race');
+      return this.requireById(request.goalId);
+    });
+  }
+
   public async checkpoint(request: CheckpointGoalRecordRequest): Promise<GoalRecord> {
     return this.transaction(() => {
       const current = this.requireById(request.goalId);

@@ -43,9 +43,10 @@ describe('Windows release trust evidence', () => {
     expect(evidenceVerifier).toContain('const releaseArtifactOnly');
     expect(evidenceVerifier).toContain('verifyCapabilityBridgeArtifacts');
     expect(bridgeVerifier).toContain('packaged bridge bytes differ from staged package bytes');
-    for (const name of ['gotzji-mcp-stdio.cmd', 'windows-capability-bridge.ps1', 'windows-capability-bridge.sha256', 'windows-capability-bridge.integrity.json', 'windows-secret-migrator.exe', 'windows-secret-migrator.sha256', 'rg.exe', 'tunnel-client.exe']) {
+    for (const name of ['gotzji-native-office.ps1', 'gotzji-cad-session-provider.ps1', 'windows-capability-bridge.ps1', 'windows-capability-bridge.sha256', 'windows-capability-bridge.integrity.json', 'windows-secret-migrator.exe', 'windows-secret-migrator.sha256', 'rg.exe', 'tunnel-client.exe']) {
       expect(captureHook).toContain(name);
     }
+    expect(captureHook).not.toContain('gotzji-mcp-stdio');
     expect(captureHook).not.toContain('lnwjud-mcp-stdio.cjs');
     expect(captureHook).not.toContain('lnwjud-node.exe');
     expect(evidenceWriter).toContain('runtimeEvidence.platform');

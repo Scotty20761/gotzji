@@ -13,27 +13,23 @@ function section(config: string, start: string, end: string): string {
   return config.slice(startIndex, endIndex);
 }
 
-describe('target-native Secure Tunnel packaged stdio layout', () => {
-  it('ships only target-native launchers and does not duplicate a Node runtime/CJS entry', async () => {
+describe('Secure Tunnel packaging and legacy stdio launcher generation', () => {
+  it('does not ship the unsupported packaged stdio launcher or a duplicate Node runtime/CJS entry', async () => {
     const config = await readFile(path.join(desktopRoot, 'electron-builder.yml'), 'utf8');
-    const win = section(config, 'win', 'nsis');
     const mac = section(config, 'mac', 'linux');
     const linux = config.slice(config.indexOf('linux:'));
-    expect(win).toContain('from: build/gotzji-mcp-stdio.cmd');
-    expect(mac).toContain('from: build/gotzji-mcp-stdio.sh');
-    expect(mac).toContain('to: Resources/gotzji-mcp-stdio');
-    expect(mac).not.toMatch(/to: gotzji-mcp-stdio\s/);
+    expect(config).not.toContain('build/gotzji-mcp-stdio');
+    expect(config).not.toContain('to: gotzji-mcp-stdio');
     expect(mac).toContain('arch:');
     expect(mac).toContain('- x64');
     expect(mac).toContain('- arm64');
-    expect(linux).toContain('from: build/gotzji-mcp-stdio.sh');
     expect(linux).toContain('target: AppImage');
     expect(linux).toContain('target: deb');
     expect(config).not.toContain('lnwjud-mcp-stdio.cjs');
     expect(config).not.toContain('lnwjud-node.exe');
   });
 
-  it('generates a Windows launcher that invokes packaged Electron with --mcp-stdio', async () => {
+  it('retains the legacy Windows launcher generator semantics without shipping the result', async () => {
     const launcher = await readFile(path.join(desktopRoot, 'build', 'gotzji-mcp-stdio.cmd'), 'utf8');
     expect(launcher).toContain('set "BASE=%~dp0"');
     expect(launcher).toContain('set "APP=%BASE%gotzji.exe"');
@@ -43,7 +39,7 @@ describe('target-native Secure Tunnel packaged stdio layout', () => {
     expect(launcher).not.toContain('powershell');
   });
 
-  it('generates a POSIX launcher that execs the packaged Electron host and preserves argv', async () => {
+  it('retains the legacy POSIX launcher generator semantics without shipping the result', async () => {
     const launcherPath = path.join(desktopRoot, 'build', 'gotzji-mcp-stdio.sh');
     const launcher = await readFile(launcherPath, 'utf8');
     expect(launcher).toContain('#!/bin/sh');

@@ -1,0 +1,153 @@
+/* global setTimeout */
+import { spawn, type ChildProcess } from 'node:child_process';
+import { createHash, createHmac, randomUUID } from 'node:crypto';
+import { link, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import path from 'node:path';
+import { afterEach, describe, expect, it } from 'vitest';
+import { GotzjiNativeError } from '@lnwjud/capabilities/gotzji-native-contract';
+import { prepareProductNativeOperation, signPreparedNativeOperation, type AuthorizedNativeWorkerConfig, type NativeWorkerBinding } from './product-native.js';
+import { executePreparedNativeOperation, readPreparedNativeState, reconcilePreparedNativeStop } from './product-native-broker.mjs';
+import { processIdentities, sameProcessIdentity, type ProcessIdentity } from './process-identity.mjs';
+import type { RegisteredProject } from './types.js';
+
+const digest = (value: string | Buffer): string => createHash('sha256').update(value).digest('hex');
+let qualificationRoot = path.resolve(process.env.LOCALAPPDATA ?? process.cwd(), 'gotzji', 'qualification');
+interface OwnedChild { readonly child: ChildProcess; identity?: ProcessIdentity }
+const roots: string[] = []; const children: OwnedChild[] = [];
+afterEach(async () => {
+  let cleanupProved = true;
+  for (const child of children.splice(0)) { try { await stop(child); } catch { cleanupProved = false; } }
+  if (!cleanupProved) throw new Error(`Synthetic child absence unproved; retained roots: ${roots.join(', ')}`);
+  for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
+});
+async function fixture(mode: 'claude' | 'test-driver' = 'claude', providerSource = 'trusted'): Promise<{ root: string; source: string; output: string; config: AuthorizedNativeWorkerConfig; prepared: Awaited<ReturnType<typeof prepareProductNativeOperation>> }> {
+  await mkdir(qualificationRoot, { recursive: true }); qualificationRoot = await realpath(qualificationRoot);
+  const root = await realpath(await mkdtemp(path.join(qualificationRoot, 'native-stop-proof-'))); roots.push(root);
+  const projectRoot = path.join(root, 'project'); const effectRoot = path.join(root, 'effects'); await mkdir(projectRoot); await mkdir(effectRoot);
+  const source = path.join(projectRoot, 'source.xlsx'); const output = path.join(projectRoot, 'output.xlsx'); const scriptPath = path.join(root, 'provider.ps1');
+  await writeFile(source, 'original'); await writeFile(scriptPath, providerSource);
+  const project: RegisteredProject = { projectId: 'project', displayName: 'fixture', rootPath: projectRoot, owner: 'owner', resourceKey: 'resource', recipeIds: [] };
+  const prepared = await prepareProductNativeOperation(project, { requestId: 'request', projectId: 'project', operation: 'excel.range.write', path: 'source.xlsx', outputPath: 'output.xlsx', sheet: 'Sheet', range: 'A1', values: [['after']] }, { scriptPath, scriptSha256: digest(providerSource) });
+  const binding: NativeWorkerBinding = { owner: 'owner', jobId: 'job', epoch: 'epoch', generation: 1, session: 'session', intentRevision: 0, authorizationDigest: 'a'.repeat(64), policy: 'b'.repeat(64), token: 'c'.repeat(64), lease: 'lease', effectRoot, database: path.join(root, 'core.sqlite'), text: JSON.stringify(prepared), grace: { mode } };
+  return { root, source, output, prepared, config: { ...binding, nativeAuthorization: signPreparedNativeOperation(binding, prepared) } };
+}
+function evidenceBinding(f: Awaited<ReturnType<typeof fixture>>): { publicBinding: Record<string, unknown>; key: string; journal: string } {
+  const journal = path.join(f.config.effectRoot, 'native-process-identities.jsonl');
+  const publicBinding = { schemaVersion: 1, effectRoot: f.config.effectRoot, journalPath: journal, jobId: f.config.jobId, epoch: f.config.epoch, generation: f.config.generation, planDigest: f.prepared.native.planDigest, provider: f.prepared.native.provider };
+  const key = createHmac('sha256', Buffer.from(f.config.token, 'hex')).update('gotzji-native-process-evidence-v1\0').update(JSON.stringify(publicBinding)).digest('hex');
+  return { publicBinding, key, journal };
+}
+async function journal(f: Awaited<ReturnType<typeof fixture>>, identities: readonly ProcessIdentity[], pids: readonly number[], macKey?: string): Promise<void> {
+  const binding = evidenceBinding(f); const lines: string[] = [];
+  for (let index = 0; index < identities.length; index++) {
+    const body = JSON.stringify({ schemaVersion: 1, recordType: 'identity', jobId: f.config.jobId, epoch: f.config.epoch, generation: f.config.generation,
+      planDigest: f.prepared.native.planDigest, invocationId: randomUUID(), provider: f.prepared.native.provider, pid: pids[index], birth: identities[index]!.birth, executable: identities[index]!.executable, recordedAt: new Date().toISOString() });
+    const mac = createHmac('sha256', Buffer.from(macKey ?? binding.key, 'hex')).update(body).digest('hex'); lines.push(JSON.stringify({ body, mac }));
+  }
+  await writeFile(binding.journal, `${lines.join('\n')}\n`);
+}
+async function ownedNode(): Promise<OwnedChild> {
+  const child = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], { windowsHide: true, stdio: 'ignore' }); const owned: OwnedChild = { child }; children.push(owned);
+  const identity = await processIdentities([child.pid!]); const value = identity[child.pid!];
+  if (!value || value === 'unknown') throw new Error('Synthetic child identity unavailable');
+  owned.identity = value; return owned;
+}
+async function stop(owned: OwnedChild): Promise<void> {
+  if (!owned.identity) {
+    const current = (await processIdentities([owned.child.pid!]))[owned.child.pid!];
+    if (current === null) return;
+    if (!current || current === 'unknown') throw new Error(`Synthetic child identity unproved for PID ${owned.child.pid}`);
+    owned.identity = current;
+  }
+  if (owned.child.exitCode === null) { try { owned.child.kill(); } catch { /* exact child already ended */ } }
+  for (let attempt = 0; attempt < 200; attempt++) {
+    if (!sameProcessIdentity(owned.identity, (await processIdentities([owned.child.pid!]))[owned.child.pid!])) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`Synthetic child absence unproved for PID ${owned.child.pid}`);
+}
+
+describe('native process stop evidence', () => {
+  it('signs a recoverable pre-dispatch no-launch proof when adapter admission refuses before the runner', async () => {
+    const f = await fixture(); await writeFile(f.prepared.native.scriptPath, 'changed before adapter admission');
+    await expect(executePreparedNativeOperation(f.config, undefined, { verifyLiveAuthority: () => true })).rejects.toMatchObject({ code: 'NATIVE_PROVIDER_CHANGED', outcome: 'none' });
+    expect(readPreparedNativeState(f.config)).toMatchObject({ state: 'not-started', outcome: 'none', dispatch: 'pre-dispatch', stopEvidence: { observed: 'pre-dispatch', verifier: 'host-signed-pre-dispatch-v1' } });
+    await expect(reconcilePreparedNativeStop(f.config)).resolves.toMatchObject({ outcome: 'none', stopEvidence: { observed: 'pre-dispatch' }, effectEvidence: { source: 'unchanged', output: 'absent' } });
+  });
+  it.runIf(process.platform === 'win32')('keeps a missing identity journal unknown after the trusted dispatch boundary', async () => {
+    const provider = `$null=[Console]::In.ReadToEnd();[Console]::Write('{"ok":false,"error":{"code":"SYNTHETIC_DISPATCH_FAILURE","outcome":"none"}}')`;
+    const f = await fixture('claude', provider);
+    await expect(executePreparedNativeOperation(f.config, undefined, { verifyLiveAuthority: () => true })).rejects.toMatchObject({ code: 'SYNTHETIC_DISPATCH_FAILURE', outcome: 'unknown' });
+    expect(readPreparedNativeState(f.config)).toMatchObject({ state: 'uncertain', outcome: 'unknown', dispatch: 'dispatched', stopEvidence: { observed: 'unknown', reason: 'missing' } });
+  });
+  it.runIf(process.platform === 'win32')('signs no-launch only for a first helper attempt confirmed absent by the runner', async () => {
+    const f = await fixture(); const originalRoot = process.env.SystemRoot;
+    try {
+      process.env.SystemRoot = 'Z:\\gotzji-missing-system-root';
+      await expect(executePreparedNativeOperation(f.config, undefined, { verifyLiveAuthority: () => true })).rejects.toMatchObject({ code: 'NATIVE_PROVIDER_START_FAILED', outcome: 'none' });
+      expect(readPreparedNativeState(f.config)).toMatchObject({ state: 'not-started', outcome: 'none', dispatch: 'pre-dispatch', dispatchAttempt: 0,
+        stopEvidence: { observed: 'pre-dispatch', verifier: 'host-signed-pre-dispatch-v1', reason: 'host-confirmed-first-spawn-no-launch', identityCount: 0, identityDigest: null } });
+    } finally { if (originalRoot === undefined) delete process.env.SystemRoot; else process.env.SystemRoot = originalRoot; }
+  });
+  for (const changed of ['source', 'output'] as const) {
+    it.runIf(process.platform === 'win32')(`keeps confirmed first-attempt no-launch separate from ${changed} drift`, async () => {
+      const f = await fixture(); const originalRoot = process.env.SystemRoot; let checks = 0;
+      try {
+        process.env.SystemRoot = 'Z:\\gotzji-missing-system-root';
+        await expect(executePreparedNativeOperation(f.config, undefined, { verifyLiveAuthority: async () => {
+          checks += 1; if (checks === 2) await writeFile(changed === 'source' ? f.source : f.output, 'independent owner bytes'); return true;
+        } })).rejects.toMatchObject({ code: 'NATIVE_PROVIDER_START_FAILED', outcome: 'unknown' });
+        expect(readPreparedNativeState(f.config)).toMatchObject({ state: 'uncertain', outcome: 'unknown', dispatch: 'pre-dispatch', dispatchAttempt: 0,
+          stopEvidence: { observed: 'pre-dispatch', verifier: 'host-signed-pre-dispatch-v1', reason: 'host-confirmed-first-spawn-no-launch', identityCount: 0, identityDigest: null },
+          effectEvidence: { [changed]: changed === 'source' ? 'changed' : 'present' } });
+      } finally { if (originalRoot === undefined) delete process.env.SystemRoot; else process.env.SystemRoot = originalRoot; }
+    });
+  }
+  it('keeps missing or invalid provider identity unknown', async () => {
+    const f = await fixture();
+    await expect(reconcilePreparedNativeStop(f.config)).resolves.toMatchObject({ outcome: 'unknown', stopEvidence: { observed: 'unknown', reason: 'missing' } });
+    await writeFile(evidenceBinding(f).journal, `${JSON.stringify({ body: '{}', mac: '0'.repeat(64) })}\n`);
+    await expect(reconcilePreparedNativeStop(f.config)).resolves.toMatchObject({ outcome: 'unknown', stopEvidence: { observed: 'unknown', reason: 'mac' } });
+    const binding = evidenceBinding(f); const own = (await processIdentities([process.pid]))[process.pid] as ProcessIdentity;
+    const wrongProvider = JSON.stringify({ schemaVersion: 1, recordType: 'identity', jobId: f.config.jobId, epoch: f.config.epoch, generation: f.config.generation, planDigest: f.prepared.native.planDigest, invocationId: randomUUID(), provider: 'cad-session', pid: process.pid, birth: own.birth, executable: own.executable, recordedAt: new Date().toISOString() });
+    const mac = createHmac('sha256', Buffer.from(binding.key, 'hex')).update(wrongProvider).digest('hex');
+    await writeFile(binding.journal, `${JSON.stringify({ body: wrongProvider, mac })}\n`);
+    await expect(reconcilePreparedNativeStop(f.config)).resolves.toMatchObject({ outcome: 'unknown', stopEvidence: { observed: 'unknown', reason: 'binding' } });
+  });
+  it.runIf(process.platform === 'win32')('rejects a hard-linked journal snapshot without changing its outside owner bytes', async () => {
+    const f = await fixture(); const outside = path.join(f.root, 'owner-evidence.txt'); const binding = evidenceBinding(f);
+    await writeFile(outside, 'outside owner evidence must remain exact'); await link(outside, binding.journal);
+    await expect(reconcilePreparedNativeStop(f.config)).resolves.toMatchObject({ outcome: 'unknown', stopEvidence: { observed: 'unknown', reason: 'invalid-file' } });
+    expect(await readFile(outside, 'utf8')).toBe('outside owner evidence must remain exact'); expect(await readFile(binding.journal, 'utf8')).toBe('outside owner evidence must remain exact');
+  });
+  it('requires every invocation identity absent, then preserves termination proof separately from file-effect proof', async () => {
+    const f = await fixture(); const first = await ownedNode(); const second = await ownedNode();
+    await journal(f, [first.identity!, second.identity!], [first.child.pid!, second.child.pid!]); await stop(first); children.splice(children.indexOf(first), 1);
+    await expect(reconcilePreparedNativeStop(f.config)).resolves.toMatchObject({ outcome: 'unknown', stopEvidence: { observed: 'alive', identityCount: 2 }, effectEvidence: { source: 'unchanged', output: 'absent' } });
+    await stop(second); children.splice(children.indexOf(second), 1);
+    await expect(reconcilePreparedNativeStop(f.config)).resolves.toMatchObject({ outcome: 'none', stopEvidence: { observed: 'absent', identityCount: 2 }, effectEvidence: { source: 'unchanged', output: 'absent' } });
+    expect(readPreparedNativeState(f.config)).toMatchObject({ state: 'not-started', outcome: 'none', stopEvidence: { observed: 'absent' } });
+    await writeFile(f.output, 'owner bytes after stop');
+    await expect(reconcilePreparedNativeStop(f.config)).resolves.toMatchObject({ outcome: 'unknown', stopEvidence: { observed: 'absent' }, effectEvidence: { output: 'present' } });
+    expect(readPreparedNativeState(f.config)).toMatchObject({ state: 'uncertain', outcome: 'unknown', stopEvidence: { observed: 'absent' } });
+  }, 20_000);
+  it('re-reads file effects after a live identity exits and treats an exact PID identity mismatch as absent', async () => {
+    const racing = await fixture(); const owned = await ownedNode(); await journal(racing, [owned.identity!], [owned.child.pid!]);
+    const pending = reconcilePreparedNativeStop(racing.config);
+    await new Promise((resolve) => setTimeout(resolve, 150)); await writeFile(racing.output, 'late provider effect'); await stop(owned); children.splice(children.indexOf(owned), 1);
+    await expect(pending).resolves.toMatchObject({ outcome: 'unknown', stopEvidence: { observed: 'absent' }, effectEvidence: { source: 'unchanged', output: 'present' } });
+
+    const mismatch = await fixture(); const own = (await processIdentities([process.pid]))[process.pid];
+    if (!own || own === 'unknown') throw new Error('Current process identity unavailable');
+    await journal(mismatch, [{ ...own, birth: `${own.birth}-different` }], [process.pid]);
+    await expect(reconcilePreparedNativeStop(mismatch.config)).resolves.toMatchObject({ outcome: 'none', stopEvidence: { observed: 'absent' }, effectEvidence: { source: 'unchanged', output: 'absent' } });
+  }, 20_000);
+  it('preserves signed synthetic process absence while re-reading changed file effects', async () => {
+    const f = await fixture('test-driver');
+    const runner = async (): Promise<never> => { await writeFile(f.output, 'synthetic provider output'); throw new GotzjiNativeError('SYNTHETIC_PROVIDER_STOPPED', undefined, 'none'); };
+    await expect(executePreparedNativeOperation(f.config, undefined, { testRunner: runner })).rejects.toMatchObject({ code: 'SYNTHETIC_PROVIDER_STOPPED', outcome: 'unknown' });
+    expect(readPreparedNativeState(f.config)).toMatchObject({ state: 'uncertain', outcome: 'unknown', stopEvidence: { observed: 'absent' }, effectEvidence: { output: 'present' } });
+    await expect(reconcilePreparedNativeStop(f.config)).resolves.toMatchObject({ outcome: 'unknown', stopEvidence: { observed: 'absent' }, effectEvidence: { source: 'unchanged', output: 'present' } });
+    expect(readPreparedNativeState(f.config)).toMatchObject({ state: 'uncertain', outcome: 'unknown', stopEvidence: { observed: 'absent' } });
+  });
+});

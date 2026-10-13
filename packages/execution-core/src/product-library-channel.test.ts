@@ -1,22 +1,23 @@
 import { createHash } from 'node:crypto';
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import os from 'node:os';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { ExecutionCore } from './core.js';
 import { ensureProductControlDocuments } from './product-control-policy.js';
 import { ProductLibraryChannel } from './product-library-channel.js';
 import { libraryCatalog } from './product-library.js';
+import { canonicalTemporaryDirectorySync } from './test-fixtures.js';
 
 describe('dedicated Library channel over the existing authority', () => {
   it('enrolls a separate adapter in one ledger, exposes only Library preparations and never borrows primary native preparations', async () => {
-    const base = mkdtempSync(path.join(os.tmpdir(), 'gotzji-library-channel-')); const directory = path.join(base, 'runtime'); const projectRoot = path.join(base, 'library');
-    mkdirSync(directory); mkdirSync(projectRoot); ensureProductControlDocuments(projectRoot); writeFileSync(path.join(projectRoot, 'source.txt'), 'owned selected Library input');
-    const core = await ExecutionCore.open(directory, { product: { executable: process.execPath, libraryRoot: projectRoot }, libraryOptions: { pythonExecutable: process.execPath, pythonSha256: createHash('sha256').update(readFileSync(process.execPath)).digest('hex') } });
-    const credential = 'a'.repeat(64); core.ensureAdapterEnrollment('gotzji-product', 'owner', credential);
-    core.registerProject(credential, { projectId: 'library', displayName: 'Library fixture', rootPath: projectRoot, kind: 'library' }); core.enrollLibraryRoute(credential, { projectId: 'library', route: 'gotzji-library' });
-    const channel = new ProductLibraryChannel({ directory, ownerId: 'owner', primaryCredential: credential, core, version: '5.7.3', allowWork: (): boolean => true, protector: { protect: async (value): Promise<string> => value, unprotect: async (value): Promise<string> => value } });
+    const base = canonicalTemporaryDirectorySync('gotzji-library-channel-'); const directory = path.join(base, 'runtime'); const projectRoot = path.join(base, 'library');
+    let core: ExecutionCore | undefined; let channel: ProductLibraryChannel | undefined;
     try {
+      mkdirSync(directory); mkdirSync(projectRoot); ensureProductControlDocuments(projectRoot); writeFileSync(path.join(projectRoot, 'source.txt'), 'owned selected Library input');
+      core = await ExecutionCore.open(directory, { product: { executable: process.execPath, libraryRoot: projectRoot }, libraryOptions: { pythonExecutable: process.execPath, pythonSha256: createHash('sha256').update(readFileSync(process.execPath)).digest('hex') } });
+      const credential = 'a'.repeat(64); core.ensureAdapterEnrollment('gotzji-product', 'owner', credential);
+      core.registerProject(credential, { projectId: 'library', displayName: 'Library fixture', rootPath: projectRoot, kind: 'library' }); core.enrollLibraryRoute(credential, { projectId: 'library', route: 'gotzji-library' });
+      channel = new ProductLibraryChannel({ directory, ownerId: 'owner', primaryCredential: credential, core, version: '5.7.3', allowWork: (): boolean => true, protector: { protect: async (value): Promise<string> => value, unprotect: async (value): Promise<string> => value } });
       const status = await channel.enroll('library'); expect(JSON.stringify(status)).not.toContain(credential);
       const state = JSON.parse(JSON.parse(readFileSync(path.join(directory, 'product-lnwjud-library.sealed.json'), 'utf8')).payload) as { credential: string; mcpPathSecret: string; projectIds: string[] };
       expect(state.credential).not.toBe(credential); expect(state.projectIds).toEqual(['library']);
@@ -32,6 +33,9 @@ describe('dedicated Library channel over the existing authority', () => {
       const primaryPreparation = core.prepareOperation(credential, { requestId: 'primary-file', projectId: 'library', operation: 'file.read', path: 'source.txt' });
       const foreignSubmit = await call('tools/call', { name: 'gotzji_submit', arguments: { preparationId: primaryPreparation.preparationId } }); expect(foreignSubmit.result.isError).toBe(true);
       expect(await core.list(credential)).toEqual([]); expect(await core.list(state.credential)).toEqual([]);
-    } finally { await channel.close(); core.close(); }
+    } finally {
+      try { await channel?.close(); }
+      finally { try { core?.close(); } finally { rmSync(base, { recursive: true, force: true }); } }
+    }
   });
 });

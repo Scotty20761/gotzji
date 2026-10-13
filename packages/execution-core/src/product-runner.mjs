@@ -4,6 +4,7 @@ import { appendFileSync, readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { childEnvironment, sanitizedStream, assertProductDependencies } from './product-security.mjs';
+import { processIdentities } from './process-identity.mjs';
 const hash = (value) => createHash('sha256').update(value).digest('hex');
 
 /** One host-reviewed command; stdout is progress, never completion evidence. */
@@ -61,11 +62,20 @@ export function productRunner(config, directory, callbacks) {
       assertProductDependencies(config);
       if (!command || hash(readFileSync(command.executable)) !== command.executableHash) throw new Error('COMMAND_DEPENDENCIES_CHANGED');
       startedAt = Date.now();
-      receipt = { epoch: config.epoch, jobId: config.jobId, operation: 'command.run', commandId: command.commandId, commandFingerprint: hash(JSON.stringify(command)), state: 'running', exitCode: null, elapsedMs: 0, lastProgressAt: new Date().toISOString(), outputBytes: 0 };
+      receipt = { epoch: config.epoch, jobId: config.jobId, operation: 'command.run', commandId: command.commandId, commandFingerprint: hash(JSON.stringify(command)), state: 'running', exitCode: null, startedAt: new Date(startedAt).toISOString(), timeoutMs: command.timeoutMs, elapsedMs: 0, lastProgressAt: new Date().toISOString(), outputBytes: 0 };
       persist();
       const env = childEnvironment();
       child = spawn(command.executable, command.args, { cwd: operation.project.rootPath, env, windowsHide: true, shell: false, stdio: ['ignore', 'pipe', 'pipe'] });
-      if (child.pid) callbacks.register(child.pid, child);
+      if (child.pid) {
+        receipt = { ...receipt, childPid: child.pid }; persist();
+        callbacks.register(child.pid, child);
+        void processIdentities([child.pid]).then((values) => {
+          const identity = values[child.pid];
+          if (receipt.state === 'running' && child.exitCode === null && child.signalCode === null && identity && typeof identity === 'object') {
+            receipt = { ...receipt, childIdentity: identity }; persist();
+          }
+        }).catch(() => { /* Missing identity forbids lease adoption; normal stop/completion still applies. */ });
+      }
       stdout = sanitizedStream((text) => append('stdout', text)); stderr = sanitizedStream((text) => append('stderr', text));
       child.stdout.on('data', (chunk) => stdout.write(chunk));
       child.stderr.on('data', (chunk) => stderr.write(chunk));

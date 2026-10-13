@@ -1,11 +1,12 @@
-import { mkdir, readFile, writeFile, rm } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, rm, realpath } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { afterEach, describe, expect, it } from 'vitest';
 import { ExecutionCore } from './core.js';
 import { hash, type WorkerRow } from './store.js';
-import { stopWorker, callWorker } from './managed-worker.js';
+import { stopWorker, callWorker, signed, observeWorker } from './managed-worker.js';
 import type { TaskBinding, ProductOperationInput } from './types.js';
 import type { ProductGraceRegistration } from './grace-profile.js';
 import { filesystem } from './product-projects.js';
@@ -36,11 +37,12 @@ async function fixture(options: { now?: () => Date; quotaReset?: number; delayed
   const f = { root, core, credential, bindings: [], profile }; fixtures.push(f);
   return f;
 }
-async function project(f: Fixture, id: string, holdMs = 600): Promise<string> {
+async function project(f: Fixture, id: string, holdMs = 600, timeoutMs = 10000, releasedByFile = false): Promise<string> {
   const root = path.join(f.root, id); await mkdir(root);
   await writeFile(path.join(root, 'source.txt'), 'Original\r\nภาษาไทย\r\n');
   await writeFile(path.join(root, 'job.mjs'), `console.log('begin-${id}');const interval=setInterval(()=>console.log('progress-${id}'),100);setTimeout(()=>{clearInterval(interval);console.log('end-${id}');},${holdMs});`);
-  f.core.registerReviewedCommand(f.credential, { recipeId: 'run', executable: process.execPath, args: ['${projectRoot}/job.mjs'], dependencies: ['${projectRoot}/job.mjs'], timeoutMs: 10000 });
+  if (releasedByFile) await writeFile(path.join(root, 'job.mjs'), `import {existsSync} from 'node:fs';console.log('begin-${id}');let paused=false;const interval=setInterval(()=>{if(existsSync(new URL('./pause',import.meta.url))){if(!paused)console.log('pause-ack-${id}');paused=true;}else console.log('progress-${id}');if(existsSync(new URL('./release',import.meta.url))){clearInterval(interval);console.log('end-${id}');}},100);`);
+  f.core.registerReviewedCommand(f.credential, { recipeId: 'run', executable: process.execPath, args: ['${projectRoot}/job.mjs'], dependencies: ['${projectRoot}/job.mjs'], timeoutMs });
   f.core.registerProject(f.credential, { projectId: id, displayName: id, rootPath: root, recipeIds: ['run'] });
   return root;
 }
@@ -62,12 +64,76 @@ afterEach(async () => {
   for (const f of fixtures.splice(0)) {
     const db = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'), { timeout: 5000 });
     const workers = db.prepare('SELECT * FROM gotzji_workers').all() as unknown as WorkerRow[]; db.close();
-    for (const worker of workers) await stopWorker(worker);
-    try { f.core.close(); } catch { /* detached */ }
-    await rm(f.root, { recursive: true, force: true });
+    let stopped = true;
+    try {
+      for (const worker of workers) {
+        if (!await stopWorker(worker) || await observeWorker(worker) !== 'absent') stopped = false;
+      }
+    } finally { f.core.close(); }
+    if (!stopped) throw new Error(`Product worker absence unproved; retained ${f.root}`);
+    const root = path.resolve(f.root);
+    if (path.dirname(root) !== await realpath(os.tmpdir()) || !path.basename(root).startsWith('gotzji-product-')) throw new Error('Product cleanup scope denied');
+    await rm(root, { recursive: true, force: true });
   }
 });
 describe('governed product operations — real native Goal, file and process seams', () => {
+  it('renews the exact live command after sleep without stopping or replacing its worker', async () => {
+    let now = new Date(); const f = await fixture({ now: () => now });
+    // The approved command budget outlasts the 300 s lease; renewal must not extend that command budget.
+    const projectRoot = await project(f, 'sleeping', 20000, 1200000, true);
+    const binding = await submit(f, { requestId: 'sleep-safe-command', projectId: 'sleeping', operation: 'command.run', commandId: 'run' });
+    await f.core.resume(f.credential, binding);
+    await until(f, async () => f.core.logs(f.credential, binding).text.includes('progress-sleeping'));
+    const db = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'), { timeout: 5000 });
+    const before = db.prepare('SELECT * FROM gotzji_workers WHERE job_id=?').get(binding.jobId) as unknown as WorkerRow; db.close();
+    await until(f, async () => !!signed<{ childIdentity?: unknown }>(before, 'product-run.json')?.childIdentity);
+    const childPid = signed<{ childPid: number }>(before, 'product-run.json')!.childPid;
+    now = new Date(now.getTime() + 301000);
+    await expect(f.core.tick()).resolves.toBeUndefined();
+    expect(await f.core.get(f.credential, binding)).toMatchObject({ status: 'running' });
+    const check = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'), { timeout: 5000 });
+    const after = check.prepare('SELECT * FROM gotzji_workers WHERE job_id=?').get(binding.jobId) as unknown as WorkerRow; check.close();
+    expect(after.epoch).toBe(before.epoch); expect(after.generation).toBe(before.generation); expect(after.lease).toBe(before.lease);
+    expect(await callWorker(before, 'status')).toMatchObject({ state: 'running' });
+    expect(signed<{ childPid: number }>(before, 'product-run.json')!.childPid).toBe(childPid);
+    await writeFile(path.join(projectRoot, 'release'), 'complete once');
+    await until(f, async () => (await f.core.get(f.credential, binding)).status === 'completed');
+    expect((f.core.logs(f.credential, binding).text.match(/begin-sleeping/gu) ?? [])).toHaveLength(1);
+    expect(await f.core.readOperationResult(f.credential, binding)).toMatchObject({ output: { state: 'completed', exitCode: 0 } });
+  }, 20000);
+  for (const changed of ['child', 'deadline', 'resource', 'writer', 'takeover'] as const) {
+    it(`refuses live-command lease renewal on ${changed} drift without stopping the owned child`, async () => {
+      let now = new Date(); const f = await fixture({ now: () => now });
+      await project(f, 'sleeping', 20000, 1200000, true);
+      const binding = await submit(f, { requestId: `sleep-${changed}`, projectId: 'sleeping', operation: 'command.run', commandId: 'run' });
+      await f.core.resume(f.credential, binding);
+      await until(f, async () => f.core.logs(f.credential, binding).text.includes('progress-sleeping'));
+      const db = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'), { timeout: 5000 });
+      const worker = db.prepare('SELECT * FROM gotzji_workers WHERE job_id=?').get(binding.jobId) as unknown as WorkerRow;
+      await until(f, async () => !!signed<{ childIdentity?: unknown }>(worker, 'product-run.json')?.childIdentity);
+      await writeFile(path.join(f.root, 'sleeping', 'pause'), 'pause progress writes');
+      await until(f, async () => f.core.logs(f.credential, binding).text.includes('pause-ack-sleeping'));
+      // The worker status response is an event-loop barrier after it persisted the acknowledged final stdout chunk.
+      await callWorker(worker, 'status');
+      if (changed === 'child' || changed === 'deadline') {
+        const run = signed<Record<string, unknown>>(worker, 'product-run.json')!;
+        if (changed === 'child') delete run.childIdentity;
+        else run.startedAt = new Date(now.getTime() - 1200001).toISOString();
+        const body = JSON.stringify(run);
+        await writeFile(path.join(worker.directory, 'product-run.json'), JSON.stringify({ body, mac: (await import('node:crypto')).createHmac('sha256', worker.token).update(body).digest('hex') }));
+      } else if (changed === 'resource') db.prepare('DELETE FROM gotzji_resource_claims WHERE job_id=?').run(binding.jobId);
+      else if (changed === 'writer') db.prepare('UPDATE gotzji_writers SET root=? WHERE job_id=?').run('wrong-root', binding.jobId);
+      else db.prepare('UPDATE goals SET lease_generation=lease_generation+1,lease_token_hash=? WHERE id=(SELECT goal_id FROM gotzji_claims WHERE id=?)').run('b'.repeat(64), binding.jobId);
+      db.close(); now = new Date(now.getTime() + 301000);
+      await expect(f.core.tick()).rejects.toMatchObject({ code: changed === 'deadline' ? 'COMMAND_DEADLINE_EXPIRED' : changed === 'takeover' ? 'LEASE_RENEWAL_CONFLICT' : 'LEASE_WORKER_RECONCILIATION_REQUIRED' });
+      if (changed === 'takeover') {
+        const check = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'), { timeout: 5000 });
+        expect(check.prepare('SELECT * FROM gotzji_diagnostics WHERE job_id=?').get(binding.jobId)).toBeUndefined(); check.close();
+      }
+      expect(await callWorker(worker, 'status')).toMatchObject({ state: 'running' });
+      expect(signed(worker, 'stopped.json')).toBeUndefined();
+    }, 20000);
+  }
   it('runs Grace-controlled read/write against enrolled project bytes with durable result and exact CRLF', async () => {
     const f = await fixture(); const root = await project(f, 'one');
     const read = await submit(f, { requestId: 'read', projectId: 'one', operation: 'file.read', path: 'source.txt' });

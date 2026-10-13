@@ -13,10 +13,11 @@ import { SqliteGoalRepository, SqliteWorkspaceRepository } from '@lnwjud/storage
 import { CoreStore, hash, secret, type AdapterRow, type ClaimRow, type WorkerRow, type WriterRow, type CoreUpgrade } from './store.js';
 import { callWorker, launchWorker, observeWorker, stopWorker, workerFingerprint } from './managed-worker.js';
 import { signed } from './managed-worker.js';
+import { processIdentities, sameProcessIdentity, type ProcessIdentity } from './process-identity.mjs';
 import { assertGraceProfile, graceProfile, productGraceProfile, type GraceProfile, type GraceRegistration, type ProductGraceRegistration } from './grace-profile.js';
 import { PRODUCT_CATALOG, claimsOverlap, folderClaim, registeredProject, productOperation, reviewedRecipe } from './product-projects.js';
 import { CoreError, type JobView, type SettleDecision, type Preparation, type RequestInput, type TaskBinding, type CodeRunReceipt, type RegisteredProject, type ProjectRegistration, type ProductOperationInput, type BasicProductOperationInput, type ProductOperation, type PreparedProductOperation, type CatalogEntry, type ReviewedCommandRegistration, type PrepareOptions, type SupportReport } from './types.js';
-import { PRODUCT_NATIVE_OPERATIONS, prepareProductNativeOperation, type ProductNativeInput, type TrustedProductNativeOptions, type ProductNativeOperationName } from './product-native.js';
+import { PRODUCT_NATIVE_OPERATIONS, prepareProductNativeOperation, type ProductNativeInput, type TrustedProductNativeOptions, type ProductNativeOperationName, type PreparedProductNativeOperation } from './product-native.js';
 import { libraryRoute, libraryCatalog, prepareLibraryOperation, verifiedLibraryNavigationEvolution, type ProductLibraryInput, type TrustedLibraryOptions } from './product-library.js';
 import type { LibraryRouteKind, LibraryDeliveryScope } from './library-workflow-contract.js';
 import { readProjectFile, listProjectFiles, searchProjectFiles } from './product-file-reads.js';
@@ -39,7 +40,7 @@ const RETENTION_BYTES = 256 * 1024 * 1024;
 const RETENTION_INTERVAL_MS = 60 * 60 * 1000;
 const RESULT_EXPIRED = 'Retention removed this job’s files; its status and history remain';
 const SETTLE_REFUSALS = {
-  SETTLE_UNSUPPORTED: 'Only project file and command jobs can be settled by the owner',
+  SETTLE_UNSUPPORTED: 'Only project file, command and proved-stopped native jobs can be settled by the owner',
   JOB_NOT_SETTLEABLE: 'Only a blocked job that still holds its project can be settled',
   WORKER_STOP_REQUIRED: 'The job worker must be proven stopped before settling',
   JOB_STILL_RUNNING: 'This job has not finished working; cancel it instead',
@@ -756,7 +757,8 @@ export class ExecutionCore {
    * uncertain, its goal ended, or its worker reports finished work. Running work is never settled; Cancel stops it.
    * Records the decision with the observed bytes before ending an active goal as cancelled, then releases exactly this
    * job's claims. It never completes or delivers, stops only the job's own worker through the stop proof, and keeps a
-   * completed job's verified receipt. Native, browser and Library jobs keep provider reconciliation.
+   * completed job's verified receipt. Native jobs additionally require signed native-process absence proof;
+   * browser and Library jobs keep provider reconciliation.
    */
   public async settleBlockedJob(credential: string, binding: TaskBinding, decision: SettleDecision): Promise<JobView> {
     if (decision !== 'effect-present' && decision !== 'no-effect') throw new CoreError('SETTLE_DECISION_INVALID', 'Choose effect-present or no-effect', 'decision');
@@ -770,15 +772,21 @@ export class ExecutionCore {
       const worker = this.#store.worker(claim.id);
       if (worker && !await stopWorker(worker)) throw new CoreError('WORKER_STOP_REQUIRED', SETTLE_REFUSALS.WORKER_STOP_REQUIRED, 'jobId');
       const summary = decision === 'effect-present' ? 'OWNER_SETTLED_EFFECT_PRESENT' : 'OWNER_SETTLED_NO_EFFECT';
-      const prepared = JSON.parse(this.#store.input(claim).text) as ProductOperation;
+      const prepared = JSON.parse(this.#store.input(claim).text) as PreparedProductOperation;
+      if (prepared.kind === 'native' && (!worker || !this.nativeStopProved(claim, worker))) throw new CoreError('WORKER_STOP_REQUIRED', SETTLE_REFUSALS.WORKER_STOP_REQUIRED, 'jobId');
       let observedSha256: string | null | undefined;
-      if (prepared.input.operation === 'file.write' && prepared.target) { try { observedSha256 = hash(readFileSync(prepared.target)); } catch { observedSha256 = null; } }
+      if ((prepared.kind === undefined || prepared.kind === 'basic') && prepared.input.operation === 'file.write' && prepared.target) { try { observedSha256 = hash(readFileSync(prepared.target)); } catch { observedSha256 = null; } }
+      const nativeObserved = prepared.kind === 'native' ? {
+        sourceSha256: this.observedFileHash(prepared.target),
+        ...('outputPath' in prepared.native.input ? { outputSha256: this.observedFileHash(prepared.native.input.outputPath) } : {}),
+        stopEvidenceDigest: hash(readFileSync(path.join(this.effectRoot(claim.id), 'native-operation.json'))),
+      } : undefined;
       const observedAt = this.#now().toISOString();
       const database = this.#store.database.connection;
       // The decision is durable before the goal ends, so an interrupted settle leaves evidence and no 'started' phase behind.
       if (goal.status === 'completed') database.prepare('UPDATE gotzji_operations SET phase=? WHERE job_id=?').run('verified', claim.id);
       else database.prepare('INSERT INTO gotzji_operations(job_id,digest,phase,receipt) VALUES (?,?,?,?) ON CONFLICT(job_id) DO UPDATE SET phase=excluded.phase,receipt=excluded.receipt')
-        .run(claim.id, this.operationDigest(claim), 'settled', JSON.stringify({ verifier: 'owner-settlement-v1', decision, owner: claim.owner, observedAt, ...(observedSha256 === undefined ? {} : { observedSha256 }), previous: this.#store.operation(claim.id)?.receipt ?? null }));
+        .run(claim.id, this.operationDigest(claim), 'settled', JSON.stringify({ verifier: 'owner-settlement-v1', decision, owner: claim.owner, observedAt, ...(observedSha256 === undefined ? {} : { observedSha256 }), ...(nativeObserved ? { nativeObserved } : {}), previous: this.#store.operation(claim.id)?.receipt ?? null }));
       this.#store.event(claim.id, summary, observedAt);
       if (goal.status === 'active') unwrap(await this.#service.cancelGoal(this.actor(claim, 'settle'), { goalId: goal.goalId, expectedRevision: goal.revision, summary, evidence: [] }));
       this.#store.clearDiagnostic(claim.id);
@@ -790,12 +798,13 @@ export class ExecutionCore {
   private settleRefusal(claim: ClaimRow, status: JobView['status'], active: boolean): keyof typeof SETTLE_REFUSALS | undefined {
     const input = this.#store.input(claim);
     const prepared = input.operation === 'grace.product-operation' ? JSON.parse(input.text) as PreparedProductOperation : undefined;
-    if (!prepared || (prepared.kind !== undefined && prepared.kind !== 'basic')) return 'SETTLE_UNSUPPORTED';
+    if (!prepared || (prepared.kind !== undefined && prepared.kind !== 'basic' && prepared.kind !== 'native')) return 'SETTLE_UNSUPPORTED';
     const writer = this.#store.writer(claim.id);
     if (!writer || status !== 'blocked') return 'JOB_NOT_SETTLEABLE';
     const worker = this.#store.worker(claim.id);
-    if (!worker) return this.unlaunched(writer.epoch) ? undefined : 'WORKER_STOP_REQUIRED';
+    if (!worker) return prepared.kind !== 'native' && this.unlaunched(writer.epoch) ? undefined : 'WORKER_STOP_REQUIRED';
     if (worker.epoch !== writer.epoch) return 'WORKER_STOP_REQUIRED';
+    if (prepared.kind === 'native' && !this.nativeStopProved(claim, worker)) return 'WORKER_STOP_REQUIRED';
     if (!active) return undefined;
     // An active job's own uncertainty is no evidence: one slow status check marks live work uncertain. Only the worker's
     // signed record that its work ended counts; a dead worker that never recorded it is released through Cancel.
@@ -803,6 +812,27 @@ export class ExecutionCore {
     try { ended = ['done', 'failed', 'cancelled'].includes(String(signed<{ state: string }>(worker, 'observation.json')?.state)) || !!signed<{ state: string }>(worker, 'stopped.json'); }
     catch { return 'WORKER_STOP_REQUIRED'; }
     return ended ? undefined : 'JOB_STILL_RUNNING';
+  }
+  private observedFileHash(filename: string): string | null {
+    try { return hash(readFileSync(filename)); } catch { return null; }
+  }
+  private nativeStopProved(claim: ClaimRow, worker: WorkerRow): boolean {
+    try {
+      const prepared = JSON.parse(this.#store.input(claim).text) as PreparedProductNativeOperation;
+      const filename = path.join(this.effectRoot(claim.id), 'native-operation.json');
+      if (prepared.kind !== 'native' || lstatSync(filename).isSymbolicLink() || realpathSync(filename) !== filename) return false;
+      const envelope = JSON.parse(readFileSync(filename, 'utf8')) as { body: string; mac: string };
+      if (createHmac('sha256', worker.token).update(envelope.body).digest('hex') !== envelope.mac) return false;
+      const state = JSON.parse(envelope.body) as { jobId: string; epoch: string; generation: number; intentDigest: string; scriptSha256: string; resourceKeys: readonly string[]; dispatch?: string; dispatchAttempt?: number; stopEvidence?: { schemaVersion: number; observed: string; identityCount: number; identityDigest: string | null; verifier?: string } };
+      const proof = state.stopEvidence;
+      return state.jobId === claim.id && state.epoch === worker.epoch && state.generation === worker.generation
+        && state.intentDigest === prepared.native.planDigest && state.scriptSha256 === prepared.native.scriptSha256
+        && JSON.stringify(state.resourceKeys) === JSON.stringify(prepared.native.resourceKeys) && proof?.schemaVersion === 1
+        && ((proof.observed === 'absent' && ((proof.identityCount > 0 && typeof proof.identityDigest === 'string' && /^[a-f0-9]{64}$/u.test(proof.identityDigest))
+          || (proof.verifier === 'test-driver' && this.#grace?.mode === 'test-driver' && !!this.#native?.testRunnerModule)))
+          || (state.dispatch === 'pre-dispatch' && state.dispatchAttempt === 0 && proof.observed === 'pre-dispatch' && proof.identityCount === 0
+            && proof.identityDigest === null && proof.verifier === 'host-signed-pre-dispatch-v1'));
+    } catch { return false; }
   }
   /** Host supervisor tick: no caller credentials, receipt booleans or executables accepted. */
   public async tick(): Promise<void> {
@@ -833,7 +863,7 @@ export class ExecutionCore {
           this.#store.clearDiagnostic(claim.id);
         });
       } catch (error) {
-        this.#store.diagnose(claim.id,error instanceof CoreError ? error.code : 'SUPERVISION_FAILED',this.#now().toISOString());
+        if (!(error instanceof CoreError && error.code === 'LEASE_RENEWAL_CONFLICT')) this.#store.diagnose(claim.id,error instanceof CoreError ? error.code : 'SUPERVISION_FAILED',this.#now().toISOString());
         failure ??= error;
       }
     }
@@ -1226,10 +1256,12 @@ export class ExecutionCore {
       else {this.markUncertain(claim.id);throw new CoreError('EFFECT_RECONCILIATION_REQUIRED');}
     } else if (observation.state === 'failed' || observation.state === 'cancelled') {
       if (this.#store.input(claim).operation === 'grace.product-operation') {
-        const native = signed<{ state: string; code?: string }>(worker, 'native-progress.json');
+        const native = signed<{ state: string; outcome?: string; code?: string }>(worker, 'native-progress.json');
         if (native?.state === 'uncertain') { this.markUncertain(claim.id); throw new CoreError(native.code ?? 'NATIVE_EFFECT_RECONCILIATION_REQUIRED', 'Inspect the selected native document and owned application before releasing resources', 'operation', 'native'); }
         if (native?.state === 'failed') {
+          if (native.outcome !== 'none') { this.markUncertain(claim.id); throw new CoreError('NATIVE_EFFECT_RECONCILIATION_REQUIRED'); }
           if (!await stopWorker(worker)) throw new CoreError('NATIVE_TERMINATION_UNCONFIRMED');
+          this.assertNativeSourceAndOutput(claim, true);
           const current = await this.snapshot(claim);
           unwrap(await this.#service.finishGoal(this.actor(claim, worker.session), { goalId: current.goalId, leaseToken: worker.lease, expectedRevision: current.revision, status: 'failed', summary: native.code ?? 'NATIVE_PROVIDER_FAILED', evidence: [{ kind: 'hash', value: hash(JSON.stringify(native)) }] }));
           this.#store.database.connection.prepare('UPDATE gotzji_operations SET phase=?,receipt=? WHERE job_id=?').run('verified', JSON.stringify({ verifier: 'host-native-no-effect-failure-v1', failure: native.code ?? 'NATIVE_PROVIDER_FAILED' }), claim.id);
@@ -1391,9 +1423,15 @@ export class ExecutionCore {
     if (input.operation === 'grace.product-operation') {
       const prepared = JSON.parse(input.text) as PreparedProductOperation;
       if (prepared.kind === 'native') {
-        const progress = signed<{ state: string; code?: string }>(worker, 'native-progress.json');
-        if (progress && !['completed','failed'].includes(progress.state)) throw new CoreError('NATIVE_TERMINATION_UNCONFIRMED', 'Inspect the owned native application before releasing document and UI resources', 'operation', 'native');
-        if (hash(readFileSync(prepared.target)) !== prepared.beforeSha256) throw new CoreError('NATIVE_ORIGINAL_CHANGED');
+        const progress = signed<{ state: string; outcome?: string; code?: string }>(worker, 'native-progress.json');
+        if (progress && !(progress.state === 'completed' && progress.outcome === 'verified') && !(progress.state === 'failed' && progress.outcome === 'none')) {
+          this.assertNativeSourceAndOutput(claim, false);
+          this.markUncertain(claim.id);
+          throw new CoreError(this.nativeStopProved(claim, worker) ? 'NATIVE_EFFECT_RECONCILIATION_REQUIRED' : 'NATIVE_TERMINATION_UNCONFIRMED', 'Inspect the selected native effect before releasing document and UI resources', 'operation', 'native');
+        }
+        if (progress?.outcome === 'verified') {
+          if (!this.verifyEffect(claim, false)) throw new CoreError('NATIVE_EFFECT_RECONCILIATION_REQUIRED');
+        } else this.assertNativeSourceAndOutput(claim, true);
       } else if (prepared.kind !== 'library' && prepared.kind !== 'browser' && prepared.input.operation === 'file.write') {
         const safeCreate=prepared.beforeSha256===null&&!!prepared.target&&(!existsSync(prepared.target)||(realpathSync(prepared.target)===prepared.target&&!lstatSync(prepared.target).isSymbolicLink()&&hash(readFileSync(prepared.target))===prepared.afterSha256));
         const safeExisting=prepared.beforeSha256!==null&&!!prepared.target&&existsSync(prepared.target)&&realpathSync(prepared.target)===prepared.target&&!lstatSync(prepared.target).isSymbolicLink()&&[prepared.beforeSha256,prepared.afterSha256].includes(hash(readFileSync(prepared.target)));
@@ -1404,6 +1442,15 @@ export class ExecutionCore {
     }
     if (input.operation !== 'fixture.hold' && input.operation !== 'grace.product-operation' && existsSync(path.join(this.effectRoot(claim.id), 'result.txt'))) this.verifyEffect(claim, false);
     this.releaseWriter(claim.id, worker.epoch);
+  }
+  private assertNativeSourceAndOutput(claim: ClaimRow, noEffect: boolean): void {
+    const prepared = JSON.parse(this.#store.input(claim).text) as PreparedProductNativeOperation;
+    if (realpathSync(prepared.target) !== prepared.target || lstatSync(prepared.target).isSymbolicLink() || hash(readFileSync(prepared.target)) !== prepared.beforeSha256) throw new CoreError('NATIVE_ORIGINAL_CHANGED');
+    if (noEffect && 'outputPath' in prepared.native.input) {
+      try { lstatSync(prepared.native.input.outputPath); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return; throw error; }
+      throw new CoreError('NATIVE_EFFECT_RECONCILIATION_REQUIRED');
+    }
   }
   private unlaunched(epoch: string): boolean {
     const directory = path.join(this.#root,'workers',epoch);
@@ -1452,12 +1499,19 @@ export class ExecutionCore {
   }
   private async recoverExpired(claim: ClaimRow, worker: WorkerRow): Promise<void> {
     this.assertEffects(claim);
-    this.#store.diagnose(claim.id,'LEASE_RECOVERY_REQUIRED',this.#now().toISOString());
     const config = JSON.parse(readFileSync(path.join(worker.directory,'config.json'),'utf8')) as {intentRevision:number};
     const goal = await this.snapshot(claim);
     if (goal.userIntentRevision !== config.intentRevision) throw new CoreError('INTENT_RECONCILIATION_REQUIRED');
     this.authorization(claim,goal.userIntentRevision);
     const input = this.#store.input(claim);
+    const prepared = input.operation === 'grace.product-operation' ? JSON.parse(input.text) as PreparedProductOperation : undefined;
+    if (prepared && (prepared.kind === undefined || prepared.kind === 'basic') && prepared.input.operation === 'command.run') {
+      await this.renewLiveCommand(claim, worker, prepared);
+      await this.reconcile(claim, worker);
+      this.#store.clearDiagnostic(claim.id);
+      return;
+    }
+    this.#store.diagnose(claim.id,'LEASE_RECOVERY_REQUIRED',this.#now().toISOString());
     const codeRunBefore=input.operation==='grace.code-check'?this.codeRun(claim,worker):undefined;
     if (!await stopWorker(worker)) throw new CoreError('CLEANUP_RECONCILIATION_REQUIRED');
     if (this.isRead(claim)) { await this.finishAbsentRead(claim, worker); this.#store.clearDiagnostic(claim.id); return; }
@@ -1466,10 +1520,10 @@ export class ExecutionCore {
     const filename = path.join(this.effectRoot(claim.id),'result.txt');
     let complete = false;
     if (existsSync(filename)) {
-      this.verifyEffect(claim,false); // Unknown bytes keep the held writer.
-      if (input.operation === 'fixture.write') complete = true;
+      const verified = this.verifyEffect(claim,false); // Unknown bytes keep the held writer.
+      if (input.operation === 'fixture.write') complete = verified;
       else if (input.operation === 'grace.read-save-check' || input.operation === 'grace.code-check' || input.operation === 'grace.product-operation') {
-        try { this.verifyGraceExecution(claim); complete = true; }
+        try { this.verifyGraceExecution(claim); complete = verified; }
         catch (error) {
           if (input.operation==='grace.code-check') {
             if(codeRunBefore?.state==='failed') throw new CoreError('VALIDATION_FAILED');
@@ -1490,6 +1544,58 @@ export class ExecutionCore {
     if (complete) await this.complete(claim,recovered);
     else await this.launchClaim(claim,recovered);
     this.#store.clearDiagnostic(claim.id);
+  }
+  /** A responsive worker alone is insufficient: only the exact live, within-budget reviewed command can keep its lease. */
+  private async renewLiveCommand(claim: ClaimRow, worker: WorkerRow, prepared: ProductOperation): Promise<void> {
+    const goal = await this.#goals.getById((await this.snapshot(claim)).goalId);
+    const configFile = path.join(worker.directory, 'config.json');
+    if (lstatSync(configFile).isSymbolicLink() || realpathSync(configFile) !== configFile) throw new CoreError('LEASE_WORKER_RECONCILIATION_REQUIRED');
+    const config = JSON.parse(readFileSync(configFile, 'utf8')) as Record<string, unknown>;
+    const operation = this.#store.operation(claim.id);
+    const writer = this.#store.writer(claim.id);
+    const expectedKeys = [...this.resourceKeys(claim)].sort();
+    const rows = this.#store.database.connection.prepare('SELECT resource_key,epoch FROM gotzji_resource_claims WHERE job_id=?').all(claim.id);
+    if (goal && (goal.status !== 'active' || goal.leaseGeneration !== worker.generation || goal.leaseOwnerSessionId !== worker.session || goal.leaseTokenHash !== hash(worker.lease))) throw new CoreError('LEASE_RENEWAL_CONFLICT');
+    if (!goal || !goal.leaseExpiresAt || goal.status !== 'active' || goal.leaseGeneration !== worker.generation
+      || goal.leaseOwnerSessionId !== worker.session || goal.leaseTokenHash !== hash(worker.lease)
+      || config.owner !== claim.owner || config.jobId !== claim.id || config.epoch !== worker.epoch || config.generation !== worker.generation
+      || config.session !== worker.session || config.token !== worker.token || config.lease !== worker.lease || config.policy !== this.#policy
+      || config.operation !== 'grace.product-operation' || config.text !== this.#store.input(claim).text
+      || config.intentRevision !== goal.userIntentRevision || config.authorizationDigest !== this.authorization(claim, goal.userIntentRevision)
+      || config.database !== path.join(this.#root, 'core.sqlite') || config.effectRoot !== this.effectRoot(claim.id)
+      || writer?.epoch !== worker.epoch || writer.root !== this.resourceScope(claim) || operation?.phase !== 'started' || operation.digest !== this.operationDigest(claim)
+      || rows.some((row) => row.epoch !== worker.epoch) || JSON.stringify(rows.map((row) => String(row.resource_key)).sort()) !== JSON.stringify(expectedKeys)) {
+      throw new CoreError('LEASE_WORKER_RECONCILIATION_REQUIRED');
+    }
+    const status = await callWorker(worker, 'status');
+    const ready = signed<{ pid: number; identity?: ProcessIdentity }>(worker, 'ready.json');
+    const run = signed<{ state: string; jobId: string; epoch: string; commandFingerprint: string; childPid?: number; childIdentity?: ProcessIdentity; startedAt?: string; timeoutMs?: number }>(worker, 'product-run.json');
+    if (status.state !== 'running' || !ready?.identity || status.pid !== ready.pid || run?.state !== 'running'
+      || run.jobId !== claim.id || run.epoch !== worker.epoch || !prepared.command || run.commandFingerprint !== hash(JSON.stringify(prepared.command))
+      || !Number.isSafeInteger(run.childPid) || !run.childIdentity || !status.descendants.includes(run.childPid!)
+      || !sameProcessIdentity(run.childIdentity, status.identities?.[run.childPid!]) || status.closedDescendants?.includes(run.childPid!)) {
+      throw new CoreError('LEASE_WORKER_RECONCILIATION_REQUIRED');
+    }
+    const started = Date.parse(run.startedAt ?? '');
+    const timeoutMs = prepared.command.timeoutMs;
+    if (typeof timeoutMs !== 'number' || !Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || !Number.isFinite(started)
+      || run.timeoutMs !== timeoutMs || started > this.#now().getTime() || this.#now().getTime() >= started + timeoutMs) throw new CoreError('COMMAND_DEADLINE_EXPIRED');
+    const identities = await processIdentities([ready.pid, run.childPid!]);
+    const commandExecutable = process.platform === 'win32' ? prepared.command.executable.toLowerCase() : prepared.command.executable;
+    if (!sameProcessIdentity(ready.identity, identities[ready.pid]) || !sameProcessIdentity(run.childIdentity, identities[run.childPid!])
+      || run.childIdentity.executable !== commandExecutable) throw new CoreError('LEASE_WORKER_RECONCILIATION_REQUIRED');
+    this.assertEffects(claim);
+    if (this.#now().getTime() >= started + timeoutMs) throw new CoreError('COMMAND_DEADLINE_EXPIRED');
+    // A lost CAS is stale authority. Never stop or rebind the other winner's worker from this path.
+    try {
+      await this.#goals.renewExpiredOwnedLease({ goalId: goal.id, ownerClientId: claim.owner, ownerSessionId: worker.session,
+        leaseTokenHash: hash(worker.lease), expectedRevision: goal.revision, expectedUserIntentRevision: goal.userIntentRevision,
+        expectedGeneration: worker.generation, expectedActivitySeq: goal.leaseActivitySeq, expectedHeartbeat: goal.leaseHeartbeatAt,
+        expectedExpiry: goal.leaseExpiresAt, now: this.#now().toISOString() });
+    } catch { throw new CoreError('LEASE_RENEWAL_CONFLICT'); }
+    await this.validateWorker(claim, worker);
+    await this.checkpoint(claim, worker, 'running');
+    this.#store.event(claim.id, 'LIVE_COMMAND_LEASE_RENEWED', this.#now().toISOString());
   }
   private releaseWriter(jobId: string, epoch: string): void {
     const database = this.#store.database.connection; database.exec('BEGIN IMMEDIATE;');

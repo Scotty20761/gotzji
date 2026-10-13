@@ -19,7 +19,7 @@ Full Bypass does not disable schema/input validation, existence checks, task/pro
 | Auto-approvable | Saved destructive-family switches may auto-approve only exact targets proven inside the host Active Project: recoverable `delete_file`, Git rm/clean/exact restore forms, shell rm/rmdir/del, and WSL rm/rmdir. Root, critical, wildcard, recursive/broad, outside-project, and unparseable forms never gain auto-approval. |
 | Active Project | With Full Bypass OFF, user/workspace file and command mutations are bound to the host-owned Active Project. Full Bypass ON accepts explicit absolute outside targets; relative traversal remains invalid. |
 | Command policy | With Full Bypass OFF, command-bearing tools share prohibited/risky command policy. Full Bypass ON skips this lnwjud policy; argv/schema and OS/runtime checks remain. |
-| Packaged transports | Desktop HTTP and Desktop `--mcp-stdio` install the native approval provider. Standalone CLI/HTTP/STDIO traverse the same registry policy but, without a trusted provider, deny mutations requiring host approval. |
+| Packaged transports | gotzji v1 packages Desktop HTTP/Secure Tunnel with the native approval provider. It ships no Desktop `--mcp-stdio` launcher. Source-retained standalone CLI/HTTP/STDIO traverses the same registry policy but is compatibility coverage rather than a gotzji product route and, without a trusted provider, denies mutations requiring host approval. |
 
 ## Reviewed families
 

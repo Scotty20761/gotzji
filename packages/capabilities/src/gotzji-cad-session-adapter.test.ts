@@ -3,7 +3,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { GotzjiCadSessionAdapter } from './gotzji-cad-session-adapter.js';
-import { nativeBytesDigest, nativeFileDigest, type GotzjiNativeGrant } from './gotzji-native-contract.js';
+import { nativeBytesDigest, nativeFileDigest, planGotzjiNativeOperation, type GotzjiNativeGrant } from './gotzji-native-contract.js';
+import { GotzjiNativeNoLaunchError, type GotzjiNativeProcessEvidenceBinding, type GotzjiNativeProcessInvocation } from './gotzji-native-adapter.js';
 
 const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
@@ -17,8 +18,8 @@ async function fixture(): Promise<{ root: string; source: string; output: string
   await Promise.all([writeFile(source, 'original DWG fixture'), writeFile(script, 'trusted provider fixture'), writeFile(executable, 'trusted executable fixture')]);
   return { root, source, output, script, executable, grant: { ownerId: 'owner', projectId: 'project', jobId: 'job', operationId: 'op', rootPath: root, proof: 'synthetic test enrollment' }, expected: await nativeFileDigest(source) };
 }
-async function adapter(f: Awaited<ReturnType<typeof fixture>>, verifyGrant: () => Promise<boolean>, runner: (script: string, input: unknown) => Promise<unknown>): Promise<GotzjiCadSessionAdapter> {
-  return new GotzjiCadSessionAdapter({ scriptPath: f.script, scriptSha256: await nativeFileDigest(f.script), executable: f.executable, executableSha256: await nativeFileDigest(f.executable), verifyGrant, runner });
+async function adapter(f: Awaited<ReturnType<typeof fixture>>, verifyGrant: () => Promise<boolean>, runner: (script: string, input: unknown, signal?: AbortSignal, evidence?: GotzjiNativeProcessInvocation, beforeSpawn?: () => Promise<void>) => Promise<unknown>, processEvidence?: GotzjiNativeProcessEvidenceBinding, beforeProviderSpawn?: () => Promise<void>): Promise<GotzjiCadSessionAdapter> {
+  return new GotzjiCadSessionAdapter({ scriptPath: f.script, scriptSha256: await nativeFileDigest(f.script), executable: f.executable, executableSha256: await nativeFileDigest(f.executable), verifyGrant, runner, ...(processEvidence ? { processEvidence } : {}), ...(beforeProviderSpawn ? { beforeProviderSpawn } : {}) });
 }
 describe('CAD provider-owned session contract (synthetic seam, no native qualification)', () => {
   it('denies a forged grant before starting any native process', async () => {
@@ -40,15 +41,35 @@ describe('CAD provider-owned session contract (synthetic seam, no native qualifi
     await expect(a.execute(f.grant, { operation: 'cad.entity.inspect', filePath: f.source, expectedSha256: f.expected, handle: '254' })).rejects.toMatchObject({ code: 'CAD_SESSION_OWNERSHIP_OR_RECEIPT_UNVERIFIED', outcome: 'unknown' });
   });
   it('checks the original grant again and independently reopens saved output before accepting a move', async () => {
-    const f = await fixture(); const authorize = vi.fn(async () => true); let calls = 0;
-    const a = await adapter(f, authorize, async (_script, input) => {
+    const f = await fixture(); const authorize = vi.fn(async () => true); const dispatch = vi.fn(async () => undefined); let calls = 0; const invocations: string[] = [];
+    const operation = { operation: 'cad.entity.move' as const, filePath: f.source, expectedSha256: f.expected, outputPath: f.output, handle: '254', displacement: [2, 2, 0] as const };
+    const plan = await planGotzjiNativeOperation(operation, f.root);
+    const processEvidence = { schemaVersion: 1 as const, effectRoot: f.root, journalPath: path.join(f.root, 'native-process-identities.jsonl'), jobId: 'job', epoch: 'epoch', generation: 1, planDigest: plan.digest, provider: 'cad-session' as const, evidenceKey: 'a'.repeat(64) };
+    const a = await adapter(f, authorize, async (_script, input, _signal, evidence, beforeSpawn) => {
+      await beforeSpawn?.();
+      if (evidence) invocations.push(evidence.invocationId);
       calls++; const request = input as { operation: string };
       if (request.operation === 'cad.entity.move') { await writeFile(f.output, 'saved output fixture'); return receipt(line(), line(2)); }
       return receipt(line(2));
-    });
-    const result = await a.execute(f.grant, { operation: 'cad.entity.move', filePath: f.source, expectedSha256: f.expected, outputPath: f.output, handle: '254', displacement: [2, 2, 0] });
+    }, processEvidence, dispatch);
+    const result = await a.execute(f.grant, operation);
     expect(result.savedAndReopened).toBe(true); expect(result.originalPreserved).toBe(true); expect(calls).toBe(2); expect(authorize).toHaveBeenCalledTimes(2);
+    expect(invocations).toHaveLength(2); expect(new Set(invocations).size).toBe(2);
+    expect(dispatch).toHaveBeenNthCalledWith(1, 1); expect(dispatch).toHaveBeenNthCalledWith(2, 2);
     expect(result.outputSha256).toBe(nativeBytesDigest(await readFile(f.output)));
+  });
+  it('keeps first-invocation evidence when the CAD reopen helper cannot launch on attempt two', async () => {
+    const f = await fixture(); const operation = { operation: 'cad.entity.move' as const, filePath: f.source, expectedSha256: f.expected, outputPath: f.output, handle: '254', displacement: [2, 2, 0] as const };
+    const plan = await planGotzjiNativeOperation(operation, f.root); const journal = path.join(f.root, 'native-process-identities.jsonl');
+    const processEvidence = { schemaVersion: 1 as const, effectRoot: f.root, journalPath: journal, jobId: 'job', epoch: 'epoch', generation: 1, planDigest: plan.digest, provider: 'cad-session' as const, evidenceKey: 'a'.repeat(64) };
+    const dispatch = vi.fn(async () => undefined); let calls = 0;
+    const a = await adapter(f, async () => true, async (_script, _input, _signal, _evidence, beforeSpawn) => {
+      await beforeSpawn?.(); calls += 1;
+      if (calls === 1) { await writeFile(journal, 'first-invocation-evidence'); await writeFile(f.output, 'saved output fixture'); return receipt(line(), line(2)); }
+      throw new GotzjiNativeNoLaunchError('synchronous-spawn-throw');
+    }, processEvidence, dispatch);
+    await expect(a.execute(f.grant, operation)).rejects.toMatchObject({ code: 'NATIVE_PROVIDER_START_FAILED', confirmedNoProviderProcess: true });
+    expect(dispatch).toHaveBeenNthCalledWith(1, 1); expect(dispatch).toHaveBeenNthCalledWith(2, 2); expect(await readFile(journal, 'utf8')).toBe('first-invocation-evidence');
   });
   it('reads the layer table, Thai names and colour methods included, and keeps the original untouched (incident I6)', async () => {
     const f = await fixture();

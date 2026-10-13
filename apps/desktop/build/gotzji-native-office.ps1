@@ -2,7 +2,9 @@
 $ErrorActionPreference = 'Stop'
 [Console]::InputEncoding = New-Object Text.UTF8Encoding($false)
 [Console]::OutputEncoding = New-Object Text.UTF8Encoding($false)
-$request = [Console]::In.ReadToEnd() | ConvertFrom-Json
+$payload = [Console]::In.ReadToEnd() | ConvertFrom-Json
+$request = if ($null -ne $payload.request) { $payload.request } else { $payload }
+$processEvidence = $payload.processEvidence
 $script:effectStarted = $false
 $script:ownedPid = 0
 $script:stage = 'validate'
@@ -35,6 +37,30 @@ function Media-Snapshot([string]$File) {
 }
 function Fail([string]$Code) { throw $Code }
 function Release-Com($Value) { if ($null -ne $Value -and [Runtime.InteropServices.Marshal]::IsComObject($Value)) { [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($Value) } }
+function Require-ProcessEvidence([string]$ExpectedProvider) {
+  if ($null -eq $script:processEvidence -or [int]$script:processEvidence.schemaVersion -ne 1 -or [string]$script:processEvidence.provider -cne $ExpectedProvider) { Fail 'NATIVE_PROCESS_EVIDENCE_REQUIRED' }
+  foreach ($field in @('effectRoot','journalPath','jobId','epoch','planDigest','evidenceKey','invocationId')) { if ([string]::IsNullOrWhiteSpace([string]$script:processEvidence.$field)) { Fail 'NATIVE_PROCESS_EVIDENCE_INVALID' } }
+  if ([string]$script:processEvidence.evidenceKey -notmatch '^[a-f0-9]{64}$' -or [string]$script:processEvidence.invocationId -notmatch '^[0-9a-f-]{36}$') { Fail 'NATIVE_PROCESS_EVIDENCE_INVALID' }
+  $root=[IO.Path]::GetFullPath([string]$script:processEvidence.effectRoot)
+  $journal=[IO.Path]::GetFullPath([string]$script:processEvidence.journalPath)
+  if ([IO.Path]::GetDirectoryName($journal) -ine $root -or [IO.Path]::GetFileName($journal) -cne 'native-process-identities.jsonl') { Fail 'NATIVE_PROCESS_EVIDENCE_INVALID' }
+  if ((Test-Path -LiteralPath $journal) -and ((Get-Item -LiteralPath $journal).Attributes -band [IO.FileAttributes]::ReparsePoint)) { Fail 'NATIVE_PROCESS_EVIDENCE_INVALID' }
+}
+function Write-ProcessIdentity([int]$Pid, [string]$Birth, [string]$Executable, [string]$Provider) {
+  Require-ProcessEvidence $Provider
+  $body = [ordered]@{
+    schemaVersion=1; recordType='identity'; jobId=[string]$script:processEvidence.jobId; epoch=[string]$script:processEvidence.epoch
+    generation=[int]$script:processEvidence.generation; planDigest=[string]$script:processEvidence.planDigest
+    invocationId=[string]$script:processEvidence.invocationId; provider=$Provider; pid=$Pid; birth=$Birth
+    executable=$Executable.ToLowerInvariant(); recordedAt=[DateTime]::UtcNow.ToString('o',[Globalization.CultureInfo]::InvariantCulture)
+  } | ConvertTo-Json -Compress
+  $key=New-Object byte[] 32
+  for($index=0;$index -lt 32;$index++){ $key[$index]=[Convert]::ToByte(([string]$script:processEvidence.evidenceKey).Substring($index*2,2),16) }
+  $algorithm=[Security.Cryptography.HMACSHA256]::new($key)
+  try { $mac=[BitConverter]::ToString($algorithm.ComputeHash([Text.Encoding]::UTF8.GetBytes($body))).Replace('-','').ToLowerInvariant() } finally { $algorithm.Dispose() }
+  $line=([ordered]@{body=$body;mac=$mac}|ConvertTo-Json -Compress) + "`n"
+  [GotzjiNativeEvidenceJournal]::Append([string]$script:processEvidence.journalPath,[string]$script:processEvidence.effectRoot,$line)
+}
 function Provider-Discovery {
   $items = @()
   foreach ($name in @('excel','word','powerpoint','cad')) {
@@ -121,6 +147,7 @@ try {
   if ($request.operation -eq 'discover') { $value = Provider-Discovery; [Console]::Write((As-Json ([ordered]@{ ok=$true; value=@($value) }))); exit 0 }
   $allowed=@('excel.range.read','excel.range.write','word.paragraph.read','word.paragraph.write','powerpoint.shape.read','powerpoint.shape.write','cad.entity.inspect','cad.entity.move')
   if ($allowed -notcontains [string]$request.operation) { Fail 'NATIVE_OPERATION_UNSUPPORTED' }
+  Require-ProcessEvidence 'office'
   $source=[IO.Path]::GetFullPath([string]$request.filePath)
   if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { Fail 'NATIVE_FILE_NOT_FOUND' }
   if ((Hash-File $source) -ne [string]$request.expectedSha256) { Fail 'NATIVE_FILE_VERSION_CONFLICT' }
@@ -131,13 +158,40 @@ try {
   $spec=$providerMap[$provider]
   $existingProviderPids=@(Get-Process -Name $spec.process -ErrorAction SilentlyContinue | ForEach-Object { $_.Id })
   if ($provider -ne 'cad' -and $existingProviderPids.Count -gt 0) { Fail 'NATIVE_SESSION_IN_USE' }
-  Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public static class GotzjiNativePid { [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hwnd,out uint pid); public static uint For(long hwnd) { uint pid; GetWindowThreadProcessId(new IntPtr(hwnd),out pid); return pid; } }' | Out-Null
+  Add-Type -TypeDefinition @'
+using System; using System.Runtime.InteropServices;
+public static class GotzjiNativeEvidenceJournal {
+  [StructLayout(LayoutKind.Sequential)] struct FileInfo { public uint attributes; public System.Runtime.InteropServices.ComTypes.FILETIME created; public System.Runtime.InteropServices.ComTypes.FILETIME accessed; public System.Runtime.InteropServices.ComTypes.FILETIME written; public uint volume; public uint sizeHigh; public uint sizeLow; public uint links; public uint indexHigh; public uint indexLow; }
+  [DllImport("kernel32.dll", SetLastError=true)] static extern bool GetFileInformationByHandle(IntPtr file, out FileInfo info);
+  [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern uint GetFinalPathNameByHandle(IntPtr file, System.Text.StringBuilder path, uint length, uint flags);
+  static string FinalPath(IntPtr handle) { var value=new System.Text.StringBuilder(32768); uint length=GetFinalPathNameByHandle(handle,value,(uint)value.Capacity,0); if(length==0||length>=value.Capacity)throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(),"GetFinalPathNameByHandle"); string result=value.ToString(); return result.StartsWith("\\\\?\\")?result.Substring(4):result; }
+  static FileInfo Inspect(IntPtr handle) { FileInfo value; if(!GetFileInformationByHandle(handle,out value))throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(),"GetFileInformationByHandle"); return value; }
+  static bool Same(FileInfo left,FileInfo right){return left.volume==right.volume&&left.indexHigh==right.indexHigh&&left.indexLow==right.indexLow;}
+  public static void Append(string filename,string root,string line) {
+    string expected=System.IO.Path.GetFullPath(filename), expectedRoot=System.IO.Path.GetFullPath(root);
+    if(!String.Equals(System.IO.Path.GetDirectoryName(expected),expectedRoot,StringComparison.OrdinalIgnoreCase))throw new InvalidOperationException("NATIVE_PROCESS_EVIDENCE_INVALID");
+    var rootInfo=new System.IO.DirectoryInfo(expectedRoot); if((rootInfo.Attributes&System.IO.FileAttributes.ReparsePoint)!=0)throw new InvalidOperationException("NATIVE_PROCESS_EVIDENCE_INVALID");
+    System.IO.FileMode mode=System.IO.File.Exists(expected)?System.IO.FileMode.Open:System.IO.FileMode.CreateNew;
+    using(var stream=new System.IO.FileStream(expected,mode,System.IO.FileAccess.ReadWrite,System.IO.FileShare.None,4096,System.IO.FileOptions.WriteThrough)){
+      FileInfo before=Inspect(stream.SafeFileHandle.DangerousGetHandle()); if(before.links!=1||(before.attributes&0x400)!=0||!String.Equals(FinalPath(stream.SafeFileHandle.DangerousGetHandle()),expected,StringComparison.OrdinalIgnoreCase))throw new InvalidOperationException("NATIVE_PROCESS_EVIDENCE_INVALID");
+      stream.Seek(0,System.IO.SeekOrigin.End); byte[] bytes=new System.Text.UTF8Encoding(false).GetBytes(line); stream.Write(bytes,0,bytes.Length); stream.Flush(true);
+      FileInfo after=Inspect(stream.SafeFileHandle.DangerousGetHandle()); if(after.links!=1||!Same(before,after)||!String.Equals(FinalPath(stream.SafeFileHandle.DangerousGetHandle()),expected,StringComparison.OrdinalIgnoreCase))throw new InvalidOperationException("NATIVE_PROCESS_EVIDENCE_INVALID");
+    }
+  }
+}
+public static class GotzjiNativePid { [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hwnd,out uint pid); public static uint For(long hwnd) { uint pid; GetWindowThreadProcessId(new IntPtr(hwnd),out pid); return pid; } }
+'@ | Out-Null
   $script:stage='start'
   $application=New-Object -ComObject $spec.progId
-  if ($provider -ne 'word') { $script:ownedPid=[int][GotzjiNativePid]::For([long]$application.HWND); if ($script:ownedPid -lt 1 -or (Get-Process -Id $script:ownedPid).ProcessName -ne $spec.process) { Fail 'NATIVE_SESSION_IDENTITY_UNVERIFIED' }; if ($existingProviderPids -contains $script:ownedPid) { $script:ownedPid=0; Fail 'NATIVE_SESSION_IN_USE' } }
+  $script:ownedPid=[int][GotzjiNativePid]::For([long]$application.Hwnd)
+  $ownedProcess=Get-Process -Id $script:ownedPid -ErrorAction Stop
+  if ($script:ownedPid -lt 1 -or $ownedProcess.ProcessName -ne $spec.process -or $existingProviderPids -contains $script:ownedPid) { $script:ownedPid=0; Fail 'NATIVE_SESSION_IDENTITY_UNVERIFIED' }
+  $ownedBirth=$ownedProcess.StartTime.ToUniversalTime().Ticks.ToString([Globalization.CultureInfo]::InvariantCulture)
+  $ownedExecutable=[IO.Path]::GetFullPath([string]$ownedProcess.Path)
+  Write-ProcessIdentity $script:ownedPid $ownedBirth $ownedExecutable 'office'
   $version=[string]$application.Version
   if ($provider -eq 'excel') { $application.Visible=$false; $application.DisplayAlerts=$false; $application.AutomationSecurity=3; if ($application.Workbooks.Count -ne 0) { Fail 'NATIVE_SESSION_IN_USE' }; $document=$application.Workbooks.Open($source,0,$true); $before=Excel-Snapshot $document ([string]$request.sheet) ([string]$request.range) }
-  elseif ($provider -eq 'word') { $application.Visible=$false; $application.DisplayAlerts=0; $application.AutomationSecurity=3; if ($application.Documents.Count -ne 0) { Fail 'NATIVE_SESSION_IN_USE' }; $document=$application.Documents.Open($source,$false,$true); $script:ownedPid=[int][GotzjiNativePid]::For([long]$document.Windows.Item(1).Hwnd); if ($script:ownedPid -lt 1 -or (Get-Process -Id $script:ownedPid).ProcessName -ne $spec.process) { Fail 'NATIVE_SESSION_IDENTITY_UNVERIFIED' }; $before=Word-Snapshot $document ([int]$request.paragraph) }
+  elseif ($provider -eq 'word') { $application.Visible=$false; $application.DisplayAlerts=0; $application.AutomationSecurity=3; if ($application.Documents.Count -ne 0) { Fail 'NATIVE_SESSION_IN_USE' }; $document=$application.Documents.Open($source,$false,$true); $before=Word-Snapshot $document ([int]$request.paragraph) }
   elseif ($provider -eq 'powerpoint') { $application.AutomationSecurity=3; if ($application.Presentations.Count -ne 0) { Fail 'NATIVE_SESSION_IN_USE' }; $document=$application.Presentations.Open($source,$true,$false,$false); $before=PowerPoint-Snapshot $document ([int]$request.slide) ([string]$request.shape) }
   else { $application.Visible=$false; foreach ($startupDocument in $application.Documents) { if ($startupDocument.ModelSpace.Count -eq 0 -and $startupDocument.PaperSpace.Count -eq 0 -and $startupDocument.Saved) { $startupBlankNames += [string]$startupDocument.Name } }; $document=$application.Documents.Open($source,$true); $before=Cad-Snapshot $document ([string]$request.handle) }
   $after=$before

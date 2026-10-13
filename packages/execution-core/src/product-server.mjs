@@ -94,7 +94,7 @@ const allowCurrentWork = () => { try { return !startupControlOnly && productRunt
 const controls = new Set(['health', 'list', 'inspectQueue', 'supportReport', 'status', 'logs', 'result', 'cancel', 'settleJob', 'connectionStatus', 'stopConnection', 'browserSession', 'stopBrowserSession', 'libraryChannelStatus', 'stopLibraryConnection', ...(testSecretFixture ? ['testOnlyE2eShutdown'] : [])]);
 let connection;
 const browser = config.browser && !startupControlOnly ? new ProductBrowserService({ directory, ownerId: config.ownerId, credential, core, ...config.browser, prerequisite: productBrowserPrerequisite(path.join(path.dirname(entry), 'product-browser-broker.mjs')) }) : undefined;
-const libraryChannel = new ProductLibraryChannel({ directory, ownerId: config.ownerId, primaryCredential: credential, core, version: runtimeVersion, allowWork: allowCurrentWork, ...(config.tunnel ? { tunnel: config.tunnel } : {}) });
+const libraryChannel = new ProductLibraryChannel({ directory, ownerId: config.ownerId, primaryCredential: credential, core, version: runtimeVersion, allowWork: allowCurrentWork, ...(config.tunnel ? { tunnel: config.tunnel } : {}), ...(testSecretProtector ? { protector: testSecretProtector } : {}) });
 // One event-loop delay meter for this host process (incident I8: lnwjud's load meter read 0 in every sample).
 // Each support report reads it and starts a fresh window.
 const loopDelay = monitorEventLoopDelay({ resolution: 20 }); loopDelay.enable();

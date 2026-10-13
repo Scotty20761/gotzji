@@ -24,7 +24,10 @@ describe('generated control-policy upgrades', () => {
       original(source, destination);
     });
     syncBuiltinESMExports();
-    expect(() => ensureProductControlDocuments(workspace, { stateDirectory: root })).toThrow('PRODUCT_CONTROL_POLICY_DRIFT');
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
+    Object.defineProperty(process, 'platform', { ...platform, value: 'win32' });
+    try { expect(() => ensureProductControlDocuments(workspace, { stateDirectory: root })).toThrow('PRODUCT_CONTROL_POLICY_DRIFT'); }
+    finally { Object.defineProperty(process, 'platform', platform); }
     expect(readFileSync(target, 'utf8')).toBe('Owner edit during retry\n');
     expect(readdirSync(workspace).some((name) => name.includes('.upgrade-'))).toBe(false);
     expect(attempts).toBe(1);

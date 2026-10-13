@@ -109,9 +109,10 @@ is not authorized. Each deferred target must first produce target-host package,
 signature, startup, permission, and recovery evidence for the exact source SHA.
 
 Secure Tunnel continues to target the running Desktop loopback HTTP MCP. The
-packaged direct-stdio launcher is a separate local transport and must not be
-used as a hidden tunnel fallback. API keys are protected by the host secret
-provider; profiles contain references, not plaintext credentials.
+source tree retains direct-stdio compatibility, but gotzji v1 does not package
+that launcher or expose it as a Codex/Claude product route. It must not be used
+as a hidden tunnel fallback. API keys are protected by the host secret provider;
+profiles contain references, not plaintext credentials.
 
 ## Windows-only features that are intentionally cut elsewhere
 

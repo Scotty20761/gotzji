@@ -1,7 +1,11 @@
+import type { ChildProcessWithoutNullStreams } from 'node:child_process';
+import { EventEmitter } from 'node:events';
 import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { PassThrough } from 'node:stream';
+import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { GotzjiNativeAdapter, gotzjiNativeChildEnvironment } from './gotzji-native-adapter.js';
+import { GotzjiNativeAdapter, gotzjiNativeChildEnvironment, runGotzjiNativePowerShell } from './gotzji-native-adapter.js';
 import { nativeBytesDigest, planGotzjiNativeOperation, type GotzjiNativeGrant } from './gotzji-native-contract.js';
 import { GotzjiNativeBrowserAdapter } from './gotzji-native-browser.js';
 import type { BrowserCdpProtocol } from './browser-cdp-backend.js';
@@ -18,7 +22,7 @@ afterEach(async () => {
 async function fixture(): Promise<{ root: string; source: string; output: string; script: string; grant: GotzjiNativeGrant }> {
   await mkdir(qualificationRoot, { recursive: true });
   qualificationRoot = await realpath(qualificationRoot);
-  const root = await mkdtemp(path.join(qualificationRoot, 'native-adapter-test-')); fixtures.push(root);
+  const root = await realpath(await mkdtemp(path.join(qualificationRoot, 'native-adapter-test-'))); qualificationRoot = path.dirname(root); fixtures.push(root);
   const source = path.join(root, 'source.xlsx'); const output = path.join(root, 'result.xlsx'); const script = path.join(root, 'provider.ps1');
   await writeFile(source, 'original'); await writeFile(script, 'pinned provider');
   return { root, source, output, script, grant: { ownerId: 'owner', projectId: 'project', jobId: 'job', operationId: 'operation', rootPath: root, proof: 'private-proof' } };
@@ -26,8 +30,20 @@ async function fixture(): Promise<{ root: string; source: string; output: string
 function input(source: string, output: string): Record<string, unknown> {
   return { operation: 'excel.range.write', filePath: source, outputPath: output, expectedSha256: nativeBytesDigest(Buffer.from('original')), sheet: 'Sheet', range: 'A1', values: [['after']] };
 }
+function fakeChild(): ChildProcessWithoutNullStreams & { kill: ReturnType<typeof vi.fn> } {
+  const child = Object.assign(new EventEmitter(), { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(),
+    kill: vi.fn(() => { void Promise.resolve().then(() => child.emit('close', null, null)); return true; }) });
+  return child as unknown as ChildProcessWithoutNullStreams & { kill: ReturnType<typeof vi.fn> };
+}
 
 describe('gotzji native admission and verification', () => {
+  it('persists the exact Office application identity before any document open and exposes no ambient kill path', async () => {
+    const provider = await readFile(fileURLToPath(new URL('../../../apps/desktop/build/gotzji-native-office.ps1', import.meta.url)), 'utf8');
+    const identity = provider.indexOf("Write-ProcessIdentity $script:ownedPid $ownedBirth $ownedExecutable 'office'");
+    expect(identity).toBeGreaterThan(0);
+    for (const open of ['$application.Workbooks.Open(', '$application.Documents.Open(', '$application.Presentations.Open(']) expect(provider.indexOf(open)).toBeGreaterThan(identity);
+    expect(provider).not.toMatch(/\bStop-Process\b|\.Kill\s*\(/u);
+  });
   it('keeps Windows native prerequisites while excluding inherited credentials and incompatible module paths', () => {
     const environment = gotzjiNativeChildEnvironment({ SystemRoot: 'C:\\Windows', USERPROFILE: 'C:\\Owner', CLAUDE_API_KEY: 'private', SOME_AUTH: 'private', NODE_OPTIONS: 'untrusted-loader', PSModulePath: 'PowerShell-7-modules' });
     expect(environment.USERPROFILE).toBe('C:\\Owner');
@@ -35,13 +51,39 @@ describe('gotzji native admission and verification', () => {
     expect(environment.CLAUDE_API_KEY).toBeUndefined(); expect(environment.SOME_AUTH).toBeUndefined(); expect(environment.NODE_OPTIONS).toBeUndefined();
   });
   it('requires an authentic host grant and provider pin before invoking native code', async () => {
-    const f = await fixture(); const runner = vi.fn();
-    const adapter = new GotzjiNativeAdapter({ scriptPath: f.script, scriptSha256: nativeBytesDigest(Buffer.from('pinned provider')), verifyGrant: async (): Promise<boolean> => false, runner });
+    const f = await fixture(); const runner = vi.fn(); const beforeProviderSpawn = vi.fn(async () => undefined);
+    const adapter = new GotzjiNativeAdapter({ scriptPath: f.script, scriptSha256: nativeBytesDigest(Buffer.from('pinned provider')), verifyGrant: async (): Promise<boolean> => false, beforeProviderSpawn, runner });
     await expect(adapter.execute(f.grant, input(f.source, f.output))).rejects.toThrow('NATIVE_AUTHORITY_DENIED');
-    expect(runner).not.toHaveBeenCalled();
+    expect(runner).not.toHaveBeenCalled(); expect(beforeProviderSpawn).not.toHaveBeenCalled();
     const wrongPin = new GotzjiNativeAdapter({ scriptPath: f.script, scriptSha256: '0'.repeat(64), verifyGrant: async (): Promise<boolean> => true, runner });
     await expect(wrongPin.execute(f.grant, input(f.source, f.output))).rejects.toThrow('NATIVE_PROVIDER_CHANGED');
     expect(runner).not.toHaveBeenCalled();
+  });
+  it.runIf(process.platform === 'win32')('requires and completes the trusted dispatch callback before the default runner can spawn', async () => {
+    const boundary = Object.assign(new Error('SIGNED_DISPATCH_BOUNDARY_REFUSED'), { code: 'SIGNED_DISPATCH_BOUNDARY_REFUSED' });
+    await expect(runGotzjiNativePowerShell('Z:\\path-that-must-not-spawn\\provider.ps1', {}, undefined, undefined, async () => { throw boundary; })).rejects.toBe(boundary);
+    await expect(runGotzjiNativePowerShell('Z:\\path-that-must-not-spawn\\provider.ps1', {})).rejects.toMatchObject({ code: 'NATIVE_DISPATCH_BOUNDARY_REQUIRED' });
+  });
+  it.runIf(process.platform === 'win32')('spawns then stops when abort races the dispatch callback or listener registration', async () => {
+    const duringCallback = new AbortController(); const first = fakeChild(); const firstStart = vi.fn(() => first);
+    await expect(runGotzjiNativePowerShell('synthetic.ps1', {}, duringCallback.signal, undefined, async () => { duringCallback.abort(); }, firstStart)).rejects.toMatchObject({ code: 'NATIVE_TERMINATION_UNVERIFIED', outcome: 'unknown' });
+    expect(firstStart).toHaveBeenCalledTimes(1); expect(first.kill).toHaveBeenCalledTimes(1);
+
+    let aborted = false; const listenerRace = { get aborted(): boolean { return aborted; }, addEventListener: (): void => { aborted = true; }, removeEventListener: (): void => undefined } as unknown as AbortSignal;
+    const second = fakeChild(); const secondStart = vi.fn(() => second); const boundary = vi.fn(async () => undefined);
+    await expect(runGotzjiNativePowerShell('synthetic.ps1', {}, listenerRace, undefined, boundary, secondStart)).rejects.toMatchObject({ code: 'NATIVE_TERMINATION_UNVERIFIED', outcome: 'unknown' });
+    expect(boundary).toHaveBeenCalledTimes(1); expect(secondStart).toHaveBeenCalledTimes(1); expect(second.kill).toHaveBeenCalledTimes(1);
+  });
+  it.runIf(process.platform === 'win32')('records the boundary before a synchronous helper spawn refusal', async () => {
+    const boundary = vi.fn(async () => undefined); const start = vi.fn(() => { throw new Error('synthetic spawn refusal'); });
+    await expect(runGotzjiNativePowerShell('synthetic.ps1', {}, undefined, undefined, boundary, start)).rejects.toMatchObject({ code: 'NATIVE_PROVIDER_START_FAILED', outcome: 'none', confirmedNoProviderProcess: true, noLaunchReason: 'synchronous-spawn-throw' });
+    expect(boundary).toHaveBeenCalledTimes(1); expect(start).toHaveBeenCalledTimes(1);
+  });
+  it.runIf(process.platform === 'win32')('tags only an asynchronous ENOENT with no spawn event or usable PID as no-launch', async () => {
+    const boundary = vi.fn(async () => undefined); const child = fakeChild();
+    const start = vi.fn(() => { void Promise.resolve().then(() => child.emit('error', Object.assign(new Error('missing executable'), { code: 'ENOENT' }))); return child; });
+    await expect(runGotzjiNativePowerShell('synthetic.ps1', {}, undefined, undefined, boundary, start)).rejects.toMatchObject({ code: 'NATIVE_PROVIDER_START_FAILED', confirmedNoProviderProcess: true, noLaunchReason: 'spawn-error-no-pid' });
+    expect(boundary).toHaveBeenCalledTimes(1); expect(start).toHaveBeenCalledTimes(1); expect(child.kill).not.toHaveBeenCalled();
   });
   it('denies stale bytes, existing output, invalid matrices and unexpected/raw fields without changing originals', async () => {
     const f = await fixture();
@@ -57,6 +99,19 @@ describe('gotzji native admission and verification', () => {
     const plan = await planGotzjiNativeOperation(input(f.source, f.output), f.root);
     expect(plan.resourceKeys).toHaveLength(3); expect(plan.resourceKeys[0]).toBe('native-provider:excel');
     await expect(planGotzjiNativeOperation(input(f.source, path.join(qualificationRoot, 'outside.xlsx')), f.root)).rejects.toThrow('NATIVE_SCOPE_DENIED');
+  });
+  it('keeps the private process-evidence binding outside input and binds one Office invocation to the native plan', async () => {
+    const f = await fixture(); const plan = await planGotzjiNativeOperation(input(f.source, f.output), f.root); let observed: unknown;
+    const processEvidence = { schemaVersion: 1 as const, effectRoot: f.root, journalPath: path.join(f.root, 'native-process-identities.jsonl'), jobId: 'job', epoch: 'epoch', generation: 1, planDigest: plan.digest, provider: 'office' as const, evidenceKey: 'a'.repeat(64) };
+    const adapter = new GotzjiNativeAdapter({ scriptPath: f.script, scriptSha256: nativeBytesDigest(Buffer.from('pinned provider')), verifyGrant: async (): Promise<boolean> => true, processEvidence,
+      runner: async (_script, providerInput, _signal, evidence): Promise<unknown> => {
+        observed = { providerInput, evidence }; await writeFile(f.output, 'after');
+        return { operation: 'excel.range.write', provider: 'excel', providerVersion: '16.0', nativePid: 123, sourceSha256: nativeBytesDigest(Buffer.from('original')), outputSha256: nativeBytesDigest(Buffer.from('after')), originalPreserved: true, savedAndReopened: true, unrelatedPreserved: true, verified: true, before: {}, after: {} };
+      } });
+    await expect(adapter.execute(f.grant, input(f.source, f.output))).resolves.toMatchObject({ verified: true });
+    expect(observed).toMatchObject({ providerInput: { operation: 'excel.range.write' }, evidence: { ...processEvidence, provider: 'office' } });
+    expect((observed as { evidence: { invocationId: string } }).evidence.invocationId).toMatch(/^[0-9a-f-]{36}$/u);
+    expect(JSON.stringify((observed as { providerInput: unknown }).providerInput)).not.toContain('evidenceKey');
   });
   it('independently checks original and returned output hashes rather than accepting preservation flags', async () => {
     const f = await fixture();

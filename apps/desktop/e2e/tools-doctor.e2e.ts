@@ -6,7 +6,7 @@ import { createServer } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { electronExecutablePath, terminateProcessTree } from './electron-runtime.js';
+import { electronExecutablePath, terminateOwnedElectronProcess } from './electron-runtime.js';
 import { buildWindowsSecretMigratorFixture, windowsSecretMigratorE2eTimeoutMs } from './windows-secret-migrator-fixture.mjs';
 import { ToolRegistry } from '@lnwjud/mcp-server';
 import { chromium, expect, test, type Browser, type Locator, type Page } from '@playwright/test';
@@ -273,7 +273,10 @@ async function launchDesktop(options: { readonly dataRoot?: string; readonly fix
     return { process, browser, page, dataRoot, fixtureRoot, devToolsPort };
   } catch (cause: unknown) {
     await browser?.close().catch(() => undefined);
-    await terminateProcessTree(process);
+    try { await terminateOwnedElectronProcess(process, devToolsPort); }
+    catch (cleanupCause: unknown) {
+      throw new Error(`Electron launch failed and its owned cleanup did not release DevTools port ${devToolsPort}; fixture roots were retained: ${stderr.join('').slice(-16_384)}`, { cause: cleanupCause });
+    }
     await Promise.all([removeTemporaryRoot(dataRoot), removeTemporaryRoot(fixtureRoot)]);
     throw new Error(`Electron launch failed: ${stderr.join('').slice(-16_384)}`, { cause });
   }
@@ -364,40 +367,8 @@ async function waitForDevTools(port: number, electronProcess: ChildProcess, stde
 
 async function closeDesktop(app: LaunchedDesktop, keepRoots = false): Promise<void> {
   await app.browser.close().catch(() => undefined);
-  await terminateProcessTree(app.process);
-  await terminateDevToolsProcess(app.devToolsPort);
+  await terminateOwnedElectronProcess(app.process, app.devToolsPort);
   if (!keepRoots) await Promise.all([removeTemporaryRoot(app.dataRoot), removeTemporaryRoot(app.fixtureRoot)]);
-}
-
-async function terminateDevToolsProcess(port: number): Promise<void> {
-  if (process.platform !== 'win32') return;
-  const output = await new Promise<string>((resolve) => {
-    const netstat = spawn('netstat.exe', ['-ano', '-p', 'tcp'], { shell: false, windowsHide: true });
-    let stdout = '';
-    netstat.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });
-    netstat.once('error', () => resolve(''));
-    netstat.once('close', () => resolve(stdout));
-  });
-  const suffix = `:${port}`;
-  const pids = new Set<number>();
-  for (const line of output.split(/\r?\n/u)) {
-    const columns = line.trim().split(/\s+/u);
-    if (columns.length < 5 || !columns[1]?.endsWith(suffix) || columns[3] !== 'LISTENING') continue;
-    const pid = Number.parseInt(columns[4] ?? '', 10);
-    if (Number.isInteger(pid) && pid > 0) pids.add(pid);
-  }
-  await Promise.all([...pids].map((pid) => terminatePidTree(pid)));
-  await expect.poll(async () => {
-    try { return !(await fetch(`http://127.0.0.1:${port}/json/version`)).ok; } catch { return true; }
-  }, { timeout: 10_000, intervals: [50, 100, 250] }).toBe(true);
-}
-
-async function terminatePidTree(pid: number): Promise<void> {
-  await new Promise<void>((resolve) => {
-    const killer = spawn('taskkill.exe', ['/PID', String(pid), '/T', '/F'], { shell: false, windowsHide: true });
-    killer.once('error', () => resolve());
-    killer.once('close', () => resolve());
-  });
 }
 
 async function removeTemporaryRoot(root: string): Promise<void> {

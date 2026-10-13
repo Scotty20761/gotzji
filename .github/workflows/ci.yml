@@ -742,7 +742,7 @@ jobs:
       - name: Verify packaged Windows legacy-profile startup
         if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
         env:
-          LNWJUD_PACKAGED_EXECUTABLE: ${{ github.workspace }}/apps/desktop/dist/installers/win-unpacked/lnwjud.exe
+          LNWJUD_PACKAGED_EXECUTABLE: ${{ github.workspace }}/apps/desktop/dist/installers/win-unpacked/gotzji.exe
         run: pnpm --filter @lnwjud/desktop exec playwright test --config playwright.config.ts --grep "Windows upgrade opens"
 
       - name: Upload Windows E2E diagnostics

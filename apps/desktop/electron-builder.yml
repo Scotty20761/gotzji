@@ -56,8 +56,6 @@ extraResources:
     to: agent-skills/ponytail-gain
   - from: ../../.agents/skills/ponytail-help
     to: agent-skills/ponytail-help
-# Target-native STDIO launchers invoke the packaged Electron host. No private
-# Node runtime or duplicated CJS entry is shipped.
 win:
   icon: build/icon.ico
   target:
@@ -70,9 +68,6 @@ win:
   artifactName: gotzji-Setup-${version}.${ext}
   # Keep the branded icon embedded in gotzji.exe for Windows shortcuts and taskbar.
   signAndEditExecutable: true
-  extraFiles:
-    - from: build/gotzji-mcp-stdio.cmd
-      to: gotzji-mcp-stdio.cmd
   extraResources:
     - from: build/capability-bridge/windows-capability-bridge.ps1
       to: windows-capability-bridge.ps1
@@ -107,10 +102,6 @@ mac:
         - x64
         - arm64
   artifactName: gotzji-${version}-${arch}.${ext}
-  extraFiles:
-    - from: build/gotzji-mcp-stdio.sh
-      # Shell scripts belong in Resources, not the signed-code area at Contents.
-      to: Resources/gotzji-mcp-stdio
   extraResources:
     - from: build/native-host/macos
       to: native-host/macos
@@ -132,9 +123,6 @@ linux:
         - arm64
   # Keep release filenames aligned with runtime evidence (x64, not amd64/x86_64).
   artifactName: gotzji-${version}-${env.LNWJUD_RUNTIME_ARCH}.${ext}
-  extraFiles:
-    - from: build/gotzji-mcp-stdio.sh
-      to: gotzji-mcp-stdio
   extraResources:
     - from: build/native-host/linux
       to: native-host/linux

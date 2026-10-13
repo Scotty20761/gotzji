@@ -128,7 +128,10 @@ describe('direct project file reads', () => {
       original(source, destination);
     });
     syncBuiltinESMExports();
-    expect(() => productBrokerCall(config, 'execute_operation', {}, true)).toThrow('FILE_VERSION_CONFLICT');
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
+    Object.defineProperty(process, 'platform', { ...platform, value: 'win32' });
+    try { expect(() => productBrokerCall(config, 'execute_operation', {}, true)).toThrow('FILE_VERSION_CONFLICT'); }
+    finally { Object.defineProperty(process, 'platform', platform); }
     expect(attempts).toBe(1);
     expect(await readFile(target, 'utf8')).toBe('external owner change');
     vi.restoreAllMocks(); syncBuiltinESMExports();

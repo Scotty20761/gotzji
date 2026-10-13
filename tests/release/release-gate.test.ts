@@ -74,7 +74,8 @@ describe('MVP release verification gate', () => {
 
   it('describes the owned mutation and enrollment boundaries without inherited raw-tool claims', async () => {
     const readme = await readFile(path.join(repositoryRoot, 'FULL_README.md'), 'utf8');
-    expect(readme).toContain('Grace controls work');
+    expect(readme).toContain('Grace controls mutations and durable workflows');
+    expect(readme).toContain('Project file reads execute directly in that host');
     expect(readme).toContain('Policies and file versions are checked before an effect');
     expect(readme).toContain('Project/recipe/connection enrollment stays in the local app');
     expect(readme).toContain('uncertain termination preserves its fence');
@@ -117,6 +118,8 @@ describe('MVP release verification gate', () => {
     expect(workflow).toContain('scripts/verify-release.ps1 -SkipWindowsPackaging -SkipWorkspaceTests');
     expect(workflow).toContain("github.ref != 'refs/heads/main'");
     expect(workflow).toContain('Run authoritative release verification gate');
+    expect(workflow).toContain('apps/desktop/dist/installers/win-unpacked/gotzji.exe');
+    expect(workflow).not.toContain('apps/desktop/dist/installers/win-unpacked/lnwjud.exe');
     expect(workflow).toContain("github.ref == 'refs/heads/main'");
     expect(workflow).toContain("(github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'");
   });

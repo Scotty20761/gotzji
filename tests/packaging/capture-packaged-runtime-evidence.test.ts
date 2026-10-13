@@ -75,10 +75,9 @@ async function fixture(platform: 'linux' | 'darwin', arch = 'x64'): Promise<{
   const bundle = platform === 'darwin' ? path.join(appOutDir, 'gotzji.app') : appOutDir;
   const resources = platform === 'darwin' ? 'Contents/Resources' : 'resources';
   const executable = platform === 'darwin' ? 'Contents/MacOS/gotzji' : 'gotzji';
-  const launcher = platform === 'darwin' ? 'Contents/Resources/gotzji-mcp-stdio' : 'gotzji-mcp-stdio';
   const nativeName = platform === 'darwin' ? 'lnwjud-macos-host' : 'lnwjud-linux-host';
   const nativeDir = `${resources}/native-host/${platform === 'darwin' ? 'macos' : 'linux'}/${arch}`;
-  const binaries = [executable, launcher, `${resources}/runtime-tools/ripgrep/rg`, `${resources}/tunnel-client/tunnel-client`, `${nativeDir}/${nativeName}`];
+  const binaries = [executable, `${resources}/runtime-tools/ripgrep/rg`, `${resources}/tunnel-client/tunnel-client`, `${nativeDir}/${nativeName}`];
   async function put(relative: string, text: string, mode = 0o100644): Promise<void> {
     const file = path.join(bundle, relative);
     await fs.mkdir(path.dirname(file), { recursive: true });
@@ -118,7 +117,7 @@ describe.each(['linux', 'darwin'] as const)('%s packaged runtime hook', (platfor
     expect(state.outputs).toHaveLength(1);
     const result = JSON.parse(state.outputs[0]);
     expect(result).toMatchObject({ schemaVersion: 1, platform, arch, capabilityBridge: null });
-    expect(result.files).toHaveLength(11);
+    expect(result.files).toHaveLength(10);
     for (const file of result.files) {
       const bytes = await fs.readFile(path.join(f.bundle, file.relativePath));
       expect(file.sizeBytes).toBe(bytes.length);
@@ -127,7 +126,7 @@ describe.each(['linux', 'darwin'] as const)('%s packaged runtime hook', (platfor
     expect(result.files.find((file: { name: string }) => file.name === 'native-host-manifest').relativePath).toBe(f.nativeManifest);
   });
 
-  it.each([0, 1, 2, 3, 4])('rejects non-executable runtime binary %i', async (index) => {
+  it.each([0, 1, 2, 3])('rejects non-executable runtime binary %i', async (index) => {
     const f = await fixture(platform);
     state.modes.set(path.join(f.bundle, f.binaries[index]), 0o100644);
     await expect(capture(f.context)).rejects.toThrow(`not executable: ${f.binaries[index]}`);
@@ -159,14 +158,14 @@ describe.each(['linux', 'darwin'] as const)('%s packaged runtime hook', (platfor
 
   it('rejects changed native-host bytes even with the same size', async () => {
     const f = await fixture(platform);
-    await f.put(f.binaries[4], 'Binary fixture\n', 0o100755);
+    await f.put(f.binaries[3], 'Binary fixture\n', 0o100755);
     await expect(capture(f.context)).rejects.toThrow('native-host hash mismatch');
     expect(state.outputs).toHaveLength(0);
   });
 
   it('rejects changed runtime bytes', async () => {
     const f = await fixture(platform);
-    await f.put(f.binaries[2], 'changed', 0o100755);
+    await f.put(f.binaries[1], 'changed', 0o100755);
     await expect(capture(f.context)).rejects.toThrow('runtime manifest executable hash mismatch');
     expect(state.outputs).toHaveLength(0);
   });
@@ -189,7 +188,7 @@ it('rejects unsupported architecture before writing evidence', async () => {
 it('fails afterSign when signing changes bytes recorded in the source manifest', async () => {
   const f = await fixture('darwin');
   await capture(f.context); // afterPack
-  await f.put(f.binaries[2], 'binary fixture\nwith signature', 0o100755);
+  await f.put(f.binaries[1], 'binary fixture\nwith signature', 0o100755);
   await expect(capture(f.context)).rejects.toThrow('runtime manifest executable hash mismatch');
   // The earlier evidence is still present: it must not be treated as signed proof.
   expect(state.outputs).toHaveLength(1);
@@ -244,12 +243,12 @@ describe('macOS signing transaction', () => {
     const signApp = vi.fn(async (options: Omit<SignConfiguration, 'ignore'> & { ignore: (file: string) => boolean }): Promise<void> => {
       expect(options.optionsForFile(f.bundle).entitlements).toBe('/build/inherit.plist');
       const ignored = await installedIgnorePredicate(options);
-      for (const binary of f.binaries.slice(2)) expect(ignored(path.join(f.bundle, binary))).toBe(true);
+      for (const binary of f.binaries.slice(1)) expect(ignored(path.join(f.bundle, binary))).toBe(true);
       expect(ignored(path.join(f.bundle, f.binaries[0]))).toBe(false);
       expect(ignored(f.bundle)).toBe(false);
       expect(ignored(path.join(f.bundle, f.nativeManifest))).toBe(false);
       expect(ignored(path.join(f.bundle, 'other.kext'))).toBe(true);
-      expect(ignored(path.join(f.bundle, f.binaries[2]) + '.other')).toBe(false);
+      expect(ignored(path.join(f.bundle, f.binaries[1]) + '.other')).toBe(false);
       // Manifest integrity must already pass before the outer app is sealed.
       const native = JSON.parse(await fs.readFile(path.join(f.bundle, f.nativeManifest), 'utf8'));
       expect(native.sha256).toBe(digest('binary fixture\nsigned bytes'));
@@ -321,7 +320,7 @@ describe('macOS signing transaction', () => {
     expect(signApp).toHaveBeenCalledTimes(2);
     const normalized = signApp.mock.calls[0]![0] as unknown as { ignore: (file: string) => boolean };
     expect(normalized.ignore(path.join(f.bundle, 'Contents', 'Frameworks', 'Electron Framework.framework'))).toBe(false);
-    for (const runtime of f.binaries.slice(2)) expect(normalized.ignore(path.join(f.bundle, runtime))).toBe(true);
+    for (const runtime of f.binaries.slice(1)) expect(normalized.ignore(path.join(f.bundle, runtime))).toBe(true);
     await capture(f.context);
     expect(JSON.parse(state.outputs.at(-1)!).signing).toEqual({
       mode: 'ad-hoc', policy: expect.objectContaining({ schemaVersion: 1, mode: 'ad-hoc', arch: 'arm64' }),
@@ -342,7 +341,7 @@ describe('macOS signing transaction', () => {
 
   it('rejects tampered source bytes before signing', async () => {
     const f = await fixture('darwin');
-    await f.put(f.binaries[2], 'tampered', 0o100755);
+    await f.put(f.binaries[1], 'tampered', 0o100755);
     const run = vi.fn(fakeCodesign);
     await expect(signPackagedMacosRuntime(signingConfiguration(f.bundle), { run, signApp: vi.fn() }))
       .rejects.toThrow('hash mismatch');
@@ -369,7 +368,7 @@ describe('macOS signing transaction', () => {
     const f = await fixture('darwin');
     const signApp = async (): Promise<void> => {
       if (failure === 'signer-failure') throw new Error('signer failed');
-      await fs.appendFile(path.join(f.bundle, failure === 'binary' ? f.binaries[2] : f.nativeManifest), ' ');
+      await fs.appendFile(path.join(f.bundle, failure === 'binary' ? f.binaries[1] : f.nativeManifest), ' ');
     };
     await expect(signPackagedMacosRuntime(signingConfiguration(f.bundle), { run: fakeCodesign, signApp })).rejects.toThrow();
     expect(JSON.parse(state.outputs.at(-1)!).schemaVersion).toBe(0);

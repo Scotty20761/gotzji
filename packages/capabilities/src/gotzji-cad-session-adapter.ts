@@ -1,7 +1,8 @@
+import { randomUUID } from 'node:crypto';
 import { lstat, readFile, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { GotzjiNativeError, nativeBytesDigest, nativeFileDigest, planGotzjiNativeOperation, type GotzjiNativeGrant, type GotzjiNativeOperation, type GotzjiNativeReceipt } from './gotzji-native-contract.js';
-import { runGotzjiNativePowerShell } from './gotzji-native-adapter.js';
+import { runGotzjiNativePowerShell, type GotzjiNativeProcessEvidenceBinding, type GotzjiNativeProcessInvocation, type GotzjiNativeRunner } from './gotzji-native-adapter.js';
 
 export interface GotzjiCadSessionOptions {
   readonly scriptPath: string;
@@ -9,7 +10,9 @@ export interface GotzjiCadSessionOptions {
   readonly executable: string;
   readonly executableSha256: string;
   readonly verifyGrant: (grant: GotzjiNativeGrant, digest: string, resourceKeys: readonly string[]) => Promise<boolean>;
-  readonly runner?: (scriptPath: string, input: unknown, signal?: AbortSignal) => Promise<unknown>;
+  readonly processEvidence?: GotzjiNativeProcessEvidenceBinding;
+  readonly beforeProviderSpawn?: (attempt: number) => Promise<void>;
+  readonly runner?: GotzjiNativeRunner;
 }
 interface CadLine {
   readonly handle: string;
@@ -40,6 +43,7 @@ interface CadSessionResult {
 
 /** Fixed LINE actions in nonce/HWND/PID/birth-bound sessions; ambient COM is never used. */
 export class GotzjiCadSessionAdapter {
+  private dispatchAttempt = 0;
   public constructor(private readonly options: GotzjiCadSessionOptions) {}
 
   public async execute(grant: GotzjiNativeGrant, input: unknown, signal?: AbortSignal): Promise<GotzjiNativeReceipt> {
@@ -52,13 +56,13 @@ export class GotzjiCadSessionAdapter {
     const executable = await this.pinnedFile(this.options.executable, this.options.executableSha256);
     const runner = this.options.runner ?? runGotzjiNativePowerShell;
     if (plan.input.operation === 'cad.layers.inspect') {
-      const session = layerSession(await runner(script, { ...plan.input, executable }, signal));
+      const session = layerSession(await runner(script, { ...plan.input, executable }, signal, this.invocation(plan.digest), this.dispatchBoundary()));
       if (await nativeFileDigest(plan.input.filePath) !== plan.input.expectedSha256) throw new GotzjiNativeError('NATIVE_ORIGINAL_CHANGED', undefined, 'unknown');
       const table: CadLayerTable = { count: session.native.count, current: session.native.current, digest: session.native.digest, layers: session.native.layers };
       // A read returns the table once.
       return { operation: plan.input.operation, provider: 'cad', providerVersion: session.providerVersion, nativePid: session.nativePid, sourceSha256: plan.input.expectedSha256, outputSha256: null, originalPreserved: true, savedAndReopened: false, unrelatedPreserved: true, verified: true, before: table, after: null, ...(session.crashPromptDeclined === true ? { crashPromptDeclined: true as const } : {}) };
     }
-    const first = sessionResult(await runner(script, { ...plan.input, executable }, signal));
+    const first = sessionResult(await runner(script, { ...plan.input, executable }, signal, this.invocation(plan.digest), this.dispatchBoundary()));
     if (first.native.before.handle.toUpperCase() !== (plan.input as Extract<GotzjiNativeOperation, { operation: 'cad.entity.inspect' | 'cad.entity.move' }>).handle.toUpperCase()) throw new GotzjiNativeError('CAD_SESSION_ENTITY_MISMATCH', 'handle', 'unknown');
     let after = first.native.after;
     let outputSha256: string | null = null;
@@ -77,7 +81,7 @@ export class GotzjiCadSessionAdapter {
         throw new GotzjiNativeError(error instanceof GotzjiNativeError ? error.code : 'NATIVE_AUTHORITY_DENIED', undefined, 'unknown');
       }
       // Reopen in another newly owned native process after the saved session has exited.
-      const second = sessionResult(await runner(script, { operation: 'cad.entity.inspect', filePath: operation.outputPath, expectedSha256: outputSha256, handle: operation.handle, executable }, signal));
+      const second = sessionResult(await runner(script, { operation: 'cad.entity.inspect', filePath: operation.outputPath, expectedSha256: outputSha256, handle: operation.handle, executable }, signal, this.invocation(plan.digest), this.dispatchBoundary()));
       if (!sameLine(after, second.native.before) || first.unrelatedHash !== second.unrelatedHash) throw new GotzjiNativeError('CAD_SESSION_REOPEN_UNVERIFIED', undefined, 'unknown');
       if (outputSha256 !== await nativeFileDigest(operation.outputPath)) throw new GotzjiNativeError('CAD_SESSION_OUTPUT_CHANGED', 'outputPath', 'unknown');
       after = second.native.before;
@@ -97,6 +101,21 @@ export class GotzjiCadSessionAdapter {
     const metadata = await lstat(filename);
     if (!metadata.isFile() || metadata.isSymbolicLink() || actual.toLowerCase() !== path.resolve(filename).toLowerCase() || nativeBytesDigest(await readFile(actual)) !== expected) throw new GotzjiNativeError('NATIVE_PROVIDER_CHANGED');
     return actual;
+  }
+  private invocation(planDigest: string): GotzjiNativeProcessInvocation | undefined {
+    const binding = this.options.processEvidence;
+    if (!binding) {
+      if (!this.options.runner) throw new GotzjiNativeError('NATIVE_PROCESS_EVIDENCE_REQUIRED');
+      return undefined;
+    }
+    if (binding.schemaVersion !== 1 || binding.planDigest !== planDigest || !path.isAbsolute(binding.effectRoot)
+      || binding.provider !== 'cad-session'
+      || path.dirname(binding.journalPath).toLowerCase() !== binding.effectRoot.toLowerCase()
+      || path.basename(binding.journalPath) !== 'native-process-identities.jsonl' || !/^[a-f0-9]{64}$/u.test(binding.evidenceKey)) throw new GotzjiNativeError('NATIVE_PROCESS_EVIDENCE_INVALID');
+    return { ...binding, invocationId: randomUUID() };
+  }
+  private dispatchBoundary(): (() => Promise<void>) | undefined {
+    return this.options.beforeProviderSpawn ? async (): Promise<void> => this.options.beforeProviderSpawn!(++this.dispatchAttempt) : undefined;
   }
 }
 
