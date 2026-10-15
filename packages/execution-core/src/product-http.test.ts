@@ -7,6 +7,32 @@ import { request as httpRequest } from 'node:http';
 import { libraryCatalog } from './product-library.js';
 
 describe('governed product HTTP and MCP boundary', () => {
+  it('returns direct file data as structured content while preserving the legacy text result', async () => {
+    const file = { content: 'proof\nทดสอบภาษาไทย\n', sha256: 'a'.repeat(64) };
+    const calls: string[] = [];
+    const host = await startProductHttp({ token: 'owner', mcpPathSecret: 'tunnel', rpc: async (method) => {
+      calls.push(method);
+      return method === 'readProjectFile' ? file : { state: 'ready' };
+    } });
+    const call = async (name: string, args: Record<string, unknown>): Promise<{ structuredContent?: unknown; content: { type: string; text: string }[]; isError: boolean }> => (await (await fetch(`http://127.0.0.1:${host.port}/mcp/tunnel`, {
+      method: 'POST', body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }),
+    })).json()).result;
+    try {
+      const result = await call('gotzji_read_file', { projectId: 'project', path: 'proof.txt' });
+      expect(result.structuredContent).toEqual(file);
+      expect(result.content).toEqual([{ type: 'text', text: JSON.stringify(file) }]);
+      expect(result.isError).toBe(false);
+      expect(calls).toEqual(['readProjectFile']);
+      const health = await call('gotzji_health', {});
+      expect(health.structuredContent).toBeUndefined();
+      expect(JSON.parse(health.content[0].text)).toEqual({ state: 'ready' });
+      file.content = 'x'.repeat(1024 * 1024);
+      const large = await call('gotzji_read_file', { projectId: 'project', path: 'large.txt' });
+      expect(large.structuredContent).toBeUndefined();
+      expect(JSON.parse(large.content[0].text)).toEqual(file);
+    } finally { await host.close(); }
+  });
+
   it('keeps registration off MCP and rejects credentialless, forged host and browser-origin calls', async () => {
     const calls: string[] = [];
     const host = await startProductHttp({ token: 'private-owner-token', mcpPathSecret: 'private-tunnel-path', rpc: async (method) => { calls.push(method); return { method }; } });

@@ -32,11 +32,12 @@ describe('direct reads through the actual product server', () => {
       }
       expect(endpoint).not.toBe('');
       const rpc = async (method: string, input: object): Promise<{ ok: boolean; value: unknown }> => (await (await fetch(`${endpoint}/rpc`, { method: 'POST', headers: { Authorization: `Bearer ${config.daemonSecret}` }, body: JSON.stringify({ method, input }) })).json()) as { ok: boolean; value: unknown };
-      const tool = async (name: string, input: object): Promise<{ result: { isError: boolean; content: { text: string }[] } }> => (await (await fetch(`${endpoint}/mcp/${config.mcpPathSecret}`, { method: 'POST', body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: input } }) })).json()) as { result: { isError: boolean; content: { text: string }[] } };
+      const tool = async (name: string, input: object): Promise<{ result: { isError: boolean; structuredContent?: unknown; content: { text: string }[] } }> => (await (await fetch(`${endpoint}/mcp/${config.mcpPathSecret}`, { method: 'POST', body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: input } }) })).json()) as { result: { isError: boolean; structuredContent?: unknown; content: { text: string }[] } };
       expect((await rpc('registerProject', { projectId: 'project', displayName: 'Synthetic', rootPath: project })).ok).toBe(true);
       const read = await tool('gotzji_read_file', { projectId: 'project', path: 'note.txt' });
       expect(read.result.isError).toBe(false);
       expect(JSON.parse(read.result.content[0]!.text)).toMatchObject({ content: 'hello\n', sha256: '5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03' });
+      expect(read.result.structuredContent).toEqual(JSON.parse(read.result.content[0]!.text));
       expect((await tool('gotzji_list_files', { projectId: 'project' })).result.isError).toBe(false);
       expect((await tool('gotzji_search_files', { projectId: 'project', query: 'hello' })).result.isError).toBe(false);
       const readTimes: number[] = [];
@@ -54,6 +55,7 @@ describe('direct reads through the actual product server', () => {
       await link(path.join(directory, 'product-host.sealed.json'), path.join(project, 'private-alias.json'));
       const denied = await tool('gotzji_read_file', { projectId: 'project', path: 'private-alias.json' });
       expect(denied.result.isError).toBe(true);
+      expect(denied.result.structuredContent).toBeUndefined();
       expect(JSON.parse(denied.result.content[0]!.text)).toMatchObject({ error: { code: 'FILE_LINK_SCOPE_DENIED' } });
       expect((await tool('gotzji_prepare_operation', { requestId: 'legacy-alias', projectId: 'project', operation: 'file.read', path: 'private-alias.json' })).result.isError).toBe(true);
       for (const name of ['gotzji_read_file', 'gotzji_list_files', 'gotzji_search_files']) {

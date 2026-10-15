@@ -137,7 +137,10 @@ export async function startProductHttp(options: { token: string; mcpPathSecret: 
       assertInput(tool.method, params.arguments);
       if (options.inputSchema && !accepts(options.inputSchema(tool.method), params.arguments)) throw new CoreError('PRODUCT_SCHEMA_INVALID');
       const value = await options.rpc(tool.method, params.arguments, surface);
-      reply(200, { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: JSON.stringify(value) }], isError: false } });
+      const result = { content: [{ type: 'text', text: JSON.stringify(value) }], ...(tool.method === 'readProjectFile' && record(value) ? { structuredContent: value } : {}), isError: false };
+      // Keep the existing bridge budget and legacy text path for large file results.
+      if (result.structuredContent && Buffer.byteLength(JSON.stringify(result), 'utf8') > 2 * 1024 * 1024 - 512) delete result.structuredContent;
+      reply(200, { jsonrpc: '2.0', id, result });
     } catch (error) { reply(200, surface === 'app' ? { ok: false, error: safeError(error) } : isToolCall
       ? { jsonrpc: '2.0', id: requestId, result: { content: [{ type: 'text', text: JSON.stringify({ error: safeError(error) }) }], isError: true } }
       : { jsonrpc: '2.0', error: { code: -32602, message: safeError(error).code }, id: requestId }); }
