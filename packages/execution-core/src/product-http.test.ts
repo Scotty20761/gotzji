@@ -24,6 +24,7 @@ describe('governed product HTTP and MCP boundary', () => {
       const response = await fetch(mcp, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 7, method: 'tools/list' }) });
       const list = await response.json() as { result: { tools: { name: string; inputSchema: object }[] } };
       expect(list.result.tools.map((tool) => tool.name)).not.toContain('registerProject');
+      expect(list.result.tools.map((tool) => tool.name)).not.toContain('registerBuiltinCommand');
       expect(list.result.tools.map((tool) => tool.name)).toContain('gotzji_cancel');
       const denied = await fetch(mcp, { method: 'POST', body: JSON.stringify({ jsonrpc: '2.0', id: 8, method: 'tools/call', params: { name: 'registerProject', arguments: {} } }) });
       expect((await denied.json()).result.isError).toBe(true);

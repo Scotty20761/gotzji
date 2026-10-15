@@ -87,6 +87,7 @@ export class ExecutionCore {
   readonly #native: CoreNativeOptions | null;
   readonly #library: TrustedLibraryOptions | null;
   #browser: CoreBrowserOptions | null;
+  readonly #builtinRecipes = new Map<string, Map<string, string>>();
   readonly #privateRuntimeRoots: readonly string[];
   #timer: ReturnType<typeof setInterval> | undefined;
   readonly #retentionBytes: number;
@@ -230,15 +231,30 @@ export class ExecutionCore {
     this.#store.database.connection.prepare('INSERT OR IGNORE INTO gotzji_projects VALUES (?,?,?)').run(adapter.owner, project.projectId, JSON.stringify(project));
     return project;
   }
+  /** Packaged host bootstrap only. App updates append immutable revisions; project approval never moves. */
+  public registerBuiltinCommand(credential: string, registration: ReviewedCommandRegistration): CatalogEntry {
+    const adapter = this.authorize(credential, true);
+    if (this.#grace?.recipe !== 'product') throw new CoreError('PRODUCT_PROFILE_REQUIRED');
+    if (!['node-check', 'pnpm-build', 'pnpm-test', 'pnpm-lint', 'pnpm-typecheck'].includes(registration.recipeId)) throw new CoreError('BUILTIN_RECIPE_DENIED');
+    const recipe = reviewedRecipe(registration);
+    const revision = `${registration.recipeId}-${hash(JSON.stringify(recipe)).slice(0, 48)}`;
+    const versioned = { ...recipe, recipeId: revision, builtinId: registration.recipeId };
+    const entry = this.storeReviewedCommand(adapter.owner, versioned);
+    const current = this.#builtinRecipes.get(adapter.owner) ?? new Map<string, string>();
+    current.set(registration.recipeId, revision); this.#builtinRecipes.set(adapter.owner, current);
+    return entry;
+  }
   /** Trusted composition, test setup, or the owner through the local app (incident I7). Never callable through MCP. */
   public registerReviewedCommand(credential: string, registration: ReviewedCommandRegistration): CatalogEntry {
     const adapter = this.authorize(credential, true);
     if (this.#grace?.recipe !== 'product') throw new CoreError('PRODUCT_PROFILE_REQUIRED');
-    const recipe = reviewedRecipe(registration);
+    return this.storeReviewedCommand(adapter.owner, reviewedRecipe(registration));
+  }
+  private storeReviewedCommand(owner: string, recipe: ReturnType<typeof reviewedRecipe>): CatalogEntry {
     const serialized = JSON.stringify(recipe);
-    const previous = this.#store.database.connection.prepare('SELECT recipe FROM gotzji_reviewed_recipes WHERE owner=? AND recipe_id=?').get(adapter.owner, recipe.recipeId);
+    const previous = this.#store.database.connection.prepare('SELECT recipe FROM gotzji_reviewed_recipes WHERE owner=? AND recipe_id=?').get(owner, recipe.recipeId);
     if (previous && String(previous.recipe) !== serialized) throw new CoreError('RECIPE_REGISTRATION_CONFLICT', 'Review changed code as a new immutable recipe ID', 'recipeId');
-    this.#store.database.connection.prepare('INSERT OR IGNORE INTO gotzji_reviewed_recipes VALUES (?,?,?)').run(adapter.owner, recipe.recipeId, serialized);
+    this.#store.database.connection.prepare('INSERT OR IGNORE INTO gotzji_reviewed_recipes VALUES (?,?,?)').run(owner, recipe.recipeId, serialized);
     return { name: `command.recipe.${recipe.recipeId}`, recipeId: recipe.recipeId, state: 'available', description: recipe.displayName ?? recipe.recipeId, controller: 'grace' };
   }
   /** App-only and append-only: binds a reviewed recipe to a project without rewriting the registration jobs embed. */
@@ -365,7 +381,14 @@ export class ExecutionCore {
   public catalog(credential: string): readonly CatalogEntry[] {
     const adapter = this.authorize(credential);
     const entries = PRODUCT_CATALOG.map((entry) => this.#grace?.recipe === 'product' || entry.state === 'unsupported' ? { ...entry } : { ...entry, state: 'unsupported' as const, reason: 'PRODUCT_PROFILE_REQUIRED' });
-    const recipes = this.#store.database.connection.prepare('SELECT recipe_id,recipe FROM gotzji_reviewed_recipes WHERE owner=? ORDER BY recipe_id').all(adapter.owner).map((row): CatalogEntry => ({ name: `command.recipe.${String(row.recipe_id)}`, recipeId: String(row.recipe_id), state: 'available', ...this.recipeCatalogText(String(row.recipe_id), JSON.parse(String(row.recipe)) as ReviewedCommandRegistration) }));
+    const recipes = this.#store.database.connection.prepare('SELECT recipe_id,recipe FROM gotzji_reviewed_recipes WHERE owner=? ORDER BY recipe_id').all(adapter.owner).map((row): CatalogEntry => {
+      const recipeId = String(row.recipe_id);
+      const recipe = JSON.parse(String(row.recipe)) as ReviewedCommandRegistration & { readonly builtinId?: string };
+      const current = this.#builtinRecipes.get(adapter.owner);
+      const replacement = current?.get(recipe.builtinId ?? recipeId);
+      const superseded = replacement !== undefined && replacement !== recipeId;
+      return { name: `command.recipe.${recipeId}`, recipeId, state: superseded ? 'unsupported' : 'available', ...(superseded ? { reason: 'BUILTIN_RECIPE_SUPERSEDED' } : {}), ...this.recipeCatalogText(recipeId, recipe) };
+    });
     const native = PRODUCT_NATIVE_OPERATIONS.map((name): CatalogEntry => ({ name, state: this.nativeAvailable(name) ? 'available' : 'unsupported', description: `Grace-controlled ${name} with original preservation and native receipt verification`, controller: 'grace', ...(this.nativeAvailable(name) ? {} : { reason: 'NATIVE_PROVIDER_NOT_QUALIFIED' }) }));
     const browser = PRODUCT_BROWSER_OPERATIONS.map((name): CatalogEntry => ({ name, state: this.#browser && this.#grace?.recipe === 'product' && (this.#browser.operations ?? PRODUCT_BROWSER_OPERATIONS).includes(name) ? 'available' : 'unsupported', description:`Grace-controlled ${name} in the enrolled owned browser session`,controller:'grace',...(this.#browser && this.#grace?.recipe === 'product' ? {} : {reason:'BROWSER_PROVIDER_NOT_QUALIFIED'}) }));
     const library: CatalogEntry[] = [];

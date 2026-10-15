@@ -69,7 +69,7 @@ if (!startupControlOnly) {
 }
 const credential = config.credential;
 // Fixed server-owned recipe; caller/project IPC cannot enroll executables or args.
-if (!startupControlOnly) core.registerReviewedCommand(credential, { recipeId: 'node-check', displayName: 'Check selected project source.js syntax', executable: process.execPath, args: ['--check', '${projectRoot}/source.js'], dependencies: ['${projectRoot}/source.js'], timeoutMs: 120000 });
+if (!startupControlOnly) core.registerBuiltinCommand(credential, { recipeId: 'node-check', displayName: 'Check selected project source.js syntax', executable: process.execPath, args: ['--check', '${projectRoot}/source.js'], dependencies: ['${projectRoot}/source.js'], timeoutMs: 120000 });
 if (!startupControlOnly) {
   const projectScript = fileURLToPath(new URL('./product-project-script.mjs', import.meta.url));
   const corepackScript = [
@@ -83,7 +83,7 @@ if (!startupControlOnly) {
       return info.isFile() && !info.isSymbolicLink() ? resolved : undefined;
     } catch { return undefined; }
   }).find((candidate) => candidate !== undefined);
-  if (corepackScript) for (const scriptName of ['build', 'test', 'lint', 'typecheck']) core.registerReviewedCommand(credential, {
+  if (corepackScript) for (const scriptName of ['build', 'test', 'lint', 'typecheck']) core.registerBuiltinCommand(credential, {
     recipeId: `pnpm-${scriptName}`, displayName: `Run the selected project's reviewed pnpm ${scriptName} script`, executable: process.execPath,
     args: [projectScript, corepackScript, '${projectRoot}/package.json', scriptName], dependencies: [projectScript, corepackScript, '${projectRoot}/package.json'], timeoutMs: scriptName === 'test' ? 7_200_000 : 1_800_000,
   });
