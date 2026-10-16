@@ -12,8 +12,9 @@ const desktopRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '
 const mainEntry = path.join(desktopRoot, 'dist', 'main', 'main.js');
 
 test('gotzji production entry exposes governed controls and denies inherited work IPC', async () => {
-  const dataRoot = await mkdtemp(path.join(os.tmpdir(), 'gotzji-desktop-e2e-'));
-  const relative = path.relative(os.tmpdir(), dataRoot);
+  const tempRoot = await realpath(os.tmpdir());
+  const dataRoot = await realpath(await mkdtemp(path.join(tempRoot, 'gotzji-desktop-e2e-')));
+  const relative = path.relative(tempRoot, dataRoot);
   if (!relative || relative.startsWith('..') || path.isAbsolute(relative) || !path.basename(dataRoot).startsWith('gotzji-desktop-e2e-')) {
     throw new Error('Unexpected gotzji E2E cleanup root');
   }
@@ -57,8 +58,8 @@ test('gotzji production entry exposes governed controls and denies inherited wor
     const browserWindow = await app.browserWindow(page);
     expect(await browserWindow.evaluate((window) => window.webContents.getLastWebPreferences().sandbox)).toBe(true);
 
-    libraryProjectRoot = await realpath(await mkdtemp(path.join(os.tmpdir(), 'gotzji-library-panel-e2e-')));
-    const libraryRelative = path.relative(os.tmpdir(), libraryProjectRoot);
+    libraryProjectRoot = await realpath(await mkdtemp(path.join(tempRoot, 'gotzji-library-panel-e2e-')));
+    const libraryRelative = path.relative(tempRoot, libraryProjectRoot);
     if (!libraryRelative || libraryRelative.startsWith('..') || path.isAbsolute(libraryRelative) || !path.basename(libraryProjectRoot).startsWith('gotzji-library-panel-e2e-')) throw new Error('Unexpected Library panel fixture root');
     await page.evaluate(async (rootPath) => window.gotzji.request({ method: 'registerProject', input: { projectId: 'library-panel', displayName: 'Library route fixture', rootPath, kind: 'library' } }), libraryProjectRoot);
     await page.getByRole('button', { name: 'รีเฟรช', exact: true }).click();

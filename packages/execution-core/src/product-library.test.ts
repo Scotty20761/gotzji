@@ -1,4 +1,4 @@
-import { access, cp, mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { access, cp, mkdtemp, mkdir, readFile, realpath, readdir, rm, writeFile } from 'node:fs/promises';
 import { readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { createHmac } from 'node:crypto';
 import path from 'node:path';
@@ -25,7 +25,7 @@ const fixtures:Fixture[]=[];
 const policies=['CLAUDE.md','AGENTS.md','references/agent-knowledge-workflow.md','KNOWLEDGE_INDEX.md'];
 async function fixture(runner=false,finalFailure?:'pipeline'|'atom-after-write'|'omit-index',direct=false):Promise<Fixture>{
   const lifecycle=createTestFixtureLifecycle() as FixtureLifecycle;
-  const root=await mkdtemp(path.join(os.tmpdir(),'gotzji-library-'));const library=path.join(root,'library');
+  const root=await realpath(await mkdtemp(path.join(os.tmpdir(),'gotzji-library-')));const library=path.join(root,'library');
   await mkdir(path.join(library,'references'),{recursive:true});
   for(const filename of policies) await writeFile(path.join(library,filename),`Policy ${filename}\n`);
   await mkdir(path.join(library,'.claude','skills','karpathy-guidelines'),{recursive:true});
