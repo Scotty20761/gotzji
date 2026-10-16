@@ -1009,6 +1009,7 @@ if (!specPath) process.exit(64);
 const spec = JSON.parse(await readFile(specPath, 'utf8'));
 await unlink(specPath).catch(() => undefined);
 let metadata = JSON.parse(await readFile(spec.metadataPath, 'utf8'));
+let metadataPublications = Promise.resolve();
 metadata.worker_pid = process.pid;
 await persist();
 let stdoutBytes = 0;
@@ -1044,11 +1045,19 @@ function isTransientMetadataIoError(error) {
 }
 
 async function persist() {
+  const snapshot = JSON.stringify(metadata);
+  const publication = metadataPublications.then(() => persistSnapshot(snapshot));
+  // Each caller still observes its failure; later terminal writes can recover.
+  metadataPublications = publication.catch(() => undefined);
+  return publication;
+}
+
+async function persistSnapshot(snapshot) {
   for (let attempt = 0; attempt < METADATA_IO_RETRY_ATTEMPTS; attempt += 1) {
     const temporaryPath = spec.metadataPath + '.tmp.' + process.pid + '.' + Date.now() + '.' + Math.random().toString(16).slice(2);
     let retryDelayMs = 0;
     try {
-      await writeFile(temporaryPath, JSON.stringify(metadata), 'utf8');
+      await writeFile(temporaryPath, snapshot, 'utf8');
       await rename(temporaryPath, spec.metadataPath);
       return;
     } catch (error) {
