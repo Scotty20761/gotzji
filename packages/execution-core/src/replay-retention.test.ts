@@ -42,7 +42,9 @@ async function until(f: Fixture, predicate: () => Promise<boolean>): Promise<voi
 }
 async function read(f: Fixture, requestId: string): Promise<TaskBinding> {
   const binding = await submit(f, { requestId, projectId: 'one', operation: 'file.read', path: 'notes.txt' });
-  await f.core.resume(f.credential, binding);
+  // A lost control response is inconclusive; reconcile this binding without retrying the operation.
+  try { await f.core.resume(f.credential, binding); }
+  catch (error) { if (!(error instanceof Error) || error.name !== 'TimeoutError') throw error; }
   await until(f, async () => (await f.core.get(f.credential, binding)).status === 'completed');
   return binding;
 }
