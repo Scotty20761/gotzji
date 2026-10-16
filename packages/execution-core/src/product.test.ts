@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile, rm, realpath } from 'node:fs/promises';
+import { access, mkdir, readFile, writeFile, rm, realpath } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -6,15 +6,17 @@ import { DatabaseSync } from 'node:sqlite';
 import { afterEach, describe, expect, it } from 'vitest';
 import { ExecutionCore } from './core.js';
 import { hash, type WorkerRow } from './store.js';
-import { stopWorker, callWorker, signed, observeWorker } from './managed-worker.js';
+import { alive, stopWorker, callWorker, signed, observeWorker } from './managed-worker.js';
 import type { TaskBinding, ProductOperationInput } from './types.js';
 import type { ProductGraceRegistration } from './grace-profile.js';
 import { filesystem } from './product-projects.js';
 import { canonicalTemporaryDirectory } from './test-fixtures.js';
 const { productBrokerCall } = await import('./product-broker.mjs');
 const { childEnvironment, sanitizedStream } = await import('./product-security.mjs');
+const { createTestFixtureLifecycle, waitForFixture } = await import('./test-fixture-lifecycle.mjs');
 
-interface Fixture { root: string; core: ExecutionCore; credential: string; bindings: TaskBinding[]; profile: ProductGraceRegistration }
+interface FixtureLifecycle { run<T>(operation: (signal: AbortSignal) => Promise<T>): Promise<T>; close(): Promise<void> }
+interface Fixture { root: string; core: ExecutionCore; credential: string; bindings: TaskBinding[]; profile: ProductGraceRegistration; lifecycle: FixtureLifecycle }
 const fixtures: Fixture[] = [];
 async function fixture(options: { now?: () => Date; quotaReset?: number; delayedProductMs?: number } = {}): Promise<Fixture> {
   const root = await canonicalTemporaryDirectory('gotzji-product-');
@@ -34,7 +36,7 @@ async function fixture(options: { now?: () => Date; quotaReset?: number; delayed
   const profile = { executable: process.execPath, libraryRoot: library, testDriver };
   const core = await ExecutionCore.open(path.join(root, 'state'), { product: profile, ...(options.now ? { now: options.now } : {}) });
   const credential = core.enrollAdapter('desktop', 'owner');
-  const f = { root, core, credential, bindings: [], profile }; fixtures.push(f);
+  const f = { root, core, credential, bindings: [], profile, lifecycle: createTestFixtureLifecycle() as FixtureLifecycle }; fixtures.push(f);
   return f;
 }
 async function project(f: Fixture, id: string, holdMs = 600, timeoutMs = 10000, releasedByFile = false): Promise<string> {
@@ -53,30 +55,68 @@ async function submit(f: Fixture, input: ProductOperationInput): Promise<TaskBin
   return binding;
 }
 async function until(f: Fixture, predicate: () => Promise<boolean>): Promise<void> {
-  for (let n = 0; n < 200; n++) {
+  await f.lifecycle.run(async (signal) => waitForFixture(signal, async () => {
     try { await f.core.tick(); } catch { /* asserted independently by views */ }
-    if (await predicate()) return;
-    await new Promise((resolve) => setTimeout(resolve, 30));
-  }
-  throw new Error('product state did not settle: ' + JSON.stringify(await f.core.list(f.credential)));
+    return await predicate() ? true : undefined;
+  }));
+}
+async function cleanupFixture(f: Fixture): Promise<void> {
+  const failures: unknown[] = [];
+  try { await f.lifecycle.close(); } catch (error) { failures.push(error); }
+  const db = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'), { timeout: 5000 });
+  let workers: WorkerRow[];
+  try { workers = db.prepare('SELECT * FROM gotzji_workers').all() as unknown as WorkerRow[]; }
+  finally { db.close(); }
+  let stopped = true;
+  try {
+    for (const worker of workers) {
+      if (!await stopWorker(worker) || await observeWorker(worker) !== 'absent') stopped = false;
+    }
+  } finally { f.core.close(); }
+  if (!stopped) failures.push(new Error('Product worker absence unproved'));
+  if (failures.length) throw new AggregateError(failures, `Product fixture cleanup failed; retained ${f.root}`);
+  const root = path.resolve(f.root);
+  if (path.dirname(root) !== await realpath(os.tmpdir()) || !path.basename(root).startsWith('gotzji-product-')) throw new Error('Product cleanup scope denied');
+  await rm(root, { recursive: true, force: true });
 }
 afterEach(async () => {
   for (const f of fixtures.splice(0)) {
-    const db = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'), { timeout: 5000 });
-    const workers = db.prepare('SELECT * FROM gotzji_workers').all() as unknown as WorkerRow[]; db.close();
-    let stopped = true;
-    try {
-      for (const worker of workers) {
-        if (!await stopWorker(worker) || await observeWorker(worker) !== 'absent') stopped = false;
-      }
-    } finally { f.core.close(); }
-    if (!stopped) throw new Error(`Product worker absence unproved; retained ${f.root}`);
-    const root = path.resolve(f.root);
-    if (path.dirname(root) !== await realpath(os.tmpdir()) || !path.basename(root).startsWith('gotzji-product-')) throw new Error('Product cleanup scope denied');
-    await rm(root, { recursive: true, force: true });
+    await cleanupFixture(f);
   }
 });
 describe('governed product operations — real native Goal, file and process seams', () => {
+  it('drains a pending product predicate before closing its core and stopping its synthetic worker', async () => {
+    const f = await fixture(); await project(f, 'pending', 20000, 1200000, true);
+    const binding = await submit(f, { requestId: 'pending-teardown', projectId: 'pending', operation: 'command.run', commandId: 'run' });
+    await f.core.resume(f.credential, binding);
+    await until(f, async () => f.core.logs(f.credential, binding).text.includes('progress-pending'));
+    const db = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'), { timeout: 5000 });
+    let worker: WorkerRow;
+    try { worker = db.prepare('SELECT * FROM gotzji_workers WHERE job_id=?').get(binding.jobId) as unknown as WorkerRow; }
+    finally { db.close(); }
+    const ownedPids = [signed<{ pid: number }>(worker, 'ready.json')!.pid, ...(await callWorker(worker, 'status')).descendants];
+    let entered!: () => void; let release!: () => void;
+    const pending = new Promise<void>((resolve) => { entered = resolve; });
+    const barrier = new Promise<void>((resolve) => { release = resolve; });
+    let readAfterRelease = false; let cleaned = false;
+    const wait = until(f, async () => {
+      entered(); await barrier;
+      f.core.logs(f.credential, binding); readAfterRelease = true;
+      return false;
+    });
+    await pending;
+    const cleanup = cleanupFixture(f).then(() => { cleaned = true; });
+    try {
+      await Promise.resolve(); expect(cleaned).toBe(false);
+      release();
+      await expect(wait).rejects.toThrow('Fixture teardown');
+      await cleanup;
+      fixtures.splice(fixtures.indexOf(f), 1);
+      expect(readAfterRelease).toBe(true);
+      expect(ownedPids.every((pid) => alive(pid) === false)).toBe(true);
+      await expect(access(path.join(f.root, 'state', 'core.sqlite'))).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally { release(); await cleanup; }
+  }, 20000);
   it('renews the exact live command after sleep without stopping or replacing its worker', async () => {
     let now = new Date(); const f = await fixture({ now: () => now });
     // The approved command budget outlasts the 300 s lease; renewal must not extend that command budget.
@@ -109,7 +149,9 @@ describe('governed product operations — real native Goal, file and process sea
       await f.core.resume(f.credential, binding);
       await until(f, async () => f.core.logs(f.credential, binding).text.includes('progress-sleeping'));
       const db = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'), { timeout: 5000 });
-      const worker = db.prepare('SELECT * FROM gotzji_workers WHERE job_id=?').get(binding.jobId) as unknown as WorkerRow;
+      let worker: WorkerRow;
+      try { worker = db.prepare('SELECT * FROM gotzji_workers WHERE job_id=?').get(binding.jobId) as unknown as WorkerRow; }
+      finally { db.close(); }
       await until(f, async () => !!signed<{ childIdentity?: unknown }>(worker, 'product-run.json')?.childIdentity);
       await writeFile(path.join(f.root, 'sleeping', 'pause'), 'pause progress writes');
       await until(f, async () => f.core.logs(f.credential, binding).text.includes('pause-ack-sleeping'));
@@ -121,10 +163,15 @@ describe('governed product operations — real native Goal, file and process sea
         else run.startedAt = new Date(now.getTime() - 1200001).toISOString();
         const body = JSON.stringify(run);
         await writeFile(path.join(worker.directory, 'product-run.json'), JSON.stringify({ body, mac: (await import('node:crypto')).createHmac('sha256', worker.token).update(body).digest('hex') }));
-      } else if (changed === 'resource') db.prepare('DELETE FROM gotzji_resource_claims WHERE job_id=?').run(binding.jobId);
-      else if (changed === 'writer') db.prepare('UPDATE gotzji_writers SET root=? WHERE job_id=?').run('wrong-root', binding.jobId);
-      else db.prepare('UPDATE goals SET lease_generation=lease_generation+1,lease_token_hash=? WHERE id=(SELECT goal_id FROM gotzji_claims WHERE id=?)').run('b'.repeat(64), binding.jobId);
-      db.close(); now = new Date(now.getTime() + 301000);
+      } else {
+        const mutation = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'), { timeout: 5000 });
+        try {
+          if (changed === 'resource') mutation.prepare('DELETE FROM gotzji_resource_claims WHERE job_id=?').run(binding.jobId);
+          else if (changed === 'writer') mutation.prepare('UPDATE gotzji_writers SET root=? WHERE job_id=?').run('wrong-root', binding.jobId);
+          else mutation.prepare('UPDATE goals SET lease_generation=lease_generation+1,lease_token_hash=? WHERE id=(SELECT goal_id FROM gotzji_claims WHERE id=?)').run('b'.repeat(64), binding.jobId);
+        } finally { mutation.close(); }
+      }
+      now = new Date(now.getTime() + 301000);
       await expect(f.core.tick()).rejects.toMatchObject({ code: changed === 'deadline' ? 'COMMAND_DEADLINE_EXPIRED' : changed === 'takeover' ? 'LEASE_RENEWAL_CONFLICT' : 'LEASE_WORKER_RECONCILIATION_REQUIRED' });
       if (changed === 'takeover') {
         const check = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'), { timeout: 5000 });

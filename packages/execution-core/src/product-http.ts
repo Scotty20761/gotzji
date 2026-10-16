@@ -139,7 +139,7 @@ export async function startProductHttp(options: { token: string; mcpPathSecret: 
       const value = await options.rpc(tool.method, params.arguments, surface);
       const result = { content: [{ type: 'text', text: JSON.stringify(value) }], ...(tool.method === 'readProjectFile' && record(value) ? { structuredContent: value } : {}), isError: false };
       // Keep the existing bridge budget and legacy text path for large file results.
-      if (result.structuredContent && Buffer.byteLength(JSON.stringify(result), 'utf8') > 2 * 1024 * 1024 - 512) delete result.structuredContent;
+      if (result.structuredContent && Buffer.byteLength(JSON.stringify({ jsonrpc: '2.0', id, result }), 'utf8') > 2 * 1024 * 1024) delete result.structuredContent;
       reply(200, { jsonrpc: '2.0', id, result });
     } catch (error) { reply(200, surface === 'app' ? { ok: false, error: safeError(error) } : isToolCall
       ? { jsonrpc: '2.0', id: requestId, result: { content: [{ type: 'text', text: JSON.stringify({ error: safeError(error) }) }], isError: true } }

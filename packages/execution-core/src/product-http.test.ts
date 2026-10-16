@@ -5,8 +5,31 @@ import { startProductHttp } from './product-http.js';
 import { CoreError } from './types.js';
 import { request as httpRequest } from 'node:http';
 import { libraryCatalog } from './product-library.js';
+import { startProductTunnelBridge } from './product-connection.js';
 
 describe('governed product HTTP and MCP boundary', () => {
+  it('keeps the entire direct-read response within the bridge budget when a valid request ID is large', async () => {
+    const secret = 'b'.repeat(64);
+    const token = 'a'.repeat(64);
+    const file = { content: 'x'.repeat(700 * 1024), sha256: 'c'.repeat(64) };
+    const host = await startProductHttp({ token: 'owner', mcpPathSecret: secret, rpc: async () => file });
+    const bridge = await startProductTunnelBridge(`http://127.0.0.1:${host.port}/mcp/${secret}`, token);
+    try {
+      const id = 'i'.repeat(700 * 1024);
+      const response = await fetch(`http://127.0.0.1:${bridge.port}/mcp`, {
+        method: 'POST', headers: { Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ jsonrpc: '2.0', id, method: 'tools/call', params: { name: 'gotzji_read_file', arguments: { projectId: 'project', path: 'large.txt' } } }),
+      });
+      expect(response.status).toBe(200);
+      const body = await response.text();
+      expect(Buffer.byteLength(body)).toBeLessThanOrEqual(2 * 1024 * 1024);
+      const result = JSON.parse(body);
+      expect(result.id).toBe(id);
+      expect(result.result.structuredContent).toBeUndefined();
+      expect(JSON.parse(result.result.content[0].text)).toEqual(file);
+    } finally { await bridge.close(); await host.close(); }
+  });
+
   it('returns direct file data as structured content while preserving the legacy text result', async () => {
     const file = { content: 'proof\nทดสอบภาษาไทย\n', sha256: 'a'.repeat(64) };
     const calls: string[] = [];

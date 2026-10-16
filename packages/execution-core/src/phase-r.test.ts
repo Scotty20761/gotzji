@@ -111,21 +111,28 @@ it('rejects native gate evidence when the observed run is rebound to another goa
  }
 },10000*BUDGET);
 
-it('rejects a signed command receipt that does not match the registered validator recipe',async()=>{
- const f=await codeFixture(3000);const p=f.core.prepareCodeChange(f.credential,'recipe-bound-code');const job=await f.core.submit(f.credential,p.preparationId);const binding=f.core.select(f.credential,job.jobId);
+it.each([false,true])('rejects a signed command receipt that does not match the registered validator recipe (completed=%s)',async(completed)=>{
+ const f=await codeFixture(completed?25:3000);const p=f.core.prepareCodeChange(f.credential,'recipe-bound-code');const job=await f.core.submit(f.credential,p.preparationId);const binding=f.core.select(f.credential,job.jobId);
  await f.core.resume(f.credential,binding);
+ let receiptFilename:string|undefined;let originalReceipt:string|undefined;
  try{
-  await waitFor(async()=>((await f.core.get(f.credential,binding)).progress?.state==='running'));
+  // A published receipt remains testable when a slow observer misses the running phase.
+  await waitFor(async()=>{const progress=(await f.core.get(f.credential,binding)).progress;return completed?progress?.state==='completed':!!progress;});
   const db=new DatabaseSync(path.join(f.root,'core','core.sqlite'), { timeout: 5000 });let worker:{directory:string;token:string;epoch:string};try{worker=db.prepare('SELECT directory,token,epoch FROM gotzji_workers WHERE job_id=?').get(job.jobId) as unknown as typeof worker;}finally{db.close();}
   const filename=path.join(worker.directory,'validation.json');
-  const envelope=JSON.parse(await readFile(filename,'utf8')) as {body:string;mac:string};
+  receiptFilename=filename;originalReceipt=await readFile(filename,'utf8');
+  const envelope=JSON.parse(originalReceipt) as {body:string;mac:string};
   const receipt=JSON.parse(envelope.body) as {authorizationDigest:string;command:string;commandFingerprint:string;runId:string};
   receipt.command=`${process.execPath} unregistered-validator.mjs`;
   receipt.commandFingerprint=sha256(receipt.command);
   receipt.runId=sha256(`${job.jobId}\0${worker.epoch}\0${receipt.authorizationDigest}\0${receipt.command}`);
   const body=JSON.stringify(receipt);await writeFile(filename,JSON.stringify({body,mac:createHmac('sha256',worker.token).update(body).digest('hex')}));
   await expect(f.core.get(f.credential,binding)).rejects.toThrow('COMMAND_RECEIPT_INVALID');
- }finally{await f.core.cancel(f.credential,binding);}
+ }finally{
+  // Undo only this test's forgery so cancellation can read a valid completed receipt.
+  if(receiptFilename&&originalReceipt)await writeFile(receiptFilename,originalReceipt);
+  await f.core.cancel(f.credential,binding);
+ }
 },10000*BUDGET);
 
 it('recovers an expired completed code worker only after proving the old process stopped',async()=>{
