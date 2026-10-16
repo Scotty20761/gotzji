@@ -317,12 +317,15 @@ describe('P7 Library runtime',()=>{
     queryDatabase(f,(db)=>db.prepare('UPDATE goals SET lease_expires_at=?').run(new Date(Date.now()+300000).toISOString()));await writeFile(path.join(f.library,'CLAUDE.md'),'changed\n');expect(()=>productBrokerCall(config,'operation_status',{},true,{status:()=>({})})).toThrow('PROJECT_POLICY_CHANGED');
   },20000);
 
-  it('retains the writer and marks uncertainty after a lost response, while cancellation before delivery is clean',async()=>{
-    const f=await fixture(true);let input=codeInput('response-loss','response-loss');input.parameters.expectedSha256=hash(await readFile(path.join(f.library,'source.md')));const lost=await submit(f,input);await f.core.resume(f.credential,lost);
+  it('retains the writer and marks uncertainty after a lost response',async()=>{
+    const f=await fixture(true);const input=codeInput('response-loss','response-loss');input.parameters.expectedSha256=hash(await readFile(path.join(f.library,'source.md')));const lost=await submit(f,input);await f.core.resume(f.credential,lost);
     await until(f,async()=> (await f.core.get(f.credential,lost)).status==='blocked');
     expect(queryDatabase(f,(db)=>db.prepare('SELECT 1 FROM gotzji_writers WHERE job_id=?').get(lost.jobId))).toBeDefined();expect(await readFile(path.join(f.library,'lost-effect.txt'),'utf8')).toBe('once');
-    const secondRoot=await fixture(true);input=codeInput('cancel-wait','normal');input.parameters.expectedSha256=hash(await readFile(path.join(secondRoot.library,'source.md')));const waiting=await submit(secondRoot,input);await secondRoot.core.resume(secondRoot.credential,waiting);
-    await until(secondRoot,()=>queryDatabase(secondRoot,(db)=>!!db.prepare("SELECT 1 FROM gotzji_recipe_operations WHERE job_id=? AND operation_id='library-step:validate' AND phase='verified'").get(waiting.jobId)));
-    expect(await secondRoot.core.cancel(secondRoot.credential,waiting)).toMatchObject({status:'cancelled'});expect(queryDatabase(secondRoot,(db)=>db.prepare('SELECT 1 FROM gotzji_writers WHERE job_id=?').get(waiting.jobId))).toBeUndefined();
+  },30000);
+
+  it('cancels before delivery without retaining the writer',async()=>{
+    const f=await fixture(true);const input=codeInput('cancel-wait','normal');input.parameters.expectedSha256=hash(await readFile(path.join(f.library,'source.md')));const waiting=await submit(f,input);await f.core.resume(f.credential,waiting);
+    await until(f,()=>queryDatabase(f,(db)=>!!db.prepare("SELECT 1 FROM gotzji_recipe_operations WHERE job_id=? AND operation_id='library-step:validate' AND phase='verified'").get(waiting.jobId)));
+    expect(await f.core.cancel(f.credential,waiting)).toMatchObject({status:'cancelled'});expect(queryDatabase(f,(db)=>db.prepare('SELECT 1 FROM gotzji_writers WHERE job_id=?').get(waiting.jobId))).toBeUndefined();
   },30000);
 });

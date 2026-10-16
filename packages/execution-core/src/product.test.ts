@@ -387,35 +387,42 @@ describe('governed product operations — real native Goal, file and process sea
   }, 25000);
 
   it('never settles running work that only looks blocked, so the command still reaches its end', async () => {
-    const f = await fixture(); await project(f, 'two', 4000);
+    const f = await fixture(); const projectRoot = await project(f, 'two', 4000, 10000, true);
     const running = await submit(f, { requestId: 'long', projectId: 'two', operation: 'command.run', commandId: 'run' });
-    await f.core.resume(f.credential, running);
-    await until(f, async () => f.core.logs(f.credential, running).text.includes('progress-two'));
-    // An owner-wide provider limit from another job and a transient supervision diagnostic both project this live job as blocked.
-    const db = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'), { timeout: 5000 });
-    db.prepare('INSERT INTO gotzji_provider_limits VALUES (?,?,?,?)').run('owner', 'f'.repeat(64), null, '{}');
-    db.prepare('INSERT INTO gotzji_diagnostics VALUES (?,?,?)').run(running.jobId, 'WORKER_UNAVAILABLE', new Date().toISOString());
-    const view = await f.core.get(f.credential, running);
-    expect(view.status).toBe('blocked'); expect(view).not.toHaveProperty('settleDecisions');
-    await expect(f.core.settleBlockedJob(f.credential, running, 'no-effect')).rejects.toMatchObject({ code: 'JOB_STILL_RUNNING' });
-    db.prepare('DELETE FROM gotzji_provider_limits').run(); db.prepare('DELETE FROM gotzji_diagnostics').run();
-    // A worker that misses a status call is busy, not lost: within the grace window nothing about the job changes.
-    const worker = db.prepare('SELECT * FROM gotzji_workers WHERE job_id=?').get(running.jobId) as unknown as WorkerRow;
-    const ready = path.join(worker.directory, 'ready.json'); const proof = await readFile(ready);
-    // Restore the status channel even if an expectation fails, so teardown can still stop this worker.
-    await writeFile(ready, '{}');
     try {
+      await f.core.resume(f.credential, running);
+      await until(f, async () => f.core.logs(f.credential, running).text.includes('progress-two'));
+      // An owner-wide provider limit from another job and a transient supervision diagnostic both project this live job as blocked.
+      const db = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'), { timeout: 5000 });
+      try {
+        db.prepare('INSERT INTO gotzji_provider_limits VALUES (?,?,?,?)').run('owner', 'f'.repeat(64), null, '{}');
+        db.prepare('INSERT INTO gotzji_diagnostics VALUES (?,?,?)').run(running.jobId, 'WORKER_UNAVAILABLE', new Date().toISOString());
+        const view = await f.core.get(f.credential, running);
+        expect(view.status).toBe('blocked'); expect(view).not.toHaveProperty('settleDecisions');
+        await expect(f.core.settleBlockedJob(f.credential, running, 'no-effect')).rejects.toMatchObject({ code: 'JOB_STILL_RUNNING' });
+        db.prepare('DELETE FROM gotzji_provider_limits').run(); db.prepare('DELETE FROM gotzji_diagnostics').run();
+        // A worker that misses a status call is busy, not lost: within the grace window nothing about the job changes.
+        const worker = db.prepare('SELECT * FROM gotzji_workers WHERE job_id=?').get(running.jobId) as unknown as WorkerRow;
+        const ready = path.join(worker.directory, 'ready.json'); const proof = await readFile(ready);
+        // Restore the status channel even if an expectation fails, so teardown can still stop this worker.
+        try {
+          await writeFile(ready, '{}');
+          await f.core.tick();
+          expect((await f.core.get(f.credential, running)).status).toBe('running');
+          expect(db.prepare('SELECT phase FROM gotzji_operations WHERE job_id=?').get(running.jobId)).toMatchObject({ phase: 'started' });
+          // Unobservable past the grace window, it is marked uncertain; that alone must not make it settleable.
+          db.prepare('UPDATE gotzji_workers SET last_renewed=? WHERE job_id=?').run(Date.now() - 120_000, running.jobId);
+          await expect(f.core.tick()).rejects.toMatchObject({ code: 'WORKER_RECONCILIATION_REQUIRED' });
+        } finally { await writeFile(ready, proof); }
+      } finally { db.close(); }
       await f.core.tick();
-      expect((await f.core.get(f.credential, running)).status).toBe('running');
-      expect(db.prepare('SELECT phase FROM gotzji_operations WHERE job_id=?').get(running.jobId)).toMatchObject({ phase: 'started' });
-      // Unobservable past the grace window, it is marked uncertain; that alone must not make it settleable.
-      db.prepare('UPDATE gotzji_workers SET last_renewed=? WHERE job_id=?').run(Date.now() - 120_000, running.jobId);
-      await expect(f.core.tick()).rejects.toMatchObject({ code: 'WORKER_RECONCILIATION_REQUIRED' });
-    } finally { db.close(); await writeFile(ready, proof); }
-    await f.core.tick();
-    const uncertain = await f.core.get(f.credential, running);
-    expect(uncertain.status).toBe('blocked'); expect(uncertain).not.toHaveProperty('settleDecisions');
-    await expect(f.core.settleBlockedJob(f.credential, running, 'effect-present')).rejects.toMatchObject({ code: 'JOB_STILL_RUNNING' });
+      const uncertain = await f.core.get(f.credential, running);
+      expect(uncertain.status).toBe('blocked'); expect(uncertain).not.toHaveProperty('settleDecisions');
+      await expect(f.core.settleBlockedJob(f.credential, running, 'effect-present')).rejects.toMatchObject({ code: 'JOB_STILL_RUNNING' });
+    } finally {
+      // Keep the command live through the assertions, then permit its normal end even if one fails.
+      await writeFile(path.join(projectRoot, 'release'), 'complete once');
+    }
     await until(f, async () => (await f.core.get(f.credential, running)).status === 'completed');
     expect(f.core.logs(f.credential, running).text).toContain('end-two');
   }, 20000);
