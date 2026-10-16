@@ -13,7 +13,7 @@ import { signPreparedBrowserOperation, type PreparedProductBrowserOperation } fr
 
 export const WORKER_FILE = fileURLToPath(new URL('./fixture-worker.mjs', import.meta.url));
 export function workerFingerprint(): string {
-  return hash([...['fixture-worker','grace-broker','grace-runtime','grace-stdio','grace-verifier','fingerprints','phase-r-runner','phase-r-validator','phase-r-host-identity','product-broker','project-file-snapshot','product-runner','product-security','process-identity','test-worker-cleanup','product-native-broker','product-native-manager','product-browser-broker','product-browser-manager','product-library-broker','product-library-manager','product-library-final-memo'].map((name) => hash(readFileSync(new URL(`./${name}.mjs`, import.meta.url)))),hash(readFileSync(new URL('./product-library-weekly-wrapper.py',import.meta.url)))].join(':'));
+  return hash([...['fixture-worker','host-direct-runtime','grace-broker','grace-runtime','grace-stdio','grace-verifier','fingerprints','phase-r-runner','phase-r-validator','phase-r-host-identity','product-broker','project-file-snapshot','product-runner','product-security','process-identity','test-worker-cleanup','product-native-broker','product-native-manager','product-browser-broker','product-browser-manager','product-library-broker','product-library-manager','product-library-final-memo'].map((name) => hash(readFileSync(new URL(`./${name}.mjs`, import.meta.url)))),hash(readFileSync(new URL('./product-library-weekly-wrapper.py',import.meta.url)))].join(':'));
 }
 export function alive(pid: number): boolean | 'unknown' {
   try { process.kill(pid, 0); return true; }
@@ -86,9 +86,9 @@ export async function observeWorker(worker: WorkerRow): Promise<'running' | 'abs
       if (await ownedProcessAlive(ready.pid, ready.identity ?? observation?.identities?.[ready.pid]) !== false) return 'unknown';
       // A dead parent is not proof that its descendants are gone. Unknown
       // enrollment during a hold/spawn also retains ownership for inspection.
-      const config = JSON.parse(readFileSync(path.join(worker.directory, 'config.json'), 'utf8')) as { operation: string };
+      const config = JSON.parse(readFileSync(path.join(worker.directory, 'config.json'), 'utf8')) as { operation: string; grace?: { mode?: string } };
       if (config.operation === 'fixture.hold' && observation?.state === 'running' && !stopped && observation.descendants.length !== 2) return 'unknown';
-      if (config.operation.startsWith('grace.') && observation?.state === 'running' && !stopped && observation.descendants.length < 1) return 'unknown';
+      if (config.operation.startsWith('grace.') && config.grace?.mode !== 'host-direct' && observation?.state === 'running' && !stopped && observation.descendants.length < 1) return 'unknown';
       if (stopped) return await stoppedOwnership(worker, stopped) ? 'absent' : 'unknown';
       for (const pid of observation?.descendants ?? []) if (!observation?.closedDescendants?.includes(pid) && await ownedProcessAlive(pid, observation?.identities?.[pid]) !== false) return 'unknown';
       return 'absent';

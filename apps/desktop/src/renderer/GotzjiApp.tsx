@@ -147,12 +147,12 @@ export function GotzjiApp(): ReactElement {
   const boundRecipeIds = Array.isArray(selectedProject?.recipeIds) ? selectedProject.recipeIds as string[] : [];
 
   return <div className="gotzji-app"><div className="gotzji-titlebar">gotzji</div>
-    <aside><h1>gotzji</h1><p>Grace ดูแลงานของคุณ</p><nav>{(Object.keys(labels) as Page[]).map((name) =>
+    <aside><h1>gotzji</h1><p>สั่งงานผ่านปลั๊กอิน ChatGPT</p><nav>{(Object.keys(labels) as Page[]).map((name) =>
       <button key={name} aria-current={page === name ? 'page' : undefined} onClick={() => setPage(name)}>{labels[name]}</button>)}</nav>
       <p className="gotzji-owner">{host?.ownerId ?? 'กำลังเชื่อมต่อ'}</p><GotzjiVersionNotes /></aside>
     <main><header><h2>{labels[page]}</h2><button disabled={busy} onClick={() => void act(refresh)}>รีเฟรช</button></header>
       {error !== null && <div role="alert" className="gotzji-error">{error}<button onClick={() => setError(null)}>ปิด</button></div>}
-      {page === 'home' && <><section><h3>ระบบควบคุม</h3><p>{host?.state === 'ready' ? 'ระบบพร้อมรับงาน · Grace ควบคุมการทำงาน' : host?.state === 'control-only' ? 'ดูผลและยกเลิกงานเดิมได้ · ต้องตรวจระบบก่อนเริ่มงานใหม่' : 'กำลังรอระบบ'}</p>
+      {page === 'home' && <><section><h3>ระบบควบคุม</h3><p>{host?.state === 'ready' ? 'ระบบในเครื่องพร้อมทำงาน' : host?.state === 'control-only' ? 'ดูผลและยกเลิกงานเดิมได้ · ต้องตรวจระบบก่อนเริ่มงานใหม่' : 'กำลังรอระบบ'}</p>
         {host?.errorCode && <p>{host.errorCode}</p>}{host?.action && <p>{host.action}</p>}<p>งานที่เริ่มแล้วมีประวัติแยกกัน เปิดกลับมาดูและควบคุมได้จากประวัติงาน</p></section>
         <section><h3>งานล่าสุด {jobs.length} งาน</h3><JobList jobs={jobs} disabled={busy} select={(id) => { setJobId(id); setPage('worklog'); }} /></section><GotzjiConnectionPanel disabled={host?.state !== 'ready'} /></>}
       {page === 'projects' && <><section><h3>โครงการที่ลงทะเบียน</h3>{projects.map((project) => <button disabled={busy} key={String(project.projectId)}
@@ -164,15 +164,15 @@ export function GotzjiApp(): ReactElement {
           <button disabled={busy || !registration.projectId || !registration.rootPath || !registration.displayName}
             onClick={() => void act(async () => { await request('registerProject', { ...registration, kind: projectKind, recipeIds: selectedRecipes }); await refresh(); setProjectId(registration.projectId); })}>ลงทะเบียน</button>
           <label>ประเภทโครงการ<select value={projectKind} disabled={busy} onChange={(event) => setProjectKind(event.target.value as 'project' | 'library')}><option value="project">โครงการทั่วไป</option><option value="library">Library ที่มีข้อกำหนดและดัชนี</option></select></label></section>
-        <section><h3>คำสั่งที่เจ้าของตรวจแล้ว</h3><p>คำสั่งนี้รันโปรแกรมที่เลือกด้วยสิทธิ์ของคุณ Grace เลือกได้เฉพาะคำสั่งที่ผูกกับโครงการ และใส่อาร์กิวเมนต์เองไม่ได้ ไฟล์ที่เขียนเป็น {'${projectRoot}/…'} จะตรึงค่าตอนเริ่มงานแต่ละครั้ง ซึ่ง Grace แก้ไฟล์ในโครงการได้ ถ้าต้องการตรึงสคริปต์ไว้ตั้งแต่ตอนอนุมัติ ให้ใช้ path เต็มนอกโครงการ อย่าใส่ path ในชื่อคำสั่ง เพราะ Grace เห็นชื่อนี้ PowerShell ให้ใส่ -NoProfile -NonInteractive -ExecutionPolicy Bypass -File และ python แนะนำ -I</p>
-          {(['recipeId', 'displayName', 'executable', 'timeoutMinutes'] as const).map((field) => <label key={field}>{field === 'recipeId' ? 'รหัสคำสั่ง' : field === 'displayName' ? 'ชื่อที่ Grace เห็น' : field === 'executable' ? 'โปรแกรม (path เต็ม)' : 'เวลาสูงสุด (นาที)'}
+        <section><h3>คำสั่งที่เจ้าของตรวจแล้ว</h3><p>คำสั่งนี้รันโปรแกรมที่เลือกด้วยสิทธิ์ของคุณ ChatGPT เลือกได้เฉพาะคำสั่งที่ผูกกับโครงการ และใส่อาร์กิวเมนต์เองไม่ได้ ไฟล์ที่เขียนเป็น {'${projectRoot}/…'} จะตรึงค่าตอนเริ่มงานแต่ละครั้ง ซึ่ง ChatGPT แก้ไฟล์ในโครงการได้ ถ้าต้องการตรึงสคริปต์ไว้ตั้งแต่ตอนอนุมัติ ให้ใช้ path เต็มนอกโครงการ อย่าใส่ path ในชื่อคำสั่ง เพราะ ChatGPT เห็นชื่อนี้ PowerShell ให้ใส่ -NoProfile -NonInteractive -ExecutionPolicy Bypass -File และ python แนะนำ -I</p>
+          {(['recipeId', 'displayName', 'executable', 'timeoutMinutes'] as const).map((field) => <label key={field}>{field === 'recipeId' ? 'รหัสคำสั่ง' : field === 'displayName' ? 'ชื่อที่ ChatGPT เห็น' : field === 'executable' ? 'โปรแกรม (path เต็ม)' : 'เวลาสูงสุด (นาที)'}
             <input disabled={busy} value={recipeForm[field]} onChange={(event) => setRecipeForm({ ...recipeForm, [field]: event.target.value })} /></label>)}
           {(['args', 'dependencies'] as const).map((field) => <label key={field}>{field === 'args' ? 'อาร์กิวเมนต์ (บรรทัดละหนึ่ง)' : 'ไฟล์ที่คำสั่งใช้ (บรรทัดละหนึ่ง)'}
             <textarea disabled={busy} value={recipeForm[field]} onChange={(event) => setRecipeForm({ ...recipeForm, [field]: event.target.value })} /></label>)}
           <label><input type="checkbox" disabled={busy} checked={recipeForm.projectOnly} onChange={(event) => setRecipeForm({ ...recipeForm, projectOnly: event.target.checked })} />
             เขียนเฉพาะในโฟลเดอร์ของโครงการ: เลือกเมื่อคำสั่งนี้ไม่เขียนนอกโฟลเดอร์ของโครงการ และไม่รัน Git หรือ build ทั้งคลัง งานในโฟลเดอร์อื่นของเวิร์กสเปซเดียวกันจะทำพร้อมกันได้ ถ้าไม่เลือก คำสั่งนี้จะถือทั้งเวิร์กสเปซจนจบ</label>
           <label><input type="checkbox" disabled={busy} checked={recipeForm.delivery} onChange={(event) => setRecipeForm({ ...recipeForm, delivery: event.target.checked })} />
-            คำสั่งส่งมอบ (push, เผยแพร่, โปรโมตเป็นเวอร์ชันทางการ): Grace สั่งรันเองไม่ได้ คุณกดรันจากหน้าทำงานของแอปนี้เองทุกครั้ง สิ่งที่ถูกส่งออกคือสิ่งที่อยู่ในโครงการตอนที่รัน ถ้าต้องการตรึงสิ่งที่ส่ง ให้ประกาศไฟล์นั้นเป็นไฟล์ที่คำสั่งใช้</label>
+            คำสั่งส่งมอบ (push, เผยแพร่, โปรโมตเป็นเวอร์ชันทางการ): ChatGPT สั่งรันเองไม่ได้ คุณกดรันจากหน้าทำงานของแอปนี้เองทุกครั้ง สิ่งที่ถูกส่งออกคือสิ่งที่อยู่ในโครงการตอนที่รัน ถ้าต้องการตรึงสิ่งที่ส่ง ให้ประกาศไฟล์นั้นเป็นไฟล์ที่คำสั่งใช้</label>
           <button disabled={busy || !recipeForm.recipeId || !recipeForm.executable} onClick={() => void act(async () => { setRecipeReview(recipeReviewLines(await request('registerRecipe', { ...recipeRequest(recipeForm) }))); await refresh(); })}>อนุมัติคำสั่งนี้</button>
           {recipeReview.length > 0 && <pre>{recipeReview.join('\n')}</pre>}
           <label>ผูกกับโครงการ<select disabled={busy} value={recipeBinding.projectId} onChange={(event) => setRecipeBinding({ ...recipeBinding, projectId: event.target.value })}><option value="">เลือกโครงการ</option>
@@ -184,7 +184,7 @@ export function GotzjiApp(): ReactElement {
         <tr key={`${item.name}:${item.projectId ?? ''}:${item.workflowId ?? ''}:${item.workflowVersion ?? ''}`}><td>{String(item.workflowId ?? item.name)}</td><td>{item.state === 'available' ? 'พร้อมใช้งาน' : 'ยังไม่พร้อม'}</td><td>{String(item.reason ?? item.description ?? '')}</td></tr>)}</tbody></table></section>
         <GotzjiBrowserPanel projectId={projectId} disabled={host?.state !== 'ready'} onChanged={refresh} />
         {selectedProject?.kind === 'library' && <GotzjiLibraryChannelPanel projectId={projectId} disabled={host?.state !== 'ready'} />}
-        <section><h3>เริ่มงานผ่าน Grace</h3><label>โครงการ<select disabled={busy} value={projectId} onChange={(event) => setProjectId(event.target.value)}><option value="">เลือกโครงการ</option>
+        <section><h3>เตรียมคำสั่งของโครงการ</h3><label>โครงการ<select disabled={busy} value={projectId} onChange={(event) => setProjectId(event.target.value)}><option value="">เลือกโครงการ</option>
           {projects.map((project) => <option key={String(project.projectId)} value={String(project.projectId)}>{String(project.displayName)}</option>)}</select></label>
           <label>เครื่องมือ<select disabled={busy} value={operation} onChange={(event) => setOperation(event.target.value)}>{available.map((item) => <option key={String(item.name)} value={String(item.name)}>{String(item.name)}</option>)}{workflows.map((item) => <option key={`${item.workflowId}:${item.workflowVersion}`} value={`library:${item.workflowId}:${item.workflowVersion}`}>{String(item.workflowId)} · {String(item.description)}</option>)}</select></label>
           {!operation.startsWith('browser.') && !operation.startsWith('library:') && <label>{operation === 'command.run' ? 'คำสั่งที่ตรวจไว้แล้ว' : 'ไฟล์ในโครงการ'}{operation === 'command.run'
@@ -218,7 +218,7 @@ export function GotzjiApp(): ReactElement {
             {selectedJob.settleDecisions.includes('no-effect') && <button disabled={busy} onClick={() => void act(async () => { setSelectedJob(await request('settleJob', { jobId, decision: 'no-effect' })); await refresh(); })}>ไม่มีผล · ปล่อยโครงการ</button>}</div></fieldset>}
           {logs && <pre>{logs}</pre>}{result !== null && <pre>{display(result)}</pre>}</section>}</>}
       {page === 'queue' && <section><h3>งานที่กำลังรอ</h3><JobList jobs={queue} disabled={busy} select={(id) => { setJobId(id); setPage('worklog'); }} /></section>}
-      {page === 'doctor' && <><section><h3>ระบบควบคุมงาน</h3><p>{host?.state === 'ready' ? 'ระบบพร้อมรับงาน · Grace ควบคุมการทำงาน' : host?.state === 'control-only' ? 'ควบคุมงานเดิมได้ · รอตรวจความเข้ากันได้ของรุ่น' : 'ยังไม่พร้อม'}</p>{host?.errorCode && <p>{host.errorCode}</p>}<p>อัปเดตด้วยไฟล์รุ่นที่ตรวจแล้ว</p>
+      {page === 'doctor' && <><section><h3>ระบบควบคุมงาน</h3><p>{host?.state === 'ready' ? 'ระบบในเครื่องพร้อมทำงาน' : host?.state === 'control-only' ? 'ควบคุมงานเดิมได้ · รอตรวจความเข้ากันได้ของรุ่น' : 'ยังไม่พร้อม'}</p>{host?.errorCode && <p>{host.errorCode}</p>}<p>อัปเดตด้วยไฟล์รุ่นที่ตรวจแล้ว</p>
         <h3>เครื่องมือและโปรแกรม</h3>{catalog.map((item) => <p key={`${item.name}:${item.projectId ?? ''}:${item.workflowId ?? ''}:${item.workflowVersion ?? ''}`}>{String(item.workflowId ?? item.name)}: {String(item.state)} {String(item.reason ?? '')}</p>)}</section><section><h3>รายงานช่วยเหลือ</h3><p>บันทึกเหตุผลของงานที่ล้มหรือค้าง ใครกำลังถือโครงการหรือทรัพยากรอะไร คิวงาน และสถานะของ CAD, Office และเบราว์เซอร์ ลงไฟล์ที่คุณเลือก รายงานมีชื่อโครงการตามที่คุณตั้ง แต่ไม่มีเนื้อหาไฟล์ path หรือ URL และไม่ถูกส่งไปที่ไหน</p><button disabled={busy || !host || host.state === 'unavailable'} onClick={() => void act(async () => { const saved = await window.gotzji.exportSupportReport(); setReportExport(saved.exported ? 'บันทึกรายงานแล้ว' : 'ยกเลิกการบันทึก'); })}>บันทึกรายงานช่วยเหลือ</button>{reportExport && <p>{reportExport}</p>}</section><GotzjiConnectionPanel disabled={host?.state !== 'ready'} /><GotzjiStartupPanel /></>}
     </main>
   </div>;
@@ -236,7 +236,7 @@ function JobStatus({ value }: { readonly value: unknown }): ReactElement {
     {value.blockingDependency ? <p>รอผลงาน {String(value.blockingDependency)}</p> : null}
     {progress && <p>ใช้เวลา {Math.floor(Number(progress.elapsedMs ?? 0) / 1_000)} วินาที · ความคืบหน้าล่าสุด {String(progress.lastProgressAt ?? '')}</p>}
     {value.blockerCode ? <p>{String(value.blockerCode)}</p> : null}
-    {value.blockerCode === 'GRACE_ACCOUNT_LIMIT' && <p>บัญชี Claude ถึงขีดจำกัด งานนี้กำลังรอผู้ให้บริการ</p>}
+    {value.blockerCode === 'GRACE_ACCOUNT_LIMIT' && <p>งานเดิมจากรุ่นก่อนรอขีดจำกัดผู้ให้บริการ ดูหลักฐานก่อนดำเนินงานนั้นต่อ</p>}
     {typeof value.retryAt === 'string' && Number.isFinite(Date.parse(value.retryAt)) && <p>ลองงานเดิมต่อได้หลัง {new Date(value.retryAt).toLocaleString('th-TH')}</p>}
     <details><summary>รายละเอียดงาน</summary><pre>{display(value)}</pre></details></>;
 }

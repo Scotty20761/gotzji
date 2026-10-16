@@ -1,26 +1,29 @@
-import { access, mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { access, cp, mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { createHmac } from 'node:crypto';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { DatabaseSync } from 'node:sqlite';
+import { backup, DatabaseSync } from 'node:sqlite';
+import { execFileSync } from 'node:child_process';
 import { afterEach, describe, expect, it } from 'vitest';
 import { ExecutionCore } from './core.js';
 import { hash, type WorkerRow } from './store.js';
 import { alive, signed, stopWorker } from './managed-worker.js';
-import type { ProductGraceRegistration } from './grace-profile.js';
+import type { ProductRegistration } from './grace-profile.js';
 import type { TaskBinding } from './types.js';
 import type { ProductLibraryInput } from './product-library.js';
 import { libraryWorkflow } from './library-workflow-registry.js';
 const { createTestFixtureLifecycle, waitForFixture } = await import('./test-fixture-lifecycle.mjs');
 const { productBrokerCall } = await import('./product-broker.mjs');
-const { executePreparedLibraryOperation } = await import('./product-library-broker.mjs');
+const { assertPreparedLibraryDependencies, executePreparedLibraryOperation } = await import('./product-library-broker.mjs');
 const { issueSyntheticCleanupCapability } = await import('./test-worker-cleanup.mjs');
 
 interface FixtureLifecycle { run<T>(operation:(signal:AbortSignal)=>Promise<T>):Promise<T>; own(label:string,close:()=>Promise<void>|void):void; close():Promise<void> }
-interface Fixture { root:string; library:string; core:ExecutionCore; credential:string; profile:ProductGraceRegistration; libraryTestRunner?:string; bindings:TaskBinding[]; lifecycle:FixtureLifecycle }
+interface Fixture { root:string; library:string; core:ExecutionCore; credential:string; profile:ProductRegistration; libraryTestRunner?:string; bindings:TaskBinding[]; lifecycle:FixtureLifecycle }
 const fixtures:Fixture[]=[];
 const policies=['CLAUDE.md','AGENTS.md','references/agent-knowledge-workflow.md','KNOWLEDGE_INDEX.md'];
-async function fixture(runner=false,finalFailure?:'pipeline'|'atom-after-write'|'omit-index'):Promise<Fixture>{
+async function fixture(runner=false,finalFailure?:'pipeline'|'atom-after-write'|'omit-index',direct=false):Promise<Fixture>{
   const lifecycle=createTestFixtureLifecycle() as FixtureLifecycle;
   const root=await mkdtemp(path.join(os.tmpdir(),'gotzji-library-'));const library=path.join(root,'library');
   await mkdir(path.join(library,'references'),{recursive:true});
@@ -46,7 +49,7 @@ async function fixture(runner=false,finalFailure?:'pipeline'|'atom-after-write'|
   await writeFile(path.join(library,'scripts/audit_portfolio_private.py'),'process.stdout.write("{\\"status\\":\\"pass\\"}\\n");\n');
   await writeFile(path.join(library,'scripts/audit_orphan_md.py'),'process.exit(0);\n');await writeFile(path.join(library,'scripts/validate.py'),'process.exit(0);\n');
   await writeFile(path.join(library,'source.md'),'Original source\n');
-  const profile={executable:process.execPath,libraryRoot:library,testDriver:fileURLToPath(new URL('./grace-test-driver.mjs',import.meta.url))};
+  const profile:ProductRegistration=direct?{mode:'host-direct',libraryRoot:library,...(runner?{testOnlyProviders:true as const}:{})}:{executable:process.execPath,libraryRoot:library,testDriver:fileURLToPath(new URL('./grace-test-driver.mjs',import.meta.url))};
   let testRunnerModule:string|undefined;
   if(runner){
     testRunnerModule=path.join(root,'library-test-runner.mjs');
@@ -192,12 +195,84 @@ describe('P7 Library runtime',()=>{
     }
   },60000);
 
-  it('runs a frozen read workflow end to end with real host receipts and no model-selected effect',async()=>{
-    const f=await fixture();const binding=await submit(f,{requestId:'read-one',projectId:'library',operation:'library.workflow',workflowId:'library.read',workflowVersion:1,parameters:{paths:JSON.stringify(['source.md'])}});
+  it.each([false,true])('runs frozen Library read with observed receipts (direct=%s)',async(direct)=>{
+    const f=await fixture(false,undefined,direct);const binding=await submit(f,{requestId:'read-one',projectId:'library',operation:'library.workflow',workflowId:'library.read',workflowVersion:1,parameters:{paths:JSON.stringify(['source.md'])}});
     await f.core.resume(f.credential,binding);await until(f,async()=> (await f.core.get(f.credential,binding)).status==='completed');
     const result=await f.core.readOperationResult(f.credential,binding);expect(result.output).toMatchObject({state:'completed',workflowId:'library.read',route:'gotzji-library'});
     expect((result.output as {steps:unknown[]}).steps).toHaveLength(1);
+    if (!direct) {
+      const authority = f.core.authority(); f.core.close(); await rm(path.join(f.library, 'source.md'));
+      f.profile = { mode: 'host-direct', libraryRoot: f.library };
+      f.core = await ExecutionCore.open(path.join(f.root, 'state'), { product: f.profile, upgrade: { expectedPolicy: authority.policy, expectedAuthorityId: authority.authorityId } });
+      const input: ProductLibraryInput = { requestId: 'read-one', projectId: 'library', operation: 'library.workflow', workflowId: 'library.read', workflowVersion: 1, parameters: { paths: JSON.stringify(['source.md']) } };
+      const replay = f.core.prepareOperation(f.credential, input); expect((await f.core.submit(f.credential, replay.preparationId)).jobId).toBe(binding.jobId);
+      expect(await f.core.readOperationResult(f.credential, f.core.select(f.credential, binding.jobId))).toEqual(result);
+      expect(() => f.core.prepareOperation(f.credential, { ...input, parameters: { paths: '["conflicting.md"]' } })).toThrow('REQUEST_DIGEST_CONFLICT');
+    }
   },20000);
+
+  it('runs direct built-in code apply, real QA and explicitly granted delivery to an owned local bare repository', async () => {
+    const f = await fixture(false, undefined, true);
+    const hooks = path.join(f.root, 'empty-hooks'); const remote = path.join(f.root, 'owned-bare-remote'); await mkdir(hooks);
+    const git = (args: string[], cwd = f.library): string => execFileSync('git', args, { cwd, windowsHide: true, encoding: 'utf8' });
+    git(['-c', `init.templateDir=${hooks}`, 'init', '--bare', remote]); git(['-c', `init.templateDir=${hooks}`, 'init', '-b', 'main']);
+    git(['config', 'user.name', 'Synthetic fixture']); git(['config', 'user.email', 'fixture@example.invalid']); git(['config', 'commit.gpgsign', 'false']); git(['config', 'core.hooksPath', hooks]); git(['config', 'core.autocrlf', 'false']);
+    git(['add', '--', 'source.md']); git(['commit', '--only', '-m', 'Owned fixture initial state', '--', 'source.md']); git(['remote', 'add', 'origin', remote]); git(['push', '-u', 'origin', 'main']);
+    for (const file of ['audit_orphan_md.py', 'validate.py']) await writeFile(path.join(f.library, 'scripts', file), "const fs=require('node:fs');if(fs.readFileSync('source.md','utf8')!=='Changed\\n')process.exit(9);process.stdout.write('observed changed source\\n');\n");
+    const input = codeInput('direct-real-code-qa', 'owner supplied exact edit'); input.parameters.expectedSha256 = hash(await readFile(path.join(f.library, 'source.md')));
+    const binding = await submit(f, input); await f.core.resume(f.credential, binding);
+    await until(f, async () => {
+      if (queryDatabase(f, db => !!db.prepare("SELECT 1 FROM gotzji_recipe_operations WHERE job_id=? AND operation_id='library-step:validate' AND phase='verified'").get(binding.jobId))) return true;
+      const status = await f.core.get(f.credential, binding);
+      if (status.status === 'blocked' || status.status === 'failed') throw new Error(JSON.stringify({ status, apply: queryDatabase(f, db => db.prepare("SELECT phase FROM gotzji_recipe_operations WHERE job_id=? AND operation_id='library-step:apply'").get(binding.jobId)), content: await readFile(path.join(f.library, 'source.md'), 'utf8') }));
+      return false;
+    });
+    expect(await readFile(path.join(f.library, 'source.md'), 'utf8')).toBe('Changed\n');
+    const worker = queryDatabase(f, db => db.prepare('SELECT * FROM gotzji_workers WHERE job_id=?').get(binding.jobId) as unknown as WorkerRow);
+    expect(signed(worker, 'controller-runtime.json')).toMatchObject({ executor: 'host-direct' });
+    expect(await present(path.join(worker.directory, 'claude-events.jsonl'))).toBe(false);
+    expect(queryDatabase(f, db => db.prepare("SELECT 1 FROM gotzji_recipe_operations WHERE job_id=? AND operation_id='library-step:commit' AND phase='verified'").get(binding.jobId))).toBeUndefined();
+    const proofDatabase = path.join(f.root, 'owned-proof-copy.sqlite'); const sourceDatabase = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'), { readOnly: true });
+    try { await backup(sourceDatabase, proofDatabase); } finally { sourceDatabase.close(); }
+    const config = JSON.parse(await readFile(path.join(worker.directory, 'config.json'), 'utf8'));
+    const proofEffects = path.join(f.root, 'owned-proof-effects'); await cp(config.effectRoot, proofEffects, { recursive: true });
+    f.core.authorizeLibraryDelivery(f.credential, binding, 'commit');
+    await until(f, () => queryDatabase(f, db => !!db.prepare("SELECT 1 FROM gotzji_recipe_operations WHERE job_id=? AND operation_id='library-step:commit' AND phase='verified'").get(binding.jobId)));
+    expect(git(['--git-dir', remote, 'show', 'refs/heads/main:source.md'])).toBe('Original source\n');
+    f.core.authorizeLibraryDelivery(f.credential, binding, 'push'); await until(f, async () => (await f.core.get(f.credential, binding)).status === 'completed');
+    expect(git(['--git-dir', remote, 'show', 'refs/heads/main:source.md'])).toBe('Changed\n');
+    expect((await f.core.readOperationResult(f.credential, binding)).output).toMatchObject({ state: 'completed', workflowId: 'library.code-qa' });
+    expect(await stopWorker(worker)).toBe(true);
+    const proofConfig = { ...config, database: proofDatabase, effectRoot: proofEffects };
+    const proof = new DatabaseSync(proofDatabase); const file = path.join(proofEffects, 'library-step-apply.json'); const artifact = readFileSync(file, 'utf8');
+    const row = proof.prepare("SELECT * FROM gotzji_recipe_operations WHERE job_id=? AND operation_id='library-step:apply'").get(binding.jobId)!;
+    const reset = (): void => { proof.prepare("INSERT OR REPLACE INTO gotzji_recipe_operations VALUES (?,?,?,?,?)").run(row.job_id, row.operation_id, row.digest, row.phase, row.receipt); writeFileSync(file, artifact); writeFileSync(path.join(f.library, 'source.md'), 'Changed\n'); };
+    const signedArtifact = (change: Record<string, unknown>, valueChange?: Record<string, unknown>): void => {
+      const body = JSON.parse(JSON.parse(artifact).body); Object.assign(body, change);
+      if (valueChange) { Object.assign(body.value, valueChange); body.valueDigest = hash(JSON.stringify(body.value)); const wrapper = JSON.parse(String(row.receipt)); wrapper.receipt.outputDigest = body.valueDigest; proof.prepare("UPDATE gotzji_recipe_operations SET receipt=? WHERE job_id=? AND operation_id='library-step:apply'").run(JSON.stringify(wrapper), binding.jobId); }
+      const text = JSON.stringify(body); writeFileSync(file, JSON.stringify({ body: text, mac: createHmac('sha256', worker.token).update(text).digest('hex') }));
+    };
+    try {
+      expect(assertPreparedLibraryDependencies(proofConfig)).toBe(true);
+      const countercases: (() => void)[] = [
+        (): void => proof.prepare("DELETE FROM gotzji_recipe_operations WHERE job_id=? AND operation_id='library-step:apply'").run(binding.jobId),
+        (): void => proof.prepare("UPDATE gotzji_recipe_operations SET phase='started' WHERE job_id=? AND operation_id='library-step:apply'").run(binding.jobId),
+        (): void => proof.prepare("UPDATE gotzji_recipe_operations SET digest=? WHERE job_id=? AND operation_id='library-step:apply'").run('f'.repeat(64), binding.jobId),
+        (): void => unlinkSync(file), (): void => writeFileSync(file, JSON.stringify({ body: JSON.parse(artifact).body, mac: '0'.repeat(64) })),
+        (): void => signedArtifact({ epoch: 'foreign-epoch' }), (): void => signedArtifact({ operation: 'library.source.read' }),
+        (): void => signedArtifact({}, { path: 'unapproved.md' }), (): void => signedArtifact({}, { afterSha256: '0'.repeat(64) }),
+        (): void => writeFileSync(path.join(f.library, 'source.md'), 'Original source\n'), (): void => writeFileSync(path.join(f.library, 'source.md'), 'third independent bytes\n'),
+      ];
+      for (const countercase of countercases) {
+        reset(); countercase(); expect(() => assertPreparedLibraryDependencies(proofConfig)).toThrow('LIBRARY_EFFECT_RECONCILIATION_REQUIRED');
+        expect(Number(proof.prepare('SELECT COUNT(*) AS count FROM gotzji_writers WHERE job_id=?').get(binding.jobId)?.count)).toBe(1);
+      }
+      reset(); const unknownPolicy = path.join(f.root, 'owned-policy-drift'); writeFileSync(unknownPolicy, 'changed');
+      expect(() => assertPreparedLibraryDependencies({ ...proofConfig, grace: { ...proofConfig.grace, documents: { ...proofConfig.grace.documents, addedPolicy: { path: unknownPolicy, hash: '0'.repeat(64) } } } })).toThrow('LIBRARY_EFFECT_RECONCILIATION_REQUIRED');
+      const protectedInput = { ...input, requestId: 'policy-overlap', parameters: { ...input.parameters, paths: '["CLAUDE.md"]', expectedSha256: hash(await readFile(path.join(f.library, 'CLAUDE.md'))) } };
+      expect(() => f.core.prepareOperation(f.credential, protectedInput)).toThrow('LIBRARY_SOURCE_POLICY_OVERLAP');
+    } finally { reset(); proof.close(); }
+  }, 30000);
 
   it('waits at each delivery boundary and resumes only after explicit enrolled-route authority',async()=>{
     const f=await fixture(true);const input=codeInput('delivery-wait','normal');input.parameters.expectedSha256=hash(await readFile(path.join(f.library,'source.md')));

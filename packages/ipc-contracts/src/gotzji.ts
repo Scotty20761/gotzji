@@ -24,7 +24,7 @@ export interface GotzjiHostStatus {
   readonly errorCode?: string;
   readonly errorLayer?: string;
   readonly action?: string;
-  readonly controller: 'grace';
+  readonly controller: 'chatgpt-plugin';
   readonly automaticUpdates: false;
 }
 export interface GotzjiRequest {

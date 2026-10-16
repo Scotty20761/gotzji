@@ -233,8 +233,16 @@ describe('governed product operations — real native Goal, file and process sea
     const other = f.core.enrollAdapter('plugin', 'owner');
     const prepared = f.core.prepareOperation(other, { requestId: 'same', projectId: 'one', operation: 'file.read', path: 'source.txt' });
     expect((await f.core.submit(other, prepared.preparationId)).jobId).toBe(first.jobId);
-    const different = f.core.prepareOperation(other, { requestId: 'same', projectId: 'one', operation: 'command.run', commandId: 'run' });
-    await expect(f.core.submit(other, different.preparationId)).rejects.toMatchObject({ code: 'REQUEST_DIGEST_CONFLICT' });
+    expect(() => f.core.prepareOperation(other, { requestId: 'same', projectId: 'one', operation: 'command.run', commandId: 'run' })).toThrow('REQUEST_DIGEST_CONFLICT');
+    expect((await f.core.list(other)).map((job) => job.jobId)).toEqual([first.jobId]);
+    const db = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'), { readOnly: true, timeout: 5000 });
+    try {
+      expect(db.prepare('SELECT COUNT(*) AS count FROM gotzji_claims').get()?.count).toBe(1);
+      expect(db.prepare('SELECT COUNT(*) AS count FROM goals').get()?.count).toBe(1);
+      expect(db.prepare('SELECT COUNT(*) AS count FROM gotzji_preparations').get()?.count).toBe(2);
+      expect(db.prepare('SELECT COUNT(*) AS count FROM gotzji_workers').get()?.count).toBe(0);
+      expect(db.prepare('SELECT id,request_id FROM gotzji_claims').get()).toMatchObject({ id: first.jobId, request_id: 'same' });
+    } finally { db.close(); }
     const foreign = f.core.enrollAdapter('foreign', 'stranger');
     expect(f.core.listProjects(foreign)).toEqual([]);
     expect(() => f.core.select(foreign, first.jobId)).toThrow('TASK_AUTHORITY_DENIED');

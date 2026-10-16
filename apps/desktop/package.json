@@ -2,7 +2,7 @@
   "name": "@lnwjud/desktop",
   "version": "1.0.0",
   "private": true,
-  "description": "Grace-governed Windows control app and MCP gateway with durable project jobs.",
+  "description": "Windows host and MCP plugin for ChatGPT-directed tools and durable project jobs.",
   "author": "Scotty20761",
   "homepage": "https://github.com/Scotty20761/gotzji#readme",
   "repository": {

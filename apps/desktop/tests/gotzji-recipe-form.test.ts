@@ -10,7 +10,7 @@ describe('owner recipe form', () => {
 
   it('shows the approved program, its hash, each stored argument and when each file is pinned', () => {
     expect(recipeReviewLines({ name: 'command.recipe.x', review: { executable: 'C:\\tool.exe', executableSha256: 'a'.repeat(64), args: ['-I', 'two words'], writeScope: 'project', delivery: true, dependencies: [{ path: 'C:\\pinned.py', pinned: 'at-approval', sha256: 'b'.repeat(64) }, { path: '${projectRoot}/x.py', pinned: 'each-run' }] } }))
-      .toEqual(['โปรแกรม C:\\tool.exe', `SHA-256 ${'a'.repeat(64)}`, 'อาร์กิวเมนต์ 1: "-I"', 'อาร์กิวเมนต์ 2: "two words"', 'คำสั่งส่งมอบ: Grace สั่งรันเองไม่ได้ เจ้าของกดรันจากแอปนี้เท่านั้น', 'เขียนได้เฉพาะในโฟลเดอร์ของโปรเจกต์ (งานในโฟลเดอร์อื่นของเวิร์กสเปซเดียวกันทำพร้อมกันได้)', `ตรึงตอนอนุมัติ C:\\pinned.py · ${'b'.repeat(64)}`, 'ตรึงทุกครั้งที่เริ่มงาน (Grace แก้ไฟล์นี้ได้) ${projectRoot}/x.py']);
+      .toEqual(['โปรแกรม C:\\tool.exe', `SHA-256 ${'a'.repeat(64)}`, 'อาร์กิวเมนต์ 1: "-I"', 'อาร์กิวเมนต์ 2: "two words"', 'คำสั่งส่งมอบ: ChatGPT สั่งรันเองไม่ได้ เจ้าของกดรันจากแอปนี้เท่านั้น', 'เขียนได้เฉพาะในโฟลเดอร์ของโปรเจกต์ (งานในโฟลเดอร์อื่นของเวิร์กสเปซเดียวกันทำพร้อมกันได้)', `ตรึงตอนอนุมัติ C:\\pinned.py · ${'b'.repeat(64)}`, 'ตรึงทุกครั้งที่เริ่มงาน (ChatGPT แก้ไฟล์นี้ได้) ${projectRoot}/x.py']);
     expect(recipeReviewLines({ review: { executable: 'C:\\tool.exe', executableSha256: 'a', args: [], writeScope: 'workspace', dependencies: [] } })).toContain('เขียนได้ทั้งเวิร์กสเปซ (งานอื่นในเวิร์กสเปซเดียวกันต้องรอ)');
     expect(recipeReviewLines({ accepted: true })).toEqual([]);
     expect(recipeReviewLines(null)).toEqual([]);

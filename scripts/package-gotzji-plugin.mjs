@@ -291,6 +291,9 @@ function validateSourceContracts(files, expectedVersion) {
     || manifest.name !== 'gotzji'
     || manifest.license !== 'MIT'
     || manifest.repository !== 'https://github.com/Scotty20761/gotzji'
+    || manifest.description !== 'Use ChatGPT to control typed gotzji operations and durable jobs on your Windows PC.'
+    || manifest.extensions?.['com.openai']?.interface?.shortDescription !== 'ChatGPT-controlled work on your Windows PC'
+    || !manifest.extensions?.['com.openai']?.interface?.longDescription?.includes('gotzji Windows host')
     || manifest.extensions?.['com.openai']?.apps !== undefined
     || manifest.extensions?.['com.openai']?.hooks !== undefined
     || manifest.mcpServers !== undefined) {
@@ -309,7 +312,9 @@ function validateSourceContracts(files, expectedVersion) {
   if (!skill.startsWith('---\nname: gotzji-workflow\ndescription: ')
     || !skill.includes('gotzji_prepare_operation')
     || !skill.includes('gotzji_result')
-    || !skill.includes('Grace')) {
+    || !skill.includes('current ChatGPT account and conversation control reasoning')
+    || !skill.includes('stable `requestId`')
+    || !skill.includes('same job until it is terminal')) {
     throw new Error('PLUGIN_SKILL_CONTRACT_INVALID');
   }
 }
@@ -320,6 +325,9 @@ function validatePackagedPluginManifest(manifest, expectedVersion) {
     || manifest.version !== expectedVersion
     || manifest.license !== 'MIT'
     || manifest.repository !== 'https://github.com/Scotty20761/gotzji'
+    || manifest.description !== 'Use ChatGPT to control typed gotzji operations and durable jobs on your Windows PC.'
+    || manifest.extensions?.['com.openai']?.interface?.shortDescription !== 'ChatGPT-controlled work on your Windows PC'
+    || !manifest.extensions?.['com.openai']?.interface?.longDescription?.includes('gotzji Windows host')
     || manifest.extensions?.['com.openai']?.apps !== undefined
     || manifest.extensions?.['com.openai']?.hooks !== undefined
     || manifest.mcpServers !== undefined) {

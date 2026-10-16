@@ -39,7 +39,7 @@ if (!config.credential) {
   config = { ...config, credential: randomBytes(32).toString('hex') };
   await writeProductConfiguration(config, testSecretProtector);
 }
-const product = { executable: config.executable, libraryRoot: config.libraryRoot };
+const product = { mode: 'host-direct', libraryRoot: config.libraryRoot };
 const nativeOptions = config.native ? { ...config.native, operations: ['excel.range.read', 'excel.range.write', 'word.paragraph.read', 'word.paragraph.write', 'powerpoint.shape.read', 'powerpoint.shape.write', ...(config.native.cad ? ['cad.entity.inspect', 'cad.entity.move', 'cad.layers.inspect'] : [])] } : undefined;
 const libraryOptions = config.library;
 const privateRuntimeRoots = [path.dirname(directory)];
@@ -126,7 +126,7 @@ const listener = await startProductHttp({ token: config.daemonSecret, mcpPathSec
     case 'configureConnection': if (surface !== 'app' || !connection) throw new CoreError('CONNECTION_CONTROL_DENIED'); return connection.configure(input);
     case 'startConnection': if (surface !== 'app' || !connection) throw new CoreError('CONNECTION_CONTROL_DENIED'); return connection.start();
     case 'stopConnection': if (surface !== 'app' || !connection) throw new CoreError('CONNECTION_CONTROL_DENIED'); return connection.stop();
-    case 'health': return { product: 'gotzji', ownerId: config.ownerId, state: currentBuild ? 'ready' : 'control-only', controller: 'grace', automaticUpdates: false, buildIdentity, configurationIdentity };
+    case 'health': return { product: 'gotzji', ownerId: config.ownerId, state: currentBuild ? 'ready' : 'control-only', controller: 'chatgpt-plugin', automaticUpdates: false, buildIdentity, configurationIdentity };
     case 'testOnlyE2eShutdown': {
       if (!testSecretFixture || surface !== 'app' || typeof input.nonce !== 'string' || !/^[a-f0-9]{64}$/u.test(input.nonce) || Object.keys(input).length !== 1) throw new CoreError('METHOD_DENIED');
       setImmediate(() => { void cleanupProductHostStartup(() => listener.close(), () => core.close(), () => ownership.release()).finally(() => process.exit(0)); });

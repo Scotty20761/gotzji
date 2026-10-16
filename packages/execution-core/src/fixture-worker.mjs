@@ -1,4 +1,4 @@
-/* global process, setInterval, setTimeout, clearTimeout, URL */
+/* global process, setInterval, setTimeout, clearTimeout, setImmediate, URL */
 // Model input selects only a sealed host-prepared operation, never a raw executable or shell.
 import http from 'node:http';
 import { readFileSync, writeFileSync, unlinkSync } from 'node:fs';
@@ -7,6 +7,7 @@ import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { brokerCall } from './grace-broker.mjs';
+import { runHostDirect } from './host-direct-runtime.mjs';
 import { launchGrace } from './grace-runtime.mjs';
 import { validationManager } from './phase-r-runner.mjs';
 import { productRunner } from './product-runner.mjs';
@@ -49,6 +50,7 @@ if (mode !== 'worker') {
   let child;
   let stopping = false;
   let runtimeApproved = false;
+  let controllerTask;
   const persist = (name, payload) => {
     const body = JSON.stringify(payload);
     const record = JSON.stringify({ body, mac: createHmac('sha256', config.token).update(body).digest('hex') });
@@ -136,7 +138,7 @@ if (mode !== 'worker') {
       } catch { res.writeHead(409).end(); }
       return;
     }
-    if (req.method === 'POST' && ['/broker', '/register-broker'].includes(url.pathname) && config.grace) {
+    if (req.method === 'POST' && ['/broker', '/register-broker'].includes(url.pathname) && config.grace && config.grace.mode !== 'host-direct') {
       try {
         let body = ''; for await (const chunk of req) { body += chunk; if (body.length > 100000) throw new Error('TOO_LARGE'); }
         const value = JSON.parse(body);
@@ -182,7 +184,7 @@ if (mode !== 'worker') {
       } else if (config.operation.startsWith('grace.') && config.grace) {
         try {
           const ready = JSON.parse(JSON.parse(readFileSync(path.join(directory,'ready.json'),'utf8')).body);
-          child = launchGrace(configPath, config, ready, {
+          const callbacks = {
             register,
             approve: (value) => { runtimeApproved = value; }, persist,
             finish: (receipt) => {
@@ -199,8 +201,23 @@ if (mode !== 'worker') {
               } else state=receipt?'done':'failed';
               persist('observation.json',snapshot());
             },
-          });
-        } catch { state = 'failed'; }
+          };
+          if (config.grace.mode === 'host-direct') {
+            runtimeApproved = true;
+            const operation = JSON.parse(config.text);
+            const runner = operation.kind === 'native' ? native : operation.kind === 'library' ? library : operation.kind === 'browser' ? browser : product;
+            controllerTask = new Promise(resolve => setImmediate(resolve)).then(() => runHostDirect(config, runner, { ...callbacks, approved: () => runtimeApproved && !stopping })).catch((error) => {
+              if (stopping) return;
+              state = 'failed';
+              persist('broker-error.json', { epoch: config.epoch, jobId: config.jobId, code: /^[A-Z][A-Z0-9_]{1,79}$/.test(error?.message) ? error.message : 'CONTROLLER_FAILED', layer: 'operation-controller' });
+              persist('observation.json', snapshot());
+            });
+          } else child = launchGrace(configPath, config, ready, callbacks);
+        } catch (error) {
+          state = 'failed';
+          persist('broker-error.json', { epoch: config.epoch, jobId: config.jobId, code: /^[A-Z][A-Z0-9_]{1,79}$/.test(error?.message) ? error.message : 'CONTROLLER_FAILED', layer: 'operation-controller' });
+          persist('observation.json', snapshot());
+        }
       } else { state = 'failed'; }
       res.end(JSON.stringify(snapshot()));
       return;
@@ -209,6 +226,7 @@ if (mode !== 'worker') {
       stopping = true;
       // A stop that throws is refused like one that returns false: no receipt, and the worker stays alive for inspection.
       const attempt = stopAttempt ??= (async () => {
+        if (controllerTask) await controllerTask;
         if (config.operation === 'grace.product-operation' && JSON.parse(config.text).kind === 'native' && !await native.stop()) return false;
         if (config.operation === 'grace.product-operation' && JSON.parse(config.text).kind === 'library' && !await library.stop()) return false;
         if (config.operation === 'grace.product-operation' && JSON.parse(config.text).kind === 'browser' && !await browser.stop()) return false;

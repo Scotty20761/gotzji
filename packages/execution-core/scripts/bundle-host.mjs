@@ -27,6 +27,6 @@ for (const name of (await readdir(output)).sort()) {
   files.push({ relativePath: name, sizeBytes: info.size, sha256: createHash('sha256').update(await readFile(file)).digest('hex') });
 }
 const version = JSON.parse(await readFile(path.join(packageRoot, 'package.json'), 'utf8')).version;
-const manifest = { schemaVersion: 1, product: 'gotzji', version, catalogVersion: 1, storeSchemaVersion: 1, entrypoint: 'product-server.mjs', files };
+const manifest = { schemaVersion: 1, product: 'gotzji', version, catalogVersion: 2, storeSchemaVersion: 1, entrypoint: 'product-server.mjs', files };
 await writeFile(path.join(output, 'product-runtime-manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
 process.stdout.write(`gotzji owned host runtime bundled: ${files.length} verified files\n`);

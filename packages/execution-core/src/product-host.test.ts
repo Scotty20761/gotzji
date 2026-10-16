@@ -176,7 +176,7 @@ describe('private product enrollment storage', () => {
     const entry = path.join(directory, 'product-server.mjs');
     expect(() => productRuntimeIdentity(entry, { requireManifest: true })).toThrow('PRODUCT_RUNTIME_MANIFEST_REQUIRED');
     const filename = path.join(directory, 'product-runtime-manifest.json');
-    const manifest = { schemaVersion: 1, product: 'gotzji', version: '1.0.0', catalogVersion: 1, storeSchemaVersion: 1, entrypoint: 'product-server.mjs', files: [] as { relativePath: string; sizeBytes: number; sha256: string }[] };
+    const manifest = { schemaVersion: 1, product: 'gotzji', version: '1.0.0', catalogVersion: 2, storeSchemaVersion: 1, entrypoint: 'product-server.mjs', files: [] as { relativePath: string; sizeBytes: number; sha256: string }[] };
     const save = (): void => { writeFileSync(filename, `${JSON.stringify(manifest, null, 2)}\n`); };
     save(); expect(() => productRuntimeIdentity(entry, { requireManifest: true })).toThrow('PRODUCT_RUNTIME_MANIFEST_INVALID');
     for (const relativePath of ['product-server.mjs', 'fixture-worker.mjs', 'product-broker.mjs', 'product-runner.mjs']) {

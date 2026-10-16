@@ -68,13 +68,19 @@ describe('MVP release verification gate', () => {
   it('requires every owned release gate and names external installed/account evidence', async () => {
     const checklist = await readFile(path.join(repositoryRoot, '.github', 'RELEASE_CHECKLIST.md'), 'utf8');
     for (let index = 1; index <= 20; index++) expect(checklist).toContain(`G${String(index).padStart(2, '0')}`);
-    for (const requirement of ['BLOCKED_EXTERNAL', 'candidate', 'Grace', 'Plus', 'Pro', 'Windows restart', 'migration', 'rollback', 'pilot']) expect(checklist).toContain(requirement);
+    for (const requirement of ['BLOCKED_EXTERNAL', 'candidate', 'ChatGPT', 'Plus', 'Pro', 'Windows restart', 'migration', 'rollback', 'pilot']) expect(checklist).toContain(requirement);
     expect(checklist).toContain('A component test does not close a runtime gate');
+    expect(checklist).toContain('G13 remains mandatory');
+    expect(checklist).toContain('One durable authority');
+    expect(checklist).toContain('both explicitly enrolled routes');
   });
 
   it('describes the owned mutation and enrollment boundaries without inherited raw-tool claims', async () => {
     const readme = await readFile(path.join(repositoryRoot, 'FULL_README.md'), 'utf8');
-    expect(readme).toContain('Grace controls mutations and durable workflows');
+    expect(readme).toContain('ChatGPT controls typed mutations and durable workflows');
+    expect(readme).toContain("The owner's current ChatGPT account and conversation supply reasoning");
+    expect(readme).toContain('requires no additional Claude, Grace, Codex, local/secondary inference backend, provider login, subscription, model or provider child process');
+    expect(readme).toContain('model-dependent workflows are unsupported');
     expect(readme).toContain('Project file reads execute directly in that host');
     expect(readme).toContain('Policies and file versions are checked before an effect');
     expect(readme).toContain('Project/recipe/connection enrollment stays in the local app');

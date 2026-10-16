@@ -9,6 +9,6 @@ describe('owned gotzji version notes', () => {
     expect([...notes!.th, ...notes!.en].every((entry) => entry.trim().length > 0 && !entry.includes('lnwjud 5.7.3'))).toBe(true);
   });
   it('keeps the upstream-numbered baseline unpublished and prepares meaningful owned v1 notes', () => {
-    expect(gotzjiReleaseNotes('5.7.3')).toMatchObject({ status: 'development' }); expect(gotzjiReleaseNotes('1.0.0')!.th.join(' ')).toContain('Grace'); expect(gotzjiReleaseNotes('1.0.0')!.en.join(' ')).toContain('durable host');
+    expect(gotzjiReleaseNotes('5.7.3')).toMatchObject({ status: 'development' }); expect(gotzjiReleaseNotes('1.0.0')!.th.join(' ')).toContain('ChatGPT'); expect(gotzjiReleaseNotes('1.0.0')!.en.join(' ')).toContain('durable host');
   });
 });

@@ -14,7 +14,7 @@ describe('dedicated Library channel over the existing authority', () => {
     let core: ExecutionCore | undefined; let channel: ProductLibraryChannel | undefined;
     try {
       mkdirSync(directory); mkdirSync(projectRoot); ensureProductControlDocuments(projectRoot); writeFileSync(path.join(projectRoot, 'source.txt'), 'owned selected Library input');
-      core = await ExecutionCore.open(directory, { product: { executable: process.execPath, libraryRoot: projectRoot }, libraryOptions: { pythonExecutable: process.execPath, pythonSha256: createHash('sha256').update(readFileSync(process.execPath)).digest('hex') } });
+      core = await ExecutionCore.open(directory, { product: { mode: 'host-direct', libraryRoot: projectRoot }, libraryOptions: { pythonExecutable: process.execPath, pythonSha256: createHash('sha256').update(readFileSync(process.execPath)).digest('hex') } });
       const credential = 'a'.repeat(64); core.ensureAdapterEnrollment('gotzji-product', 'owner', credential);
       core.registerProject(credential, { projectId: 'library', displayName: 'Library fixture', rootPath: projectRoot, kind: 'library' }); core.enrollLibraryRoute(credential, { projectId: 'library', route: 'gotzji-library' });
       channel = new ProductLibraryChannel({ directory, ownerId: 'owner', primaryCredential: credential, core, version: '5.7.3', allowWork: (): boolean => true, protector: { protect: async (value): Promise<string> => value, unprotect: async (value): Promise<string> => value } });
@@ -27,7 +27,12 @@ describe('dedicated Library channel over the existing authority', () => {
       const initialize = await call('initialize'); expect(initialize.result.serverInfo!.name).toBe('gotzji-lnwjud-library');
       const health = await call('tools/call', { name: 'gotzji_health', arguments: {} }); expect(JSON.parse(health.result.content![0]!.text).authorityId).toBe(core.authority().authorityId);
       const listed = await call('tools/list'); const prepare = listed.result.tools!.find((entry) => entry.name === 'gotzji_prepare_operation')!;
-      expect(prepare.inputSchema.oneOf).toHaveLength(libraryCatalog().length); expect(prepare.inputSchema.oneOf.every((entry: { properties: { operation: { const: string } } }) => entry.properties.operation.const === 'library.workflow')).toBe(true);
+      expect(prepare.inputSchema.oneOf).toHaveLength(libraryCatalog('host-direct').length); expect(prepare.inputSchema.oneOf.every((entry: { properties: { operation: { const: string } } }) => entry.properties.operation.const === 'library.workflow')).toBe(true);
+      for (const [workflowId, workflowVersion] of [['library.weekly-reading',2],['library.final-memo',2],['library.memo-review',1]]) {
+        expect(JSON.stringify(prepare.inputSchema)).not.toContain(workflowId);
+        const unsupported = await call('tools/call', { name: 'gotzji_prepare_operation', arguments: { requestId: 'model-required', projectId: 'library', operation: 'library.workflow', workflowId, workflowVersion, parameters: {} } });
+        expect(unsupported.result.isError).toBe(true); expect(unsupported.result.content![0]!.text).toContain('CHATGPT_ORCHESTRATION_REQUIRED');
+      }
       const prepared = await call('tools/call', { name: 'gotzji_prepare_operation', arguments: { requestId: 'library-read', projectId: 'library', operation: 'library.workflow', workflowId: 'library.read', workflowVersion: 1, parameters: { paths: '["source.txt"]' } } }); expect(prepared.result.isError, JSON.stringify(prepared.result.content)).toBe(false);
       const denied = await call('tools/call', { name: 'gotzji_prepare_operation', arguments: { requestId: 'native-forged', projectId: 'library', operation: 'file.read', path: 'source.txt' } }); expect(denied.result.isError).toBe(true);
       const primaryPreparation = core.prepareOperation(credential, { requestId: 'primary-file', projectId: 'library', operation: 'file.read', path: 'source.txt' });

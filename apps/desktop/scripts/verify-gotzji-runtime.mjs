@@ -10,7 +10,7 @@ const digest = (bytes) => createHash('sha256').update(bytes).digest('hex');
 
 export function validateGotzjiRuntimeManifest(manifest, version) {
   if (!manifest || manifest.schemaVersion !== 1 || manifest.product !== 'gotzji' || manifest.version !== version
-    || manifest.catalogVersion !== 1 || manifest.storeSchemaVersion !== 1 || manifest.entrypoint !== 'product-server.mjs'
+    || manifest.catalogVersion !== 2 || manifest.storeSchemaVersion !== 1 || manifest.entrypoint !== 'product-server.mjs'
     || !Array.isArray(manifest.files) || manifest.files.length < requiredEntries.length) {
     throw new Error('The gotzji core runtime manifest identity/version/catalog/store schema is invalid');
   }

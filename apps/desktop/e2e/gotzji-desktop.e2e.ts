@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, realpath, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, realpath, readdir, rm } from 'node:fs/promises';
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
@@ -18,22 +18,20 @@ test('gotzji production entry exposes governed controls and denies inherited wor
     throw new Error('Unexpected gotzji E2E cleanup root');
   }
   let app: ElectronApplication | undefined;
+  let libraryProjectRoot: string | undefined;
   let hostWasReady = false;
   const expectedHostExecutable = await realpath(electronExecutablePath(desktopRoot));
   try {
-    const providerFixture = path.join(dataRoot, 'claude.exe');
-    await writeFile(providerFixture, 'gotzji E2E provider path fixture\n', { flag: 'wx' });
-    const providerExecutable = await realpath(providerFixture);
     app = await _electron.launch({
       executablePath: expectedHostExecutable,
       args: [mainEntry],
       cwd: desktopRoot,
-      env: { ...process.env, GOTZJI_DATA_PATH: dataRoot, GOTZJI_E2E_MODE: '1', GOTZJI_E2E_PROVIDER_EXECUTABLE: providerExecutable },
+      env: { ...process.env, GOTZJI_DATA_PATH: dataRoot, GOTZJI_E2E_MODE: '1' },
       timeout: 40_000,
     });
     const page = await app.firstWindow();
     await expect(page.getByRole('heading', { name: 'gotzji', exact: true })).toBeVisible({ timeout: 30_000 });
-    await expect(page.getByText('Grace ดูแลงานของคุณ', { exact: true })).toBeVisible();
+    await expect(page.getByText('สั่งงานผ่านปลั๊กอิน ChatGPT', { exact: true })).toBeVisible();
     const observation = await page.evaluate(async () => {
       const result = await Promise.race([
         window.gotzji.hostStatus().then((value) => ({ kind: 'status' as const, value })).catch((error: unknown) => ({ kind: 'error' as const, value: error instanceof Error ? error.message : String(error) })),
@@ -43,7 +41,7 @@ test('gotzji production entry exposes governed controls and denies inherited wor
     });
     const incidents = await Promise.all((await readdir(path.join(dataRoot, 'runtime'))).filter((name) => name.startsWith('product-startup-')).map(async (name) => readFile(path.join(dataRoot, 'runtime', name), 'utf8')));
     expect(observation.result, `${observation.body}\nSTATUS=${JSON.stringify(observation.result)}\nINCIDENTS=${incidents.join('\n')}`).toMatchObject({
-      kind: 'status', value: { product: 'gotzji', state: 'ready', controller: 'grace', automaticUpdates: false },
+      kind: 'status', value: { product: 'gotzji', state: 'ready', controller: 'chatgpt-plugin', automaticUpdates: false },
     });
     hostWasReady = true;
     await expect(page.evaluate(() => ({
@@ -58,6 +56,16 @@ test('gotzji production entry exposes governed controls and denies inherited wor
     expect(denied).toContain('GRACE_GOVERNED_OPERATION_REQUIRED');
     const browserWindow = await app.browserWindow(page);
     expect(await browserWindow.evaluate((window) => window.webContents.getLastWebPreferences().sandbox)).toBe(true);
+
+    libraryProjectRoot = await realpath(await mkdtemp(path.join(os.tmpdir(), 'gotzji-library-panel-e2e-')));
+    const libraryRelative = path.relative(os.tmpdir(), libraryProjectRoot);
+    if (!libraryRelative || libraryRelative.startsWith('..') || path.isAbsolute(libraryRelative) || !path.basename(libraryProjectRoot).startsWith('gotzji-library-panel-e2e-')) throw new Error('Unexpected Library panel fixture root');
+    await page.evaluate(async (rootPath) => window.gotzji.request({ method: 'registerProject', input: { projectId: 'library-panel', displayName: 'Library route fixture', rootPath, kind: 'library' } }), libraryProjectRoot);
+    await page.getByRole('button', { name: 'รีเฟรช', exact: true }).click();
+    await page.getByRole('button', { name: 'โครงการ', exact: true }).click();
+    await page.getByRole('button', { name: /^Library route fixture ·/ }).click();
+    await expect(page.getByRole('heading', { name: 'ช่องทาง Library สำหรับ lnwjud', exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'เชื่อมโครงการ Library นี้', exact: true })).toBeEnabled();
   } finally {
     try {
       const selfStopped = await stopOwnedTestHost(dataRoot, expectedHostExecutable);
@@ -69,6 +77,7 @@ test('gotzji production entry exposes governed controls and denies inherited wor
         try { await rm(dataRoot, { recursive: true, force: true }); return true; }
         catch { return false; }
       }, { timeout: 10_000, intervals: [50, 100, 250] }).toBe(true);
+      if (libraryProjectRoot) await rm(libraryProjectRoot, { recursive: true, force: true });
     }
   }
 });

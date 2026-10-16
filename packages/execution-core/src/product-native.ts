@@ -83,7 +83,7 @@ export async function prepareProductNativeOperation(project: RegisteredProject, 
 export interface NativeWorkerBinding {
   readonly owner: string; readonly jobId: string; readonly epoch: string; readonly generation: number; readonly session: string;
   readonly intentRevision: number; readonly authorizationDigest: string; readonly policy: string; readonly token: string; readonly lease: string;
-  readonly effectRoot: string; readonly database: string; readonly text: string; readonly grace: { readonly mode: 'claude' | 'test-driver' };
+  readonly effectRoot: string; readonly database: string; readonly text: string; readonly grace: { readonly mode: 'claude' | 'test-driver' | 'host-direct'; readonly testOnlyProviders?: true };
   readonly nativeTestRunner?: { readonly path: string; readonly sha256: string };
 }
 export interface NativeWorkerAuthorization { readonly body: string; readonly mac: string }
@@ -107,11 +107,11 @@ export function assertPreparedNativeAuthorization(config: AuthorizedNativeWorker
 function nativeAuthorizationBody(config: NativeWorkerBinding, prepared: PreparedProductNativeOperation): string {
   if (!config.owner || !config.jobId || !config.epoch || !config.session || !/^[a-f0-9]{64}$/u.test(config.token) || !config.lease
     || !Number.isSafeInteger(config.generation) || config.generation < 1 || !Number.isSafeInteger(config.intentRevision) || config.intentRevision < 0
-    || !/^[a-f0-9]{64}$/u.test(config.authorizationDigest) || !/^[a-f0-9]{64}$/u.test(config.policy) || !['claude', 'test-driver'].includes(config.grace?.mode)) throw new CoreError('NATIVE_WORKER_BINDING_INVALID');
-  if (config.nativeTestRunner && (config.grace.mode !== 'test-driver' || !path.isAbsolute(config.nativeTestRunner.path) || !/^[a-f0-9]{64}$/u.test(config.nativeTestRunner.sha256))) throw new CoreError('NATIVE_TEST_RUNNER_DENIED');
+    || !/^[a-f0-9]{64}$/u.test(config.authorizationDigest) || !/^[a-f0-9]{64}$/u.test(config.policy) || !['claude', 'test-driver', 'host-direct'].includes(config.grace?.mode)) throw new CoreError('NATIVE_WORKER_BINDING_INVALID');
+  if (config.nativeTestRunner && (!(config.grace.mode === 'test-driver' || (config.grace.mode === 'host-direct' && config.grace.testOnlyProviders === true)) || !path.isAbsolute(config.nativeTestRunner.path) || !/^[a-f0-9]{64}$/u.test(config.nativeTestRunner.sha256))) throw new CoreError('NATIVE_TEST_RUNNER_DENIED');
   return JSON.stringify({ schemaVersion: 1, owner: config.owner, jobId: config.jobId, epoch: config.epoch, generation: config.generation, session: config.session,
     intentRevision: config.intentRevision, authorizationDigest: config.authorizationDigest, policy: config.policy, leaseDigest: hash(config.lease),
-    effectRoot: config.effectRoot, database: config.database, mode: config.grace.mode, ...(config.nativeTestRunner ? { nativeTestRunner: config.nativeTestRunner } : {}), textDigest: hash(config.text), preparedDigest: hash(JSON.stringify(prepared)),
+    effectRoot: config.effectRoot, database: config.database, mode: config.grace.mode, ...(config.grace.testOnlyProviders ? { testOnlyProviders: true } : {}), ...(config.nativeTestRunner ? { nativeTestRunner: config.nativeTestRunner } : {}), textDigest: hash(config.text), preparedDigest: hash(JSON.stringify(prepared)),
     planDigest: prepared.native.planDigest, resourceKeys: prepared.native.resourceKeys, scriptPath: prepared.native.scriptPath, scriptSha256: prepared.native.scriptSha256,
     provider: prepared.native.provider, ...(prepared.native.cad ? { cad: prepared.native.cad } : {}) });
 }

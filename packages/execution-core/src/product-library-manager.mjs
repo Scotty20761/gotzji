@@ -28,7 +28,7 @@ export function productLibraryManager(config,directory,callbacks){
         const receipt=await backend.executePreparedLibraryOperation(config,controller.signal,{verifyLiveAuthority});
         writeFileSync(path.join(config.effectRoot,'result.txt'),JSON.stringify(receipt),{mode:0o600});
         current={...current,state:receipt.state==='completed'?'completed':'failed',code:receipt.state==='blocked'?'LIBRARY_FACTY_BLOCKED':undefined,elapsedMs:Date.now()-started,checks:receipt.steps?.length??0,lastProgressAt:new Date().toISOString()};persist();callbacks.finished(current);
-      }).catch((error)=>{const state=recordedState();const uncertain=state?.outcome==='unknown'||state?.state==='uncertain';current={...current,state:uncertain?'uncertain':'failed',code:providerFailureCode(error,'LIBRARY_EXECUTION_FAILED'),elapsedMs:Date.now()-started,lastProgressAt:new Date().toISOString()};persist();callbacks.finished(current);}).finally(()=>{running=undefined;});
+      }).catch((error)=>{const state=recordedState();const uncertain=error?.outcome==='unknown'||state?.outcome==='unknown'||state?.state==='uncertain';current={...current,state:uncertain?'uncertain':'failed',code:providerFailureCode(error,'LIBRARY_EXECUTION_FAILED'),elapsedMs:Date.now()-started,lastProgressAt:new Date().toISOString()};persist();callbacks.finished(current);}).finally(()=>{running=undefined;});
       return current;
     },
     stop:async()=>{

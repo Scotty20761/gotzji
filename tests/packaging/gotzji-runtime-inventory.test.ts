@@ -25,7 +25,7 @@ async function fixture(): Promise<{ root: string; manifest: CoreManifest; manife
     await writeFile(path.join(root, relativePath), text);
     return { relativePath, sizeBytes: Buffer.byteLength(text), sha256: digest(text) };
   }));
-  const manifest = { schemaVersion: 1, product: 'gotzji', version: '5.7.3', catalogVersion: 1, storeSchemaVersion: 1, entrypoint: 'product-server.mjs', files };
+  const manifest = { schemaVersion: 1, product: 'gotzji', version: '5.7.3', catalogVersion: 2, storeSchemaVersion: 1, entrypoint: 'product-server.mjs', files };
   const manifestPath = path.join(root, 'product-runtime-manifest.json');
   await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
   return { root, manifest, manifestPath };
@@ -48,7 +48,7 @@ describe('gotzji packaged neutral host inventory', () => {
       if (failure === 'unlisted file') await writeFile(path.join(f.root, 'not-in-the-inventory.mjs'), 'new bytes');
       if (failure === 'wrong version') f.manifest.version = '99.0.0';
       if (failure === 'unsafe path') f.manifest.files[0]!.relativePath = '../outside.mjs';
-      if (failure === 'wrong catalog') f.manifest.catalogVersion = 999;
+      if (failure === 'wrong catalog') f.manifest.catalogVersion = 1;
       if (failure === 'wrong schema') f.manifest.storeSchemaVersion = 999;
       await writeFile(f.manifestPath, `${JSON.stringify(f.manifest, null, 2)}\n`);
       await expect(verifyGotzjiRuntimeDirectory(f.root, '5.7.3')).rejects.toThrow();

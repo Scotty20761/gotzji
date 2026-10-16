@@ -143,7 +143,7 @@ describe('governed product HTTP and MCP boundary', () => {
       }
       expect(calls).toHaveLength(cases.length);
       const list = await (await fetch(`http://127.0.0.1:${host.port}/mcp/tunnel`, { method: 'POST', body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list' }) })).json();
-      expect(list.result.tools.find((entry: { name: string }) => entry.name === 'gotzji_prepare_operation').inputSchema.oneOf).toHaveLength(cases.length + 6 + libraryCatalog().length);
+      expect(list.result.tools.find((entry: { name: string }) => entry.name === 'gotzji_prepare_operation').inputSchema.oneOf).toHaveLength(cases.length + 6 + libraryCatalog('host-direct').length);
     } finally { await host.close(); }
   });
 
@@ -171,7 +171,7 @@ describe('governed product HTTP and MCP boundary', () => {
       ...['browser.read', 'browser.query'].map((operation) => ({ ...base, ...binding, operation, selector: 'h1' })),
       { ...base, ...binding, operation: 'browser.type', selector: '#text', text: 'after' }, { ...base, ...binding, operation: 'browser.click', selector: '#button', postSelector: '#status', expectedPostText: 'done' },
       { ...base, ...binding, operation: 'browser.navigate', url: 'https://example.org/next' }, { ...base, ...binding, operation: 'browser.workflow', steps: [{ operation: 'browser.navigate', url: 'https://example.org/next' }, { operation: 'browser.read', selector: 'h1' }] },
-      ...libraryCatalog().map((workflow) => ({ ...base, operation: 'library.workflow', workflowId: workflow.id, workflowVersion: workflow.version, parameters: Object.fromEntries(workflow.requiredParameters.map((name) => [name, name === 'expectedSha256' ? 'a'.repeat(64) : name === 'paths' ? '["source.md"]' : name === 'ticker' ? 'NVDA' : 'owned-input'])) })),
+      ...libraryCatalog('host-direct').map((workflow) => ({ ...base, operation: 'library.workflow', workflowId: workflow.id, workflowVersion: workflow.version, parameters: Object.fromEntries(workflow.requiredParameters.map((name) => [name, name === 'expectedSha256' ? 'a'.repeat(64) : name === 'paths' ? '["source.md"]' : name === 'ticker' ? 'NVDA' : 'owned-input'])) })),
       { ...base, operation: 'file.write', path: 'new.txt', expectedSha256: null, content: 'new content' },
     ];
     const call = async (input: Record<string, unknown>): Promise<{ ok: boolean }> => (await (await fetch(`http://127.0.0.1:${host.port}/rpc`, { method: 'POST', headers: { Authorization: 'Bearer owner' }, body: JSON.stringify({ method: 'prepareOperation', input }) })).json());

@@ -2,7 +2,7 @@
   "name": "gotzji",
   "version": "1.0.0",
   "private": true,
-  "description": "Owner-maintained Grace-governed Windows control app and MCP gateway with durable project jobs.",
+  "description": "Owner-maintained ChatGPT plugin and Windows MCP host for typed operations and durable project jobs.",
   "author": "Scotty20761",
   "homepage": "https://github.com/Scotty20761/gotzji#readme",
   "repository": {

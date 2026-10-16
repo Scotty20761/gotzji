@@ -24,13 +24,14 @@ const operationId = (stepId) => `library-step:${stepId}`;
 
 export function assertPreparedLibraryAuthorization(config) {
   const prepared = JSON.parse(config.text);
+  if (config.grace?.mode === 'host-direct' && (!['library.read:1','library.code-qa:2'].includes(`${prepared?.library?.ast?.workflowId}:${prepared?.library?.ast?.workflowVersion}`) || prepared.library.ast.nodes.some(step => step.actor !== 'grace' || step.operation === 'library.weekly-reading.synthesize'))) throw typed('CHATGPT_ORCHESTRATION_REQUIRED','none');
   if (prepared?.kind !== 'library' || !config.libraryAuthorization || !config.grace) throw typed('LIBRARY_PREPARATION_REQUIRED','none');
   const { body, mac } = config.libraryAuthorization;
   if (typeof body !== 'string' || typeof mac !== 'string' || !equal(createHmac('sha256',config.token).update(body).digest('hex'),mac)) throw typed('LIBRARY_BINDING_INVALID','none');
   const binding = JSON.parse(body);
   if (binding.owner !== config.owner || binding.jobId !== config.jobId || binding.epoch !== config.epoch || binding.generation !== config.generation
     || binding.session !== config.session || binding.intentRevision !== config.intentRevision || binding.policy !== config.policy
-    || binding.leaseDigest !== digest(config.lease) || binding.textDigest !== digest(config.text)) throw typed('LIBRARY_BINDING_INVALID','none');
+    || (binding.mode !== undefined && binding.mode !== config.grace.mode) || (config.grace.mode === 'host-direct' && (binding.mode !== 'host-direct' || binding.testOnlyProviders !== config.grace.testOnlyProviders || JSON.stringify(binding.libraryTestRunner) !== JSON.stringify(config.libraryTestRunner))) || binding.leaseDigest !== digest(config.lease) || binding.textDigest !== digest(config.text)) throw typed('LIBRARY_BINDING_INVALID','none');
   assertPreparedLibraryDependencies(config, prepared);
   return prepared;
 }
@@ -38,9 +39,19 @@ export function assertPreparedLibraryAuthorization(config) {
 export function assertPreparedLibraryDependencies(config, knownPrepared) {
   const prepared = knownPrepared ?? JSON.parse(config.text);
   if (prepared?.kind !== 'library') throw typed('LIBRARY_PREPARATION_REQUIRED','none');
-  let navigationAfter; let effects=[];
+  let navigationAfter; let effects=[]; let applyEvidence=false; let appliedSource;
+  try {
   const db=new DatabaseSync(config.database,{readOnly:true,timeout:5000});
-  try{const row=db.prepare("SELECT phase FROM gotzji_recipe_operations WHERE job_id=? AND operation_id='library-step:index'").get(config.jobId);if(row?.phase==='verified'){
+  try{
+    if (prepared.library.ast.workflowId === 'library.code-qa' && prepared.library.ast.workflowVersion === 2) {
+      const apply = db.prepare("SELECT * FROM gotzji_recipe_operations WHERE job_id=? AND operation_id='library-step:apply'").get(config.jobId);
+      const applyVerified = apply?.phase === 'verified';
+      applyEvidence = applyVerified || ['started','uncertain'].includes(apply?.phase) || existsSync(path.join(config.effectRoot, 'library-step-apply.json'));
+      if (applyEvidence && !applyVerified) throw typed('LIBRARY_EFFECT_RECONCILIATION_REQUIRED','unknown');
+      // Historical test drivers may explicitly model an unmutated step. They never authorize poststate bytes.
+      if (applyVerified && !(config.grace.mode === 'test-driver' && config.libraryTestRunner)) appliedSource = verifiedCodeQaApplyEvolution(config, prepared, db, apply);
+    }
+    const row=db.prepare("SELECT phase FROM gotzji_recipe_operations WHERE job_id=? AND operation_id='library-step:index'").get(config.jobId);if(row?.phase==='verified'){
     const value=readStepValue(config,'index');navigationAfter=value.navigationAfter;effects=value.navigationEffects??[];
   }}finally{db.close();}
   if(navigationAfter)assertNavigationSnapshot(prepared,navigationAfter);
@@ -49,21 +60,55 @@ export function assertPreparedLibraryDependencies(config, knownPrepared) {
     if(expected===null){if(existsSync(entry.path))throw typed('PROJECT_POLICY_CHANGED','none');return;}
     if(!existsSync(entry.path)||realpathSync(entry.path)!==entry.path||lstatSync(entry.path).isSymbolicLink()||digest(readFileSync(entry.path))!==expected)throw typed('PROJECT_POLICY_CHANGED','none');};
   for(const entry of Object.values(prepared.projectPolicies??{}))verify(entry);
-  for(const entry of [...prepared.library.selectedSources,prepared.library.python])verify(entry);
+  for(const entry of prepared.library.selectedSources) {
+    if (appliedSource && entry.path === appliedSource.path) {
+      if (!existsSync(entry.path) || realpathSync(entry.path) !== entry.path || lstatSync(entry.path).isSymbolicLink() || digest(readFileSync(entry.path)) !== appliedSource.hash) throw typed('LIBRARY_EFFECT_RECONCILIATION_REQUIRED','unknown');
+    } else verify(entry);
+  }
+  verify(prepared.library.python);
   if(config.grace){
-    for(const entry of [{path:config.grace.executable,hash:config.grace.executableHash},{path:config.grace.sourceFile,hash:config.grace.sourceHash},...Object.values(config.grace.documents??{}),...(config.grace.testDriver?[{path:config.grace.testDriver,hash:config.grace.testDriverHash}]:[])])verify(entry);
+    for(const entry of [...(config.grace.mode==='host-direct'?[]:[{path:config.grace.executable,hash:config.grace.executableHash}]),{path:config.grace.sourceFile,hash:config.grace.sourceHash},...Object.values(config.grace.documents??{}),...(config.grace.testDriver?[{path:config.grace.testDriver,hash:config.grace.testDriverHash}]:[])])verify(entry);
   }
   const expectedPolicies=Object.entries(prepared.projectPolicies??{}).filter(([name])=>name.startsWith('project_policy_')).map(([,entry])=>entry.path).sort();const actual=[];
   for(const directory of prepared.policyDirectories??[])for(const name of ['AGENTS.md','CLAUDE.md']){const filename=path.join(directory,name);if(existsSync(filename))actual.push(filename);}
   if(JSON.stringify(actual.sort())!==JSON.stringify(expectedPolicies))throw typed('PROJECT_POLICY_CHANGED','none');
   return true;
+  } catch (error) {
+    if (applyEvidence) throw typed('LIBRARY_EFFECT_RECONCILIATION_REQUIRED','unknown');
+    throw error;
+  }
+}
+
+/** Only the approved code target may evolve; controller, policy and provider pins remain frozen. */
+export function verifiedCodeQaApplyEvolution(config, prepared, database, row) {
+  const fail = () => { throw typed('LIBRARY_EFFECT_RECONCILIATION_REQUIRED','unknown'); };
+  assertProductAuthority(database, config);
+  if (prepared.library.ast.workflowId !== 'library.code-qa' || prepared.library.ast.workflowVersion !== 2 || prepared.library.selectedSources.length !== 1 || row?.job_id !== config.jobId || row.operation_id !== 'library-step:apply' || row.phase !== 'verified' || typeof row.receipt !== 'string') fail();
+  const target = prepared.library.selectedSources[0];
+  const pins = [...Object.values(prepared.projectPolicies ?? {}), prepared.library.python, ...Object.values(config.grace.documents ?? {}), { path: config.grace.sourceFile, hash: config.grace.sourceHash }, ...(config.grace.executable ? [{ path: config.grace.executable, hash: config.grace.executableHash }] : [])];
+  if (pins.some(entry => path.resolve(entry.path) === path.resolve(target.path)) || target.hash !== prepared.input.parameters.expectedSha256 || typeof prepared.input.parameters.content !== 'string') fail();
+  const wrapper = JSON.parse(row.receipt); const { grant, receipt } = wrapper;
+  if (!grant || typeof grant.grantId !== 'string' || !/^[a-f0-9]{64}$/.test(grant.requestDigest) || !/^[a-f0-9]{64}$/.test(grant.grantDigest) || !Number.isFinite(Date.parse(grant.expiresAt))
+    || row.digest !== digestLibraryValue({ preparation: prepared.library.digest, step: 'apply', grant: grant.grantDigest }) || !receipt
+    || receipt.preparationDigest !== prepared.library.digest || receipt.sourceDigest !== prepared.library.sourceScope.digest || receipt.jobId !== config.jobId || receipt.stepId !== 'apply'
+    || receipt.operation !== 'library.code.apply' || receipt.status !== 'completed' || receipt.grantDigest !== grant.grantDigest
+    || JSON.stringify(receipt.obligations) !== JSON.stringify(prepared.library.ast.nodes.find(step => step.id === 'apply')?.requiredObligations)) fail();
+  const filename = path.join(config.effectRoot, 'library-step-apply.json');
+  if (!existsSync(filename) || lstatSync(filename).isSymbolicLink() || realpathSync(filename) !== filename) fail();
+  const envelope = JSON.parse(readFileSync(filename, 'utf8'));
+  if (typeof envelope.body !== 'string' || typeof envelope.mac !== 'string' || !equal(createHmac('sha256',config.token).update(envelope.body).digest('hex'),envelope.mac)) fail();
+  const artifact = JSON.parse(envelope.body); const value = artifact.value;
+  if (artifact.jobId !== config.jobId || artifact.epoch !== config.epoch || artifact.stepId !== 'apply' || artifact.operation !== 'library.code.apply'
+    || !value || artifact.valueDigest !== digest(JSON.stringify(value)) || receipt.outputDigest !== artifact.valueDigest
+    || value.path !== path.relative(prepared.project.rootPath, target.path) || value.beforeSha256 !== target.hash || value.afterSha256 !== digest(prepared.input.parameters.content)) fail();
+  return { path: target.path, hash: value.afterSha256 };
 }
 
 export async function executePreparedLibraryOperation(config, signal, options = {}) {
   const prepared = assertPreparedLibraryAuthorization(config);
   const testRunner = config.libraryTestRunner ? await loadTestRunner(config) : options.testRunner;
-  if (testRunner && config.grace.mode !== 'test-driver') throw typed('LIBRARY_TEST_RUNNER_DENIED','none');
-  if (config.grace.mode === 'claude' && typeof options.verifyLiveAuthority !== 'function') throw typed('LIBRARY_LIVE_AUTHORITY_REQUIRED','none');
+  if (testRunner && !(config.grace.mode === 'test-driver' || (config.grace.mode === 'host-direct' && config.grace.testOnlyProviders === true))) throw typed('LIBRARY_TEST_RUNNER_DENIED','none');
+  if (['claude','host-direct'].includes(config.grace.mode) && typeof options.verifyLiveAuthority !== 'function') throw typed('LIBRARY_LIVE_AUTHORITY_REQUIRED','none');
   const key = `${config.owner}:${config.jobId}:${config.epoch}:${prepared.library.digest}:${digest(config.token)}`;
   const inFlight = active.get(key); if (inFlight) return inFlight;
   const execute = async () => {
@@ -293,7 +338,7 @@ async function runDeploy(config,prepared,signal){const controller=path.join(prep
 function weeklyWrapper(config){const binding=config.libraryWrapper;if(!binding||typeof binding.path!=='string'||!path.isAbsolute(binding.path)||!existsSync(binding.path)||lstatSync(binding.path).isSymbolicLink()||realpathSync(binding.path)!==path.resolve(binding.path)||digest(readFileSync(binding.path))!==binding.sha256)throw typed('LIBRARY_WEEKLY_WRAPPER_CHANGED','none');return binding.path;}
 function readStepValue(config,stepId){const filename=path.join(config.effectRoot,`library-step-${stepId}.json`);if(!existsSync(filename)||lstatSync(filename).isSymbolicLink())throw typed('LIBRARY_STEP_ARTIFACT_MISSING','unknown');const envelope=JSON.parse(readFileSync(filename,'utf8'));if(typeof envelope.body!=='string'||typeof envelope.mac!=='string'||!equal(createHmac('sha256',config.token).update(envelope.body).digest('hex'),envelope.mac))throw typed('LIBRARY_STEP_ARTIFACT_INVALID','unknown');const body=JSON.parse(envelope.body);if(body.jobId!==config.jobId||body.epoch!==config.epoch||body.stepId!==stepId||body.valueDigest!==digest(JSON.stringify(body.value??null)))throw typed('LIBRARY_STEP_ARTIFACT_INVALID','unknown');return body.value;}
 function runCommand(executable,args,cwd,signal,expectedHash){return new Promise((resolve,reject)=>{if(expectedHash&&digest(readFileSync(executable))!==expectedHash){reject(typed('DEPENDENCIES_CHANGED','none'));return;}const child=spawn(executable,args,{cwd,env:childEnvironment(),windowsHide:true,shell:false,stdio:['ignore','pipe','pipe']});let stdout='',stderr='';let settled=false;const done=(error,value)=>{if(settled)return;settled=true;signal.removeEventListener('abort',abort);if(error)reject(error);else resolve(value);};const abort=()=>{child.kill();done(typed('LIBRARY_CANCELLED','unknown'));};signal.addEventListener('abort',abort,{once:true});child.stdout.on('data',(chunk)=>{stdout+=chunk;});child.stderr.on('data',(chunk)=>{stderr+=chunk;});child.once('error',()=>done(typed('LIBRARY_COMMAND_LAUNCH_FAILED','none')));child.once('close',(code)=>{if(code===0)done(null,{exitCode:0,stdout,stderrDigest:digest(stderr)});else done(typed('LIBRARY_COMMAND_FAILED','none'));});});}
-async function loadTestRunner(config){if(config.grace.mode!=='test-driver')throw typed('LIBRARY_TEST_RUNNER_DENIED','none');const binding=config.libraryTestRunner;const verify=()=>{const info=lstatSync(binding.path);if(!info.isFile()||info.isSymbolicLink()||realpathSync(binding.path)!==path.resolve(binding.path)||digest(readFileSync(binding.path))!==binding.sha256)throw typed('LIBRARY_TEST_RUNNER_CHANGED','none');};verify();const module=await import(pathToFileURL(binding.path).href+'?sha256='+binding.sha256);verify();if(typeof module.executeLibraryStep!=='function')throw typed('LIBRARY_TEST_RUNNER_INVALID','none');return module.executeLibraryStep;}
+async function loadTestRunner(config){if(!(config.grace.mode==='test-driver'||(config.grace.mode==='host-direct'&&config.grace.testOnlyProviders===true)))throw typed('LIBRARY_TEST_RUNNER_DENIED','none');const binding=config.libraryTestRunner;const verify=()=>{const info=lstatSync(binding.path);if(!info.isFile()||info.isSymbolicLink()||realpathSync(binding.path)!==path.resolve(binding.path)||digest(readFileSync(binding.path))!==binding.sha256)throw typed('LIBRARY_TEST_RUNNER_CHANGED','none');};verify();const module=await import(pathToFileURL(binding.path).href+'?sha256='+binding.sha256);verify();if(typeof module.executeLibraryStep!=='function')throw typed('LIBRARY_TEST_RUNNER_INVALID','none');return module.executeLibraryStep;}
 function publicConfig(config){return{jobId:config.jobId,epoch:config.epoch,owner:config.owner,intentRevision:config.intentRevision};}
 function assertEffectRoot(config){if(!path.isAbsolute(config.effectRoot)||realpathSync(config.effectRoot)!==path.resolve(config.effectRoot)||!lstatSync(config.effectRoot).isDirectory()||lstatSync(config.effectRoot).isSymbolicLink())throw typed('LIBRARY_EFFECT_ROOT_CHANGED','unknown');}
 function readState(config){const filename=path.join(config.effectRoot,'library-operation.json');if(!existsSync(filename))return undefined;if(lstatSync(filename).isSymbolicLink()||realpathSync(filename)!==path.resolve(filename))throw typed('LIBRARY_EVIDENCE_INVALID','unknown');const envelope=JSON.parse(readFileSync(filename,'utf8'));if(typeof envelope.body!=='string'||typeof envelope.mac!=='string'||!equal(createHmac('sha256',config.token).update(envelope.body).digest('hex'),envelope.mac))throw typed('LIBRARY_EVIDENCE_INVALID','unknown');const state=JSON.parse(envelope.body);if(state.jobId!==config.jobId||state.epoch!==config.epoch||state.intentDigest!==JSON.parse(config.text).library.digest)throw typed('LIBRARY_EVIDENCE_INVALID','unknown');return state;}

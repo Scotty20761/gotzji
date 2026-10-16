@@ -21,8 +21,8 @@ export async function executePreparedNativeOperation(config, signal, options = {
   const testRunner = config.nativeTestRunner ? await loadTestRunner(config) : options.testRunner;
   const key = config.owner + ':' + config.jobId + ':' + config.epoch + ':' + prepared.native.planDigest + ':' + digest(config.token);
   const inFlight = active.get(key); if (inFlight) return inFlight;
-  if (testRunner && config.grace.mode !== 'test-driver') throw new Error('NATIVE_TEST_RUNNER_DENIED');
-  if (config.grace.mode === 'claude' && typeof options.verifyLiveAuthority !== 'function') throw new Error('NATIVE_LIVE_AUTHORITY_REQUIRED');
+  if (testRunner && !(config.grace.mode === 'test-driver' || (config.grace.mode === 'host-direct' && config.grace.testOnlyProviders === true))) throw new Error('NATIVE_TEST_RUNNER_DENIED');
+  if (['claude','host-direct'].includes(config.grace.mode) && typeof options.verifyLiveAuthority !== 'function') throw new Error('NATIVE_LIVE_AUTHORITY_REQUIRED');
   const assertLive = async () => { if (options.verifyLiveAuthority && await options.verifyLiveAuthority() !== true) throw typed('LIVE_AUTHORITY_DENIED', 'none'); };
   const execute = async () => {
     assertEffectRoot(config);
@@ -94,7 +94,7 @@ export async function reconcilePreparedNativeStop(config) {
   const prepared = assertPreparedNativeAuthorization(config); assertEffectRoot(config);
   const previous = readState(config);
   const binding = nativeProcessEvidenceBinding(config, prepared);
-  const stop = config.grace.mode === 'test-driver' ? testDriverStopEvidence(previous?.outcome, prepared, previous?.stopEvidence) : await inspectPreparedNativeStop(config, prepared, binding, previous);
+  const stop = (config.grace.mode === 'test-driver' || (config.grace.mode === 'host-direct' && config.grace.testOnlyProviders === true)) ? testDriverStopEvidence(previous?.outcome, prepared, previous?.stopEvidence) : await inspectPreparedNativeStop(config, prepared, binding, previous);
   if (previous?.state !== 'completed') writeState(config, prepared, { state: stop.outcome === 'none' ? 'not-started' : 'uncertain', outcome: stop.outcome,
     dispatch: previous?.dispatch, dispatchAttempt: previous?.dispatchAttempt, code: previous?.code ?? 'NATIVE_TERMINATION_UNCONFIRMED', ...(typeof previous?.field === 'string' ? { field: previous.field } : {}), stopEvidence: stop.stopEvidence, effectEvidence: stop.effectEvidence });
   return previous?.state === 'completed' ? { ...stop, outcome: 'verified' } : stop;
@@ -202,7 +202,7 @@ function errorOutcome(error) { return error?.outcome === 'none' ? 'none' : 'unkn
 function evidenceError(reason) { const error = new Error('NATIVE_PROCESS_EVIDENCE_INVALID'); error.evidenceReason = reason; return error; }
 function safeEvidenceReason(error) { return typeof error?.evidenceReason === 'string' ? error.evidenceReason : 'unavailable'; }
 async function loadTestRunner(config) {
-  if (config.grace.mode !== 'test-driver') throw new Error('NATIVE_TEST_RUNNER_DENIED');
+  if (!(config.grace.mode === 'test-driver' || (config.grace.mode === 'host-direct' && config.grace.testOnlyProviders === true))) throw new Error('NATIVE_TEST_RUNNER_DENIED');
   const binding = config.nativeTestRunner;
   const verify = () => {
     const info = lstatSync(binding.path);

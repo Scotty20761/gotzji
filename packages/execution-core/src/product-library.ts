@@ -67,6 +67,7 @@ export function prepareLibraryOperation(project: RegisteredProject, input: Produ
   if (hash(readFileSync(python.path)) !== python.hash) throw new CoreError('LIBRARY_EXECUTOR_CHANGED');
   const policies = discoverPolicies(project.rootPath, selectedSources.map((entry) => path.dirname(entry.path)));
   const workflowPolicies = Object.fromEntries(prepared.sourceScope.descriptors.map((entry) => [`library_policy_${entry.id}`, { path: path.join(project.rootPath, entry.relativePath), hash: entry.sha256 }]));
+  if (input.workflowId === 'library.code-qa' && input.workflowVersion === 2 && selectedSources.some((source) => [...Object.values(policies.projectPolicies), ...Object.values(workflowPolicies), python].some((pin) => path.resolve(pin.path) === path.resolve(source.path)))) throw new CoreError('LIBRARY_SOURCE_POLICY_OVERLAP', 'The approved code target must be separate from frozen policy and provider files', 'paths');
   const spokePolicies = input.workflowId === 'library.final-memo' && input.workflowVersion === 2 ? Object.fromEntries(['mammos','facty','indie'].map((actor) => {
     const descriptor = prepared.sourceScope.descriptors.find((entry) => entry.id === `${actor}-agent`);
     if (!descriptor) throw new CoreError('LIBRARY_CANONICAL_AGENT_MISSING');
@@ -78,9 +79,13 @@ export function prepareLibraryOperation(project: RegisteredProject, input: Produ
     library: { ...prepared, ...(spokePolicies ? { spokePolicies } : {}), resources: [`project:${project.resourceKey}`, `library-vault:${project.resourceKey}`, ...(prepared.ast.nodes.some((entry) => entry.actor !== 'grace') ? ['global:library-roster-writer'] : [])], selectedSources, python,
       ...(finalMemo ? { finalMemo: finalMemo.metadata } : {}) } };
 }
-export function libraryCatalog(): readonly LibraryWorkflowDefinition[] { return LIBRARY_WORKFLOW_REGISTRY.filter((entry) => RUNNABLE_LIBRARY_WORKFLOWS.has(`${entry.id}:${entry.version}`)); }
-export function signLibraryBinding(config: { owner: string; jobId: string; epoch: string; generation: number; session: string; intentRevision: number; policy: string; token: string; lease: string; text: string }): { body: string; mac: string } {
-  const body = JSON.stringify({ owner: config.owner, jobId: config.jobId, epoch: config.epoch, generation: config.generation, session: config.session, intentRevision: config.intentRevision, policy: config.policy, leaseDigest: hash(config.lease), textDigest: hash(config.text) });
+export const HOST_DIRECT_LIBRARY_WORKFLOWS = new Set(['library.read:1','library.code-qa:2']);
+export function assertHostDirectLibraryWorkflow(id: string, version: number): void {
+  if (!HOST_DIRECT_LIBRARY_WORKFLOWS.has(`${id}:${version}`)) throw new CoreError('CHATGPT_ORCHESTRATION_REQUIRED', 'This workflow requires reasoning and audit continuation from the ChatGPT conversation', 'workflowId', 'controller', 'Use supported typed host operations from ChatGPT; analytical workflow continuation is not yet implemented');
+}
+export function libraryCatalog(mode?: string): readonly LibraryWorkflowDefinition[] { return LIBRARY_WORKFLOW_REGISTRY.filter((entry) => RUNNABLE_LIBRARY_WORKFLOWS.has(`${entry.id}:${entry.version}`) && (mode !== 'host-direct' || HOST_DIRECT_LIBRARY_WORKFLOWS.has(`${entry.id}:${entry.version}`))); }
+export function signLibraryBinding(config: { owner: string; jobId: string; epoch: string; generation: number; session: string; intentRevision: number; policy: string; token: string; lease: string; text: string; grace?: { readonly mode: string; readonly testOnlyProviders?: true } | null; libraryTestRunner?: { readonly path: string; readonly sha256: string } }): { body: string; mac: string } {
+  const body = JSON.stringify({ owner: config.owner, jobId: config.jobId, epoch: config.epoch, generation: config.generation, session: config.session, intentRevision: config.intentRevision, policy: config.policy, leaseDigest: hash(config.lease), textDigest: hash(config.text), ...(config.grace ? { mode: config.grace.mode, ...(config.grace.testOnlyProviders ? { testOnlyProviders: true } : {}) } : {}), ...(config.libraryTestRunner ? { libraryTestRunner: config.libraryTestRunner } : {}) });
   return { body, mac: createHmac('sha256', config.token).update(body).digest('hex') };
 }
 export function libraryPreparationDigest(prepared: PreparedLibraryOperation): string { return digestLibraryValue(prepared.library); }

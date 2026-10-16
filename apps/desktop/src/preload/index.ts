@@ -1666,7 +1666,7 @@ const gotzjiApi: GotzjiApi = {
   hostStatus: async () => {
     const value: unknown = await invoke(gotzjiIpcChannels.hostStatus);
     if (!isRecord(value) || value.product !== 'gotzji' || (value.state !== 'ready' && value.state !== 'control-only' && value.state !== 'unavailable')
-      || value.controller !== 'grace' || value.automaticUpdates !== false
+      || value.controller !== 'chatgpt-plugin' || value.automaticUpdates !== false
       || (value.ownerId !== null && typeof value.ownerId !== 'string')) throw new Error('Invalid gotzji host response');
     return value as unknown as GotzjiHostStatus;
   },

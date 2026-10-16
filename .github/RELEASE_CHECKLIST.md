@@ -7,7 +7,7 @@ Every record must identify exact source/build/catalog, scope, scenario, observed
 | Gate | Required observation |
 |---|---|
 | G01 | One isolated owner, host/native Goal/job history; original lnwjud unaffected |
-| G02 | Honest complete tool/provider/workflow census; Grace owns every effect |
+| G02 | Honest complete tool/capability/workflow census; the owner's current ChatGPT account controls typed host-direct effects with no additional Claude/Grace/Codex/local-secondary inference backend, provider login, subscription or model |
 | G03 | Actionable errors and scope/evidence/delivery guards |
 | G04 | Durable admission, progress, history, result and retention after reopen |
 | G05 | Normal exact-byte file/code/reviewed-command workflow |
@@ -18,7 +18,7 @@ Every record must identify exact source/build/catalog, scope, scenario, observed
 | G10 | Excel range/formula/table/chart/image preservation and workflow |
 | G11 | Word and PowerPoint object/workflow preservation |
 | G12 | CAD entities/layers/measurement/edit/save/reopen and original preservation |
-| G13 | Canonical Library skills/spokes/audit/privacy/write-back and both enrolled routes |
+| G13 | One durable authority for canonical Library skills/spokes/audit/privacy/write-back under an explicit ChatGPT reasoning/artifact-continuation contract across both explicitly enrolled routes |
 | G14 | Actual ChatGPT Pro account/workspace/granular/workflow/reconnect |
 | G15 | Separate actual ChatGPT Plus proof of the same scenarios |
 | G16 | Exact installed 1-2h useful parallel work with interruptions/Windows restart |
@@ -27,4 +27,4 @@ Every record must identify exact source/build/catalog, scope, scenario, observed
 | G19 | Accepted 3-day/20-job pilot plus final standards/spec/scrutiny/security review |
 | G20 | Owner publication and independent download/hash/install/plugin verification |
 
-G01-G19 must pass before declaring the candidate qualified for publication. G20 is the observed post-publication gate. Missing external evidence never becomes PASS. Current source tests, provider fixtures and waiting-account facts are tracked separately; this checklist itself is not acceptance evidence.
+G01-G19 must pass before declaring the candidate qualified for publication. G20 is the observed post-publication gate. G13 remains mandatory: model-dependent Library workflows are currently unsupported and cannot become PASS until the ChatGPT-driven contract is implemented and observed end to end. Missing external evidence never becomes PASS. Current source tests, provider fixtures and waiting-account facts are tracked separately; this checklist itself is not acceptance evidence.

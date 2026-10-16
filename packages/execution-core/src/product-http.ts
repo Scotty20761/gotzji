@@ -2,7 +2,7 @@ import http from 'node:http';
 import { timingSafeEqual } from 'node:crypto';
 import type { AddressInfo } from 'node:net';
 import { CoreError } from './types.js';
-import { libraryCatalog } from './product-library.js';
+import { assertHostDirectLibraryWorkflow, libraryCatalog } from './product-library.js';
 
 export type ProductRpc = (method: string, input: Record<string, unknown>, surface: 'app' | 'mcp', expectedBuild?: string) => Promise<unknown>;
 export const PRODUCT_MCP_TOOLS = [
@@ -12,7 +12,7 @@ export const PRODUCT_MCP_TOOLS = [
   { name: 'gotzji_read_file', method: 'readProjectFile', readOnly: true, description: 'Read one enrolled project UTF-8 file and its SHA-256 directly, without a Claude session or job. Prefer this over a legacy file.read job.' },
   { name: 'gotzji_list_files', method: 'listProjectFiles', readOnly: true, description: 'List a selected enrolled project directory directly. Reports incomplete results; never follows redirected paths.' },
   { name: 'gotzji_search_files', method: 'searchProjectFiles', readOnly: true, description: 'Search literal case-sensitive text recursively in an enrolled project without Claude. Reports bounded or skipped results.' },
-  { name: 'gotzji_prepare_operation', method: 'prepareOperation', readOnly: false, description: 'Prepare a typed Grace-controlled file, reviewed command, native object or registered Library workflow in an enrolled project.' },
+  { name: 'gotzji_prepare_operation', method: 'prepareOperation', readOnly: false, description: 'Prepare a typed ChatGPT-requested host file, reviewed command, native object or registered Library workflow in an enrolled project.' },
   { name: 'gotzji_submit', method: 'submit', readOnly: false, description: 'Submit a prepared request and return its durable job identity promptly.' },
   { name: 'gotzji_jobs', method: 'list', readOnly: true, description: 'List this owner’s newest jobs (25 by default, up to 500); pass before = the last jobId to page back. Select the intended job explicitly.' },
   { name: 'gotzji_queue', method: 'inspectQueue', readOnly: true, description: 'Inspect queue order and the selected owner’s blocking resources, jobs and dependencies.' },
@@ -66,7 +66,7 @@ export function productControlSchema(method: string): Schema {
       const variant = operation === 'browser.workflow' ? { steps: { type: 'array', minItems: 1, maxItems: 20, items: { oneOf: ['browser.read', 'browser.query', 'browser.type', 'browser.click', 'browser.navigate'].map(step) } } } : (step(operation).properties as Record<string, Schema>);
       return objectSchema({ ...common, operation: { type: 'string', const: operation }, sessionId: text, tabId: text, expectedUrl: text, expectedDocumentId: text, ...variant }, ['requestId', 'projectId', 'operation', 'sessionId', 'tabId', 'expectedUrl', 'expectedDocumentId', ...(operation === 'browser.workflow' ? ['steps'] : (step(operation).required as string[]).filter((key) => key !== 'operation'))]);
     });
-    const library = libraryCatalog().map((workflow) => objectSchema({ ...common, operation: { type: 'string', const: 'library.workflow' }, workflowId: { type: 'string', const: workflow.id }, workflowVersion: { type: 'integer', const: workflow.version }, parameters: objectSchema(Object.fromEntries(workflow.allowedParameters.map((field) => [field, field === 'force' ? { type: 'boolean' } : field === 'expectedSha256' ? fields.expectedSha256! : field === 'content' ? fields.content! : text])), workflow.requiredParameters) }, ['requestId', 'projectId', 'operation', 'workflowId', 'workflowVersion', 'parameters']));
+    const library = libraryCatalog('host-direct').map((workflow) => objectSchema({ ...common, operation: { type: 'string', const: 'library.workflow' }, workflowId: { type: 'string', const: workflow.id }, workflowVersion: { type: 'integer', const: workflow.version }, parameters: objectSchema(Object.fromEntries(workflow.allowedParameters.map((field) => [field, field === 'force' ? { type: 'boolean' } : field === 'expectedSha256' ? fields.expectedSha256! : field === 'content' ? fields.content! : text])), workflow.requiredParameters) }, ['requestId', 'projectId', 'operation', 'workflowId', 'workflowVersion', 'parameters']));
     return { oneOf: [...basic, ...browser, ...library] };
   }
   if (method === 'registerProject') return objectSchema({ projectId: { ...text, pattern: '^[a-zA-Z0-9_-]{1,64}$' }, displayName: { ...text, maxLength: 200 }, rootPath: text, kind: { type: 'string', enum: ['project', 'library'] }, recipeIds: { type: 'array', uniqueItems: true, items: { type: 'string', pattern: '^[a-zA-Z0-9_-]{1,64}$' } } }, ['projectId', 'displayName', 'rootPath']);
@@ -96,7 +96,7 @@ function accepts(schema: Schema, value: unknown): boolean {
   }
   return true;
 }
-function assertInput(method: string, input: Record<string, unknown>): void { if (!accepts(productControlSchema(method), input)) throw new CoreError('PRODUCT_SCHEMA_INVALID'); }
+function assertInput(method: string, input: Record<string, unknown>): void { if (method === 'prepareOperation' && input.operation === 'library.workflow') assertHostDirectLibraryWorkflow(String(input.workflowId), Number(input.workflowVersion)); if (!accepts(productControlSchema(method), input)) throw new CoreError('PRODUCT_SCHEMA_INVALID'); }
 function secretEqual(expected: string, observed: string | undefined): boolean { const a = Buffer.from(expected); const b = Buffer.from(observed ?? ''); return a.length === b.length && timingSafeEqual(a, b); }
 function record(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === 'object' && !Array.isArray(value); }
 function safeError(error: unknown): { code: string; reason?: string; field?: string; layer?: string; action?: string } {
@@ -128,7 +128,7 @@ export async function startProductHttp(options: { token: string; mcpPathSecret: 
       requestId = id ?? null;
       if (parsed.jsonrpc !== '2.0' || typeof method !== 'string' || id !== undefined && id !== null && typeof id !== 'string' && typeof id !== 'number') throw new CoreError('MCP_REQUEST_INVALID');
       if (id === undefined && method.startsWith('notifications/')) { response.writeHead(202); response.end(); return; }
-      if (method === 'initialize') { reply(200, { jsonrpc: '2.0', id, result: { protocolVersion: '2025-03-26', capabilities: { tools: {} }, serverInfo: { name: options.serverName ?? 'gotzji', version: options.version ?? 'development' }, instructions: 'Use enrolled projects. Project file read/list/search tools return directly from the host without Claude or a job. Mutating work remains controlled by Grace; legacy file.read jobs remain supported. Select explicit job IDs for status/log/result polling, which never submits another job.' } }); return; }
+      if (method === 'initialize') { reply(200, { jsonrpc: '2.0', id, result: { protocolVersion: '2025-03-26', capabilities: { tools: {} }, serverInfo: { name: options.serverName ?? 'gotzji', version: options.version ?? 'development' }, instructions: 'Use enrolled projects. Project file read/list/search tools return directly from the host without Claude or a job. Typed work executes on the host through its governed broker; legacy file.read jobs remain supported. Select explicit job IDs for status/log/result polling, which never submits another job.' } }); return; }
       if (method === 'ping') { reply(200, { jsonrpc: '2.0', id, result: {} }); return; }
       if (method === 'tools/list') { reply(200, { jsonrpc: '2.0', id, result: { tools: PRODUCT_MCP_TOOLS.map((tool) => ({ name: tool.name, description: tool.description, inputSchema: options.inputSchema?.(tool.method) ?? productControlSchema(tool.method), annotations: { readOnlyHint: tool.readOnly, destructiveHint: tool.method === 'cancel', idempotentHint: true, openWorldHint: false } })) } }); return; }
       if (method !== 'tools/call' || !record(params) || !record(params.arguments)) throw new CoreError('MCP_METHOD_DENIED');

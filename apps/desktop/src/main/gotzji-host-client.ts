@@ -80,12 +80,13 @@ export class GotzjiHostClient {
     try {
       const descriptor = await this.descriptor();
       const health = await this.call(descriptor, 'health', {});
+      if (!record(health) || health.controller !== 'chatgpt-plugin') throw new GotzjiHostError('HOST_CONTROLLER_MISMATCH');
       const controlOnly = record(health) && health.state === 'control-only';
-      return { product: 'gotzji', state: controlOnly ? 'control-only' : 'ready', ownerId: descriptor.ownerId, controller: 'grace', automaticUpdates: false,
+      return { product: 'gotzji', state: controlOnly ? 'control-only' : 'ready', ownerId: descriptor.ownerId, controller: 'chatgpt-plugin', automaticUpdates: false,
         ...(controlOnly ? { errorCode: record(health) && typeof health.reason === 'string' && /^[A-Z][A-Z0-9_]{1,79}$/u.test(health.reason) ? health.reason : 'HOST_BUILD_RECONCILIATION_REQUIRED' } : {}) };
     } catch (error) {
       const startup = record(error) && error.layer === 'host-startup';
-      return { product: 'gotzji', state: 'unavailable', ownerId: null, errorCode: safeErrorCode(error), ...(startup ? { errorLayer: 'host-startup', action: 'ตรวจบันทึกการเริ่มระบบและโปรแกรมที่จำเป็นก่อนลองเปิดระบบอีกครั้ง' } : {}), controller: 'grace', automaticUpdates: false };
+      return { product: 'gotzji', state: 'unavailable', ownerId: null, errorCode: safeErrorCode(error), ...(startup ? { errorLayer: 'host-startup', action: 'ตรวจบันทึกการเริ่มระบบและโปรแกรมที่จำเป็นก่อนลองเปิดระบบอีกครั้ง' } : {}), controller: 'chatgpt-plugin', automaticUpdates: false };
     }
   }
 

@@ -19,7 +19,7 @@ export function GotzjiBrowserPanel({ projectId, disabled, onChanged }: { readonl
     }
     finally { setBusy(false); }
   }
-  return <section><h3>เบราว์เซอร์ของโครงการ</h3><p>เปิดหน้าต่างของโครงการนี้เพื่อให้ Grace ทำงานกับหน้าที่คุณเลือก หากต้องลงชื่อเข้าใช้ ให้คุณกรอกในหน้าต่างนั้นเอง</p>
+  return <section><h3>เบราว์เซอร์ของโครงการ</h3><p>เปิดหน้าต่างของโครงการนี้เพื่อให้ ChatGPT เรียกเครื่องมือกับหน้าที่คุณเลือก หากต้องลงชื่อเข้าใช้ ให้คุณกรอกในหน้าต่างนั้นเอง</p>
     <label>หน้าเริ่มต้น<input value={startUrl} disabled={busy || disabled} onChange={(event) => setStartUrl(event.target.value)} /></label>
     <label>เว็บไซต์เพิ่มเติมที่อนุญาต (เว้นว่างได้)<input value={origins} disabled={busy || disabled} onChange={(event) => setOrigins(event.target.value)} placeholder="https://example.org, https://another.example" /></label>
     {session && <p>{view.label} {String(session.expectedUrl ?? '')}</p>}

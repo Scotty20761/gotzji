@@ -1,7 +1,6 @@
 import { execFileSync, spawn } from 'node:child_process';
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, writeFileSync } from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { CoreError } from './types.js';
@@ -19,7 +18,7 @@ export interface ProductHostConfiguration {
   readonly ownerId: string;
   readonly daemonSecret: string;
   readonly mcpPathSecret: string;
-  readonly executable: string;
+  readonly executable?: string;
   readonly libraryRoot: string;
   readonly credential?: string;
   readonly authority?: { readonly policy: string; readonly authorityId: string };
@@ -51,7 +50,7 @@ export interface ProductHostDescriptor {
 }
 
 export function productConfigurationIdentity(config: ProductHostConfiguration): string {
-  return createHash('sha256').update(JSON.stringify({ schemaVersion: config.schemaVersion, directory: config.directory, ownerId: config.ownerId, executable: config.executable, libraryRoot: config.libraryRoot, native: config.native ?? null, tunnel: config.tunnel ?? null, browser: config.browser ?? null, library: config.library ?? null, credentialHash: createHash('sha256').update(config.credential ?? '').digest('hex') })).digest('hex');
+  return createHash('sha256').update(JSON.stringify({ schemaVersion: config.schemaVersion, directory: config.directory, ownerId: config.ownerId, controller: 'host-direct', libraryRoot: config.libraryRoot, native: config.native ?? null, tunnel: config.tunnel ?? null, browser: config.browser ?? null, library: config.library ?? null, credentialHash: createHash('sha256').update(config.credential ?? '').digest('hex') })).digest('hex');
 }
 export function productRuntimeIdentity(entry: string, options: { requireManifest?: boolean } = {}): string {
   const directory = path.dirname(entry);
@@ -60,7 +59,7 @@ export function productRuntimeIdentity(entry: string, options: { requireManifest
     const bytes = readFileSync(manifestFile);
     const manifest = JSON.parse(bytes.toString('utf8')) as { schemaVersion?: number; product?: string; version?: string; catalogVersion?: number; storeSchemaVersion?: number; entrypoint?: string; files?: { relativePath: string; sha256: string; sizeBytes: number }[] };
     if (manifest.schemaVersion !== 1 || manifest.product !== 'gotzji' || typeof manifest.version !== 'string' || !/^\d+\.\d+\.\d+(?:[-+][a-zA-Z0-9.-]+)?$/.test(manifest.version)
-      || manifest.catalogVersion !== 1 || manifest.storeSchemaVersion !== 1 || manifest.entrypoint !== 'product-server.mjs' || !Array.isArray(manifest.files) || manifest.files.length === 0
+      || manifest.catalogVersion !== 2 || manifest.storeSchemaVersion !== 1 || manifest.entrypoint !== 'product-server.mjs' || !Array.isArray(manifest.files) || manifest.files.length === 0
       || bytes.toString('utf8') !== `${JSON.stringify(manifest, null, 2)}\n`) throw new CoreError('PRODUCT_RUNTIME_MANIFEST_INVALID');
     const names = manifest.files.map((file) => file.relativePath);
     if (new Set(names).size !== names.length || ['product-server.mjs', 'fixture-worker.mjs', 'product-broker.mjs', 'product-runner.mjs'].some((name) => !names.includes(name))) throw new CoreError('PRODUCT_RUNTIME_INVENTORY_INVALID');
@@ -117,7 +116,7 @@ function validateConfiguration(value: unknown, directory: string): ProductHostCo
   const config = value as Partial<ProductHostConfiguration> | null;
   if (!config || Object.keys(config).some((key) => !['schemaVersion', 'directory', 'ownerId', 'daemonSecret', 'mcpPathSecret', 'executable', 'libraryRoot', 'credential', 'authority', 'native', 'tunnel', 'browser', 'library'].includes(key)) || config.schemaVersion !== 1 || config.directory !== directory || !config.ownerId
     || !/^[0-9a-f]{64}$/.test(config.daemonSecret ?? '') || !/^[0-9a-f]{64}$/.test(config.mcpPathSecret ?? '')
-    || !config.executable || !path.isAbsolute(config.executable) || !config.libraryRoot || !path.isAbsolute(config.libraryRoot)) {
+    || (config.executable !== undefined && !path.isAbsolute(config.executable)) || !config.libraryRoot || !path.isAbsolute(config.libraryRoot)) {
     throw new CoreError('PRODUCT_CONFIGURATION_INVALID');
   }
   if (config.credential !== undefined && !/^[a-f0-9]{64}$/u.test(config.credential)) throw new CoreError('PRODUCT_CONFIGURATION_INVALID');
@@ -201,7 +200,7 @@ async function bootGotzjiProductHost(options: ProductHostOptions, directory: str
     const libraryRoot = path.resolve(options.libraryRoot ?? path.join(directory, 'workspace'));
     mkdirSync(libraryRoot, { recursive: true, mode: 0o700 });
     if (!options.libraryRoot) ensureProductControlDocuments(libraryRoot);
-    const config: ProductHostConfiguration = { schemaVersion: 1, directory, ownerId: randomUUID(), daemonSecret: randomBytes(32).toString('hex'), mcpPathSecret: randomBytes(32).toString('hex'), executable: path.resolve(options.executable ?? path.join(os.homedir(), '.local', 'bin', 'claude.exe')), libraryRoot, credential: randomBytes(32).toString('hex') };
+    const config: ProductHostConfiguration = { schemaVersion: 1, directory, ownerId: randomUUID(), daemonSecret: randomBytes(32).toString('hex'), mcpPathSecret: randomBytes(32).toString('hex'), ...(options.executable ? { executable: path.resolve(options.executable) } : {}), libraryRoot, credential: randomBytes(32).toString('hex') };
     try { await writeProductConfiguration(config, protector, true); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
   }
   let config = await readProductConfiguration(directory, protector);
@@ -272,7 +271,6 @@ async function bootGotzjiProductHost(options: ProductHostOptions, directory: str
     return undefined;
   };
   const existing = await descriptor(); if (existing) return existing;
-  if (!existsSync(config.executable)) throw new CoreError('GRACE_EXECUTABLE_NOT_FOUND');
   const incidentId = randomUUID(); const incidentPath = path.join(directory, `product-startup-${incidentId}.json`);
   let stderr = ''; let failed = false; let exitCode: number | null | undefined; let signal: string | null | undefined; let settledReady = false; const phases: string[] = [];
   const saveIncident = (phase: string): void => {

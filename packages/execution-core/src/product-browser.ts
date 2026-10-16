@@ -134,11 +134,11 @@ export function assertPreparedBrowserAuthorization(config: AuthorizedBrowserWork
 function authorizationBody(config: BrowserWorkerBinding, prepared: PreparedProductBrowserOperation): string {
   if (!config.owner || !config.jobId || !config.epoch || !config.session || !/^[a-f0-9]{64}$/u.test(config.token) || !config.lease
     || !Number.isSafeInteger(config.generation) || config.generation < 1 || !Number.isSafeInteger(config.intentRevision) || config.intentRevision < 0
-    || !/^[a-f0-9]{64}$/u.test(config.authorizationDigest) || !/^[a-f0-9]{64}$/u.test(config.policy) || !['claude', 'test-driver'].includes(config.grace?.mode) || config.nativeTestRunner) throw new CoreError('BROWSER_WORKER_BINDING_INVALID');
-  if (config.browserTestTransport && (config.grace.mode !== 'test-driver' || !path.isAbsolute(config.browserTestTransport.path) || !/^[a-f0-9]{64}$/u.test(config.browserTestTransport.sha256))) throw new CoreError('BROWSER_TEST_TRANSPORT_DENIED');
+    || !/^[a-f0-9]{64}$/u.test(config.authorizationDigest) || !/^[a-f0-9]{64}$/u.test(config.policy) || !['claude', 'test-driver', 'host-direct'].includes(config.grace?.mode) || config.nativeTestRunner) throw new CoreError('BROWSER_WORKER_BINDING_INVALID');
+  if (config.browserTestTransport && (!(config.grace.mode === 'test-driver' || (config.grace.mode === 'host-direct' && config.grace.testOnlyProviders === true)) || !path.isAbsolute(config.browserTestTransport.path) || !/^[a-f0-9]{64}$/u.test(config.browserTestTransport.sha256))) throw new CoreError('BROWSER_TEST_TRANSPORT_DENIED');
   return JSON.stringify({ schemaVersion: 1, owner: config.owner, jobId: config.jobId, epoch: config.epoch, generation: config.generation, session: config.session,
     intentRevision: config.intentRevision, authorizationDigest: config.authorizationDigest, policy: config.policy, leaseDigest: hash(config.lease), effectRoot: config.effectRoot,
-    database: config.database, mode: config.grace.mode, textDigest: hash(config.text), preparedDigest: nativeDigest(prepared), planDigest: prepared.browser.planDigest,
+    database: config.database, mode: config.grace.mode, ...(config.grace.testOnlyProviders ? { testOnlyProviders: true } : {}), textDigest: hash(config.text), preparedDigest: nativeDigest(prepared), planDigest: prepared.browser.planDigest,
     resourceKeys: prepared.browser.resourceKeys, manifestSha256: prepared.browser.manifestSha256, ...(config.browserTestTransport ? { browserTestTransport: config.browserTestTransport } : {}) });
 }
 function validateSession(session: TrustedProductBrowserSessionManifest, project: RegisteredProject): void {

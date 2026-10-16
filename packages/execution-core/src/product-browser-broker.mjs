@@ -111,7 +111,7 @@ export async function executePreparedBrowserOperation(config, signal, options = 
   const prepared = assertPreparedBrowserAuthorization(config);
   if (typeof options.verifyLiveAuthority !== 'function' || typeof options.verifyOwnedSession !== 'function') throw typed('BROWSER_LIVE_AUTHORITY_REQUIRED', 'none');
   const testTransport = config.browserTestTransport ? await loadTestTransport(config) : options.testTransport;
-  if (testTransport && config.grace.mode !== 'test-driver') throw typed('BROWSER_TEST_TRANSPORT_DENIED', 'none');
+  if (testTransport && !(config.grace.mode === 'test-driver' || (config.grace.mode === 'host-direct' && config.grace.testOnlyProviders === true))) throw typed('BROWSER_TEST_TRANSPORT_DENIED', 'none');
   const key = config.owner + ':' + config.jobId + ':' + config.epoch + ':' + prepared.browser.planDigest + ':' + hash(config.token);
   if (active.has(key)) return active.get(key);
   const assertLive = async () => {
@@ -169,7 +169,7 @@ async function assertPins(prepared) {
 }
 async function pinned(filename, expected) { try { return typeof filename === 'string' && path.isAbsolute(filename) && typeof expected === 'string' && /^[a-f0-9]{64}$/.test(expected) && realpathSync(filename) === path.resolve(filename) && lstatSync(filename).isFile() && !lstatSync(filename).isSymbolicLink() && await nativeFileDigest(filename) === expected; } catch { return false; } }
 async function loadTestTransport(config) {
-  if (config.grace.mode !== 'test-driver') throw typed('BROWSER_TEST_TRANSPORT_DENIED', 'none');
+  if (!(config.grace.mode === 'test-driver' || (config.grace.mode === 'host-direct' && config.grace.testOnlyProviders === true))) throw typed('BROWSER_TEST_TRANSPORT_DENIED', 'none');
   const binding = config.browserTestTransport;
   if (!await pinned(binding.path, binding.sha256)) throw typed('BROWSER_TEST_TRANSPORT_CHANGED', 'none');
   const module = await import(pathToFileURL(binding.path).href + '?sha256=' + binding.sha256);

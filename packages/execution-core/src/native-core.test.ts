@@ -15,7 +15,7 @@ import { canonicalTemporaryDirectory } from './test-fixtures.js';
 
 interface Fixture { root: string; core: ExecutionCore; credential: string }
 const fixtures: Fixture[] = [];
-async function fixture(cancelOutcome?: 'none' | 'unknown'): Promise<Fixture> {
+async function fixture(cancelOutcome?: 'none' | 'unknown', direct = false): Promise<Fixture> {
   const root = await canonicalTemporaryDirectory('gotzji-native-core-');
   const libraryRoot = path.join(root, 'library'); await mkdir(path.join(libraryRoot, 'references'), { recursive: true });
   for (const file of ['CLAUDE.md','AGENTS.md','KNOWLEDGE_INDEX.md','references/agent-knowledge-workflow.md']) await writeFile(path.join(libraryRoot, file), 'Explicit no-model core fixture policy\n');
@@ -25,7 +25,7 @@ async function fixture(cancelOutcome?: 'none' | 'unknown'): Promise<Fixture> {
   if (cancelOutcome) {
     await writeFile(runner, `import {readFileSync,writeFileSync} from 'node:fs';import {createHash} from 'node:crypto';const hash=x=>createHash('sha256').update(x).digest('hex');export async function testRunner(_script,input,signal){if(input.range==='C1'){writeFileSync(${JSON.stringify(path.join(root, 'native-started'))},'started');await new Promise(resolve=>{if(signal.aborted)resolve();else signal.addEventListener('abort',resolve,{once:true});});throw Object.assign(new Error('NATIVE_CANCELLED'),{code:'NATIVE_CANCELLED',outcome:${JSON.stringify(cancelOutcome)}});}return{operation:input.operation,provider:'excel',providerVersion:'explicit-no-model-fixture',nativePid:process.pid,sourceSha256:hash(readFileSync(input.filePath)),outputSha256:null,originalPreserved:true,savedAndReopened:false,unrelatedPreserved:true,verified:true,before:{},after:{}};}`);
   }
-  const core = await ExecutionCore.open(path.join(root, 'state'), { product: { executable: process.execPath, libraryRoot, testDriver: fileURLToPath(new URL('./grace-test-driver.mjs', import.meta.url)) }, nativeOptions: { scriptPath, scriptSha256: hash(await readFile(scriptPath)), testRunnerModule: runner, operations: ['excel.range.read','excel.range.write'] } });
+  const core = await ExecutionCore.open(path.join(root, 'state'), { product: direct ? { mode: 'host-direct', libraryRoot, testOnlyProviders: true } : { executable: process.execPath, libraryRoot, testDriver: fileURLToPath(new URL('./grace-test-driver.mjs', import.meta.url)) }, nativeOptions: { scriptPath, scriptSha256: hash(await readFile(scriptPath)), testRunnerModule: runner, operations: ['excel.range.read','excel.range.write'] } });
   const credential = core.enrollAdapter('native-fixture', 'owner');
   for (const projectId of ['one','two']) { const project = path.join(root, projectId); await mkdir(project); await writeFile(path.join(project, 'source.xlsx'), 'original fixture bytes'); await writeFile(path.join(project, 'AGENTS.md'), 'Actual selected project native rule\n'); core.registerProject(credential, { projectId, displayName: projectId, rootPath: project }); }
   const f = { root, core, credential }; fixtures.push(f); return f;
@@ -46,7 +46,7 @@ afterEach(async () => {
       // injected uncertain case only, tear down our authenticated Node root
       // after matching its real OS birth/executable; never kill stale children.
       const config = JSON.parse(await readFile(path.join(worker.directory, 'config.json'), 'utf8'));
-      if (config.grace.mode !== 'test-driver' || !config.nativeTestRunner) throw new Error('Unexpected production fixture');
+      if (!(config.grace.mode === 'test-driver' || (config.grace.mode === 'host-direct' && config.grace.testOnlyProviders === true)) || !config.nativeTestRunner) throw new Error('Unexpected production fixture');
       const observed = await callWorker(worker, 'status'); const ready = signed<{ identity: { birth: string; executable: string } }>(worker, 'ready.json');
       if (!sameProcessIdentity(ready?.identity, (await processIdentities([observed.pid]))[observed.pid])) throw new Error('Fixture root identity changed');
       process.kill(observed.pid);
@@ -197,8 +197,8 @@ describe('native operations through Grace and the shared Goal (explicit no-model
       await until(f, async () => (await f.core.get(f.credential, next)).status === 'completed');
     }, 20000);
   }
-  it('seals a typed native operation, runs Grace broker pre-work, verifies original/output and retains one replayable result', async () => {
-    const f = await fixture();
+  it.each([false, true])('seals a typed native operation, verifies original/output and replay (direct=%s)', async (direct) => {
+    const f = await fixture(undefined, direct);
     const input: ProductNativeInput = { requestId: 'native-write', projectId: 'one', operation: 'excel.range.write', path: 'source.xlsx', outputPath: 'output.xlsx', sheet: 'Sheet1', range: 'A1', values: [['new']] };
     const binding = await job(f, input); await f.core.resume(f.credential, binding);
     await until(f, async () => (await f.core.get(f.credential, binding)).status === 'completed');

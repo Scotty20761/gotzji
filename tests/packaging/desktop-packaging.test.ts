@@ -109,7 +109,7 @@ describe('cross-platform desktop packaging', () => {
       repository?: { type?: unknown; url?: unknown };
     };
 
-    expect(desktopPackage.description).toBe('Grace-governed Windows control app and MCP gateway with durable project jobs.');
+    expect(desktopPackage.description).toBe('Windows host and MCP plugin for ChatGPT-directed tools and durable project jobs.');
     expect(desktopPackage.author).toBe('Scotty20761');
     expect(desktopPackage.homepage).toBe('https://github.com/Scotty20761/gotzji#readme');
     expect(desktopPackage.repository).toEqual({ type: 'git', url: 'https://github.com/Scotty20761/gotzji.git' });

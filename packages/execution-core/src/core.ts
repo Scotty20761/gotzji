@@ -14,11 +14,11 @@ import { CoreStore, hash, secret, type AdapterRow, type ClaimRow, type WorkerRow
 import { callWorker, launchWorker, observeWorker, stopWorker, workerFingerprint } from './managed-worker.js';
 import { signed } from './managed-worker.js';
 import { processIdentities, sameProcessIdentity, type ProcessIdentity } from './process-identity.mjs';
-import { assertGraceProfile, graceProfile, productGraceProfile, type GraceProfile, type GraceRegistration, type ProductGraceRegistration } from './grace-profile.js';
+import { assertGraceProfile, graceProfile, productGraceProfile, profileDependencies, testProviderProfile, type GraceProfile, type GraceRegistration, type ProductRegistration } from './grace-profile.js';
 import { PRODUCT_CATALOG, claimsOverlap, folderClaim, registeredProject, productOperation, reviewedRecipe } from './product-projects.js';
 import { CoreError, type JobView, type SettleDecision, type Preparation, type RequestInput, type TaskBinding, type CodeRunReceipt, type RegisteredProject, type ProjectRegistration, type ProductOperationInput, type BasicProductOperationInput, type ProductOperation, type PreparedProductOperation, type CatalogEntry, type ReviewedCommandRegistration, type PrepareOptions, type SupportReport } from './types.js';
 import { PRODUCT_NATIVE_OPERATIONS, prepareProductNativeOperation, type ProductNativeInput, type TrustedProductNativeOptions, type ProductNativeOperationName, type PreparedProductNativeOperation } from './product-native.js';
-import { libraryRoute, libraryCatalog, prepareLibraryOperation, verifiedLibraryNavigationEvolution, type ProductLibraryInput, type TrustedLibraryOptions } from './product-library.js';
+import { libraryRoute, libraryCatalog, assertHostDirectLibraryWorkflow, prepareLibraryOperation, verifiedLibraryNavigationEvolution, type ProductLibraryInput, type TrustedLibraryOptions } from './product-library.js';
 import type { LibraryRouteKind, LibraryDeliveryScope } from './library-workflow-contract.js';
 import { readProjectFile, listProjectFiles, searchProjectFiles } from './product-file-reads.js';
 import type { ProjectReadInput, ProjectFileResult, ProjectListInput, ProjectListResult, ProjectSearchInput, ProjectSearchResult } from './types.js';
@@ -94,7 +94,7 @@ export class ExecutionCore {
   #prunedAt = -Infinity;
   #closed = false;
 
-  private constructor(root: string, now: () => Date, grace: GraceRegistration | undefined, controlOnly: boolean, product?: ProductGraceRegistration, upgrade?: CoreUpgrade, nativeOptions?: CoreNativeOptions, libraryOptions?: TrustedLibraryOptions, browserOptions?: CoreBrowserOptions, privateRuntimeRoots: readonly string[] = [], retentionBytes?: number) {
+  private constructor(root: string, now: () => Date, grace: GraceRegistration | undefined, controlOnly: boolean, product?: ProductRegistration, upgrade?: CoreUpgrade, nativeOptions?: CoreNativeOptions, libraryOptions?: TrustedLibraryOptions, browserOptions?: CoreBrowserOptions, privateRuntimeRoots: readonly string[] = [], retentionBytes?: number) {
     mkdirSync(root, { recursive: true, mode: 0o700 });
     this.#root = realpathSync(root);
     this.#privateRuntimeRoots=[...new Set([this.#root,...privateRuntimeRoots.map((entry)=>realpathSync(entry))])];
@@ -104,13 +104,13 @@ export class ExecutionCore {
     this.#library = libraryOptions ? { ...libraryOptions } : null;
     this.#browser = browserOptions ? { ...browserOptions } : null;
     this.#grace = !controlOnly && product ? productGraceProfile(product) : !controlOnly && grace ? graceProfile(grace) : null;
-    if (nativeOptions?.testRunnerModule && this.#grace?.mode !== 'test-driver') throw new CoreError('NATIVE_TEST_RUNNER_DENIED');
-    if (libraryOptions?.testRunnerModule && this.#grace?.mode !== 'test-driver') throw new CoreError('LIBRARY_TEST_RUNNER_DENIED');
-    if (browserOptions?.testTransportModule && this.#grace?.mode !== 'test-driver') throw new CoreError('BROWSER_TEST_TRANSPORT_DENIED');
-    if (retentionBytes !== undefined && this.#grace?.mode !== 'test-driver') throw new CoreError('RETENTION_TEST_CAP_DENIED');
+    if (nativeOptions?.testRunnerModule && !testProviderProfile(this.#grace)) throw new CoreError('NATIVE_TEST_RUNNER_DENIED');
+    if (libraryOptions?.testRunnerModule && !testProviderProfile(this.#grace)) throw new CoreError('LIBRARY_TEST_RUNNER_DENIED');
+    if (browserOptions?.testTransportModule && !testProviderProfile(this.#grace)) throw new CoreError('BROWSER_TEST_TRANSPORT_DENIED');
+    if (retentionBytes !== undefined && !testProviderProfile(this.#grace)) throw new CoreError('RETENTION_TEST_CAP_DENIED');
     this.#retentionBytes = retentionBytes ?? RETENTION_BYTES;
     this.#policy = controlOnly ? CoreStore.existingPolicy(path.join(this.#root,'core.sqlite')) : this.policyFingerprint();
-    this.#store = new CoreStore(path.join(this.#root, 'core.sqlite'), this.#policy, upgrade);
+    this.#store = new CoreStore(path.join(this.#root, 'core.sqlite'), this.#policy, upgrade && this.#grace?.mode === 'host-direct' ? { ...upgrade, requireNoPendingJobs: true } : upgrade);
     this.#goals = new SqliteGoalRepository(this.#store.database);
     const workspaces = new SqliteWorkspaceRepository(this.#store.database);
     const fence = new GoalMutationFenceService(this.#goals, {
@@ -153,7 +153,7 @@ export class ExecutionCore {
       })) },
     });
   }
-  public static async open(root: string, options: { now?: () => Date; grace?: GraceRegistration; product?: ProductGraceRegistration; controlOnly?: boolean; upgrade?: CoreUpgrade; nativeOptions?: CoreNativeOptions; libraryOptions?: TrustedLibraryOptions; browserOptions?: CoreBrowserOptions; privateRuntimeRoots?: readonly string[]; retentionBytes?: number } = {}): Promise<ExecutionCore> {
+  public static async open(root: string, options: { now?: () => Date; grace?: GraceRegistration; product?: ProductRegistration; controlOnly?: boolean; upgrade?: CoreUpgrade; nativeOptions?: CoreNativeOptions; libraryOptions?: TrustedLibraryOptions; browserOptions?: CoreBrowserOptions; privateRuntimeRoots?: readonly string[]; retentionBytes?: number } = {}): Promise<ExecutionCore> {
     if (options.grace && options.product) throw new CoreError('CORE_PROFILE_CONFLICT');
     if (options.controlOnly && options.upgrade) throw new CoreError('CONTROL_ONLY');
     const core = new ExecutionCore(root, options.now ?? ((): Date => new Date()), options.grace, options.controlOnly === true, options.product, options.upgrade, options.nativeOptions, options.libraryOptions, options.browserOptions, options.privateRuntimeRoots, options.retentionBytes);
@@ -255,7 +255,7 @@ export class ExecutionCore {
     const previous = this.#store.database.connection.prepare('SELECT recipe FROM gotzji_reviewed_recipes WHERE owner=? AND recipe_id=?').get(owner, recipe.recipeId);
     if (previous && String(previous.recipe) !== serialized) throw new CoreError('RECIPE_REGISTRATION_CONFLICT', 'Review changed code as a new immutable recipe ID', 'recipeId');
     this.#store.database.connection.prepare('INSERT OR IGNORE INTO gotzji_reviewed_recipes VALUES (?,?,?)').run(owner, recipe.recipeId, serialized);
-    return { name: `command.recipe.${recipe.recipeId}`, recipeId: recipe.recipeId, state: 'available', description: recipe.displayName ?? recipe.recipeId, controller: 'grace' };
+    return { name: `command.recipe.${recipe.recipeId}`, recipeId: recipe.recipeId, state: 'available', description: recipe.displayName ?? recipe.recipeId, controller: this.#grace?.mode === 'host-direct' ? 'chatgpt-plugin' : 'grace' };
   }
   /** App-only and append-only: binds a reviewed recipe to a project without rewriting the registration jobs embed. */
   public bindProjectRecipe(credential: string, binding: { readonly projectId: string; readonly recipeId: string }): RegisteredProject {
@@ -286,7 +286,7 @@ export class ExecutionCore {
   /** A delivery command is listed for the model as the owner's to run, so Grace can ask instead of trying (incident I5). */
   private recipeCatalogText(recipeId: string, recipe: ReviewedCommandRegistration): Pick<CatalogEntry, 'description' | 'controller'> {
     const name = recipe.displayName ?? recipeId;
-    return recipe.delivery ? { description: `${name} (delivery: the owner runs it from the gotzji app)`, controller: 'owner' } : { description: name, controller: 'grace' };
+    return recipe.delivery ? { description: `${name} (delivery: the owner runs it from the gotzji app)`, controller: 'owner' } : { description: name, controller: this.#grace?.mode === 'host-direct' ? 'chatgpt-plugin' : 'grace' };
   }
   private boundRecipeIds(owner: string, projectId: string): readonly string[] {
     return this.#store.database.connection.prepare('SELECT recipe_id FROM gotzji_project_recipes WHERE owner=? AND project_id=? ORDER BY bound_at,recipe_id').all(owner, projectId).map((entry) => String(entry.recipe_id));
@@ -389,14 +389,14 @@ export class ExecutionCore {
       const superseded = replacement !== undefined && replacement !== recipeId;
       return { name: `command.recipe.${recipeId}`, recipeId, state: superseded ? 'unsupported' : 'available', ...(superseded ? { reason: 'BUILTIN_RECIPE_SUPERSEDED' } : {}), ...this.recipeCatalogText(recipeId, recipe) };
     });
-    const native = PRODUCT_NATIVE_OPERATIONS.map((name): CatalogEntry => ({ name, state: this.nativeAvailable(name) ? 'available' : 'unsupported', description: `Grace-controlled ${name} with original preservation and native receipt verification`, controller: 'grace', ...(this.nativeAvailable(name) ? {} : { reason: 'NATIVE_PROVIDER_NOT_QUALIFIED' }) }));
-    const browser = PRODUCT_BROWSER_OPERATIONS.map((name): CatalogEntry => ({ name, state: this.#browser && this.#grace?.recipe === 'product' && (this.#browser.operations ?? PRODUCT_BROWSER_OPERATIONS).includes(name) ? 'available' : 'unsupported', description:`Grace-controlled ${name} in the enrolled owned browser session`,controller:'grace',...(this.#browser && this.#grace?.recipe === 'product' ? {} : {reason:'BROWSER_PROVIDER_NOT_QUALIFIED'}) }));
+    const native = PRODUCT_NATIVE_OPERATIONS.map((name): CatalogEntry => ({ name, state: this.nativeAvailable(name) ? 'available' : 'unsupported', description: `Grace-controlled ${name} with original preservation and native receipt verification`, controller: this.#grace?.mode === 'host-direct' ? 'chatgpt-plugin' : 'grace', ...(this.nativeAvailable(name) ? {} : { reason: 'NATIVE_PROVIDER_NOT_QUALIFIED' }) }));
+    const browser = PRODUCT_BROWSER_OPERATIONS.map((name): CatalogEntry => ({ name, state: this.#browser && this.#grace?.recipe === 'product' && (this.#browser.operations ?? PRODUCT_BROWSER_OPERATIONS).includes(name) ? 'available' : 'unsupported', description:`Grace-controlled ${name} in the enrolled owned browser session`,controller:this.#grace?.mode === 'host-direct' ? 'chatgpt-plugin' : 'grace',...(this.#browser && this.#grace?.recipe === 'product' ? {} : {reason:'BROWSER_PROVIDER_NOT_QUALIFIED'}) }));
     const library: CatalogEntry[] = [];
     if (this.#library) for (const project of this.listProjects(credential).filter((entry) => entry.kind === 'library')) {
       const route = this.#store.database.connection.prepare('SELECT route FROM gotzji_library_routes WHERE adapter=? AND project_id=?').get(adapter.id, project.projectId);
-      if (route) for (const workflow of libraryCatalog()) library.push({ name: 'library.workflow', workflowId: workflow.id, workflowVersion: workflow.version, projectId: project.projectId, state: 'available', description: workflow.title, controller: 'grace' });
+      if (route) for (const workflow of libraryCatalog(this.#grace?.mode)) library.push({ name: 'library.workflow', workflowId: workflow.id, workflowVersion: workflow.version, projectId: project.projectId, state: 'available', description: workflow.title, controller: this.#grace?.mode === 'host-direct' ? 'chatgpt-plugin' : 'grace' });
     }
-    return [...entries, ...recipes, ...native, ...browser, ...library];
+    return [...entries, ...recipes, ...native, ...browser, ...library].map((entry) => this.#grace?.mode === 'host-direct' ? { ...entry, controller: entry.controller === 'grace' ? 'chatgpt-plugin' : entry.controller, description: entry.description.replace(/Legacy Grace-controlled/gu, 'Durable host').replace(/Grace-controlled/gu, 'ChatGPT-requested host').replace(/Grace changes/gu, 'The host changes').replace(/Grace starts/gu, 'The host starts') } : entry);
   }
   private nativeAvailable(operation: ProductNativeOperationName): boolean {
     if (!this.#native || this.#grace?.recipe !== 'product' || !(this.#native.operations ?? PRODUCT_NATIVE_OPERATIONS.filter((name) => !name.startsWith('cad.'))).includes(operation)) return false;
@@ -421,6 +421,31 @@ export class ExecutionCore {
       if (claim.owner !== adapter.owner || claim.id === hash(`${adapter.owner}\0${input.requestId}`) || claim.goal_id === null) throw new CoreError('DEPENDENCY_AUTHORITY_DENIED', 'Select an existing owned job other than this request', 'dependsOn');
     }
     if (input.operation === 'library.workflow') {
+      if (this.#grace.mode === 'host-direct') assertHostDirectLibraryWorkflow(input.workflowId, input.workflowVersion);
+      if (!this.#store.database.connection.prepare('SELECT 1 FROM gotzji_library_routes WHERE adapter=? AND project_id=?').get(adapter.id, input.projectId)) throw new CoreError('LIBRARY_ROUTE_AUTHORITY_DENIED');
+    }
+    const basic = input as BasicProductOperationInput;
+    const recipe = basic.operation === 'command.run' ? this.#store.database.connection.prepare('SELECT recipe FROM gotzji_reviewed_recipes WHERE owner=? AND recipe_id=?').get(adapter.owner, basic.commandId ?? '') : undefined;
+    const reviewed = recipe ? JSON.parse(String(recipe.recipe)) as ReturnType<typeof reviewedRecipe> : undefined;
+    if (reviewed?.delivery && options.ownerRun !== true) throw new CoreError('DELIVERY_OWNER_ONLY', 'A delivery command runs only when the owner starts it in the gotzji app', 'commandId', 'request', 'Ask the owner to run this delivery from the gotzji app');
+    const existing = this.#store.database.connection.prepare('SELECT * FROM gotzji_claims WHERE id=? AND owner=?').get(hash(`${adapter.owner}\0${input.requestId}`), adapter.owner) as unknown as ClaimRow | undefined;
+    if (existing) {
+      const replay = (): Preparation => {
+        const saved = this.#store.input(existing);
+        const known = saved.operation === 'grace.product-operation' ? JSON.parse(saved.text) as PreparedProductOperation : undefined;
+        const canonical = (value: unknown): string => JSON.stringify(value, (_key, item: unknown) => item && typeof item === 'object' && !Array.isArray(item) ? Object.fromEntries(Object.entries(item as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b))) : item);
+        const normalize = (value: ProductOperationInput): unknown => known?.kind === 'native' ? { ...value, path: path.relative(known.project.rootPath, path.resolve(known.project.rootPath, (value as ProductNativeInput).path)), expectedSha256: (value as ProductNativeInput).expectedSha256 ?? known.beforeSha256, ...('outputPath' in value && value.outputPath ? { outputPath: path.relative(known.project.rootPath, path.resolve(known.project.rootPath, value.outputPath)) } : {}) } : value;
+        if (!known || canonical(normalize(known.input)) !== canonical(normalize(input)) || canonical(known.project) !== canonical(JSON.parse(String(row.registration)))) throw new CoreError('REQUEST_DIGEST_CONFLICT');
+        const preparation = this.#store.database.connection.prepare('SELECT id,digest FROM gotzji_preparations WHERE owner=? AND adapter=? AND digest=? ORDER BY rowid LIMIT 1').get(adapter.owner, adapter.id, existing.digest);
+        if (preparation) return { preparationId: String(preparation.id), digest: String(preparation.digest) };
+        const id = randomUUID();
+        this.#store.database.connection.prepare('INSERT INTO gotzji_preparations VALUES (?,?,?,?,?,?)').run(id, adapter.id, adapter.owner, existing.digest, existing.input, existing.policy);
+        return { preparationId: id, digest: existing.digest };
+      };
+      return PRODUCT_NATIVE_OPERATIONS.includes(input.operation as ProductNativeOperationName) || PRODUCT_BROWSER_OPERATIONS.includes(input.operation as ProductBrowserOperationName) ? Promise.resolve().then(replay) : replay();
+    }
+    if (input.operation === 'library.workflow') {
+      if (this.#grace.mode === 'host-direct') assertHostDirectLibraryWorkflow(input.workflowId, input.workflowVersion);
       if (!this.#library) throw new CoreError('LIBRARY_EXECUTOR_NOT_REGISTERED');
       const project = JSON.parse(String(row.registration)) as RegisteredProject;
       const enrolled = this.#store.database.connection.prepare('SELECT route FROM gotzji_library_routes WHERE adapter=? AND project_id=?').get(adapter.id, project.projectId);
@@ -438,25 +463,9 @@ export class ExecutionCore {
       });
     }
     if (PRODUCT_NATIVE_OPERATIONS.includes(input.operation as ProductNativeOperationName)) {
-      const existing = this.#store.database.connection.prepare('SELECT * FROM gotzji_claims WHERE id=? AND owner=?').get(hash(`${adapter.owner}\0${input.requestId}`), adapter.owner) as unknown as ClaimRow | undefined;
-      if (existing) {
-        const known = JSON.parse(this.#store.input(existing).text) as PreparedProductOperation;
-        if (known.kind !== 'native') return Promise.reject(new CoreError('REQUEST_DIGEST_CONFLICT'));
-        const normalize = (value: ProductNativeInput): Record<string, unknown> => ({ ...value, path: path.relative(known.project.rootPath, path.resolve(known.project.rootPath, value.path)), expectedSha256: value.expectedSha256 ?? known.beforeSha256, ...('outputPath' in value && value.outputPath ? { outputPath: path.relative(known.project.rootPath, path.resolve(known.project.rootPath, value.outputPath)) } : {}) });
-        const canonical = (value: unknown): string => JSON.stringify(value, (_key, entry: unknown) => entry && typeof entry === 'object' && !Array.isArray(entry) ? Object.fromEntries(Object.entries(entry as Record<string, unknown>).sort(([a],[b]) => a.localeCompare(b))) : entry);
-        if (canonical(normalize(input as ProductNativeInput)) !== canonical(known.input)) return Promise.reject(new CoreError('REQUEST_DIGEST_CONFLICT'));
-        const preparation = this.#store.database.connection.prepare('SELECT id,digest FROM gotzji_preparations WHERE owner=? AND adapter=? AND digest=? ORDER BY rowid LIMIT 1').get(adapter.owner, adapter.id, existing.digest);
-        if (preparation) return Promise.resolve({ preparationId: String(preparation.id), digest: String(preparation.digest) });
-        const id = randomUUID(); this.#store.database.connection.prepare('INSERT INTO gotzji_preparations VALUES (?,?,?,?,?,?)').run(id, adapter.id, adapter.owner, existing.digest, existing.input, existing.policy);
-        return Promise.resolve({ preparationId: id, digest: existing.digest });
-      }
       if (!this.#native || !this.nativeAvailable(input.operation as ProductNativeOperationName)) throw new CoreError('NATIVE_PROVIDER_NOT_QUALIFIED', 'Use an installed qualified provider with the pinned script', 'operation');
       return prepareProductNativeOperation(JSON.parse(String(row.registration)) as RegisteredProject, input, this.#native).then((operation) => this.createPreparation(credential, { requestId: input.requestId, operation: 'grace.product-operation', text: JSON.stringify(operation) }));
     }
-    const basic = input as BasicProductOperationInput;
-    const recipe = basic.operation === 'command.run' ? this.#store.database.connection.prepare('SELECT recipe FROM gotzji_reviewed_recipes WHERE owner=? AND recipe_id=?').get(adapter.owner, basic.commandId ?? '') : undefined;
-    const reviewed = recipe ? JSON.parse(String(recipe.recipe)) as ReturnType<typeof reviewedRecipe> : undefined;
-    if (reviewed?.delivery && options.ownerRun !== true) throw new CoreError('DELIVERY_OWNER_ONLY', 'A delivery command runs only when the owner starts it in the gotzji app', 'commandId', 'request', 'Ask the owner to run this delivery from the gotzji app');
     const operation = productOperation(JSON.parse(String(row.registration)) as RegisteredProject, basic, reviewed,{privateRuntimeRoots:this.privateRuntimeRoots(),boundRecipeIds:this.boundRecipeIds(adapter.owner,basic.projectId)});
     return this.createPreparation(credential, { requestId: input.requestId, operation: 'grace.product-operation', text: JSON.stringify(operation) });
   }
@@ -852,7 +861,7 @@ export class ExecutionCore {
         && state.intentDigest === prepared.native.planDigest && state.scriptSha256 === prepared.native.scriptSha256
         && JSON.stringify(state.resourceKeys) === JSON.stringify(prepared.native.resourceKeys) && proof?.schemaVersion === 1
         && ((proof.observed === 'absent' && ((proof.identityCount > 0 && typeof proof.identityDigest === 'string' && /^[a-f0-9]{64}$/u.test(proof.identityDigest))
-          || (proof.verifier === 'test-driver' && this.#grace?.mode === 'test-driver' && !!this.#native?.testRunnerModule)))
+          || (proof.verifier === 'test-driver' && testProviderProfile(this.#grace) && !!this.#native?.testRunnerModule)))
           || (state.dispatch === 'pre-dispatch' && state.dispatchAttempt === 0 && proof.observed === 'pre-dispatch' && proof.identityCount === 0
             && proof.identityDigest === null && proof.verifier === 'host-signed-pre-dispatch-v1'));
     } catch { return false; }
@@ -923,8 +932,7 @@ export class ExecutionCore {
     if (prepared.kind !== 'library' || !worker || this.expired(claim, this.effectRoot(claim.id))) { assertGraceProfile(this.#grace); return; }
     const evolution = verifiedLibraryNavigationEvolution(prepared, this.#store.database.connection, claim.id, worker, this.effectRoot(claim.id));
     if (!evolution) { assertGraceProfile(this.#grace); return; }
-    const entries = [{ path: this.#grace.executable, hash: this.#grace.executableHash }, { path: this.#grace.sourceFile, hash: this.#grace.sourceHash },
-      ...Object.values(this.#grace.documents), ...(this.#grace.testDriver && this.#grace.testDriverHash ? [{ path: this.#grace.testDriver, hash: this.#grace.testDriverHash }] : [])];
+    const entries = profileDependencies(this.#grace);
     for (const entry of entries) {
       const expected = evolution.has(path.resolve(entry.path)) ? evolution.get(path.resolve(entry.path)) : entry.hash;
       if (expected === null) { if (existsSync(entry.path)) throw new CoreError('GRACE_DEPENDENCIES_CHANGED'); continue; }
@@ -964,6 +972,7 @@ export class ExecutionCore {
       try { operation = JSON.parse(input.text) as PreparedProductOperation; } catch { throw new CoreError('INVALID_REQUEST', 'Invalid operation preparation', 'arguments'); }
       const project = this.#store.database.connection.prepare('SELECT registration FROM gotzji_projects WHERE owner=? AND project_id=?').get(operation.project?.owner ?? '', operation.project?.projectId ?? '');
       if (!project || String(project.registration) !== JSON.stringify(operation.project) || operation.input?.requestId !== input.requestId) throw new CoreError('PRODUCT_PREPARATION_DENIED');
+      if (operation.kind === 'library' && this.#grace.mode === 'host-direct') assertHostDirectLibraryWorkflow(operation.library.ast.workflowId, operation.library.ast.workflowVersion);
       if(operation.kind==='browser'&&(!this.#browser||this.#browser.session.sessionId!==operation.browser.session.sessionId||this.#browser.manifestSha256!==operation.browser.manifestSha256||JSON.stringify(this.#browser.session)!==JSON.stringify(operation.browser.session)))throw new CoreError('BROWSER_SESSION_CHANGED');
     }
     return { requestId: input.requestId, operation: input.operation, text: input.text };
@@ -975,7 +984,7 @@ export class ExecutionCore {
     if (!existing) {
       const input = this.#store.input(claim);
       const product = input.operation === 'grace.product-operation' ? JSON.parse(input.text) as ProductOperation : null;
-      const result = unwrap(await this.#service.runGoal(this.actor(claim, `preparing-${claim.id}`), { workspaceId: WORKSPACE, goalKey: claim.goal_key, objective: product ? `Grace-controlled ${product.input.operation} in ${product.project.displayName}` : 'Qualify governed execution', plan: { steps: [{ id: 'effect', title: product ? 'Execute the approved project operation and verify its observed result' : 'Execute and independently verify the fixed qualification recipe' }] }, ...(input.operation==='grace.code-check'?{engineering:{schemaVersion:1 as const,primaryTaskKind:'bugfix' as const,riskTier:'low' as const,policyDigest:this.#policy,deliveryScope:'local' as const,gates:[{id:'focused_validation',title:'Actual registered command',applicability:'required' as const,status:'pending' as const,reason:'Host observed recipe verification',basedOnUserIntentRevision:0}]}}:{}), leaseSeconds: 300 }));
+      const result = unwrap(await this.#service.runGoal(this.actor(claim, `preparing-${claim.id}`), { workspaceId: WORKSPACE, goalKey: claim.goal_key, objective: product ? `${this.#grace?.mode === 'host-direct' ? 'ChatGPT-requested host' : 'Grace-controlled'} ${product.input.operation} in ${product.project.displayName}` : 'Qualify governed execution', plan: { steps: [{ id: 'effect', title: product ? 'Execute the approved project operation and verify its observed result' : 'Execute and independently verify the fixed qualification recipe' }] }, ...(input.operation==='grace.code-check'?{engineering:{schemaVersion:1 as const,primaryTaskKind:'bugfix' as const,riskTier:'low' as const,policyDigest:this.#policy,deliveryScope:'local' as const,gates:[{id:'focused_validation',title:'Actual registered command',applicability:'required' as const,status:'pending' as const,reason:'Host observed recipe verification',basedOnUserIntentRevision:0}]}}:{}), leaseSeconds: 300 }));
       if (result.acquired && result.leaseToken) unwrap(await this.#service.checkpointGoal(this.actor(claim, `preparing-${claim.id}`), { goalId: result.goalId, leaseToken: result.leaseToken, expectedRevision: result.revision, currentPhase: 'queued', summary: 'Durable request accepted; execution not started', stepUpdates: [], nextAction: 'Acquire controlled worker', blockers: [], evidence: [], releaseLease: true }));
     }
     const goal = await this.snapshot(claim);
@@ -1211,7 +1220,7 @@ export class ExecutionCore {
         if (prepared.input.operation === 'file.write' && (!prepared.target || !existsSync(prepared.target) || realpathSync(prepared.target) !== prepared.target || hash(readFileSync(prepared.target)) !== prepared.afterSha256)) throw new CoreError('ARTIFACT_CHANGED');
         if (prepared.input.operation === 'file.read' && (typeof result.content !== 'string' || hash(result.content) !== prepared.beforeSha256)) throw new CoreError('FILE_RECEIPT_INVALID');
       }
-      if (requireGraceCompletion) this.verifyGraceExecution(claim);
+      if (requireGraceCompletion) this.verifyControllerExecution(claim);
       const receipt = JSON.stringify({ recipe: input.operation, recipeDigest: operation.digest, artifactHash: hash(effect), bytes: effect.byteLength, verifier: 'host-product-receipt-v1', operation: prepared.input.operation, projectId: prepared.project.projectId });
       this.#store.database.connection.prepare('UPDATE gotzji_operations SET phase=?,receipt=? WHERE job_id=?').run('verified', receipt, claim.id);
       return true;
@@ -1220,12 +1229,31 @@ export class ExecutionCore {
       this.#store.database.connection.prepare('UPDATE gotzji_operations SET phase=? WHERE job_id=?').run('uncertain', claim.id);
       throw new CoreError('EFFECT_RECONCILIATION_REQUIRED');
     }
-    if (input.operation.startsWith('grace.') && requireGraceCompletion) this.verifyGraceExecution(claim);
+    if (input.operation.startsWith('grace.') && requireGraceCompletion) this.verifyControllerExecution(claim);
     const receipt = JSON.stringify({ recipe: input.operation, recipeDigest: operation.digest, artifactHash: hash(effect), bytes: effect.byteLength, verifier: 'host-file-sha256-v1' });
     this.#store.database.connection.prepare('UPDATE gotzji_operations SET phase=?,receipt=? WHERE job_id=?').run('verified', receipt, claim.id);
     return true;
   }
-  private verifyGraceExecution(claim: ClaimRow): void {
+  private verifyHostDirectExecution(claim: ClaimRow): void {
+    const worker = this.requireWorker(claim.id);
+    const runtime = signed<{ schemaVersion: number; executor: string; mode: string; jobId: string; owner: string; session: string; generation: number; intentRevision: number; policy: string; textDigest: string; leaseDigest: string; authorizationDigest: string; brokerReceipts: { operationId: string; digest: string; receiptHash: string }[] }>(worker, 'controller-runtime.json');
+    const config = JSON.parse(readFileSync(path.join(worker.directory, 'config.json'), 'utf8')) as { intentRevision: number; grace?: { mode?: string; executable?: string; testDriver?: string } };
+    const input = this.#store.input(claim);
+    const prepared = JSON.parse(input.text) as PreparedProductOperation;
+    const ids = [...Object.keys({ ...this.#grace?.documents, ...prepared.projectPolicies }).map((name) => `policy:${name}`), 'execute_operation', 'operation_status'];
+    if (input.operation !== 'grace.product-operation' || !runtime || runtime.schemaVersion !== 1 || runtime.executor !== 'host-direct' || runtime.mode !== 'host-direct'
+      || config.grace?.mode !== 'host-direct' || config.grace.executable || config.grace.testDriver || runtime.jobId !== claim.id || runtime.owner !== claim.owner
+      || runtime.session !== worker.session || runtime.generation !== worker.generation || runtime.policy !== claim.policy || runtime.textDigest !== hash(input.text)
+      || runtime.leaseDigest !== hash(worker.lease) || runtime.intentRevision !== config.intentRevision || runtime.authorizationDigest !== this.authorization(claim, runtime.intentRevision)
+      || !Array.isArray(runtime.brokerReceipts) || JSON.stringify(runtime.brokerReceipts.map((entry) => entry.operationId)) !== JSON.stringify(ids)
+      || existsSync(path.join(worker.directory, 'claude-events.jsonl')) || existsSync(path.join(worker.directory, 'grace-runtime.json'))) throw new CoreError('CONTROLLER_RUNTIME_EVIDENCE_REQUIRED');
+    for (const receipt of runtime.brokerReceipts) {
+      const row = this.#store.database.connection.prepare('SELECT digest,phase,receipt FROM gotzji_recipe_operations WHERE job_id=? AND operation_id=?').get(claim.id, receipt.operationId);
+      if (!row || row.phase !== 'verified' || row.digest !== receipt.digest || typeof row.receipt !== 'string' || hash(row.receipt) !== receipt.receiptHash) throw new CoreError('CONTROLLER_BROKER_EVIDENCE_REQUIRED');
+    }
+  }
+  private verifyControllerExecution(claim: ClaimRow): void {
+    if (this.#grace?.mode === 'host-direct') { this.verifyHostDirectExecution(claim); return; }
     const worker = this.requireWorker(claim.id);
     const runtime = signed<{ mode: string; exitCode: number; eventsHash: string; apiKeySource: string; model: string }>(worker, 'grace-runtime.json');
     if (!runtime || runtime.mode !== this.#grace?.mode || runtime.exitCode !== 0 || runtime.apiKeySource !== 'none' || runtime.eventsHash !== hash(readFileSync(path.join(worker.directory,'claude-events.jsonl')))) throw new CoreError('GRACE_RUNTIME_EVIDENCE_REQUIRED');
@@ -1546,7 +1574,7 @@ export class ExecutionCore {
       const verified = this.verifyEffect(claim,false); // Unknown bytes keep the held writer.
       if (input.operation === 'fixture.write') complete = verified;
       else if (input.operation === 'grace.read-save-check' || input.operation === 'grace.code-check' || input.operation === 'grace.product-operation') {
-        try { this.verifyGraceExecution(claim); complete = verified; }
+        try { this.verifyControllerExecution(claim); complete = verified; }
         catch (error) {
           if (input.operation==='grace.code-check') {
             if(codeRunBefore?.state==='failed') throw new CoreError('VALIDATION_FAILED');

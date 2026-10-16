@@ -9,7 +9,7 @@ export function GotzjiLibraryChannelPanel({ projectId, disabled }: { readonly pr
     catch (value) { setError(value instanceof Error ? value.message : 'จัดการช่องทาง Library ไม่สำเร็จ'); }
     finally { if (method === 'configureLibraryConnection') setRuntimeKey(''); setBusy(false); }
   }
-  return <section><h3>ช่องทาง Library สำหรับ lnwjud</h3><p>เชื่อมโครงการนี้เข้าประวัติงานชุดเดียวกับ gotzji โดยใช้การเชื่อมต่อ Library ของตัวเอง</p>
+  return <section><h3>ช่องทาง Library สำหรับ lnwjud</h3><p>เชื่อมโครงการนี้เข้าประวัติงานชุดเดียวกับ gotzji โดยใช้การเชื่อมต่อ Library ของตัวเอง ChatGPT เรียกได้เฉพาะขั้นตอนที่ระบบประกาศว่าพร้อมใช้งาน</p>
     <button disabled={busy || disabled || !projectId} onClick={() => void act('enrollLibraryChannel')}>เชื่อมโครงการ Library นี้</button>
     <details><summary>ตั้งค่าการเชื่อมต่อ Library แยก</summary><p>สร้าง Tunnel และ Runtime API key สำหรับช่องทางนี้ แล้วกรอกในแอปด้วยบัญชีของคุณ</p>
       <label>รหัส Tunnel<input value={tunnelId} disabled={busy || disabled} autoComplete="off" onChange={(event) => setTunnelId(event.target.value)} /></label>

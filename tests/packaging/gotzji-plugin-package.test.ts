@@ -94,8 +94,13 @@ describe('gotzji Agent Plugin package', () => {
         name: 'gotzji',
         version,
         license: 'MIT',
+        description: 'Use ChatGPT to control typed gotzji operations and durable jobs on your Windows PC.',
       });
-      expect((plugin.extensions as Record<string, Record<string, unknown>>)['com.openai']).not.toHaveProperty('apps');
+      const openAiExtension = (plugin.extensions as Record<string, Record<string, unknown>>)['com.openai'];
+      expect(openAiExtension).not.toHaveProperty('apps');
+      expect(openAiExtension.interface).toMatchObject({
+        shortDescription: 'ChatGPT-controlled work on your Windows PC',
+      });
       expect(entries.has('.app.json')).toBe(false);
       const archiveText = [...entries.values()].map((bytes) => bytes.toString('utf8')).join('\n');
       expect(archiveText).not.toMatch(new RegExp(`${'plugin_'}${'asdk_app_'}[A-Za-z0-9_-]{16,}`, 'u'));
@@ -285,13 +290,15 @@ describe('gotzji Agent Plugin package', () => {
       const skills = [...entries.keys()].filter((name) => name.startsWith('skills/') && name.endsWith('/SKILL.md'));
       expect(skills).toEqual(['skills/gotzji-workflow/SKILL.md']);
       const skill = entries.get(skills[0]!)?.toString('utf8') ?? '';
-      for (const tool of ['gotzji_health', 'gotzji_projects', 'gotzji_tools', 'gotzji_prepare_operation', 'gotzji_submit', 'gotzji_jobs', 'gotzji_queue', 'gotzji_reprioritize', 'gotzji_status', 'gotzji_logs', 'gotzji_result', 'gotzji_resume', 'gotzji_cancel']) {
+      for (const tool of ['gotzji_health', 'gotzji_projects', 'gotzji_tools', 'gotzji_read_file', 'gotzji_list_files', 'gotzji_search_files', 'gotzji_prepare_operation', 'gotzji_submit', 'gotzji_jobs', 'gotzji_queue', 'gotzji_reprioritize', 'gotzji_status', 'gotzji_logs', 'gotzji_result', 'gotzji_resume', 'gotzji_cancel']) {
         expect(skill).toContain(tool);
       }
       expect(skill).toContain('stable `requestId`');
       expect(skill).toContain('exact `jobId`');
-      expect(skill).toContain('Grace owns every effect');
-      expect(skill).toContain('Request curation only when the user explicitly asks');
+      expect(skill).toContain('current ChatGPT account and conversation control reasoning');
+      expect(skill).toContain('same job until it is terminal');
+      expect(skill).toContain('unsupported pending an explicit ChatGPT orchestration contract');
+      expect(skill).not.toContain('Request curation');
       expect(skill).not.toContain('lnwjud');
     } finally {
       await rm(root, { recursive: true, force: true });

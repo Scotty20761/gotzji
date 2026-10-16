@@ -30,7 +30,7 @@ describe('gotzji desktop governed boundary', () => {
       const body = JSON.parse(text) as { method: string; input: Record<string, unknown> };
       calls.push({ ...(request.headers.authorization === undefined ? {} : { authorization: request.headers.authorization }), ...body });
       response.setHeader('Content-Type', 'application/json');
-      response.end(JSON.stringify({ ok: true, value: body.method === 'health' ? { state: 'ready' } : { jobId: body.input.jobId, status: 'running' } }));
+      response.end(JSON.stringify({ ok: true, value: body.method === 'health' ? { state: 'ready', controller: 'chatgpt-plugin' } : { jobId: body.input.jobId, status: 'running' } }));
     });
     const client = new GotzjiHostClient(async () => ({ endpoint, token: 'private-secret', ownerId: 'owner-one' }));
     const handlers = new Map<string, (event: { trusted: boolean }, payload?: unknown) => Promise<unknown>>();
@@ -41,7 +41,7 @@ describe('gotzji desktop governed boundary', () => {
     await expect(invoke({ trusted: true }, { method: 'status', input: { jobId: 'job-one' } })).resolves.toEqual({ jobId: 'job-one', status: 'running' });
     const status = await handlers.get(gotzjiIpcChannels.hostStatus)!({ trusted: true });
     expect(JSON.stringify(status)).not.toContain('private-secret');
-    expect(status).toMatchObject({ product: 'gotzji', ownerId: 'owner-one', state: 'ready', automaticUpdates: false });
+    expect(status).toMatchObject({ product: 'gotzji', ownerId: 'owner-one', state: 'ready', controller: 'chatgpt-plugin', automaticUpdates: false });
     expect(calls[0]).toEqual({ authorization: 'Bearer private-secret', method: 'status', input: { jobId: 'job-one' } });
     await expect(invoke({ trusted: false }, { method: 'cancel', input: { jobId: 'job-one' } })).rejects.toThrow('UNTRUSTED_RENDERER');
     await expect(invoke({ trusted: true }, { method: 'cancel', input: {} })).rejects.toThrow('jobId');
@@ -51,6 +51,14 @@ describe('gotzji desktop governed boundary', () => {
     await expect(invoke({ trusted: true }, { method: 'inspectQueue', input: { owner: 'foreign-owner' } })).rejects.toThrow('CALLER_AUTHORITY_DENIED');
     await expect(invoke({ trusted: true }, { method: 'registerProject', input: { projectId: 'project', displayName: 'Project', rootPath: 'C:\\project', commands: [{ executable: 'C:\\Windows\\cmd.exe', args: ['/c', 'anything'] }] } })).rejects.toThrow('arguments');
     expect(calls).toHaveLength(2);
+  });
+
+  it('refuses to label an old Claude-controlled host as the ChatGPT plugin controller', async () => {
+    const endpoint = await serve(async (_request, response) => {
+      response.end(JSON.stringify({ ok: true, value: { state: 'ready', controller: 'grace' } }));
+    });
+    const client = new GotzjiHostClient(async () => ({ endpoint, token: 'private-secret', ownerId: 'owner-one' }));
+    await expect(client.status()).resolves.toMatchObject({ state: 'unavailable', errorCode: 'HOST_CONTROLLER_MISMATCH' });
   });
 
   it('exports the owner support report through main into a file the owner chooses (incident I8)', async () => {
@@ -77,10 +85,10 @@ describe('gotzji desktop governed boundary', () => {
     let build: string | string[] | undefined;
     const endpoint = await serve(async (request, response) => {
       build = request.headers['x-gotzji-build'];
-      response.end(JSON.stringify({ ok: true, value: { state: 'control-only', reason: 'HOST_BUILD_CHANGED' } }));
+      response.end(JSON.stringify({ ok: true, value: { state: 'control-only', controller: 'chatgpt-plugin', reason: 'HOST_BUILD_CHANGED' } }));
     });
     const client = new GotzjiHostClient(async () => ({ endpoint, token: 'private-secret', ownerId: 'owner-one', buildIdentity: 'build-one' }));
-    await expect(client.status()).resolves.toEqual({ product: 'gotzji', state: 'control-only', ownerId: 'owner-one', errorCode: 'HOST_BUILD_CHANGED', controller: 'grace', automaticUpdates: false });
+    await expect(client.status()).resolves.toEqual({ product: 'gotzji', state: 'control-only', ownerId: 'owner-one', errorCode: 'HOST_BUILD_CHANGED', controller: 'chatgpt-plugin', automaticUpdates: false });
     expect(build).toBe('build-one');
   });
   it('allows typed CAD entity handles while retaining the private authority-handle fence', async () => {

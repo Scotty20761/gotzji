@@ -13,9 +13,13 @@ const LEGACY_PRODUCT_CONTROL_DOCUMENTS: Readonly<Record<string, string>> = {
   'references/agent-knowledge-workflow.md': '# gotzji generic work sequence\n\nRead the admitted operation and enrolled project policy; use only the private broker tools; execute the allowed operation; verify exact results; return the real receipt. Do not invent evidence, silently retry unknown effects, publish private content, or curate product jobs without an explicit request. Native providers and Library workflows require their own qualified adapters/contracts.\n',
   'KNOWLEDGE_INDEX.md': '# gotzji generic control workspace\n\nThis private directory holds packaged control instructions, not an Investment Library vault or user knowledge corpus. Actual project identity and files come from verified registration. This index supplies no authority over another project.\n',
 };
-export const PRODUCT_CONTROL_DOCUMENTS: Readonly<Record<string, string>> = {
+const PREVIOUS_PRODUCT_CONTROL_DOCUMENTS: Readonly<Record<string, string>> = {
   ...LEGACY_PRODUCT_CONTROL_DOCUMENTS,
   'CLAUDE.md': LEGACY_PRODUCT_CONTROL_DOCUMENTS['CLAUDE.md']!.replace('Grace controls every user work operation through the governed broker.', 'Project file read/list/search tools return directly from the host within the enrolled project, without a Claude session or job. Mutating work and legacy file.read jobs remain controlled by Grace through the governed broker.'),
+};
+export const PRODUCT_CONTROL_DOCUMENTS: Readonly<Record<string, string>> = {
+  ...PREVIOUS_PRODUCT_CONTROL_DOCUMENTS,
+  'CLAUDE.md': PREVIOUS_PRODUCT_CONTROL_DOCUMENTS['CLAUDE.md']!.replace('generic Grace control policy', 'generic ChatGPT host control policy').replace('Mutating work and legacy file.read jobs remain controlled by Grace through the governed broker.', 'ChatGPT requests typed work through its MCP plugin. The host executes admitted operations through the governed broker without a Claude installation, model, login or child process. Model-dependent Library workflows require ChatGPT orchestration and are unavailable until their continuation contract exists.'),
 };
 type PolicyUpgrade = { readonly stateDirectory: string; readonly authority?: { readonly policy: string; readonly authorityId: string } };
 
@@ -36,7 +40,7 @@ export function ensureProductControlDocuments(directory: string, upgrade?: Polic
     } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
     const before = present ? readFileSync(filename, 'utf8') : null;
     if (before === content) continue;
-    if (before !== null && (!upgrade || before !== LEGACY_PRODUCT_CONTROL_DOCUMENTS[relative])) throw new CoreError('PRODUCT_CONTROL_POLICY_DRIFT', 'A generated policy was edited; preserve it and inspect the difference');
+    if (before !== null && (!upgrade || before !== LEGACY_PRODUCT_CONTROL_DOCUMENTS[relative] && before !== PREVIOUS_PRODUCT_CONTROL_DOCUMENTS[relative])) throw new CoreError('PRODUCT_CONTROL_POLICY_DRIFT', 'A generated policy was edited; preserve it and inspect the difference');
     changes.push({ filename, content, before });
   }
   if (!changes.length) return;

@@ -18,7 +18,7 @@ export interface WorkerRow {
 }
 export interface OperationRow { job_id: string; digest: string; phase: string; receipt: string | null }
 export interface WriterRow { root: string; job_id: string; epoch: string }
-export interface CoreUpgrade { readonly expectedAuthorityId: string; readonly expectedPolicy: string }
+export interface CoreUpgrade { readonly expectedAuthorityId: string; readonly expectedPolicy: string; readonly requireNoPendingJobs?: boolean }
 
 const SQL = `
 CREATE TABLE gotzji_meta (version INTEGER NOT NULL, policy TEXT NOT NULL, authority_id TEXT NOT NULL);
@@ -61,7 +61,7 @@ export class CoreStore {
         database.exec('COMMIT;'); return;
       }
       if (meta.policy !== expected.expectedPolicy) throw new CoreError('UPGRADE_POLICY_CONFLICT');
-      CoreStore.assertQuiescentUpgrade(database);
+      CoreStore.assertQuiescentUpgrade(database, expected.requireNoPendingJobs === true);
       const current = statSync(filename, { bigint: true });
       if (identity.dev !== current.dev || identity.ino !== current.ino || identity.birthtimeNs !== current.birthtimeNs) throw new CoreError('CORE_DATABASE_REPLACED');
       database.prepare('UPDATE gotzji_meta SET policy=? WHERE policy=? AND authority_id=?').run(policy, expected.expectedPolicy, expected.expectedAuthorityId);

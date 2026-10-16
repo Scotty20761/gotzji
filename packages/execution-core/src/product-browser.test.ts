@@ -15,7 +15,7 @@ const roots: string[] = [];
 afterEach(async () => {
   for (const root of roots.splice(0)) { const relative = path.relative(qualificationRoot, root); if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) throw new Error('Browser fixture cleanup scope denied'); await rm(root, { recursive: true, force: true }); }
 });
-async function fixture(): Promise<{ project: RegisteredProject; options: TrustedProductBrowserOptions; input: ProductBrowserInput; prepared: PreparedProductBrowserOperation; config: AuthorizedBrowserWorkerConfig; transport: GotzjiBrowserTransport; effectRoot: string; modulePath: string }> {
+async function fixture(direct = false): Promise<{ project: RegisteredProject; options: TrustedProductBrowserOptions; input: ProductBrowserInput; prepared: PreparedProductBrowserOperation; config: AuthorizedBrowserWorkerConfig; transport: GotzjiBrowserTransport; effectRoot: string; modulePath: string }> {
   await mkdir(qualificationRoot, { recursive: true }); qualificationRoot = await realpath(qualificationRoot);
   const root = await realpath(await mkdtemp(path.join(qualificationRoot, 'product-browser-test-'))); qualificationRoot = path.dirname(root); roots.push(root);
   const projectRoot = path.join(root, 'project'); const effectRoot = path.join(root, 'effects'); const profilePath = path.join(root, 'gotzji-browser-provider-owned');
@@ -30,7 +30,7 @@ async function fixture(): Promise<{ project: RegisteredProject; options: Trusted
   const options: TrustedProductBrowserOptions = { session, manifestPath, manifestSha256: hash(manifest), prerequisites: [{ path: modulePath, hash: hash('trusted-browser-module') }], verifyOwnedSession: async () => true, deadlineMs: 1000 };
   const input: ProductBrowserInput = { requestId: 'request-one', projectId: 'project', operation: 'browser.type', sessionId: 'session-one', tabId: binding.tabId, expectedUrl: binding.url, expectedDocumentId: binding.documentId, selector: '#note', text: 'after' };
   const prepared = await prepareProductBrowserOperation(project, input, options);
-  const privateBinding: BrowserWorkerBinding = { owner: 'owner', jobId: 'job-one', epoch: 'epoch-one', generation: 1, session: 'private-worker', intentRevision: 0, authorizationDigest: 'a'.repeat(64), policy: 'b'.repeat(64), token: 'c'.repeat(64), lease: 'private-lease', database: path.join(root, 'core.sqlite'), effectRoot, text: JSON.stringify(prepared), grace: { mode: 'test-driver' } };
+  const privateBinding: BrowserWorkerBinding = { owner: 'owner', jobId: 'job-one', epoch: 'epoch-one', generation: 1, session: 'private-worker', intentRevision: 0, authorizationDigest: 'a'.repeat(64), policy: 'b'.repeat(64), token: 'c'.repeat(64), lease: 'private-lease', database: path.join(root, 'core.sqlite'), effectRoot, text: JSON.stringify(prepared), grace: direct ? { mode: 'host-direct', testOnlyProviders: true } : { mode: 'test-driver' } };
   const config = { ...privateBinding, browserAuthorization: signPreparedBrowserOperation(privateBinding, prepared) };
   let node: GotzjiBrowserNode = { count: 1, identity: 'note-text', tag: 'INPUT', text: '', value: 'before', editable: true, enabled: true, visible: true, protected: false };
   const transport: GotzjiBrowserTransport = { binding: vi.fn(async () => ({ ...binding })), inspect: vi.fn(async () => ({ ...node })), click: vi.fn(), fill: vi.fn(async (_selector, text) => { node = { ...node, value: text }; }) };
@@ -78,8 +78,8 @@ describe('signed Grace browser provider preparation and broker', () => {
     const f = await fixture(); const binding = { ...f.config, grace: { mode: 'claude' as const } }; const config = { ...binding, browserAuthorization: signPreparedBrowserOperation(binding, f.prepared) };
     await expect(executePreparedBrowserOperation(config, undefined, { ...authority, testTransport: f.transport })).rejects.toThrow('BROWSER_TEST_TRANSPORT_DENIED');
   });
-  it('records one signed completed effect and reuses its receipt without replay', async () => {
-    const f = await fixture(); const options = { ...authority, testTransport: f.transport };
+  it.each([false, true])('records and reuses one signed browser effect (direct=%s)', async (direct) => {
+    const f = await fixture(direct); const options = { ...authority, testTransport: f.transport };
     await expect(executePreparedBrowserOperation(f.config, undefined, options)).resolves.toMatchObject({ state: 'completed', browserReceipt: { verified: true, effect: 'verified' } });
     await expect(executePreparedBrowserOperation(f.config, undefined, options)).resolves.toMatchObject({ state: 'completed' });
     expect(f.transport.fill).toHaveBeenCalledTimes(1); expect(readPreparedBrowserState(f.config)).toMatchObject({ state: 'completed', outcome: 'verified' });

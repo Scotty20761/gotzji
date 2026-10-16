@@ -128,7 +128,7 @@ export interface CatalogEntry {
   readonly name: string;
   readonly state: 'available' | 'unsupported';
   readonly description: string;
-  readonly controller: 'grace' | 'owner' | 'host';
+  readonly controller: 'grace' | 'owner' | 'host' | 'chatgpt-plugin';
   readonly reason?: string;
   readonly recipeId?: string;
   readonly workflowId?: string;

@@ -16,7 +16,7 @@ export function toolNames(config){return config?.grace?.recipe==='product'?PRODU
 export function fullTools(config){return toolNames(config).map((name)=>`mcp__${SERVER}__${name}`);}
 export function digest(bytes) { return createHash('sha256').update(bytes).digest('hex'); }
 export function assertProfile(profile) {
-  for (const entry of [{ path: profile.executable, hash: profile.executableHash }, { path: profile.sourceFile, hash: profile.sourceHash }, ...Object.values(profile.documents), ...(profile.testDriver ? [{ path: profile.testDriver, hash: profile.testDriverHash }] : [])]) {
+  for (const entry of [...(profile.mode === 'host-direct' ? [] : [{ path: profile.executable, hash: profile.executableHash }]), { path: profile.sourceFile, hash: profile.sourceHash }, ...Object.values(profile.documents), ...(profile.testDriver ? [{ path: profile.testDriver, hash: profile.testDriverHash }] : [])]) {
     try { verifyFingerprint(entry.path, entry.hash); } catch { throw new Error('DEPENDENCIES_CHANGED'); }
   }
 }

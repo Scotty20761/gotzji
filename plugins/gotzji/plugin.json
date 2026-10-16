@@ -2,14 +2,14 @@
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "gotzji",
   "version": "1.0.0",
-  "description": "Use Grace-controlled gotzji projects and durable jobs from ChatGPT and Codex.",
+  "description": "Use ChatGPT to control typed gotzji operations and durable jobs on your Windows PC.",
   "author": {
     "name": "gotzji contributors"
   },
   "repository": "https://github.com/Scotty20761/gotzji",
   "license": "MIT",
   "keywords": [
-    "grace",
+    "chatgpt",
     "mcp",
     "windows",
     "workflow"
@@ -18,8 +18,8 @@
     "com.openai": {
       "interface": {
         "displayName": "gotzji",
-        "shortDescription": "Grace-controlled work on your Windows PC",
-        "longDescription": "Use enrolled projects and explicit durable job identities while Grace controls typed work in the gotzji Windows app.",
+        "shortDescription": "ChatGPT-controlled work on your Windows PC",
+        "longDescription": "Use ChatGPT to call typed operations on enrolled projects while the gotzji Windows host preserves explicit durable job identity, authority and evidence.",
         "developerName": "gotzji contributors",
         "category": "Productivity",
         "capabilities": [
