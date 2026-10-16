@@ -32,7 +32,7 @@ Remaining internal @lnwjud package names preserve upstream compatibility and do 
 
 ## Qualification and release
 
-The v1 target includes files/code/commands, browser, Excel, Word, PowerPoint, ZWCAD 2025 and governed Investment Library integration, with separate actual ChatGPT Plus/Pro acceptance and installed 1–2 hour recovery tests. Model-dependent Library workflows remain unsupported until an explicit ChatGPT orchestration and artifact-continuation contract is implemented; their mandatory acceptance gate remains open. Components awaiting end-to-end qualification remain explicitly unavailable in the catalog; source presence is not a runtime pass.
+The v1 target includes files/code/commands, browser, Excel, Word, PowerPoint, ZWCAD 2025 and governed Investment Library integration, with actual ChatGPT Pro acceptance and installed 1–2 hour recovery tests. Intended Plus compatibility remains; the owner removed separate Plus qualification on 2026-10-17 (G15 NOT_REQUIRED, not a Plus PASS). Model-dependent Library workflows remain unsupported until an explicit ChatGPT orchestration and artifact-continuation contract is implemented; their mandatory acceptance gate remains open. Components awaiting end-to-end qualification remain explicitly unavailable in the catalog; source presence is not a runtime pass.
 
 The owner selected **official unsigned** Windows distribution. Setup and Portable candidates must report NotSigned and match complete SHA-256/runtime provenance. Automatic updates are disabled; manual updates require verified files and compatible state handling. Public v1 release follows real qualification and publishes the same tested bytes.
 

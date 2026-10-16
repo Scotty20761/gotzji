@@ -18,7 +18,7 @@ The owner's current ChatGPT account and conversation supply reasoning and call t
 
 The local app configures its own OpenAI Secure MCP Tunnel, independent of lnwjud. A dedicated runtime API key requires Tunnels Read + Use. Enter it in the app; never paste it into a chat or issue. The host protects credentials with Windows CurrentUser DPAPI. Tunnel transport uses authenticated loopback forwarding. Project enrollment and connection configuration are absent from ChatGPT's tool catalog.
 
-The personal plugin requires actual account/workspace consent and qualification. Plus and Pro are separate acceptance records; documentation or a local HTTP test does not accept either account. Public ChatGPT directory submission is a separate later target.
+The personal plugin requires actual Pro account/workspace consent and qualification; documentation or a local HTTP test does not accept the account. Intended Plus compatibility remains, but the owner's 2026-10-17 decision makes separate Plus qualification NOT_REQUIRED (G15), without asserting plan equivalence or a Plus PASS. Public ChatGPT directory submission is a separate later target.
 
 ## Build and private candidate
 
@@ -28,7 +28,7 @@ The intended release is Windows x64, official unsigned, with SHA-256, complete r
 
 ## Acceptance
 
-Follow .github/RELEASE_CHECKLIST.md. Full v1 requires real ChatGPT-plugin work, useful concurrent jobs, all required host capabilities and Library workflows, separate Plus and Pro account proof, exact installed 1–2 hour interruption/reboot tests, migration/rollback, and the accepted pilot. The Library gate remains mandatory while model-dependent workflows are unsupported. Component/source tests have their own scope. Never promote a developer fixture or an upstream release into gotzji release evidence.
+Follow .github/RELEASE_CHECKLIST.md. Full v1 requires real ChatGPT-plugin work, useful concurrent jobs, all required host capabilities and Library workflows, actual Pro account proof, exact installed 1–2 hour interruption/reboot tests, migration/rollback, and the accepted pilot. G15 retains the fixed owner NOT_REQUIRED decision and is excluded from accepted gates. The Library gate remains mandatory while model-dependent workflows are unsupported. Component/source tests have their own scope. Never promote a developer fixture or an upstream release into gotzji release evidence.
 
 ### Session resilience / แนวทางสำหรับผู้ปฏิบัติการ
 
