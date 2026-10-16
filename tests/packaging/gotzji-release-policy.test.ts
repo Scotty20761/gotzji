@@ -77,7 +77,7 @@ async function releaseFixture(): Promise<{ root: string; provenance: ReleaseFixt
     sizeBytes: relativePath.endsWith('windows-capability-bridge.ps1') ? bridgeBytes.length : Buffer.byteLength(relativePath),
   }));
   const coreManifest = {
-    schemaVersion: 1, product: 'gotzji', version, catalogVersion: 1, storeSchemaVersion: 1, entrypoint: 'product-server.mjs',
+    schemaVersion: 1, product: 'gotzji', version, catalogVersion: 2, storeSchemaVersion: 1, entrypoint: 'product-server.mjs',
     files: ['product-server.mjs', 'product-broker.mjs', 'product-runner.mjs', 'fixture-worker.mjs']
       .map((relativePath) => ({ relativePath, sha256: digest(relativePath), sizeBytes: Buffer.byteLength(relativePath) })),
   };
