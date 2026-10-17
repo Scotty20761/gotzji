@@ -1,6 +1,6 @@
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { ok } from '@lnwjud/domain';
-import type { ToolAvailabilitySnapshot } from '@lnwjud/shared';
+import { APP_NAME, type ToolAvailabilitySnapshot } from '@lnwjud/shared';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ActivityTracker } from './activity-tracker.js';
 import { ToolRegistry, type McpApplicationServices } from './tool-registry.js';
@@ -595,7 +595,7 @@ describe('MCP localhost HTTP transport', () => {
 
     expect(response.status).toBe(200);
     expect(response.headers.get('x-lnwjud-service')).toBe('desktop-mcp');
-    await expect(response.json()).resolves.toMatchObject({ product: 'lnwjud', service: 'desktop-mcp', protocol: 1 });
+    await expect(response.json()).resolves.toMatchObject({ product: APP_NAME, service: 'desktop-mcp', protocol: 1 });
   });
 
   it('does not poison a legacy session after one protocol-level tool error', async () => {

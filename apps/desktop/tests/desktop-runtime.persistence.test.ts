@@ -17,6 +17,7 @@ const LONG_RUNTIME_TEST_TIMEOUT_MS = isWindowsGitHubActions ? 120_000 : 60_000;
 
 beforeEach(() => {
   vi.stubEnv('LNWJUD_UNRESTRICTED', '1');
+  vi.stubEnv('LNWJUD_MCP_PORT', undefined);
 });
 
 afterEach(async () => {

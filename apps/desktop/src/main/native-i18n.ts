@@ -51,6 +51,12 @@ export interface NativeMessages {
   trayDownloading(version: string, percent: number | null): string;
 }
 
+export const gotzjiNativeMessages = {
+  trayOpen: 'เปิด gotzji',
+  trayQuit: 'ออกจากแอป gotzji',
+  manualUpdate: 'อัปเดตด้วยไฟล์ gotzji รุ่นที่ตรวจแล้ว',
+} as const;
+
 const th: NativeMessages = {
   trayOpen: 'เปิดหน้า',
   trayCheckUpdates: 'ตรวจอัปเดต',

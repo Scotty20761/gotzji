@@ -7,7 +7,7 @@ const repositoryRoot = path.resolve(import.meta.dirname, '..', '..');
 const releaseNotesModuleUrl = pathToFileURL(path.join(repositoryRoot, 'scripts', 'release-notes.mjs')).href;
 
 describe('standardized GitHub release notes', () => {
-  it('keeps the READMEs concise while retaining historical highlights for backfill', async () => {
+  it('keeps gotzji READMEs scoped while retaining upstream historical highlights for backfill', async () => {
     const { extractCuratedHighlights } = await import(releaseNotesModuleUrl);
     const [readme, fullReadme, releaseHistory] = await Promise.all([
       readFile(path.join(repositoryRoot, 'README.md'), 'utf8'),
@@ -19,11 +19,11 @@ describe('standardized GitHub release notes', () => {
       (match) => match[1],
     );
 
-    expect(versions(readme)).toHaveLength(3);
-    expect(versions(fullReadme)).toEqual(versions(readme));
-    expect(readme).toContain('[RELEASE_NOTES.md](RELEASE_NOTES.md)');
-    expect(fullReadme).toContain('[RELEASE_NOTES.md](RELEASE_NOTES.md)');
-    for (const version of [...versions(readme), '5.6.1', '4.52.0']) {
+    expect(versions(readme)).toEqual([]);
+    expect(versions(fullReadme)).toEqual([]);
+    expect(readme).toContain('docs/upstream/README-v5.7.3.md');
+    expect(fullReadme).toContain('docs/upstream/');
+    for (const version of ['5.7.3', '5.6.1', '4.52.0']) {
       expect(extractCuratedHighlights(releaseHistory, `v${version}`, 'engasnm111/lnwjud')).not.toEqual([]);
     }
   });

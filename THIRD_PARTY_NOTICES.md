@@ -1,6 +1,6 @@
 # Third-Party Notices
 
-lnwjud v4.70.1 includes pinned resources from the following MIT-licensed projects.
+gotzji retains the following upstream pinned resource notices. Packaged dependency notices are generated from the installed production dependency census into resources/licenses/dependencies; Electron/Chromium, tunnel-client, ripgrep and the Prompt font retain their separate packaged license texts.
 
 ## Everything Claude Code / ECC (`ecc-universal` 2.2.1)
 

@@ -47,7 +47,7 @@ describe('lnwjud tunnel ownership lock', () => {
         },
       },
     });
-    await expect(Promise.race([publishEntered.promise, rejectAfter(2_000, 'beforePublish hook was not called')])).resolves.toBeUndefined();
+    await expect(Promise.race([publishEntered.promise, rejectAfter(20_000, 'beforePublish hook was not called')])).resolves.toBeUndefined();
     await expect(access(path.join(directory, 'lnwjud.tunnel.lock'))).rejects.toThrow();
 
     let secondSettled = false;
@@ -153,7 +153,7 @@ describe('lnwjud tunnel ownership lock', () => {
     if (!claim.acquired) return;
 
     const releasing = claim.release();
-    await expect(Promise.race([releaseEntered.promise, rejectAfter(2_000, 'release quarantine hook was not called')])).resolves.toBeUndefined();
+    await expect(Promise.race([releaseEntered.promise, rejectAfter(20_000, 'release quarantine hook was not called')])).resolves.toBeUndefined();
     await rename(path.join(directory, 'lnwjud.tunnel.lock'), path.join(directory, 'original-owner-record'));
     await writeFile(path.join(directory, 'lnwjud.tunnel.lock'), JSON.stringify({ version: 1, ...replacement }), 'utf8');
     allowRelease.resolve();

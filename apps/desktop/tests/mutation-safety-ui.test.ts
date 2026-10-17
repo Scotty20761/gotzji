@@ -131,13 +131,13 @@ describe('mutation safety UI contract', () => {
     expect(markup).toContain('<button type="button" disabled="">Stop Tunnel</button>');
   });
 
-  it('renders the actual 5.7.3 application version', () => {
-    expect(APP_VERSION).toBe('5.7.3');
+  it('renders the actual 1.0.0 application version', () => {
+    expect(APP_VERSION).toBe('1.0.0');
     const markup = renderToStaticMarkup(createElement(AppShell, {
       locale: 'en', appVersion: APP_VERSION, hostPlatform: 'win32', mcpRunning: false, desktopFullBypassOn: false, stdioFullBypassOn: false, updateStatus: null, screen: 'settings',
       onNavigate: () => undefined, onLocaleChange: () => undefined, onUpdateAction: () => undefined, children: createElement('div'),
     }));
-    expect(markup).toContain('v5.7.3');
+    expect(markup).toContain('v1.0.0');
     expect(markup).toContain('data-host-platform="win32"');
   });
 

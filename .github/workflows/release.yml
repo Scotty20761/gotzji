@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   publish-release:
-    name: Publish Verified Cross-Platform Release
+    name: Publish Qualified gotzji Windows Release
     runs-on: ubuntu-latest
     timeout-minutes: 120
 
@@ -49,7 +49,7 @@ jobs:
             --commit "${GITHUB_SHA}" \
             --output release-notes.md
 
-      - name: Download verified target-native CI artifacts for the exact commit
+      - name: Download the Windows CI artifact for the exact commit
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -107,10 +107,6 @@ jobs:
 
           declare -a targets=(
             "win32-x64|windows-release-$sha"
-            "darwin-arm64|native-darwin-arm64-$sha"
-            "darwin-x64|native-darwin-x64-$sha"
-            "linux-x64|native-linux-x64-$sha"
-            "linux-arm64|native-linux-arm64-$sha"
           )
           for target in "${targets[@]}"; do
             key="${target%%|*}"
@@ -135,10 +131,6 @@ jobs:
 
           declare -a targets=(
             "win32-x64|win32|x64"
-            "darwin-arm64|darwin|arm64"
-            "darwin-x64|darwin|x64"
-            "linux-x64|linux|x64"
-            "linux-arm64|linux|arm64"
           )
           for target in "${targets[@]}"; do
             IFS='|' read -r key platform arch <<< "$target"
@@ -156,15 +148,30 @@ jobs:
               node apps/desktop/scripts/verify-release-evidence.mjs
           done
 
-      - name: Aggregate target-native artifacts and update feeds
+      - name: Require reviewed acceptance of the exact frozen candidate
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./package.json').version")"
+          mkdir -p qualification
+          # The owner uploads a sanitized declaration to a private draft candidate.
+          # This release never manufactures account/native/reboot/pilot evidence.
+          gh release view "candidate-${version}" --repo "${GITHUB_REPOSITORY}" --json isDraft --jq '.isDraft' | grep -Fx true
+          gh release download "candidate-${version}" --repo "${GITHUB_REPOSITORY}" --pattern QUALIFICATION.json --dir qualification
+          mapfile -t provenance_files < <(find release-staging/win32-x64 -type f -name PROVENANCE.json -print)
+          [[ "${#provenance_files[@]}" -eq 1 ]]
+          node scripts/verify-candidate-qualification.mjs qualification/QUALIFICATION.json "${provenance_files[0]}" "$(dirname "${provenance_files[0]}")/PLUGIN_PROVENANCE.json"
+      - name: Aggregate the same qualified Windows bytes
         shell: bash
         env:
           LNWJUD_RELEASE_STAGING_DIRECTORY: ${{ github.workspace }}/release-staging
           LNWJUD_RELEASE_ASSETS_DIRECTORY: ${{ github.workspace }}/release-assets
           LNWJUD_RELEASE_COMMIT: ${{ github.sha }}
-        run: node scripts/collect-release-assets.mjs
+        run: node scripts/collect-release-assets.mjs --windows-only
 
-      - name: Publish verified cross-platform release assets
+      - name: Publish qualified gotzji Windows release assets
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
         with:
           files: release-assets/*

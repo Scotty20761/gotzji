@@ -6,6 +6,8 @@ import { automationShellRequestDigest, ok, type Result } from '@lnwjud/domain';
 import { engineeringCommandFingerprint, formatEngineeringCommand } from '@lnwjud/shared';
 import { ShellCapabilityBackend, withAutomationShellDispatchContext } from './shell-backend.js';
 import { CAPABILITY_TASK_OWNER_METADATA_KEY } from './task-ownership.js';
+import { DurableShellTaskStore } from './durable-shell-task-store.js';
+import { fileURLToPath } from 'node:url';
 
 const temporaryRoots: string[] = [];
 
@@ -172,6 +174,103 @@ describe('ShellCapabilityBackend', () => {
     }), 'utf8');
     await expect(backend.statusForAutomation('client-a', 'workspace-a', legacyTaskId, requestDigest))
       .resolves.toMatchObject({ ok: false, error: { code: 'CONFLICT' } });
+  }, 20_000);
+
+  it.each(['delayed', 'rejected'] as const)('keeps terminal metadata after a %s running publication from the real durable worker', async (fault) => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'lnwjud-shell-publication-'));
+    temporaryRoots.push(root);
+    const taskStateDirectory = path.join(root, '.tasks');
+    const childRelease = path.join(root, 'release-child');
+    const terminalPublished = path.join(root, 'terminal-published');
+    const tracePath = path.join(root, 'rename-trace.jsonl');
+    const oncePath = path.join(root, 'once.txt');
+    const prototype = DurableShellTaskStore.prototype as unknown as { ensureWorkerScript(): Promise<string> };
+    const originalWorkerScript = prototype.ensureWorkerScript;
+    const workerScript = vi.spyOn(prototype, 'ensureWorkerScript').mockImplementation(async function (this: DurableShellTaskStore) {
+      const filename = await originalWorkerScript.call(this);
+      const source = await readFile(filename, 'utf8');
+      const intercepted = source.replace('readFile, writeFile, open, rename, unlink', 'readFile, writeFile, open, rename as originalRename, unlink, appendFile');
+      if (intercepted === source) throw new Error('Durable worker rename seam was not found');
+      // Delay the real worker's first child-bearing running rename. The child
+      // exits only after that write starts. A bounded fallback also releases a
+      // correctly serialized writer, whose terminal rename must wait its turn.
+      await writeFile(filename, intercepted + `
+async function rename(from, to) {
+  const value = JSON.parse(await readFile(from, 'utf8'));
+  const record = (phase) => appendFile(${JSON.stringify(tracePath)}, JSON.stringify({ phase, state: value.state, childPid: value.child_pid }) + '\\n');
+  await record('before');
+  if (!rename.delayedRunning && value.state === 'running' && value.child_pid) {
+    rename.delayedRunning = true;
+    await writeFile(${JSON.stringify(childRelease)}, 'running publication started');
+    const deadline = Date.now() + 2000;
+    while (Date.now() < deadline) {
+      if (await readFile(${JSON.stringify(terminalPublished)}, 'utf8').then(() => true, () => false)) break;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    if (${fault === 'rejected'}) {
+      await record('rejected');
+      throw Object.assign(new Error('Injected running publication failure'), { code: 'EIO' });
+    }
+  }
+  await originalRename(from, to);
+  await record('after');
+  if (value.state === 'completed') await writeFile(${JSON.stringify(terminalPublished)}, 'terminal publication committed');
+}
+`);
+      return filename;
+    });
+    const backend = new ShellCapabilityBackend({ allowedRoots: [root], taskStateDirectory });
+    const owner = { metadata: { [CAPABILITY_TASK_OWNER_METADATA_KEY]: { clientId: 'publication-client', sessionId: 'publication-session', workspaceId: 'publication-workspace' } } };
+    const taskId = 'automation-publication-order';
+    const child = `const fs=require('node:fs');const timer=setTimeout(()=>{clearInterval(poll);process.exitCode=1;process.stderr.write('running publication was not observed');},10000);const poll=setInterval(()=>{if(fs.existsSync(${JSON.stringify(childRelease)})){clearInterval(poll);clearTimeout(timer);fs.writeFileSync(${JSON.stringify(oncePath)},'once',{flag:'wx'});process.stdout.write('once');}},10);`;
+    const childScript = path.join(root, 'child.cjs');
+    await writeFile(childScript, child);
+    const dispatch = { executable: process.execPath, arguments: [childScript], cwd: root, timeoutSeconds: 30, maxOutputBytes: 1024, includeStdout: true, includeStderr: true, windowsVerbatimArguments: false };
+    const requestDigest = automationShellRequestDigest({ taskId, ownerClientId: 'publication-client', workspaceId: 'publication-workspace', dispatch });
+    const input = withAutomationShellDispatchContext({ operation: 'run', executable: dispatch.executable, arguments: dispatch.arguments, cwd: root, execution: 'background', timeout_seconds: 30, max_output_bytes: 1024, include_stdout: true, include_stderr: true, userConfirmed: true, ...owner }, { runId: 'publication-run', milestoneId: 'publication', attemptId: 'publication-attempt', taskId, requestDigest, goalId: 'publication-goal', workspaceId: 'publication-workspace', windowsVerbatimArguments: false });
+    let result: Awaited<ReturnType<typeof backend.execute>> | undefined;
+    let failure: unknown;
+    const absent = (pid: number): boolean => { try { process.kill(pid, 0); return false; } catch (error) { return error instanceof Error && 'code' in error && error.code === 'ESRCH'; } };
+    try {
+      const first = await backend.execute(input);
+      result = first;
+      expect(first).toMatchObject({ ok: true, value: { task_id: taskId, durable: true } });
+      if (!first.ok) return;
+      await expect(backend.execute(input)).resolves.toMatchObject({ ok: true, value: { task_id: taskId, started_at: first.value.started_at } });
+      result = await backend.execute({ operation: 'wait', task_id: taskId, timeout_seconds: 5, ...owner });
+      expect(result).toMatchObject({ ok: true, value: { state: 'completed', exit_code: 0, stdout: 'once', stderr: '' } });
+      const metadata = JSON.parse(await readFile(path.join(taskStateDirectory, taskId, 'task.json'), 'utf8')) as { worker_pid: number; child_pid: number };
+      expect(Number.isInteger(metadata.worker_pid) && Number.isInteger(metadata.child_pid)).toBe(true);
+      await expect.poll(() => [metadata.worker_pid, metadata.child_pid].every(absent), { interval: 25, timeout: 2000 }).toBe(true);
+      await expect(readFile(oncePath, 'utf8')).resolves.toBe('once');
+      const publications = (await readFile(tracePath, 'utf8')).trim().split('\n').map((line) => JSON.parse(line) as { phase: string; state: string; childPid?: number });
+      expect(publications.some((entry) => entry.phase === 'before' && entry.state === 'running' && Number.isInteger(entry.childPid))).toBe(true);
+      expect(publications.filter((entry) => entry.phase === 'after').map((entry) => entry.state)).toEqual(fault === 'delayed' ? ['running', 'running', 'completed'] : ['running', 'completed']);
+      if (fault === 'rejected') expect(publications.some((entry) => entry.phase === 'rejected' && entry.state === 'running')).toBe(true);
+      await expect(backend.execute({ operation: 'wait', task_id: taskId, timeout_seconds: 5, ...owner })).resolves.toMatchObject({ ok: true, value: { state: 'completed', exit_code: 0, stdout: 'once', stderr: '' } });
+      await expect(readFile(path.join(taskStateDirectory, taskId, 'task.json'), 'utf8').then((value) => JSON.parse(value))).resolves.toMatchObject({ state: 'completed', exit_code: 0 });
+    } catch (error) { failure = error; }
+    finally {
+      workerScript.mockRestore();
+      try {
+        const metadata = await readFile(path.join(taskStateDirectory, taskId, 'task.json'), 'utf8').then((value) => JSON.parse(value) as { worker_pid?: number; child_pid?: number }, () => undefined);
+        const pids = [metadata?.worker_pid, metadata?.child_pid].filter((pid): pid is number => pid !== undefined);
+        if (pids.some((pid) => !absent(pid))) await backend.execute({ operation: 'cancel', task_id: taskId, ...owner });
+        await expect.poll(() => pids.every(absent), { interval: 25, timeout: 2000 }).toBe(true);
+      } catch (error) { failure = failure === undefined ? error : new AggregateError([failure, error], 'Durable publication assertion and cleanup failed'); }
+    }
+    if (failure !== undefined) {
+      const evidence: Record<string, unknown> = { root, result };
+      for (const name of ['task.json', 'stdout.log', 'stderr.log']) evidence[name] = await readFile(path.join(taskStateDirectory, taskId, name), 'utf8').catch(() => null);
+      evidence.renameTrace = await readFile(tracePath, 'utf8').catch(() => null);
+      const evidenceRoot = fileURLToPath(new URL('../../../.local-artifacts/shell-finalization/', import.meta.url));
+      await mkdir(evidenceRoot, { recursive: true });
+      const evidencePath = path.join(evidenceRoot, `failure-${Date.now()}-${process.pid}.json`);
+      await writeFile(evidencePath, JSON.stringify(evidence, null, 2));
+      console.error('Durable publication regression evidence:', JSON.stringify({ evidencePath, result }));
+      temporaryRoots.splice(temporaryRoots.indexOf(root), 1);
+      throw failure;
+    }
   }, 20_000);
 
   it.each([

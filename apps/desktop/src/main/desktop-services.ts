@@ -3151,21 +3151,21 @@ export type McpIdentityProbe = (endpoint: URL) => Promise<boolean>;
 export async function checkConfiguredMcpPort(
   status: McpConnectionStatus,
   configuredPort: number,
-  identityProbe: McpIdentityProbe = probeLnwjudMcpIdentity,
+  identityProbe: McpIdentityProbe = probeDesktopMcpIdentity,
 ): Promise<DoctorProbeResult> {
   if (status.running && status.url !== null) {
     try {
       const endpoint = new URL(status.url);
       const livePort = Number(endpoint.port);
       if (!(await identityProbe(endpoint))) {
-        return { status: 'fail', message: `Desktop MCP endpoint failed the lnwjud identity check at ${endpoint.origin}` };
+        return { status: 'fail', message: `Desktop MCP endpoint failed the ${APP_NAME} identity check at ${endpoint.origin}` };
       }
       if (configuredPort === 0 || livePort === configuredPort) {
-        return { status: 'pass', message: `lnwjud Desktop MCP identity verified at ${endpoint.origin}${endpoint.pathname}` };
+        return { status: 'pass', message: `${APP_NAME} Desktop MCP identity verified at ${endpoint.origin}${endpoint.pathname}` };
       }
       return {
         status: 'warn',
-        message: `lnwjud Desktop MCP identity verified at fallback port ${livePort}; configured port ${configuredPort} was unavailable`,
+        message: `${APP_NAME} Desktop MCP identity verified at fallback port ${livePort}; configured port ${configuredPort} was unavailable`,
       };
     } catch {
       return { status: 'fail', message: `Desktop MCP reported an invalid endpoint: ${status.url}` };
@@ -3189,16 +3189,16 @@ export async function checkConfiguredMcpPort(
   } catch (error: unknown) {
     const code = typeof error === 'object' && error !== null && 'code' in error ? String(error.code) : 'unknown';
     const endpoint = new URL(`http://127.0.0.1:${configuredPort}/mcp`);
-    const isLnwjud = await identityProbe(endpoint);
-    return isLnwjud
-      ? { status: 'fail', message: `Configured MCP port ${configuredPort} is owned by an lnwjud listener that this Desktop instance is not managing (${code})` }
-      : { status: 'fail', message: `Configured MCP port ${configuredPort} is occupied by a listener that is not an lnwjud Desktop MCP (${code})` };
+    const isProduct = await identityProbe(endpoint);
+    return isProduct
+      ? { status: 'fail', message: `Configured MCP port ${configuredPort} is owned by a ${APP_NAME} listener that this Desktop instance is not managing (${code})` }
+      : { status: 'fail', message: `Configured MCP port ${configuredPort} is occupied by a listener that is not a ${APP_NAME} Desktop MCP (${code})` };
   } finally {
     if (listening) await new Promise<void>((resolve) => server.close(() => resolve()));
   }
 }
 
-async function probeLnwjudMcpIdentity(endpoint: URL): Promise<boolean> {
+async function probeDesktopMcpIdentity(endpoint: URL): Promise<boolean> {
   const MCP_IDENTITY_PROBE_TIMEOUT_MS = 750;
   const MCP_IDENTITY_PROBE_MAX_ATTEMPTS = 2;
   const started = Date.now();
@@ -3219,7 +3219,7 @@ async function probeLnwjudMcpIdentity(endpoint: URL): Promise<boolean> {
       }
       const body: unknown = await response.json();
       const matches = typeof body === 'object' && body !== null
-        && 'product' in body && body.product === 'lnwjud'
+        && 'product' in body && body.product === APP_NAME
         && 'service' in body && body.service === 'desktop-mcp'
         && 'protocol' in body && body.protocol === 1;
       if (matches) return true;

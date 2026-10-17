@@ -1,14 +1,63 @@
 {
   "name": "@lnwjud/capabilities",
-  "version": "5.7.3",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
   "exports": {
+    "./gotzji-browser-provider-policy": {
+      "types": "./src/gotzji-browser-provider-policy.ts",
+      "import": {
+        "development": "./src/gotzji-browser-provider-policy.ts",
+        "default": "./dist/gotzji-browser-provider-policy.js"
+      }
+    },
+    "./gotzji-browser-provider-cdp": {
+      "types": "./src/gotzji-browser-provider-cdp.ts",
+      "import": {
+        "development": "./src/gotzji-browser-provider-cdp.ts",
+        "default": "./dist/gotzji-browser-provider-cdp.js"
+      }
+    },
+    "./gotzji-browser-provider-session": {
+      "types": "./src/gotzji-browser-provider-session.ts",
+      "import": {
+        "development": "./src/gotzji-browser-provider-session.ts",
+        "default": "./dist/gotzji-browser-provider-session.js"
+      }
+    },
     ".": {
       "types": "./src/index.ts",
       "import": {
         "development": "./src/index.ts",
         "default": "./dist/index.js"
+      }
+    },
+    "./gotzji-native-adapter": {
+      "types": "./src/gotzji-native-adapter.ts",
+      "import": {
+        "development": "./src/gotzji-native-adapter.ts",
+        "default": "./dist/gotzji-native-adapter.js"
+      }
+    },
+    "./gotzji-native-contract": {
+      "types": "./src/gotzji-native-contract.ts",
+      "import": {
+        "development": "./src/gotzji-native-contract.ts",
+        "default": "./dist/gotzji-native-contract.js"
+      }
+    },
+    "./gotzji-native-browser": {
+      "types": "./src/gotzji-native-browser.ts",
+      "import": {
+        "development": "./src/gotzji-native-browser.ts",
+        "default": "./dist/gotzji-native-browser.js"
+      }
+    },
+    "./gotzji-cad-session-adapter": {
+      "types": "./src/gotzji-cad-session-adapter.ts",
+      "import": {
+        "development": "./src/gotzji-cad-session-adapter.ts",
+        "default": "./dist/gotzji-cad-session-adapter.js"
       }
     }
   },
