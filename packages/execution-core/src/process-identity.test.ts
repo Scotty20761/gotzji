@@ -1,12 +1,125 @@
 import { describe, expect, it, vi } from 'vitest';
-import { spawn, type ChildProcess } from 'node:child_process';
-import { EventEmitter } from 'node:events';
+import { execFile, spawn, type ChildProcess } from 'node:child_process';
+import { EventEmitter, once } from 'node:events';
+import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { PassThrough } from 'node:stream';
+import { promisify } from 'node:util';
 import { createWindowsPowerShellSession, createWindowsProcessIdentityReader, windowsPowerShellSession, type ProcessIdentity, type WindowsPowerShellSession, type WindowsProcessIdentityExecutor } from './process-identity.mjs';
 
 const identity = (birth: string): ProcessIdentity => ({ birth, executable: 'c:\\node.exe' });
 const paths = { programFiles: 'C:\\Program Files', systemRoot: 'C:\\Windows', currentPid: 100 };
+const exec = promisify(execFile);
+const within = async <T>(promise: Promise<T>, milliseconds: number): Promise<T> => {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try { return await Promise.race([promise, new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new Error('owned fixture deadline')), milliseconds); })]); }
+  finally { clearTimeout(timer); }
+};
+
+const windowsPrograms = process.platform === 'win32' ? [...new Set([
+  path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
+  path.join(process.env.ProgramFiles ?? 'C:\\Program Files', 'PowerShell', '7', 'pwsh.exe'),
+  ...(process.env.PATH ?? '').split(path.delimiter).map((directory) => path.join(directory, 'pwsh.exe')),
+].filter((program) => existsSync(program)))] : [];
+
+/** Own every real child and wait for its close event even when an assertion fails. */
+async function withNodeIdentity(action: (child: ChildProcess, pid: number, own: (start: () => ChildProcess) => ChildProcess, onCleanup: (close: () => void) => void) => Promise<void>, budgetMs = 29_000): Promise<void> {
+  const deadline = performance.now() + budgetMs;
+  const remaining = (reserve: number): number => Math.max(1, deadline - performance.now() - reserve);
+  const owned: { child?: ChildProcess; closed?: Promise<unknown[]> }[] = [];
+  const closeHooks: (() => void)[] = [];
+  let closing = false;
+  const own = (start: () => ChildProcess): ChildProcess => {
+    if (closing) throw new Error('owned fixture is closing');
+    const item: typeof owned[number] = {}; owned.push(item);
+    const child = start(); item.child = child; item.closed = new Promise((resolve) => child.once('close', (...result) => resolve(result)));
+    // Observe startup errors immediately, including an executable that never gets a PID.
+    child.on('error', () => undefined);
+    return child;
+  };
+  let failure: unknown; const cleanupFailures: unknown[] = [];
+  const child = own(() => spawn(process.execPath, ['-e', 'process.stdin.resume(); process.stdin.on("end", () => process.exit(259)); process.stdout.write("ready\\n")'], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] }));
+  try {
+    await within(once(child.stdout!, 'data'), Math.min(5000, remaining(4000)));
+    expect(child.pid).toBeGreaterThan(0);
+    await within(action(child, child.pid!, own, (close) => { closeHooks.push(close); }), Math.min(20_000, remaining(4000)));
+  } catch (error) { failure = error;
+  } finally {
+    closing = true;
+    for (const close of closeHooks) { try { close(); } catch (error) { cleanupFailures.push(error); } }
+    try { child.stdin?.end(); } catch (error) { cleanupFailures.push(error); }
+    await Promise.all(owned.map(async (item) => {
+      if (!item.child || !item.closed) return;
+      try {
+        let result: unknown[];
+        try { result = await within(item.closed, 2000); }
+        catch (error) { item.child.kill(); result = await within(item.closed, 2000); cleanupFailures.push(error); }
+        const [code, signal] = result;
+        expect(code).toBe(item.child === child ? 259 : 0); expect(signal).toBeNull();
+        if (item.child.pid) expect(() => process.kill(item.child!.pid!, 0)).toThrow();
+        console.info(JSON.stringify({ resource: item.child === child ? 'owned-node' : 'owned-powershell', pid: item.child.pid, exitCode: code, signal, closed: true, absent: true }));
+      } catch (error) { cleanupFailures.push(error); }
+    }));
+  }
+  if (cleanupFailures.length) throw new AggregateError(failure ? [failure, ...cleanupFailures] : cleanupFailures, 'owned fixture failed with cleanup diagnostics');
+  if (failure) throw failure;
+}
+
+describe.each(windowsPrograms)('actual Windows identity script: %s', (program) => {
+  it.each(['one-shot', 'session'] as const)('ignores Get-Process.Path startup DLL in the actual %s script', async (mode) => {
+    await withNodeIdentity(async (child, pid, own, onCleanup) => {
+      const runOwned = async (args: readonly string[], options: object): Promise<{ stdout: string }> => {
+        let running!: ReturnType<typeof exec>;
+        own(() => { running = exec(program, [...args], options); return running.child; });
+        return { stdout: (await running).stdout.toString() };
+      };
+      // Retain actual HasExited/StartTime for this owned Node; only the faulty Path observation changes.
+      const wrapper = `function Get-Process {[CmdletBinding()]param([int]$Id);$p=Microsoft.PowerShell.Management\\Get-Process -Id $Id -ErrorAction Stop;[pscustomobject]@{HasExited=$p.HasExited;StartTime=$p.StartTime;Path='C:\\Windows\\System32\\ntdll.dll'}};`;
+      const session = createWindowsPowerShellSession({ program, spawn: (command, args, options) => {
+        const actual = [...args]; actual[actual.length - 1] = wrapper + actual[actual.length - 1];
+        return own(() => spawn(command, actual, options));
+      } });
+      onCleanup(() => session.close());
+      const read = createWindowsProcessIdentityReader({ currentPid: process.pid, exists: () => false, session, ...(mode === 'one-shot' ? { run: async (_command: string, args: readonly string[], options: object): Promise<{ stdout: string }> => {
+        const actual = [...args]; actual[actual.length - 1] = wrapper + actual[actual.length - 1];
+        return runOwned(actual, options);
+      } } : {}) });
+      try {
+        const first = (await read([pid]))[pid];
+        expect(first).toMatchObject({ executable: process.execPath.toLowerCase() });
+        expect(first).toMatchObject({ birth: expect.stringMatching(/^\d+$/u) });
+        const expectedBirth = (await runOwned(['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', `(Microsoft.PowerShell.Management\\Get-Process -Id ${pid} -ErrorAction Stop).StartTime.ToUniversalTime().Ticks.ToString([Globalization.CultureInfo]::InvariantCulture)`], { windowsHide: true, timeout: 5000, maxBuffer: 65536 })).stdout.trim();
+        expect(first).toMatchObject({ birth: expectedBirth });
+        expect((await read([pid]))[pid]).toEqual(first);
+        console.info(JSON.stringify({ resource: 'owned-node-identity', mode, program, pid, identity: first }));
+        const closed = once(child, 'close'); child.stdin!.end(); await within(closed, 2000);
+        expect((await read([pid]))[pid]).toBeNull();
+      } finally { session.close(); }
+    });
+  }, 30_000);
+
+  it.each(['time', 'image', 'pre-wait', 'post-wait'] as const)('keeps a real nonsignaled handle unknown on diagnostic %s failure and closes it', async (failure) => {
+    await withNodeIdentity(async (_child, pid, own) => {
+      let script = '';
+      await createWindowsProcessIdentityReader({ exists: () => false, run: async (_command, args) => { script = args.at(-1)!; return { stdout: '{}' }; } })([pid]);
+      // Diagnostic copies use actual read-only handles; forced statuses do not qualify native ACL failures.
+      script = script.replace('public static class GotzjiProcessIdentityNative {', 'public static class GotzjiProcessIdentityNative { public static int Opened; public static int Closed; public static uint FailureWait;');
+      script = script.replace('try {\n      uint before', 'Opened++; try {\n      uint before');
+      script = script.replace('finally { CloseHandle(process); }', 'finally { if (CloseHandle(process)) Closed++; }');
+      script = script.replace('return WaitForSingleObject(process, 0) == 0 ? null', 'FailureWait = WaitForSingleObject(process, 0); return FailureWait == 0 ? null');
+      if (failure === 'time') script = script.replace('!GetProcessTimes(process, out created, out exited, out kernel, out user)', '!(GetProcessTimes(process, out created, out exited, out kernel, out user) && false)');
+      else if (failure === 'image') script = script.replace('!QueryFullProcessImageName(process, 0, image, ref length)', '!(QueryFullProcessImageName(process, 0, image, ref length) && false)');
+      else script = script.replace(`uint ${failure === 'pre-wait' ? 'before' : 'after'} = WaitForSingleObject(process, 0);`, `uint ${failure === 'pre-wait' ? 'before' : 'after'} = 0xffffffff;`);
+      script = script.replace('$r|ConvertTo-Json -Compress -Depth 3', '@{result=$r;opened=[GotzjiProcessIdentityNative]::Opened;closed=[GotzjiProcessIdentityNative]::Closed;wait=[GotzjiProcessIdentityNative]::FailureWait}|ConvertTo-Json -Compress -Depth 3');
+      let running!: ReturnType<typeof exec>;
+      own(() => { running = exec(program, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], { windowsHide: true, timeout: 5000, maxBuffer: 65536 }); return running.child; });
+      const result: unknown = JSON.parse((await running).stdout.toString().trim());
+      expect(result).toMatchObject({ result: { [pid]: 'unknown' }, opened: 1, closed: 1 });
+      if (failure === 'time' || failure === 'image') expect(result).toMatchObject({ wait: 258 });
+      console.info(JSON.stringify({ resource: 'native-diagnostic-handle', program, failure, pid, result }));
+    }, 14_000);
+  }, 15_000);
+});
 
 describe('Windows process identity probes', () => {
   it('prefers installed absolute PowerShell 7 and falls back only when it is absent', async () => {
@@ -68,7 +181,7 @@ describe('Windows process identity probes', () => {
 });
 
 
-type Request = { id: number; op: string; pids?: number[]; value?: string };
+type Request = { id: number; op: string; pids?: number[]; value?: string | undefined };
 type Reply = Record<string, unknown> | 'silent' | 'garbage' | 'overflow';
 /** Fake PowerShell processes: JSON identity lines or tab-separated DPAPI lines, answered by `answer`. */
 function fakePowerShell(answer: (request: Request, line: string) => Reply): { spawn: ReturnType<typeof vi.fn>; children: { killed: boolean; ended: boolean; stdout: PassThrough; exit: () => void }[] } {

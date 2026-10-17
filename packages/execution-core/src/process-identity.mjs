@@ -72,7 +72,7 @@ export function createWindowsProcessIdentityReader(options = {}) {
     const key = requested.join(',');
     let query = pending.get(key);
     if (!query) {
-      const script = `${identityLoop(key)};$r|ConvertTo-Json -Compress -Depth 3`;
+      const script = `${WINDOWS_IDENTITY_HELPER}\n${identityLoop(key)};$r|ConvertTo-Json -Compress -Depth 3`;
       query = (async () => {
         const started = performance.now();
         try {
@@ -100,10 +100,43 @@ export function createWindowsProcessIdentityReader(options = {}) {
   };
 }
 
-// Shared by the one-shot executor and the session. An exited process is absent before StartTime/Path: reading the
-// MainModule of a dying process retries for ~0.8 s, and absence here means its exit status is set, as alive() treats it.
+// Image and creation time belong to one handle, never Get-Process.Path's transient startup MainModule.
+// A zero wait proves exit; failures remain unknown. Exit code 259 alone cannot prove that a process is live.
+const WINDOWS_IDENTITY_HELPER = `Add-Type -TypeDefinition @'
+using System;
+using System.Collections;
+using System.Globalization;
+using System.Runtime.InteropServices;
+using System.Text;
+public static class GotzjiProcessIdentityNative {
+  [DllImport("kernel32.dll", SetLastError=true)] static extern IntPtr OpenProcess(uint access, bool inherit, int pid);
+  [DllImport("kernel32.dll", SetLastError=true)] static extern uint WaitForSingleObject(IntPtr process, uint milliseconds);
+  [DllImport("kernel32.dll", SetLastError=true)] static extern bool GetProcessTimes(IntPtr process, out long created, out long exited, out long kernel, out long user);
+  [DllImport("kernel32.dll", EntryPoint="QueryFullProcessImageNameW", ExactSpelling=true, CharSet=CharSet.Unicode, SetLastError=true)] static extern bool QueryFullProcessImageName(IntPtr process, uint flags, StringBuilder name, ref uint size);
+  [DllImport("kernel32.dll", SetLastError=true)] static extern bool CloseHandle(IntPtr handle);
+  static object FailedQuery(IntPtr process) { return WaitForSingleObject(process, 0) == 0 ? null : (object)"unknown"; }
+  public static object Read(int pid) {
+    IntPtr process = OpenProcess(0x1000 | 0x00100000, false, pid);
+    if (process == IntPtr.Zero) return pid > 0 && Marshal.GetLastWin32Error() == 87 ? null : (object)"unknown";
+    try {
+      uint before = WaitForSingleObject(process, 0);
+      if (before == 0) return null;
+      if (before != 258) return "unknown";
+      long created, exited, kernel, user;
+      if (!GetProcessTimes(process, out created, out exited, out kernel, out user)) return FailedQuery(process);
+      uint length = 32768; StringBuilder image = new StringBuilder((int)length);
+      if (!QueryFullProcessImageName(process, 0, image, ref length)) return FailedQuery(process);
+      uint after = WaitForSingleObject(process, 0);
+      if (after == 0) return null;
+      if (after != 258 || length == 0) return "unknown";
+      return new Hashtable { { "birth", DateTime.FromFileTimeUtc(created).Ticks.ToString(CultureInfo.InvariantCulture) }, { "executable", image.ToString().ToLowerInvariant() } };
+    } catch { return FailedQuery(process); }
+    finally { CloseHandle(process); }
+  }
+}
+'@`;
 function identityLoop(source) {
-  return `$r=@{};foreach($v in @(${source})){$n=[int]$v;try{$p=Get-Process -Id $n -ErrorAction Stop;if($p.HasExited){$r[[string]$n]=$null;continue};$r[[string]$n]=@{birth=$p.StartTime.ToUniversalTime().Ticks.ToString();executable=$p.Path.ToLowerInvariant()}}catch{if(Get-Process -Id $n -ErrorAction SilentlyContinue){$r[[string]$n]='unknown'}else{$r[[string]$n]=$null}}}`;
+  return `$r=@{};foreach($v in @(${source})){try{$r[[string]$v]=[GotzjiProcessIdentityNative]::Read([int]$v)}catch{$r[[string]$v]='unknown'}}`;
 }
 // One owned PowerShell per role and program answers fixed requests over its own pipes, so a proof or a protected
 // write no longer pays a cold PowerShell start. It receives data only, never script text, and it ends on stdin EOF,
@@ -111,7 +144,7 @@ function identityLoop(source) {
 // budget, and identity sessions carry no DPAPI code. The marker lets a process census find any session that remains.
 const SESSION_PREAMBLE = ["$null='gotzji-powershell-session'", "$ErrorActionPreference='Stop'", '[Console]::InputEncoding=[Text.UTF8Encoding]::new($false)', '[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)'];
 const SESSION_SCRIPTS = {
-  identity: [...SESSION_PREAMBLE,
+  identity: [...SESSION_PREAMBLE, `${WINDOWS_IDENTITY_HELPER}\n`,
     `while($null -ne ($line=[Console]::In.ReadLine())){$id=$null;try{$q=$line|ConvertFrom-Json;$id=[int64]$q.id;${identityLoop('$q.pids')};$o=@{id=$id;ok=$true;result=$r}}catch{$o=@{id=$id;ok=$false}};[Console]::Out.WriteLine(($o|ConvertTo-Json -Compress -Depth 5));[Console]::Out.Flush()}`].join(';'),
   // Secrets never pass through a cmdlet, where module logging could record them: tab-separated requests, and
   // replies assembled by concatenation ([char]34 is a double quote). A failed System.Security load ends the session.
