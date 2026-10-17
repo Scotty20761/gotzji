@@ -99,11 +99,11 @@ export async function stopWorker(worker: WorkerRow): Promise<boolean> {
   const observed = await observeWorker(worker);
   if (observed === 'absent') return true;
   if (observed === 'unknown') return false;
-  // A refusal the worker answered needs no long wait. An accepted cancel, or one whose answer was lost, still needs
-  // independent exit evidence and gets time to produce it on a slow machine.
-  let patient = true;
-  try { await callWorker(worker, 'cancel'); } catch (error) { patient = !(error instanceof CoreError); }
-  return await awaitStoppedOwnership(worker, { patient });
+  // A typed control refusal still needs independent stop proof, but cannot promise a later receipt.
+  // Accepted cancels and transport losses retain the patient wait for their stop/exit evidence.
+  try { await callWorker(worker, 'cancel'); }
+  catch (error) { if (error instanceof CoreError) return await verifyStoppedWorker(worker); }
+  return await awaitStoppedOwnership(worker, { patient: true });
 }
 /** The signed worker receipt remains the authority; injected observations only support focused stop-proof tests. */
 export async function awaitStoppedOwnership(worker: WorkerRow, dependencies: { alive?: typeof alive; identities?: typeof processIdentities; delay?: () => Promise<void>; patient?: boolean } = {}): Promise<boolean> {

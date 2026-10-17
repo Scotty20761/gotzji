@@ -15,6 +15,25 @@ import { canonicalTemporaryDirectory } from './test-fixtures.js';
 
 interface Fixture { root: string; core: ExecutionCore; credential: string }
 const fixtures: Fixture[] = [];
+let stopCheck: { closing: boolean; pending: Set<Promise<unknown>>; restore?: (() => void) | undefined } | undefined;
+function checkStopOpen(): void { if (stopCheck?.closing) throw new Error('Stop check is closing; retained fixture'); }
+function trackStopCheck<T>(promise: Promise<T>): Promise<T> {
+  const check = stopCheck;
+  check?.pending.add(promise);
+  void promise.then(() => check?.pending.delete(promise), () => check?.pending.delete(promise));
+  return promise;
+}
+async function drainStopCheck(): Promise<void> {
+  const check = stopCheck;
+  if (!check) return;
+  check.closing = true; check.restore?.(); check.restore = undefined;
+  if (!check.pending.size) return;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const drained = await Promise.race([Promise.allSettled([...check.pending]).then(() => true), new Promise<false>((resolve) => { timer = setTimeout(() => resolve(false), process.env.CI ? 15000 : 5000); })]);
+    if (!drained) throw new Error('Stop check still pending; Core and fixture retained');
+  } finally { if (timer) clearTimeout(timer); }
+}
 async function fixture(cancelOutcome?: 'none' | 'unknown', direct = false): Promise<Fixture> {
   const root = await canonicalTemporaryDirectory('gotzji-native-core-');
   const libraryRoot = path.join(root, 'library'); await mkdir(path.join(libraryRoot, 'references'), { recursive: true });
@@ -38,6 +57,8 @@ async function until(f: Fixture, check: () => Promise<boolean>): Promise<void> {
   throw new Error(JSON.stringify(await f.core.list(f.credential)));
 }
 afterEach(async () => {
+  // A timed-out check cannot close SQLite underneath its outstanding public call.
+  await drainStopCheck();
   for (const f of fixtures.splice(0)) {
     const db = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'), { timeout: 5000 }); const workers = db.prepare('SELECT * FROM gotzji_workers').all() as unknown as WorkerRow[]; db.close();
     for (const worker of workers) {
@@ -49,6 +70,7 @@ afterEach(async () => {
       if (!(config.grace.mode === 'test-driver' || (config.grace.mode === 'host-direct' && config.grace.testOnlyProviders === true)) || !config.nativeTestRunner) throw new Error('Unexpected production fixture');
       const observed = await callWorker(worker, 'status'); const ready = signed<{ identity: { birth: string; executable: string } }>(worker, 'ready.json');
       if (!sameProcessIdentity(ready?.identity, (await processIdentities([observed.pid]))[observed.pid])) throw new Error('Fixture root identity changed');
+      if (stopCheck) process.stderr.write(`[native-stop-refusal-cleanup] ${JSON.stringify({ stage: 'identity-proved', pid: observed.pid, identity: ready?.identity })}\n`);
       process.kill(observed.pid);
       let absent = false;
       for (let attempt = 0; attempt < 100; attempt++) {
@@ -56,14 +78,58 @@ afterEach(async () => {
         await new Promise((resolve) => setTimeout(resolve, 20));
       }
       if (!absent) { f.core.close(); throw new Error(`Synthetic worker absence unproved; retained ${f.root}`); }
+      if (stopCheck) process.stderr.write('[native-stop-refusal-cleanup] {"stage":"worker-absent"}\n');
     }
     f.core.close();
     const root = path.resolve(f.root);
     if (path.dirname(root) !== await realpath(os.tmpdir()) || !path.basename(root).startsWith('gotzji-native-core-')) throw new Error('Native cleanup scope denied');
     await rm(root, { recursive: true, force: true });
+    if (stopCheck) process.stderr.write('[native-stop-refusal-cleanup] {"stage":"core-closed-root-removed"}\n');
   }
+  stopCheck = undefined;
 });
 describe('native operations through Grace and the shared Goal (explicit no-model runner)', () => {
+  it('settles a typed stop refusal before the next event turn without a stop receipt', async () => {
+    stopCheck = { closing: false, pending: new Set() };
+    try {
+      const f = await trackStopCheck(fixture('unknown')); checkStopOpen();
+      const first = await trackStopCheck(job(f, { requestId: 'stop-refusal', projectId: 'one', operation: 'excel.range.read', path: 'source.xlsx', sheet: 'Sheet1', range: 'C1' })); checkStopOpen();
+      await trackStopCheck(f.core.resume(f.credential, first)); checkStopOpen();
+      await trackStopCheck(until(f, async () => { try { return await readFile(path.join(f.root, 'native-started'), 'utf8') === 'started'; } catch { return false; } })); checkStopOpen();
+      const db = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'), { timeout: 5000 });
+      let worker: WorkerRow;
+      try { worker = db.prepare('SELECT * FROM gotzji_workers WHERE job_id=?').get(first.jobId) as unknown as WorkerRow; } finally { db.close(); }
+      const ready = signed<{ port: number }>(worker, 'ready.json');
+      expect(ready).toBeDefined(); expect(signed(worker, 'stopped.json')).toBeUndefined();
+      const originalFetch = globalThis.fetch;
+      let settled = false, observed = false;
+      let checkpoint!: (value: { settled: boolean; status: number }) => void;
+      const delivered = new Promise<{ settled: boolean; status: number }>((resolve) => { checkpoint = resolve; });
+      stopCheck.restore = (): void => { globalThis.fetch = originalFetch; };
+      globalThis.fetch = async (input, init): Promise<Response> => {
+        const url = new URL(typeof input === 'string' || input instanceof URL ? input : input.url);
+        const response = await originalFetch(input, init);
+        if (!observed && url.origin === `http://127.0.0.1:${ready?.port}` && url.pathname === '/cancel' && init?.method === 'POST') {
+          observed = true;
+          setImmediate(() => checkpoint({ settled, status: response.status }));
+        }
+        return response;
+      };
+      const stopping = trackStopCheck(stopWorker(worker));
+      void stopping.then(() => { settled = true; }, () => { settled = true; });
+      const atDelivery = await delivered; checkStopOpen();
+      const result = await stopping; checkStopOpen();
+      stopCheck.restore(); stopCheck.restore = undefined;
+      const progress = signed<{ state: string; outcome: string }>(worker, 'native-progress.json');
+      process.stderr.write(`[native-stop-refusal-checkpoint] ${JSON.stringify({ ...atDelivery, result, stoppedPresent: !!signed(worker, 'stopped.json'), progress })}\n`);
+      expect(result).toBe(false);
+      expect(signed(worker, 'stopped.json')).toBeUndefined();
+      expect(progress).toMatchObject({ state: 'uncertain', outcome: 'unknown' });
+      expect(await trackStopCheck(observeWorker(worker))).toBe('running');
+      expect(atDelivery.status).toBe(409);
+      expect(atDelivery.settled).toBe(true);
+    } finally { await drainStopCheck(); }
+  }, 20000);
   it('retries cancellation after a refused stop-receipt write without restarting native work', async () => {
     const f = await fixture('none');
     const first = await job(f, { requestId: 'cancel-retry', projectId: 'one', operation: 'excel.range.read', path: 'source.xlsx', sheet: 'Sheet1', range: 'C1' });
