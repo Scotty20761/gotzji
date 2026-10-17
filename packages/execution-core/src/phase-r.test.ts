@@ -1,15 +1,16 @@
-import { access, rm, mkdir, writeFile, readFile, realpath } from 'node:fs/promises';
+import { access, rm, mkdir, writeFile, readFile, realpath, readdir } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import { ExecutionCore } from './core.js';
-import { alive, verifyStoppedWorker } from './managed-worker.js';
+import { alive, signed, verifyStoppedWorker, WORKER_FILE } from './managed-worker.js';
 import type { WorkerRow } from './store.js';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { createHash, createHmac } from 'node:crypto';
 import { randomBytes } from 'node:crypto';
-import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import childProcess, { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { syncBuiltinESMExports } from 'node:module';
 import { once } from 'node:events';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -20,6 +21,7 @@ import { canonicalTemporaryDirectory } from './test-fixtures.js';
 const BUDGET = process.env.CI ? 3 : 1;
 const fixtures: { root: string; core: ExecutionCore }[] = [];
 afterEach(async () => {
+  vi.restoreAllMocks();syncBuiltinESMExports();
   for (const {root,core} of fixtures.splice(0)) {
     core.close();
     if (!path.resolve(root).startsWith(path.join(await realpath(os.tmpdir()),'gotzji-phase-r-'))) throw new Error('Unexpected fixture root');
@@ -147,22 +149,80 @@ it('recovers an expired completed code worker only after proving the old process
 },10000*BUDGET);
 
 it('replays only the read-only validation path after an expired partial code run is stopped',async()=>{
- let clock=Date.now();const f=await codeFixture(1500,()=>new Date(clock));const p=f.core.prepareCodeChange(f.credential,'expired-partial');const job=await f.core.submit(f.credential,p.preparationId);const binding=f.core.select(f.credential,job.jobId);
- await f.core.resume(f.credential,binding);
- await waitFor(async()=>((await f.core.get(f.credential,binding)).progress?.state==='running'));
- const db=new DatabaseSync(path.join(f.root,'core','core.sqlite'), { timeout: 5000 });let old:WorkerRow;try{old=db.prepare('SELECT * FROM gotzji_workers WHERE job_id=?').get(job.jobId) as unknown as WorkerRow;}finally{db.close();}
- await waitFor(async()=>{try{await access(path.join(old.directory,'grace-runtime.json'));return true;}catch{return false;}});
- clock+=301000;await f.core.tick();
- await waitFor(async()=>{await f.core.tick();return (await f.core.get(f.credential,binding)).status==='completed';});
- const after=new DatabaseSync(path.join(f.root,'core','core.sqlite'), { timeout: 5000 });try{expect(after.prepare('SELECT reason FROM gotzji_worker_history WHERE epoch=?').get(old.epoch)?.reason).toBe('stopped');expect(after.prepare('SELECT epoch FROM gotzji_workers WHERE job_id=?').get(job.jobId)?.epoch).not.toBe(old.epoch);}finally{after.close();}
- expect(await verifyStoppedWorker(old)).toBe(true);
+ const cleanupDeadline=Date.now()+15000*BUDGET-250;
+ let clock=Date.now();const f=await codeFixture(25,()=>new Date(clock));const p=f.core.prepareCodeChange(f.credential,'expired-partial');const job=await f.core.submit(f.credential,p.preparationId);const binding=f.core.select(f.credential,job.jobId);
+ // This owned worker is test instrumentation: the signed validator command and its 25 ms work stay canonical.
+ const gate=path.join(f.root,'validation-gate');await mkdir(gate);
+ const release=path.join(gate,'release'),preload=path.join(gate,'preload.mjs'),runner=path.join(gate,'phase-r-runner.mjs'),workerFile=path.join(gate,'fixture-worker.mjs');
+ const workerUrl=pathToFileURL(WORKER_FILE),validatorUrl=new URL('./phase-r-validator.mjs',import.meta.url);
+ const workerSource=await readFile(workerUrl,'utf8'),runnerSource=await readFile(new URL('./phase-r-runner.mjs',import.meta.url),'utf8');
+ const replaceOnce=(text:string,from:string,to:string):string=>{expect(text.split(from)).toHaveLength(2);return text.replace(from,to);};
+ const runnerCopy=replaceOnce(replaceOnce(runnerSource,"new URL('./phase-r-validator.mjs',import.meta.url)",`new URL(${JSON.stringify(validatorUrl.href)},import.meta.url)`),"child=spawn(process.execPath,args,{windowsHide:true,shell:false,stdio:['ignore','pipe','pipe']});",`child=spawn(process.execPath,args,{env:{...process.env,NODE_OPTIONS:${JSON.stringify('--import='+pathToFileURL(preload).href)}},windowsHide:true,shell:false,stdio:['ignore','pipe','pipe']});`);
+ const imported=new Set<string>();let runnerImports=0;
+ const workerCopy=workerSource.replace(/from '(\.\/[^']+)'/g,(_match:string,relative:string):string=>{expect(imported.has(relative)).toBe(false);imported.add(relative);if(relative==='./phase-r-runner.mjs')runnerImports++;return `from ${JSON.stringify(relative==='./phase-r-runner.mjs'?pathToFileURL(runner).href:new URL(relative,workerUrl).href)}`;});
+ expect(runnerImports).toBe(1);
+ await writeFile(preload,`import { access, writeFile } from 'node:fs/promises';\nimport path from 'node:path';\nconst directory=${JSON.stringify(gate)},release=${JSON.stringify(release)};\nawait writeFile(path.join(directory,'entered-'+process.pid+'.json'),JSON.stringify({pid:process.pid,executable:process.execPath,args:process.argv.slice(1)}),{flag:'wx'});\nfor(;;){try{await access(release);break;}catch(error){if(error.code!=='ENOENT')throw error;}await new Promise(resolve=>setTimeout(resolve,5));}\n`,{flag:'wx'});
+ await writeFile(runner,runnerCopy,{flag:'wx'});await writeFile(workerFile,workerCopy,{flag:'wx'});
+ const originalSpawn=childProcess.spawn,workers=path.join(f.root,'core','workers');let remapped=0;const workerClosures:Promise<void>[]=[];const workerPids:number[]=[];
+ const spy=vi.spyOn(childProcess,'spawn').mockImplementation((...parameters:Parameters<typeof spawn>):ReturnType<typeof spawn>=>{
+  const [command,args,options]=parameters;
+  if(command===process.execPath&&Array.isArray(args)&&args.length===2&&args[0]===WORKER_FILE&&typeof args[1]==='string'){
+   const relative=path.relative(workers,args[1]);
+   if(relative!==''&&!relative.startsWith('..'+path.sep)&&!path.isAbsolute(relative)&&path.basename(relative)==='config.json'){
+    remapped++;const child=originalSpawn(command,[workerFile,args[1]],options);if(child.pid)workerPids.push(child.pid);workerClosures.push(new Promise(resolve=>child.once('close',()=>resolve())));return child;
+   }
+  }
+  return originalSpawn(...parameters);
+ });
+ syncBuiltinESMExports();
+ // A timed-out body must not leave this live fixture in afterEach's unconditional deletion list.
+ const fixtureIndex=fixtures.findIndex(fixture=>fixture.root===f.root);if(fixtureIndex>=0)fixtures.splice(fixtureIndex,1);
+ let firstPid:number|undefined;let old:WorkerRow|undefined;let failure:{error:unknown}|undefined;
+ const gateEntries=async():Promise<{pid:number;executable:string;args:string[]}[]>=>Promise.all((await readdir(gate)).filter(name=>/^entered-\d+\.json$/.test(name)).map(async name=>JSON.parse(await readFile(path.join(gate,name),'utf8')) as {pid:number;executable:string;args:string[]}));
+ try{
+  await f.core.resume(f.credential,binding);
+  await waitFor(async()=>((await f.core.get(f.credential,binding)).progress?.state==='running'));
+  const db=new DatabaseSync(path.join(f.root,'core','core.sqlite'), { timeout: 5000 });try{old=db.prepare('SELECT * FROM gotzji_workers WHERE job_id=?').get(job.jobId) as unknown as WorkerRow;}finally{db.close();}
+  const stoppedWorker=old;
+  await waitFor(async()=>{try{await access(path.join(stoppedWorker.directory,'grace-runtime.json'));return (await gateEntries()).length===1;}catch{return false;}});
+  const [entered]=await gateEntries();expect(entered).toBeDefined();firstPid=entered!.pid;
+  expect(entered!.executable).toBe(process.execPath);expect(entered!.args[0]).toBe(fileURLToPath(validatorUrl));expect(entered!.args[3]).toBe('25');expect(alive(firstPid)).toBe(true);
+  expect(signed(stoppedWorker,'validation.json')).toMatchObject({state:'running',exitCode:null});
+  expect(signed(stoppedWorker,'grace-runtime.json')).toMatchObject({mode:'test-driver',exitCode:0});
+  await expect(access(release)).rejects.toMatchObject({code:'ENOENT'});
+  clock+=301000;await f.core.tick();
+  expect(alive(firstPid)).toBe(false);expect(await verifyStoppedWorker(stoppedWorker)).toBe(true);
+  await expect(access(release)).rejects.toMatchObject({code:'ENOENT'});
+  await writeFile(release,'release',{flag:'wx'});
+  await waitFor(async()=>{await f.core.tick();return (await f.core.get(f.credential,binding)).status==='completed';});
+  const after=new DatabaseSync(path.join(f.root,'core','core.sqlite'), { timeout: 5000 });try{expect(after.prepare('SELECT reason FROM gotzji_worker_history WHERE epoch=?').get(stoppedWorker.epoch)?.reason).toBe('stopped');expect(after.prepare('SELECT epoch FROM gotzji_workers WHERE job_id=?').get(job.jobId)?.epoch).not.toBe(stoppedWorker.epoch);}finally{after.close();}
+  expect(await verifyStoppedWorker(stoppedWorker)).toBe(true);expect(remapped).toBe(2);
+ }catch(error){failure={error};}
+ spy.mockRestore();syncBuiltinESMExports();
+ let cleanupTimer:ReturnType<typeof setTimeout>|undefined;
+ try{
+  const cleanup=(async():Promise<void>=>{
+   await writeFile(release,'release');await f.core.cancel(f.credential,binding);await Promise.all(workerClosures);
+   const entered=await gateEntries();for(const entry of entered)expect(alive(entry.pid)).toBe(false);for(const pid of workerPids)expect(alive(pid)).toBe(false);
+   if(old)expect(await verifyStoppedWorker(old)).toBe(true);
+   console.info('PHASE_R_OWNED_GATE_CLOSED '+JSON.stringify({root:f.root,firstPid,gatePids:entered.map(entry=>entry.pid),workerPids,remapped,workerClosuresDrained:workerClosures.length,workerSourceHash:sha256(workerSource),runnerSourceHash:sha256(runnerSource),oldStopped:old?await verifyStoppedWorker(old):null}));
+  })();
+  await Promise.race([cleanup,new Promise<never>((_resolve,reject)=>{cleanupTimer=setTimeout(()=>reject(new Error('Owned validation gate cleanup exceeded the remaining test budget')),Math.max(0,cleanupDeadline-Date.now()));})]);
+  fixtures.push({root:f.root,core:f.core});
+ }catch(error){
+  // Keep evidence on uncertainty. A timeout bounds waiting; it does not cancel the underlying cleanup.
+  throw failure?new AggregateError([failure.error,error],'Owned validation gate cleanup failed'):error;
+ }finally{if(cleanupTimer)clearTimeout(cleanupTimer);}
+ if(failure)throw failure.error;
 },15000*BUDGET);
 
 it('keeps a real nonzero validator result blocked instead of replaying it as an interruption',async()=>{
  let clock=Date.now();const f=await codeFixture(5000,()=>new Date(clock));const p=f.core.prepareCodeChange(f.credential,'failed-validation');const job=await f.core.submit(f.credential,p.preparationId);const binding=f.core.select(f.credential,job.jobId);
  await f.core.resume(f.credential,binding);
  try{
-  await waitFor(async()=>((await f.core.get(f.credential,binding)).progress?.state==='running'));
+  // The canonical successful command must be terminal before this signed recovery-receipt injection.
+  // Its exit 1 is reproduced separately below; the canonical add+ command itself did not fail.
+  await waitFor(async()=>((await f.core.get(f.credential,binding)).progress?.state==='completed'));
   const verifier=fileURLToPath(new URL('./phase-r-validator.mjs',import.meta.url));const sourceHash=sha256(await readFile(f.registration.sourceFile,'utf8'));const actual=spawnSync(process.execPath,[verifier,f.registration.sourceFile,sourceHash,'0'],{windowsHide:true,encoding:'utf8'});expect(actual.status).toBe(1);expect(actual.stdout).toContain('CODE_ASSERTION_FAILED');
   const db=new DatabaseSync(path.join(f.root,'core','core.sqlite'), { timeout: 5000 });let worker:{directory:string;token:string};try{worker=db.prepare('SELECT directory,token FROM gotzji_workers WHERE job_id=?').get(job.jobId) as unknown as typeof worker;}finally{db.close();}
   const filename=path.join(worker.directory,'validation.json');const envelope=JSON.parse(await readFile(filename,'utf8')) as {body:string;mac:string};const receipt=JSON.parse(envelope.body) as Record<string,unknown>;receipt.state='failed';receipt.exitCode=actual.status;receipt.lastProgressAt=new Date().toISOString();const body=JSON.stringify(receipt);await writeFile(filename,JSON.stringify({body,mac:createHmac('sha256',worker.token).update(body).digest('hex')}));

@@ -1,9 +1,12 @@
-/* global setTimeout */
+/* global setTimeout, clearTimeout */
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createHash, createHmac, randomUUID } from 'node:crypto';
 import { chmod, copyFile, link, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { existsSync } from 'node:fs';
+import { performance } from 'node:perf_hooks';
+import * as processIdentityObserver from './process-identity.mjs';
 import { GotzjiNativeError } from '@lnwjud/capabilities/gotzji-native-contract';
 import { prepareProductNativeOperation, signPreparedNativeOperation, type AuthorizedNativeWorkerConfig, type NativeWorkerBinding } from './product-native.js';
 import { executePreparedNativeOperation, readPreparedNativeState, reconcilePreparedNativeStop } from './product-native-broker.mjs';
@@ -15,6 +18,7 @@ let qualificationRoot = path.resolve(process.env.LOCALAPPDATA ?? process.cwd(), 
 interface OwnedChild { readonly child: ChildProcess; identity?: ProcessIdentity; noProcess?: true }
 const roots: string[] = []; const children: OwnedChild[] = [];
 afterEach(async () => {
+  vi.restoreAllMocks();
   let cleanupProved = true;
   for (const child of children.splice(0)) { try { await stop(child); } catch { cleanupProved = false; } }
   if (!cleanupProved) throw new Error(`Synthetic child absence unproved; retained roots: ${roots.join(', ')}`);
@@ -148,10 +152,71 @@ describe('native process stop evidence', () => {
     expect(readPreparedNativeState(f.config)).toMatchObject({ state: 'uncertain', outcome: 'unknown', stopEvidence: { observed: 'absent' } });
   }, 20_000);
   it('re-reads file effects after a live identity exits and treats an exact PID identity mismatch as absent', async () => {
-    const racing = await fixture(); const owned = await ownedNode(); await journal(racing, [owned.identity!], [owned.child.pid!]);
-    const pending = reconcilePreparedNativeStop(racing.config);
-    await new Promise((resolve) => setTimeout(resolve, 150)); await writeFile(racing.output, 'late provider effect'); await stop(owned); children.splice(children.indexOf(owned), 1);
-    await expect(pending).resolves.toMatchObject({ outcome: 'unknown', stopEvidence: { observed: 'absent' }, effectEvidence: { source: 'unchanged', output: 'present' } });
+    const deadline = performance.now() + 20_000;
+    const racing = await fixture();
+    // Preserve this exact fixture until both the child and its reconciliation are proved settled.
+    roots.splice(roots.indexOf(racing.root), 1);
+    let owned: OwnedChild | undefined;
+    let pending: ReturnType<typeof reconcilePreparedNativeStop> | undefined;
+    let releaseLive = (): void => {};
+    let restoreObserver = (): void => {};
+    let observationTimer: ReturnType<typeof setTimeout> | undefined;
+    let cleanupTimer: ReturnType<typeof setTimeout> | undefined;
+    let failure: { error: unknown } | undefined;
+    try {
+      const child = await ownedNode(); owned = child;
+      await journal(racing, [child.identity!], [child.child.pid!]);
+      const pid = child.child.pid!;
+      const readActual = processIdentityObserver.processIdentities;
+      let initialObservation: Record<string, unknown> | undefined;
+      let reported = false;
+      let reportFirst!: (matching: boolean) => void;
+      const liveDelivery = new Promise<void>((resolve) => { releaseLive = resolve; });
+      const firstProbe = new Promise<boolean>((resolve) => { reportFirst = resolve; });
+      const diagnostic = (): string => JSON.stringify({ initialObservation, exitCode: child.child.exitCode, signalCode: child.child.signalCode, outputExistsNow: existsSync(racing.output) });
+      const observer = vi.spyOn(processIdentityObserver, 'processIdentities').mockImplementation(async (values) => {
+        const observed = await readActual(values);
+        if (reported || values.length !== 1 || values[0] !== pid) return observed;
+        reported = true;
+        const actual = observed[pid], matching = sameProcessIdentity(child.identity, actual);
+        initialObservation = { at: performance.now(), pid, expected: child.identity, actual: actual === undefined ? 'missing-key' : actual,
+          exitCode: child.child.exitCode, signalCode: child.child.signalCode, output: racing.output,
+          preparedOutput: 'outputPath' in racing.prepared.native.input ? racing.prepared.native.input.outputPath : null, outputExists: existsSync(racing.output) };
+        reportFirst(matching);
+        if (matching) await liveDelivery;
+        return observed;
+      });
+      restoreObserver = (): void => { observer.mockRestore(); };
+      const reconciliation = reconcilePreparedNativeStop(racing.config); pending = reconciliation;
+      void reconciliation.catch(() => undefined);
+      const firstMatching = await Promise.race([firstProbe, reconciliation.then((result) => {
+        throw new Error(`Reconciliation completed before the actual live boundary: ${JSON.stringify(result)}; ${diagnostic()}`);
+      }), new Promise<never>((_resolve, reject) => {
+        observationTimer = setTimeout(() => reject(new Error(`Actual live boundary unproved: ${diagnostic()}`)), Math.max(1, deadline - performance.now() - 500));
+      })]);
+      if (observationTimer) clearTimeout(observationTimer);
+      expect(firstMatching, diagnostic()).toBe(true);
+      expect(initialObservation?.outputExists, diagnostic()).toBe(false);
+      await writeFile(racing.output, 'late provider effect');
+      await stop(child);
+      releaseLive();
+      await expect(reconciliation).resolves.toMatchObject({ outcome: 'unknown', stopEvidence: { observed: 'absent' }, effectEvidence: { source: 'unchanged', output: 'present' } });
+    } catch (error) { failure = { error }; }
+    releaseLive(); restoreObserver(); if (observationTimer) clearTimeout(observationTimer);
+    try {
+      const cleanup = (async (): Promise<void> => {
+        if (owned) { await stop(owned); const index = children.indexOf(owned); if (index >= 0) children.splice(index, 1); }
+        if (pending) await pending.catch(() => undefined);
+      })();
+      await Promise.race([cleanup, new Promise<never>((_resolve, reject) => {
+        cleanupTimer = setTimeout(() => reject(new Error(`Owned native observation cleanup unproved; retained root: ${racing.root}`)), Math.max(1, deadline - performance.now() - 250));
+      })]);
+    } catch (error) {
+      if (failure) throw new AggregateError([failure.error, error], 'Owned native observation failed and cleanup is unproved');
+      throw error;
+    } finally { if (cleanupTimer) clearTimeout(cleanupTimer); }
+    if (failure) throw failure.error;
+    roots.push(racing.root);
 
     const mismatch = await fixture(); const own = (await processIdentities([process.pid]))[process.pid];
     if (!own || own === 'unknown') throw new Error('Current process identity unavailable');
