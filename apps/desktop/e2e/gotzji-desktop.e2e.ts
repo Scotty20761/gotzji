@@ -17,6 +17,7 @@ import { electronExecutablePath, terminateProcessTree } from './electron-runtime
 import { assertChromeRootsPreserved, independentChromeRoots, ownedChromeProcesses } from './gotzji-browser-runtime.js';
 import { readProductConfiguration, testOnlyProductSecretProtector } from '../../../packages/execution-core/src/product-host.js';
 import { startGotzjiOwnedBrowser, type GotzjiOwnedBrowserDriver } from '../../../packages/capabilities/src/gotzji-browser-provider-session.js';
+import { ownedRootRemovalEvidence } from './owned-fixture-cleanup.js';
 
 const desktopRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const mainEntry = path.join(desktopRoot, 'dist', 'main', 'main.js');
@@ -187,11 +188,15 @@ const test = base.extend<{ gotzji: GovernedFixture }>({
     }
     const resourcesAbsent = uiAbsent && hostAbsent && workersAbsent && launcherAbsent && databaseClosed && additionalResourcesAbsent;
     if (!resourcesAbsent) failures.push(new Error(`Owned fixture processes unproved; retained ${dataRoot}, ${roots.join(', ')}`));
+    let lastRootRemovalError: unknown;
     const cleanup = await Promise.allSettled([
       dataRootVerified && resourcesAbsent ? expect.poll(async () => {
         try { await rm(dataRoot, { recursive: true, force: true }); return true; }
-        catch { return false; }
-      }, { timeout: 10_000, intervals: [50, 100, 250] }).toBe(true) : Promise.reject(new Error('Unverified data-root cleanup refused')),
+        catch (error) { lastRootRemovalError = error; return false; }
+      }, { timeout: 10_000, intervals: [50, 100, 250] }).toBe(true).catch(async (cause: unknown): Promise<never> => {
+        const evidence = await ownedRootRemovalEvidence(dataRoot, lastRootRemovalError);
+        throw new Error(`Owned data-root removal failed: ${JSON.stringify(evidence)}`, { cause });
+      }) : Promise.reject(new Error('Unverified data-root cleanup refused')),
       ...(resourcesAbsent ? roots.map((root) => rm(root, { recursive: true, force: true })) : []),
       ...(resourcesAbsent ? rendererFiles.map((file) => rm(file, { force: true })) : []),
     ]);

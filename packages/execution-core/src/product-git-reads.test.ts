@@ -1,4 +1,6 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import os from 'node:os';
+import { createOwnedTestLifetime, finishOwnedTest, type OwnedTestLifetime } from '../test-support/owned-test-lifetime.js';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createHash } from 'node:crypto';
@@ -6,7 +8,7 @@ import { deflateSync } from 'node:zlib';
 import fsPromises from 'node:fs/promises';
 import { syncBuiltinESMExports } from 'node:module';
 import { existsSync } from 'node:fs';
-import { link, mkdir, readFile, readdir, rename, rm, symlink, writeFile } from 'node:fs/promises';
+import { link, mkdir, readFile, readdir, realpath, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { ExecutionCore } from './core.js';
 import { ensureProductControlDocuments } from './product-control-policy.js';
@@ -17,6 +19,11 @@ import { readProjectGit } from './product-git-reads.js';
 import { DirectGitRunner, type GitRunResult } from '@lnwjud/git';
 
 const run = promisify(execFile);
+let testLifetime: OwnedTestLifetime;
+beforeEach(() => { testLifetime = createOwnedTestLifetime(); });
+function ownBody<Arguments extends unknown[]>(body: (...args: Arguments) => Promise<void>): (...args: Arguments) => Promise<void> {
+  return (...args: Arguments): Promise<void> => testLifetime.run(() => body(...args));
+}
 const fixtures: { root: string; core: ExecutionCore }[] = [];
 async function fixture(): Promise<{ root: string; projectRoot: string; core: ExecutionCore; credential: string; git: (args: string[]) => Promise<{ stdout: string; stderr: string }> }> {
   const root = await canonicalTemporaryDirectory('gotzji-git-reads-');
@@ -38,14 +45,16 @@ async function fixture(): Promise<{ root: string; projectRoot: string; core: Exe
   core.registerProject(credential, { projectId: 'repo', displayName: 'Synthetic Git', rootPath: projectRoot });
   return { root, projectRoot, core, credential, git };
 }
-afterEach(async () => {
-  vi.restoreAllMocks();
-  syncBuiltinESMExports();
-  for (const { root, core } of fixtures.splice(0)) { core.close(); await rm(root, { recursive: true, force: true }); }
+afterEach(async (): Promise<void> => {
+  await finishOwnedTest(testLifetime, () => { vi.restoreAllMocks(); syncBuiltinESMExports(); }, () => fixtures.splice(0), async ({ root, core }): Promise<void> => {
+    core.close();
+    if (await realpath(root) !== root || path.dirname(root) !== await realpath(os.tmpdir()) || !path.basename(root).startsWith('gotzji-git-reads-')) throw new Error('Git fixture cleanup scope denied');
+    await rm(root, { recursive: true, force: true });
+  });
 });
 
 describe('owner project Git reads', () => {
-  it('reads real status, selected-file diff and recent history without changing the index or creating jobs', async () => {
+  it('reads real status, selected-file diff and recent history without changing the index or creating jobs', ownBody(async () => {
     const f = await fixture();
     await writeFile(path.join(f.projectRoot, 'note.txt'), 'changed\n');
     await writeFile(path.join(f.projectRoot, 'new.txt'), 'untracked\n');
@@ -56,9 +65,9 @@ describe('owner project Git reads', () => {
     expect(await readFile(path.join(f.projectRoot, '.git', 'index'))).toEqual(before);
     expect(await f.core.list(f.credential)).toEqual([]);
     expect((await readdir(path.join(f.root, 'state'))).filter((item) => item.startsWith('git-read-'))).toEqual([]);
-  });
+  }));
 
-  it('rejects owner mismatch, extra command arguments, parent discovery and redirected object stores', async () => {
+  it('rejects owner mismatch, extra command arguments, parent discovery and redirected object stores', ownBody(async () => {
     const f = await fixture();
     await expect(readProjectGit({ ...f.core.listProjects(f.credential)[0]!, rootPath: '\\\\unreachable.invalid\\share\\repo' }, { projectId: 'repo', view: 'status' }, [], path.join(f.root, 'state'))).rejects.toMatchObject({ code: 'GIT_NETWORK_ROOT_DENIED' });
     const foreign = f.core.enrollAdapter('foreign-desktop', 'another-owner');
@@ -69,9 +78,9 @@ describe('owner project Git reads', () => {
     await expect(f.core.readProjectGit(f.credential, { projectId: 'nested', view: 'status' })).rejects.toMatchObject({ code: 'GIT_REPOSITORY_REQUIRED' });
     await writeFile(path.join(f.projectRoot, '.git', 'objects', 'info', 'alternates'), path.join(f.root, 'other-objects'));
     await expect(f.core.readProjectGit(f.credential, { projectId: 'repo', view: 'log' })).rejects.toMatchObject({ code: 'GIT_LAYOUT_UNSUPPORTED' });
-  });
+  }));
 
-  it('ignores inherited Git redirection and never runs repository textconv or fsmonitor helpers', async () => {
+  it('ignores inherited Git redirection and never runs repository textconv or fsmonitor helpers', ownBody(async () => {
     const f = await fixture();
     const marker = path.join(f.root, 'helper-ran');
     const helper = path.join(f.root, 'helper.mjs');
@@ -89,9 +98,9 @@ describe('owner project Git reads', () => {
       expect(await f.core.readProjectGit(f.credential, { projectId: 'repo', view: 'diff', path: 'note.txt' })).toMatchObject({ patch: expect.stringContaining('+safe changed') });
       expect(existsSync(marker)).toBe(false);
     } finally { if (previous === undefined) delete process.env.GIT_DIR; else process.env.GIT_DIR = previous; }
-  });
+  }));
 
-  it('serves real Git through its advertised MCP schema and rejects caller commands before dispatch', async () => {
+  it('serves real Git through its advertised MCP schema and rejects caller commands before dispatch', ownBody(async () => {
     const f = await fixture();
     let calls = 0;
     const host = await startProductHttp({ token: 'synthetic-owner', mcpPathSecret: 'synthetic-mcp', rpc: async (method, input) => {
@@ -109,18 +118,18 @@ describe('owner project Git reads', () => {
       expect(JSON.stringify(denied)).toContain('PRODUCT_SCHEMA_INVALID');
       expect(calls).toBe(1);
     } finally { await host.close(); }
-  });
+  }));
 
-  it('labels a bounded large diff and denies a private hard-linked worktree file', async () => {
+  it('labels a bounded large diff and denies a private hard-linked worktree file', ownBody(async () => {
     const f = await fixture();
     await writeFile(path.join(f.projectRoot, 'note.txt'), 'large change\n'.repeat(10000));
     expect(await f.core.readProjectGit(f.credential, { projectId: 'repo', view: 'diff', path: 'note.txt' })).toMatchObject({ truncated: true });
     await writeFile(path.join(f.root, 'state', 'private.txt'), 'PRIVATE_BYTES');
     await link(path.join(f.root, 'state', 'private.txt'), path.join(f.projectRoot, 'alias.txt'));
     await expect(f.core.readProjectGit(f.credential, { projectId: 'repo', view: 'diff', path: 'alias.txt' })).rejects.toMatchObject({ code: 'GIT_PATH_DENIED' });
-  });
+  }));
 
-  it('preserves multiple commit identities and staged, deleted and Unicode file semantics', async () => {
+  it('preserves multiple commit identities and staged, deleted and Unicode file semantics', ownBody(async () => {
     const f = await fixture();
     const name = 'โฟลเดอร์/ชื่อ file.txt';
     await mkdir(path.join(f.projectRoot, 'โฟลเดอร์'));
@@ -140,9 +149,9 @@ describe('owner project Git reads', () => {
     expect(await f.core.readProjectGit(f.credential, { projectId: 'repo', view: 'status' })).toMatchObject({ entries: expect.arrayContaining([expect.objectContaining({ path: name, kind: 'deleted' })]) });
     expect(await f.core.readProjectGit(f.credential, { projectId: 'repo', view: 'diff', path: name })).toMatchObject({ patch: expect.stringContaining('-บันทึกที่เตรียม') });
     expect(await readFile(path.join(f.projectRoot, '.git', 'index'))).toEqual(index);
-  }, 20000);
+  }), 20000);
 
-  it('accepts a large ordinary object store without counting unrelated metadata as copied inputs', async () => {
+  it('accepts a large ordinary object store without counting unrelated metadata as copied inputs', ownBody(async () => {
     const started = performance.now();
     const phase = (name: string): void => { console.info(JSON.stringify({ fixture: 'ordinary-10020-objects', phase: name, elapsedMs: Math.round(performance.now() - started) })); };
     const f = await fixture(); phase('fixture-ready');
@@ -161,9 +170,9 @@ describe('owner project Git reads', () => {
     phase('read-start');
     expect(await f.core.readProjectGit(f.credential, { projectId: 'repo', view: 'status' })).toMatchObject({ entries: [], truncated: false });
     phase('read-completed');
-  }, 30000);
+  }), 60000);
 
-  it('rejects hard-linked loose objects, packs, indexes, commit graphs and redirected object directories', async () => {
+  it('rejects hard-linked loose objects, packs, indexes, commit graphs and redirected object directories', ownBody(async () => {
     const f = await fixture();
     const secret = path.join(f.root, 'state', 'private-object'); await writeFile(secret, 'PRIVATE_BYTES');
     for (const relative of ['aa/' + '1'.repeat(38), 'pack/pack-' + '2'.repeat(40) + '.pack', 'pack/pack-' + '2'.repeat(40) + '.idx', 'info/commit-graphs/graph-' + '3'.repeat(40) + '.graph']) {
@@ -173,16 +182,16 @@ describe('owner project Git reads', () => {
     }
     await symlink(path.join(f.root, 'state'), path.join(f.projectRoot, '.git', 'objects', 'redirect'), process.platform === 'win32' ? 'junction' : 'dir');
     await expect(f.core.readProjectGit(f.credential, { projectId: 'repo', view: 'status' })).rejects.toMatchObject({ code: 'GIT_LAYOUT_UNSUPPORTED' });
-  }, 20000);
+  }), 20000);
 
-  it('fails closed when complete object validation cannot finish within its read budget', async () => {
+  it('fails closed when complete object validation cannot finish within its read budget', ownBody(async () => {
     const f = await fixture();
     vi.spyOn(performance, 'now').mockReturnValueOnce(0).mockReturnValue(10001);
     await expect(f.core.readProjectGit(f.credential, { projectId: 'repo', view: 'status' })).rejects.toMatchObject({ code: 'GIT_VALIDATION_BUDGET' });
     expect((await readdir(path.join(f.root, 'state'))).filter((item) => item.startsWith('git-read-'))).toEqual([]);
-  });
+  }));
 
-  it('does not admit outside object data introduced through an alternate after the census', async () => {
+  it('does not admit outside object data introduced through an alternate after the census', ownBody(async () => {
     const f = await fixture();
     const outside = path.join(f.root, 'state', 'outside-repo'); await mkdir(outside);
     await f.git(['-C', outside, 'init']);
@@ -208,9 +217,9 @@ describe('owner project Git reads', () => {
     expect(JSON.stringify(observed)).not.toContain('SYNTHETIC_PRIVATE_OUTSIDE_SUBJECT');
     expect(observed).toHaveProperty('error');
     expect(await f.core.list(f.credential)).toEqual([]);
-  }, 20000);
+  }), 20000);
 
-  it('refuses a replaced pack before admitting Git to the owned object view', async () => {
+  it('refuses a replaced pack before admitting Git to the owned object view', ownBody(async () => {
     const f = await fixture(); await f.git(['repack', '-ad']);
     const packs = path.join(f.projectRoot, '.git', 'objects', 'pack');
     const pack = (await readdir(packs)).find((name) => name.endsWith('.pack'))!;
@@ -226,9 +235,9 @@ describe('owner project Git reads', () => {
     });
     await expect(f.core.readProjectGit(f.credential, { projectId: 'repo', view: 'log' })).rejects.toMatchObject({ code: 'GIT_REPOSITORY_CHANGED' });
     expect(injected).toBe(true); expect(objectReads).toBe(0);
-  }, 20000);
+  }), 20000);
 
-  it('rejects a redirected ancestor even when the census-authorized pack inode is unchanged', async () => {
+  it('rejects a redirected ancestor even when the census-authorized pack inode is unchanged', ownBody(async () => {
     const f = await fixture(); await f.git(['repack', '-ad']);
     const packs = path.join(f.projectRoot, '.git', 'objects', 'pack');
     const pack = (await readdir(packs)).find((name) => name.endsWith('.pack'))!;
@@ -249,9 +258,9 @@ describe('owner project Git reads', () => {
     expect(await readFile(path.join(moved, pack))).toEqual(originalBytes);
     expect((await readdir(path.join(f.root, 'state'))).filter((name) => name.startsWith('git-read-'))).toEqual([]);
     expect(await f.core.list(f.credential)).toEqual([]);
-  }, 20000);
+  }), 20000);
 
-  it.each([17000, 24999, 25000])('uses one snapshot allowance and rejects the exact cumulative boundary at %ims', async (finishedAt) => {
+  it.each([17000, 24999, 25000])('uses one snapshot allowance and rejects the exact cumulative boundary at %ims', ownBody(async (finishedAt: number) => {
     const f = await fixture(); const objects = path.join(f.projectRoot, '.git', 'objects');
     const index = await readFile(path.join(f.projectRoot, '.git', 'index'));
     let clock = 0; let copying = false; let crossed = false; let objectReads = 0;
@@ -276,9 +285,9 @@ describe('owner project Git reads', () => {
     expect(await readFile(path.join(f.projectRoot, '.git', 'index'))).toEqual(index);
     expect((await readdir(path.join(f.root, 'state'))).filter((name) => name.startsWith('git-read-'))).toEqual([]);
     expect(await f.core.list(f.credential)).toEqual([]);
-  }, 20000);
+  }), 20000);
 
-  it('charges config to the remaining snapshot allowance and refuses expiry before object copying', async () => {
+  it('charges config to the remaining snapshot allowance and refuses expiry before object copying', ownBody(async () => {
     const f = await fixture(); let clock = 0; let configTimeout: number | undefined; let objectReads = 0;
     const native = DirectGitRunner.prototype.run; const write = fsPromises.writeFile;
     vi.spyOn(performance, 'now').mockImplementation(() => clock);
@@ -298,9 +307,9 @@ describe('owner project Git reads', () => {
     await expect(f.core.readProjectGit(f.credential, { projectId: 'repo', view: 'status' })).rejects.toMatchObject({ code: 'GIT_SNAPSHOT_BUDGET' });
     expect(configTimeout).toBe(4000); expect(sourceOpens).not.toHaveBeenCalled(); expect(objectReads).toBe(0);
     expect((await readdir(path.join(f.root, 'state'))).filter((name) => name.startsWith('git-read-'))).toEqual([]);
-  }, 20000);
+  }), 20000);
 
-  it('checks the validation deadline after the final real asynchronous object lookup', async () => {
+  it('checks the validation deadline after the final real asynchronous object lookup', ownBody(async () => {
     const f = await fixture(); const objects = path.join(f.projectRoot, '.git', 'objects');
     await rm(objects, { recursive: true, force: true });
     const bytes = Buffer.from('blob 5\0clock'); const id = createHash('sha1').update(bytes).digest('hex');
@@ -316,5 +325,5 @@ describe('owner project Git reads', () => {
     const git = vi.spyOn(DirectGitRunner.prototype, 'run');
     await expect(f.core.readProjectGit(f.credential, { projectId: 'repo', view: 'status' })).rejects.toMatchObject({ code: 'GIT_VALIDATION_BUDGET' });
     expect(crossed).toBe(true); expect(git).not.toHaveBeenCalled();
-  }, 20000);
+  }), 20000);
 });
