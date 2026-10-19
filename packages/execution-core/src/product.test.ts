@@ -3,7 +3,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { createOwnedTestLifetime, finishOwnedTest, type OwnedTestLifetime } from '../test-support/owned-test-lifetime.js';
 import { ExecutionCore } from './core.js';
 import { hash, type WorkerRow } from './store.js';
 import { alive, stopWorker, callWorker, signed, observeWorker } from './managed-worker.js';
@@ -13,10 +14,15 @@ import { filesystem } from './product-projects.js';
 import { canonicalTemporaryDirectory } from './test-fixtures.js';
 const { productBrokerCall } = await import('./product-broker.mjs');
 const { childEnvironment, sanitizedStream } = await import('./product-security.mjs');
-const { createTestFixtureLifecycle, waitForFixture } = await import('./test-fixture-lifecycle.mjs');
+const { waitForFixture } = await import('./test-fixture-lifecycle.mjs');
 
 interface FixtureLifecycle { run<T>(operation: (signal: AbortSignal) => Promise<T>): Promise<T>; close(): Promise<void> }
 interface Fixture { root: string; core: ExecutionCore; credential: string; bindings: TaskBinding[]; profile: ProductGraceRegistration; lifecycle: FixtureLifecycle }
+let testLifetime: OwnedTestLifetime;
+beforeEach(() => { testLifetime = createOwnedTestLifetime(); });
+function ownBody(body: () => Promise<void>): () => Promise<void> { return (): Promise<void> => testLifetime.run(body); }
+// Each possible sequential worker epoch can use37s readiness+3s authenticated status; retain20s for setup/effect/assertions.
+function productTestTimeout(workerEpochs: number): number { return workerEpochs * 40_000 + 20_000; }
 const fixtures: Fixture[] = [];
 async function fixture(options: { now?: () => Date; quotaReset?: number; delayedProductMs?: number } = {}): Promise<Fixture> {
   const root = await canonicalTemporaryDirectory('gotzji-product-');
@@ -36,7 +42,7 @@ async function fixture(options: { now?: () => Date; quotaReset?: number; delayed
   const profile = { executable: process.execPath, libraryRoot: library, testDriver };
   const core = await ExecutionCore.open(path.join(root, 'state'), { product: profile, ...(options.now ? { now: options.now } : {}) });
   const credential = core.enrollAdapter('desktop', 'owner');
-  const f = { root, core, credential, bindings: [], profile, lifecycle: createTestFixtureLifecycle() as FixtureLifecycle }; fixtures.push(f);
+  const f = { root, core, credential, bindings: [], profile, lifecycle: createOwnedTestLifetime(testLifetime.signal) }; fixtures.push(f);
   return f;
 }
 async function project(f: Fixture, id: string, holdMs = 600, timeoutMs = 10000, releasedByFile = false): Promise<string> {
@@ -79,13 +85,11 @@ async function cleanupFixture(f: Fixture): Promise<void> {
   if (path.dirname(root) !== await realpath(os.tmpdir()) || !path.basename(root).startsWith('gotzji-product-')) throw new Error('Product cleanup scope denied');
   await rm(root, { recursive: true, force: true });
 }
-afterEach(async () => {
-  for (const f of fixtures.splice(0)) {
-    await cleanupFixture(f);
-  }
-});
+afterEach(async (): Promise<void> => {
+  await finishOwnedTest(testLifetime, () => undefined, () => fixtures.splice(0), cleanupFixture);
+}, 180_000);
 describe('governed product operations — real native Goal, file and process seams', () => {
-  it('drains a pending product predicate before closing its core and stopping its synthetic worker', async () => {
+  it('drains a pending product predicate before closing its core and stopping its synthetic worker', ownBody(async () => {
     const f = await fixture(); await project(f, 'pending', 20000, 1200000, true);
     const binding = await submit(f, { requestId: 'pending-teardown', projectId: 'pending', operation: 'command.run', commandId: 'run' });
     await f.core.resume(f.credential, binding);
@@ -116,8 +120,8 @@ describe('governed product operations — real native Goal, file and process sea
       expect(ownedPids.every((pid) => alive(pid) === false)).toBe(true);
       await expect(access(path.join(f.root, 'state', 'core.sqlite'))).rejects.toMatchObject({ code: 'ENOENT' });
     } finally { release(); await cleanup; }
-  }, 20000);
-  it('renews the exact live command after sleep without stopping or replacing its worker', async () => {
+  }), productTestTimeout(1));
+  it('renews the exact live command after sleep without stopping or replacing its worker', ownBody(async () => {
     let now = new Date(); const f = await fixture({ now: () => now });
     // The approved command budget outlasts the 300 s lease; renewal must not extend that command budget.
     const projectRoot = await project(f, 'sleeping', 20000, 1200000, true);
@@ -140,9 +144,9 @@ describe('governed product operations — real native Goal, file and process sea
     await until(f, async () => (await f.core.get(f.credential, binding)).status === 'completed');
     expect((f.core.logs(f.credential, binding).text.match(/begin-sleeping/gu) ?? [])).toHaveLength(1);
     expect(await f.core.readOperationResult(f.credential, binding)).toMatchObject({ output: { state: 'completed', exitCode: 0 } });
-  }, 20000);
+  }), productTestTimeout(1));
   for (const changed of ['child', 'deadline', 'resource', 'writer', 'takeover'] as const) {
-    it(`refuses live-command lease renewal on ${changed} drift without stopping the owned child`, async () => {
+    it(`refuses live-command lease renewal on ${changed} drift without stopping the owned child`, ownBody(async () => {
       let now = new Date(); const f = await fixture({ now: () => now });
       await project(f, 'sleeping', 20000, 1200000, true);
       const binding = await submit(f, { requestId: `sleep-${changed}`, projectId: 'sleeping', operation: 'command.run', commandId: 'run' });
@@ -179,9 +183,9 @@ describe('governed product operations — real native Goal, file and process sea
       }
       expect(await callWorker(worker, 'status')).toMatchObject({ state: 'running' });
       expect(signed(worker, 'stopped.json')).toBeUndefined();
-    }, 20000);
+    }), productTestTimeout(1));
   }
-  it('runs Grace-controlled read/write against enrolled project bytes with durable result and exact CRLF', async () => {
+  it('runs Grace-controlled read/write against enrolled project bytes with durable result and exact CRLF', ownBody(async () => {
     const f = await fixture(); const root = await project(f, 'one');
     const read = await submit(f, { requestId: 'read', projectId: 'one', operation: 'file.read', path: 'source.txt' });
     await f.core.resume(f.credential, read);
@@ -192,16 +196,16 @@ describe('governed product operations — real native Goal, file and process sea
     await until(f, async () => (await f.core.get(f.credential, write)).status === 'completed');
     expect(await readFile(path.join(root, 'source.txt'), 'utf8')).toBe('Changed\r\nภาษาไทย\r\n');
     expect(await f.core.readOperationResult(f.credential, write)).toMatchObject({ operation: 'file.write', before: { content: 'Original\r\nภาษาไทย\r\n' } });
-  }, 20000);
-  it('rejects stale hashes, unknown projects and path escape with a useful field before admission', async () => {
+  }), productTestTimeout(2));
+  it('rejects stale hashes, unknown projects and path escape with a useful field before admission', ownBody(async () => {
     const f = await fixture(); await project(f, 'one');
     expect(() => f.core.prepareOperation(f.credential, { requestId: 'x', projectId: 'missing', operation: 'file.read', path: 'source.txt' })).toThrow('PROJECT_NOT_REGISTERED');
     expect(() => f.core.prepareOperation(f.credential, { requestId: 'x', projectId: 'one', operation: 'file.read', path: '../library/CLAUDE.md' })).toThrow('INVALID_REQUEST');
     try { f.core.prepareOperation(f.credential, { requestId: 'x', projectId: 'one', operation: 'file.write', path: 'source.txt', content: 'x', expectedSha256: 'a'.repeat(64) }); throw new Error('accepted'); }
     catch (error) { expect(error).toMatchObject({ code: 'FILE_VERSION_CONFLICT', field: 'expectedSha256' }); }
     expect(await f.core.list(f.credential)).toEqual([]);
-  });
-  it('runs two independent real commands concurrently while a shared project waits and then completes', async () => {
+  }));
+  it('runs two independent real commands concurrently while a shared project waits and then completes', ownBody(async () => {
     const f = await fixture(); await project(f, 'one', 1600); await project(f, 'two', 1600);
     const first = await submit(f, { requestId: 'first', projectId: 'one', operation: 'command.run', commandId: 'run' });
     const second = await submit(f, { requestId: 'second', projectId: 'two', operation: 'command.run', commandId: 'run' });
@@ -216,8 +220,8 @@ describe('governed product operations — real native Goal, file and process sea
     f.core = await ExecutionCore.openForControl(path.join(f.root, 'state'));
     expect(f.core.logs(f.credential, first).text).toContain('end-one');
     expect(await f.core.readOperationResult(f.credential, first)).toMatchObject({ output: { state: 'completed' } });
-  }, 25000);
-  it('cancels the selected command without stopping the independent job or its result', async () => {
+  }), productTestTimeout(3));
+  it('cancels the selected command without stopping the independent job or its result', ownBody(async () => {
     const f = await fixture(); await project(f, 'one', 4000); await project(f, 'two', 1200);
     const first = await submit(f, { requestId: 'first', projectId: 'one', operation: 'command.run', commandId: 'run' });
     const second = await submit(f, { requestId: 'second', projectId: 'two', operation: 'command.run', commandId: 'run' });
@@ -226,8 +230,8 @@ describe('governed product operations — real native Goal, file and process sea
     expect(await f.core.cancel(f.credential, first)).toMatchObject({ status: 'cancelled' });
     await until(f, async () => (await f.core.get(f.credential, second)).status === 'completed');
     expect(f.core.logs(f.credential, second).text).toContain('end-two');
-  }, 20000);
-  it('keeps owner/request replay stable across adapters and refuses a changed operation', async () => {
+  }), productTestTimeout(2));
+  it('keeps owner/request replay stable across adapters and refuses a changed operation', ownBody(async () => {
     const f = await fixture(); await project(f, 'one');
     const first = await submit(f, { requestId: 'same', projectId: 'one', operation: 'file.read', path: 'source.txt' });
     const other = f.core.enrollAdapter('plugin', 'owner');
@@ -246,8 +250,8 @@ describe('governed product operations — real native Goal, file and process sea
     const foreign = f.core.enrollAdapter('foreign', 'stranger');
     expect(f.core.listProjects(foreign)).toEqual([]);
     expect(() => f.core.select(foreign, first.jobId)).toThrow('TASK_AUTHORITY_DENIED');
-  });
-  it('bounds the durable waiting queue at 32 jobs, preserving control and replay', async () => {
+  }));
+  it('bounds the durable waiting queue at 32 jobs, preserving control and replay', ownBody(async () => {
     const f = await fixture(); await project(f, 'one');
     for (let i = 0; i < 32; i++) await submit(f, { requestId: 'queued-' + i, projectId: 'one', operation: 'command.run', commandId: 'run' });
     const overflow = f.core.prepareOperation(f.credential, { requestId: 'overflow', projectId: 'one', operation: 'command.run', commandId: 'run' });
@@ -256,8 +260,8 @@ describe('governed product operations — real native Goal, file and process sea
     expect((await f.core.submit(f.credential, overflow.preparationId)).status).toBe('queued');
     expect((await f.core.list(f.credential)).length).toBe(33);
     // About 8 s locally, mostly re-hashing node.exe per submit; hosted Windows runners have taken over 15 s.
-  }, process.env.CI ? 45_000 : 15_000);
-  it('waits for dependencies and rejects failed dependency work without starting an effect', async () => {
+  }), process.env.CI ? 45_000 : 15_000);
+  it('waits for dependencies and rejects failed dependency work without starting an effect', ownBody(async () => {
     const f = await fixture(); await project(f, 'one'); await project(f, 'two');
     const dependency = await submit(f, { requestId: 'parent', projectId: 'one', operation: 'command.run', commandId: 'run' });
     const dependent = await submit(f, { requestId: 'child', projectId: 'two', operation: 'file.read', path: 'source.txt', dependsOn: [dependency.jobId] });
@@ -266,14 +270,14 @@ describe('governed product operations — real native Goal, file and process sea
     expect(await f.core.resume(f.credential, dependent)).toMatchObject({ status: 'failed', waitingReason: 'DEPENDENCY_FAILED' });
     const db = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'), { timeout: 5000 });
     expect(db.prepare('SELECT 1 FROM gotzji_workers WHERE job_id=?').get(dependent.jobId)).toBeUndefined(); db.close();
-  });
-  it('declares unqualified native providers and forbids qualification recipes on the product authority', async () => {
+  }));
+  it('declares unqualified native providers and forbids qualification recipes on the product authority', ownBody(async () => {
     const f = await fixture();
     expect(f.core.catalog(f.credential).find((entry) => entry.name === 'cad')).toMatchObject({ state: 'unsupported', reason: 'PROVIDER_NOT_QUALIFIED' });
     expect(() => f.core.prepare(f.credential, { requestId: 'bypass', operation: 'fixture.write', text: 'bypass' })).toThrow('QUALIFICATION_NOT_AVAILABLE');
     expect(() => f.core.prepare(f.credential, { requestId: 'bypass', operation: 'grace.product-operation', text: '{}' })).toThrow('PRODUCT_PREPARATION_REQUIRED');
-  });
-  it('replays trusted startup enrollment after insertion without rotating identity or admitting a different owner/token', async () => {
+  }));
+  it('replays trusted startup enrollment after insertion without rotating identity or admitting a different owner/token', ownBody(async () => {
     const f = await fixture();
     f.core.ensureAdapterEnrollment('desktop', 'owner', f.credential);
     f.core.ensureAdapterEnrollment('desktop', 'owner', f.credential);
@@ -283,8 +287,8 @@ describe('governed product operations — real native Goal, file and process sea
     expect(() => f.core.ensureAdapterEnrollment('different', 'owner', f.credential)).toThrow('ADAPTER_ENROLLMENT_CONFLICT');
     const db = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'), { timeout: 5000 });
     expect(db.prepare('SELECT COUNT(*) AS count FROM gotzji_adapters').get()?.count).toBe(1); db.close();
-  });
-  it('rejects invalid lease expiry, changed ownership and broker arguments before a new effect', async () => {
+  }));
+  it('rejects invalid lease expiry, changed ownership and broker arguments before a new effect', ownBody(async () => {
     const f = await fixture(); await project(f, 'one', 3000);
     const binding = await submit(f, { requestId: 'authority', projectId: 'one', operation: 'command.run', commandId: 'run' });
     await f.core.resume(f.credential, binding);
@@ -297,8 +301,8 @@ describe('governed product operations — real native Goal, file and process sea
     expect(() => productBrokerCall(config, 'operation_status', {}, true, {})).toThrow('LIVE_AUTHORITY_DENIED');
     db.prepare('UPDATE goals SET lease_expires_at=?').run(new Date(Date.now() + 300000).toISOString());
     db.close();
-  }, 10000);
-  it('records a reviewed command deadline as actual failure with retained output rather than observer timeout', async () => {
+  }), productTestTimeout(1));
+  it('records a reviewed command deadline as actual failure with retained output rather than observer timeout', ownBody(async () => {
     const f = await fixture(); const root = await project(f, 'one', 8000);
     f.core.registerReviewedCommand(f.credential, { recipeId: 'short', executable: process.execPath, args: [path.join(root, 'job.mjs')], dependencies: [path.join(root, 'job.mjs')], timeoutMs: 200 });
     f.core.registerProject(f.credential, { projectId: 'deadline', displayName: 'Deadline', rootPath: root, recipeIds: ['short'] });
@@ -307,8 +311,8 @@ describe('governed product operations — real native Goal, file and process sea
     await until(f, async () => (await f.core.get(f.credential, binding)).status === 'failed');
     expect(f.core.logs(f.credential, binding).text).toContain('begin-one');
     expect(await f.core.get(f.credential, binding)).toMatchObject({ status: 'failed', summary: 'COMMAND_TIMED_OUT' });
-  }, 15000);
-  it('retains the resource fence when cancellation observes unexpected project-file bytes', async () => {
+  }), productTestTimeout(1));
+  it('retains the resource fence when cancellation observes unexpected project-file bytes', ownBody(async () => {
     const f = await fixture(); const root = await project(f, 'one');
     const target = path.join(root, 'source.txt');
     const binding = await submit(f, { requestId: 'change', projectId: 'one', operation: 'file.write', path: 'source.txt', expectedSha256: hash(await readFile(target)), content: 'Approved\r\n' });
@@ -325,9 +329,9 @@ describe('governed product operations — real native Goal, file and process sea
     await writeFile(target, 'Unexpected external content');
     await expect(f.core.cancel(f.credential, binding)).rejects.toMatchObject({ code: 'EFFECT_RECONCILIATION_REQUIRED', field: 'path' });
     expect(await f.core.get(f.credential, binding)).toMatchObject({ status: 'blocked' });
-  }, 10000);
+  }), productTestTimeout(1));
 
-  it('lets the owner settle a write held by bytes changed after it ran, so the next job on that project runs', async () => {
+  it('lets the owner settle a write held by bytes changed after it ran, so the next job on that project runs', ownBody(async () => {
     const f = await fixture(); const root = await project(f, 'one');
     const target = path.join(root, 'source.txt');
     const binding = await submit(f, { requestId: 'change', projectId: 'one', operation: 'file.write', path: 'source.txt', expectedSha256: hash(await readFile(target)), content: 'Approved\r\n' });
@@ -355,9 +359,9 @@ describe('governed product operations — real native Goal, file and process sea
     await until(f, async () => (await f.core.get(f.credential, next)).status === 'completed');
     await expect(f.core.settleBlockedJob(f.credential, next, 'no-effect')).rejects.toMatchObject({ code: 'JOB_NOT_SETTLEABLE' });
     expect(await readFile(target, 'utf8')).toBe('Owner edit after the run');
-  }, 15000);
+  }), productTestTimeout(2));
 
-  it('refuses to settle a running job or a worker without stop proof, then settles a cancelled held write from a control-only host', async () => {
+  it('refuses to settle a running job or a worker without stop proof, then settles a cancelled held write from a control-only host', ownBody(async () => {
     const f = await fixture(); const root = await project(f, 'one'); await project(f, 'two', 1600);
     const running = await submit(f, { requestId: 'long', projectId: 'two', operation: 'command.run', commandId: 'run' });
     await f.core.resume(f.credential, running);
@@ -390,9 +394,9 @@ describe('governed product operations — real native Goal, file and process sea
     expect(events).toContain('OWNER_SETTLED_NO_EFFECT');
     f.core.close(); f.core = await ExecutionCore.open(path.join(f.root, 'state'), { product: f.profile });
     await until(f, async () => (await f.core.get(f.credential, running)).status === 'completed');
-  }, 25000);
+  }), productTestTimeout(2));
 
-  it('never settles running work that only looks blocked, so the command still reaches its end', async () => {
+  it('never settles running work that only looks blocked, so the command still reaches its end', ownBody(async () => {
     const f = await fixture(); const projectRoot = await project(f, 'two', 4000, 10000, true);
     const running = await submit(f, { requestId: 'long', projectId: 'two', operation: 'command.run', commandId: 'run' });
     try {
@@ -431,9 +435,9 @@ describe('governed product operations — real native Goal, file and process sea
     }
     await until(f, async () => (await f.core.get(f.credential, running)).status === 'completed');
     expect(f.core.logs(f.credential, running).text).toContain('end-two');
-  }, 20000);
+  }), productTestTimeout(1));
 
-  it('keeps a completed job’s verified result when the owner settles a writer still held after completion', async () => {
+  it('keeps a completed job’s verified result when the owner settles a writer still held after completion', ownBody(async () => {
     const f = await fixture(); const root = await project(f, 'one');
     const target = path.join(root, 'source.txt');
     const binding = await submit(f, { requestId: 'change', projectId: 'one', operation: 'file.write', path: 'source.txt', expectedSha256: hash(await readFile(target)), content: 'Approved\r\n' });
@@ -455,8 +459,8 @@ describe('governed product operations — real native Goal, file and process sea
     expect(await f.core.readOperationResult(f.credential, binding)).toEqual(result);
     state = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'), { timeout: 5000 });
     expect(state.prepare('SELECT COUNT(*) AS count FROM gotzji_writers WHERE job_id=?').get(binding.jobId)).toMatchObject({ count: 0 }); state.close();
-  }, 15000);
-  it('rejects IPC-style executable/argument enrollment and changed prepared script dependencies', async () => {
+  }), productTestTimeout(1));
+  it('rejects IPC-style executable/argument enrollment and changed prepared script dependencies', ownBody(async () => {
     const f = await fixture(); const root = await project(f, 'one');
     expect(() => f.core.registerProject(f.credential, { projectId: 'forged', displayName: 'Forged', rootPath: root, commands: [{ executable: 'powershell.exe', args: ['anything'] }] } as never)).toThrow('INVALID_REQUEST');
     expect(f.core.catalog(f.credential).find((entry) => entry.recipeId === 'run')).toMatchObject({ state: 'available', recipeId: 'run' });
@@ -471,8 +475,8 @@ describe('governed product operations — real native Goal, file and process sea
     expect(f.core.logs(f.credential, binding).text).not.toContain('unreviewed-change');
     const state = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'), { readOnly: true, timeout: 5000 });
     expect(state.prepare('SELECT COUNT(*) AS count FROM gotzji_writers WHERE job_id=?').get(binding.jobId)).toMatchObject({ count: 0 }); state.close();
-  }, 15000);
-  it('ends a write refused before it touched the file as failed and frees its project (incident I1b)', async () => {
+  }), productTestTimeout(1));
+  it('ends a write refused before it touched the file as failed and frees its project (incident I1b)', ownBody(async () => {
     const f = await fixture(); const root = await project(f, 'one');
     await writeFile(path.join(root, 'notes.txt'), 'Original\n');
     const prepared = f.core.prepareOperation(f.credential, { requestId: 'policy-drift', projectId: 'one', operation: 'file.write', path: 'notes.txt', expectedSha256: hash('Original\n'), content: 'Changed\n' });
@@ -485,8 +489,8 @@ describe('governed product operations — real native Goal, file and process sea
     expect(await readFile(path.join(root, 'notes.txt'), 'utf8')).toBe('Original\n');
     const state = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'), { readOnly: true, timeout: 5000 });
     expect(state.prepare('SELECT COUNT(*) AS count FROM gotzji_writers WHERE job_id=?').get(binding.jobId)).toMatchObject({ count: 0 }); state.close();
-  }, 15000);
-  it('requires frozen project and ancestor policy reads and rejects changed or newly added rules', async () => {
+  }), productTestTimeout(1));
+  it('requires frozen project and ancestor policy reads and rejects changed or newly added rules', ownBody(async () => {
     const f = await fixture(); const root = await project(f, 'one', 3000);
     await writeFile(path.join(f.root, 'AGENTS.md'), 'Ancestor policy\n'); await writeFile(path.join(root, 'CLAUDE.md'), 'Actual project policy\n');
     const binding = await submit(f, { requestId: 'policy', projectId: 'one', operation: 'command.run', commandId: 'run' });
@@ -501,8 +505,8 @@ describe('governed product operations — real native Goal, file and process sea
     await writeFile(path.join(root, 'CLAUDE.md'), 'Changed project rules\n');
     expect(() => productBrokerCall(config, 'execute_operation', {}, true, {})).toThrow('PROJECT_POLICY_CHANGED');
     db.close();
-  }, 15000);
-  it('persists priority/FIFO across reopen, advances actual queued work and ages low priority jobs', async () => {
+  }), productTestTimeout(1));
+  it('persists priority/FIFO across reopen, advances actual queued work and ages low priority jobs', ownBody(async () => {
     let clock = new Date(); const f = await fixture({ now: () => clock }); await project(f, 'one', 800);
     const first = await submit(f, { requestId: 'first-order', projectId: 'one', operation: 'command.run', commandId: 'run', priority: 0 });
     const second = await submit(f, { requestId: 'second-order', projectId: 'one', operation: 'command.run', commandId: 'run' });
@@ -517,8 +521,8 @@ describe('governed product operations — real native Goal, file and process sea
     expect(await f.core.get(f.credential, second)).toMatchObject({ status: 'queued', blockingJob: first.jobId, waitingReason: 'RESOURCE_HELD' });
     await until(f, async () => (await f.core.get(f.credential, second)).status === 'running');
     expect((await f.core.get(f.credential, first)).status).toBe('completed');
-  }, 20000);
-  it('creates an explicitly absent project file once and rejects source drift or private-runtime creation',async()=>{
+  }), productTestTimeout(2));
+  it('creates an explicitly absent project file once and rejects source drift or private-runtime creation',ownBody(async()=>{
     const f=await fixture();const root=await project(f,'one');
     const creation=f.core.prepareOperation(f.credential,{requestId:'create-new',projectId:'one',operation:'file.write',path:'new-module.mjs',expectedSha256:null,content:'export const value = 1;\r\n'});const createdJob=await f.core.submit(f.credential,creation.preparationId);const created=f.core.select(f.credential,createdJob.jobId);f.bindings.push(created);
     await f.core.resume(f.credential,created);await until(f,async()=> (await f.core.get(f.credential,created)).status==='completed');
@@ -531,8 +535,8 @@ describe('governed product operations — real native Goal, file and process sea
     expect(await readFile(path.join(root,'race.mjs'),'utf8')).toBe('external\n');
     f.core.registerProject(f.credential,{projectId:'broad-create',displayName:'Broad create',rootPath:f.root});
     expect(()=>f.core.prepareOperation(f.credential,{requestId:'private-create',projectId:'broad-create',operation:'file.write',path:'state/forged-worker.json',expectedSha256:null,content:'{}'})).toThrow('PRIVATE_RUNTIME_SCOPE_DENIED');
-  },25000);
-  it('reconciles a lost create response from exact bytes without repeating the exclusive effect',async()=>{
+  }),productTestTimeout(2));
+  it('reconciles a lost create response from exact bytes without repeating the exclusive effect',ownBody(async()=>{
     const f=await fixture({delayedProductMs:1200});const root=await project(f,'one');const content='created exactly once\n';
     const preparation=f.core.prepareOperation(f.credential,{requestId:'create-response-loss',projectId:'one',operation:'file.write',path:'lost-create.txt',expectedSha256:null,content});const job=await f.core.submit(f.credential,preparation.preparationId);const binding=f.core.select(f.credential,job.jobId);f.bindings.push(binding);await f.core.resume(f.credential,binding);
     const db=new DatabaseSync(path.join(f.root,'state','core.sqlite'), { timeout: 5000 });await until(f,()=>Number(db.prepare("SELECT COUNT(*) AS count FROM gotzji_recipe_operations WHERE job_id=? AND operation_id LIKE 'policy:%' AND phase='verified'").get(binding.jobId)?.count)===4);
@@ -540,8 +544,8 @@ describe('governed product operations — real native Goal, file and process sea
     const operationDigest=hash(JSON.stringify({name:'execute_operation',args:{},intent:String(claim?.digest),epoch:config.epoch}));db.prepare('INSERT INTO gotzji_recipe_operations VALUES (?,?,?,?,NULL)').run(binding.jobId,'execute_operation',operationDigest,'started');
     await writeFile(path.join(root,'lost-create.txt'),content,{flag:'wx'});await until(f,async()=> (await f.core.get(f.credential,binding)).status==='completed');
     expect(await readFile(path.join(root,'lost-create.txt'),'utf8')).toBe(content);expect(await f.core.readOperationResult(f.credential,binding)).toMatchObject({output:{beforeSha256:null,sha256:hash(content)}});db.close();
-  },20000);
-  it('bounds waiting per owner while retaining another owner\'s admission and queue controls', async () => {
+  }),productTestTimeout(1));
+  it('bounds waiting per owner while retaining another owner\'s admission and queue controls', ownBody(async () => {
     const f = await fixture(); const root = await project(f, 'one');
     for (let i = 0; i < 32; i++) await submit(f, { requestId: 'owner-one-' + i, projectId: 'one', operation: 'file.read', path: 'source.txt' });
     const other = f.core.enrollAdapter('second-owner', 'another-owner');
@@ -550,8 +554,8 @@ describe('governed product operations — real native Goal, file and process sea
     const job = await f.core.submit(other, prepared.preparationId);
     expect((await f.core.inspectQueue(other))[0]?.jobId).toBe(job.jobId);
     await expect(f.core.reprioritize(other, { jobId: f.bindings[0]!.jobId, priority: 3 })).rejects.toMatchObject({ code: 'TASK_AUTHORITY_DENIED' });
-  }, 20000);
-  it('uses an explicit child environment and redacts retained model-visible logs across chunks', async () => {
+  }), 20000);
+  it('uses an explicit child environment and redacts retained model-visible logs across chunks', ownBody(async () => {
     expect(childEnvironment({ PATH: 'safe', PSModuleAnalysisCachePath: 'C:/cache/ModuleAnalysisCache', SECRET_X: 'sensitive-host-secret', NODE_OPTIONS: '--dangerous', ANTHROPIC_API_KEY: 'provider-secret' })).toEqual({ PATH: 'safe', PSModuleAnalysisCachePath: 'C:/cache/ModuleAnalysisCache' });
     let sanitized = ''; const stream = sanitizedStream((text: string) => { sanitized += text; });
     stream.write(Buffer.from('SECRET_X=sensitive-')); stream.write(Buffer.from('value\nAuthorization: Bearer token-value\n')); stream.end();
@@ -569,14 +573,14 @@ describe('governed product operations — real native Goal, file and process sea
       await f.core.resume(f.credential, binding); await until(f, async () => (await f.core.get(f.credential, binding)).status === 'completed');
       const logs = f.core.logs(f.credential, binding).text; expect(logs).not.toContain('host-sentinel-private'); expect(logs).not.toContain('sentinel-private'); expect(logs).toContain('[REDACTED]');
     } finally { if (previous === undefined) delete process.env.SECRET_X; else process.env.SECRET_X = previous; }
-  }, 15000);
-  it('reports missing and permission failures with actionable filesystem fields', async () => {
+  }), productTestTimeout(1));
+  it('reports missing and permission failures with actionable filesystem fields', ownBody(async () => {
     const f = await fixture(); await project(f, 'one');
     try { f.core.prepareOperation(f.credential, { requestId: 'missing-file', projectId: 'one', operation: 'file.read', path: 'missing.txt' }); throw new Error('accepted'); }
     catch (error) { expect(error).toMatchObject({ code: 'FILE_NOT_FOUND', field: 'path', layer: 'filesystem', action: 'Check the selected path and prepare again' }); }
     expect(() => filesystem('path', () => { throw Object.assign(new Error('denied'), { code: 'EACCES' }); })).toThrow('FILE_PERMISSION_DENIED');
-  });
-  it('keeps server-owned worker/config/receipt paths outside a broadly enrolled parent project', async()=>{
+  }));
+  it('keeps server-owned worker/config/receipt paths outside a broadly enrolled parent project', ownBody(async()=>{
     const f=await fixture();await project(f,'one',4000);await writeFile(path.join(f.root,'public.txt'),'ordinary\n');
     f.core.registerProject(f.credential,{projectId:'broad',displayName:'Broad owner scope',rootPath:f.root});
     const running=await submit(f,{requestId:'private-boundary-worker',projectId:'one',operation:'command.run',commandId:'run'});await f.core.resume(f.credential,running);
@@ -587,8 +591,8 @@ describe('governed product operations — real native Goal, file and process sea
     expect(()=>f.core.prepareOperation(f.credential,{requestId:'private-write',projectId:'broad',operation:'file.write',path:relative,expectedSha256:privateHash,content:'forged'})).toThrow('PRIVATE_RUNTIME_SCOPE_DENIED');
     const ordinary=await submit(f,{requestId:'ordinary-read',projectId:'broad',operation:'file.read',path:'public.txt'});await f.core.resume(f.credential,ordinary);await until(f,async()=> (await f.core.get(f.credential,ordinary)).status==='completed');
     expect(await f.core.readOperationResult(f.credential,ordinary)).toMatchObject({output:{content:'ordinary\n'}});
-  },20000);
-  it('retains the same job on an actual rejected quota event and suppresses further model launches until provider reset', async () => {
+  }),productTestTimeout(2));
+  it('retains the same job on an actual rejected quota event and suppresses further model launches until provider reset', ownBody(async () => {
     let now = new Date(); const reset = Math.floor(now.getTime() / 1000) + 3600;
     const f = await fixture({ quotaReset: reset, now: () => now }); await project(f, 'one');
     const binding = await submit(f, { requestId: 'quota-job', projectId: 'one', operation: 'file.read', path: 'source.txt' });
@@ -611,8 +615,8 @@ describe('governed product operations — real native Goal, file and process sea
     expect(db.prepare('SELECT COUNT(*) AS count FROM gotzji_worker_history h WHERE NOT EXISTS(SELECT 1 FROM gotzji_workers w WHERE w.epoch=h.epoch)').get()?.count).toBe(1);
     expect(db.prepare('SELECT COUNT(*) AS count FROM gotzji_worker_history h JOIN gotzji_workers w ON w.epoch=h.epoch').get()?.count).toBe(1);
     expect(db.prepare('SELECT status FROM goals').get()?.status).toBe('completed'); db.close();
-  }, 15000);
-  it('upgrades an anchored quiescent predecessor store and rolls policy back without rewriting job intent or result', async () => {
+  }), productTestTimeout(2));
+  it('upgrades an anchored quiescent predecessor store and rolls policy back without rewriting job intent or result', ownBody(async () => {
     const f = await fixture(); await project(f, 'one');
     const prepared = f.core.prepareOperation(f.credential, { requestId: 'upgrade-result', projectId: 'one', operation: 'file.read', path: 'source.txt' });
     const job = await f.core.submit(f.credential, prepared.preparationId); const binding = f.core.select(f.credential, job.jobId); f.bindings.push(binding);
@@ -643,8 +647,8 @@ describe('governed product operations — real native Goal, file and process sea
     expect(f.core.authority()).toEqual(predecessor); expect(records()).toBe(before);
     expect(await f.core.readOperationResult(f.credential, f.core.select(f.credential, job.jobId))).toEqual(originalResult);
     expect(db.prepare('SELECT COUNT(*) AS count FROM gotzji_policy_history').get()?.count).toBe(2); db.close();
-  }, 15000);
-  it('keeps old no-effect queued jobs selectable after upgrade but denies unreviewed resumption', async () => {
+  }), productTestTimeout(1));
+  it('keeps old no-effect queued jobs selectable after upgrade but denies unreviewed resumption', ownBody(async () => {
     const f = await fixture(); await project(f, 'one');
     const binding = await submit(f, { requestId: 'old-queued', projectId: 'one', operation: 'file.read', path: 'source.txt' });
     const old = f.core.authority(); f.core.close(); await writeFile(path.join(f.profile.libraryRoot, 'CLAUDE.md'), 'Upgraded runtime policy\n');
@@ -652,8 +656,8 @@ describe('governed product operations — real native Goal, file and process sea
     expect(await f.core.get(f.credential, binding)).toMatchObject({ jobId: binding.jobId, status: 'blocked', blockerCode: 'POLICY_RECONCILIATION_REQUIRED' });
     await expect(f.core.resume(f.credential, binding)).rejects.toMatchObject({ code: 'POLICY_RECONCILIATION_REQUIRED' });
     expect((await f.core.cancel(f.credential, f.core.select(f.credential, binding.jobId))).status).toBe('cancelled');
-  });
-  it('denies an upgrade when live workers or an incorrect authority expectation exist', async () => {
+  }));
+  it('denies an upgrade when live workers or an incorrect authority expectation exist', ownBody(async () => {
     const f = await fixture(); await project(f, 'one', 3000);
     const binding = await submit(f, { requestId: 'live-upgrade', projectId: 'one', operation: 'command.run', commandId: 'run' });
     await f.core.resume(f.credential, binding); const old = f.core.authority();
@@ -661,5 +665,5 @@ describe('governed product operations — real native Goal, file and process sea
     await expect(ExecutionCore.open(path.join(f.root, 'state'), { product: f.profile, upgrade: { expectedAuthorityId: old.authorityId, expectedPolicy: old.policy } })).rejects.toMatchObject({ code: 'UPGRADE_RECONCILIATION_REQUIRED' });
     await expect(ExecutionCore.open(path.join(f.root, 'state'), { product: f.profile, upgrade: { expectedAuthorityId: 'a'.repeat(64), expectedPolicy: old.policy } })).rejects.toMatchObject({ code: 'UPGRADE_AUTHORITY_DENIED' });
     expect((await f.core.get(f.credential, binding)).jobId).toBe(binding.jobId);
-  }, 15000);
+  }), productTestTimeout(1));
 });

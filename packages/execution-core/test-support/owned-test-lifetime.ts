@@ -1,16 +1,18 @@
 import { createTestFixtureLifecycle } from '../src/test-fixture-lifecycle.mjs';
 
-interface CanonicalLifecycle { run<T>(operation: () => Promise<T>): Promise<T>; close(): Promise<void> }
-export interface OwnedTestLifetime { run<T>(body: () => Promise<T>): Promise<T>; close(): Promise<void> }
+interface CanonicalLifecycle { readonly signal: AbortSignal; run<T>(operation: (signal: AbortSignal) => Promise<T>): Promise<T>; close(): Promise<void> }
+export interface OwnedTestLifetime { readonly signal: AbortSignal; run<T>(body: (signal: AbortSignal) => Promise<T>): Promise<T>; close(): Promise<void> }
 type Outcome<T> = { readonly ok: true; readonly value: T } | { readonly ok: false; readonly error: unknown };
 
 /** Track the whole body without reporting its awaited rejection again during teardown. */
-export function createOwnedTestLifetime(): OwnedTestLifetime {
+export function createOwnedTestLifetime(parentSignal?: AbortSignal): OwnedTestLifetime {
   const lifecycle = createTestFixtureLifecycle() as CanonicalLifecycle;
+  const signal = parentSignal ? AbortSignal.any([lifecycle.signal, parentSignal]) : lifecycle.signal;
   return {
-    async run<T>(body: () => Promise<T>): Promise<T> {
+    signal,
+    async run<T>(body: (signal: AbortSignal) => Promise<T>): Promise<T> {
       const outcome = await lifecycle.run<Outcome<T>>(async (): Promise<Outcome<T>> => {
-        try { return { ok: true, value: await body() }; }
+        try { return { ok: true, value: await body(signal) }; }
         catch (error) { return { ok: false, error }; }
       });
       if (!outcome.ok) throw outcome.error;
