@@ -12,6 +12,29 @@ afterEach(async () => {
 });
 
 describe('gotzji desktop governed boundary', () => {
+  it('lets synchronous resume enclose cold worker startup and still aborts only that control call at sixty seconds', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(AbortSignal, 'timeout').mockImplementation((milliseconds: number): AbortSignal => {
+      const controller = new AbortController(); setTimeout(() => controller.abort(new Error('deadline')), milliseconds); return controller.signal;
+    });
+    const calls: unknown[] = [];
+    const transport: typeof fetch = async (_url, options): Promise<Response> => new Promise((resolve, reject) => {
+      const request = JSON.parse(String(options?.body)) as { method: string; input: { jobId: string } }; calls.push(request);
+      const responseTimer = request.input.jobId === 'stalled' ? undefined : setTimeout(() => resolve(new Response(JSON.stringify({ ok: true, value: { jobId: request.input.jobId, state: 'running' } }))), 40_000);
+      options?.signal?.addEventListener('abort', () => { clearTimeout(responseTimer); reject(options.signal?.reason); }, { once: true });
+    });
+    const client = new GotzjiHostClient(async () => ({ endpoint: 'http://127.0.0.1:1/rpc', token: 'secret', ownerId: 'owner' }), transport);
+    const requests = Promise.allSettled([client.request({ method: 'resume', input: { jobId: 'same-job' } }), client.request({ method: 'status', input: { jobId: 'same-job' } })]);
+    await vi.advanceTimersByTimeAsync(40_000);
+    const [resume, ordinary] = await requests;
+    expect(resume).toEqual({ status: 'fulfilled', value: { jobId: 'same-job', state: 'running' } });
+    expect(ordinary).toMatchObject({ status: 'rejected', reason: { code: 'HOST_CONNECTION_LOST' } });
+    let settled = false;
+    const stalled = client.request({ method: 'resume', input: { jobId: 'stalled' } }).then(() => 'unexpected', (error: unknown) => error).finally(() => { settled = true; });
+    await vi.advanceTimersByTimeAsync(59_999); expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1); expect(await stalled).toMatchObject({ code: 'HOST_CONNECTION_LOST' });
+    expect(calls).toEqual([{ method: 'resume', input: { jobId: 'same-job' } }, { method: 'status', input: { jobId: 'same-job' } }, { method: 'resume', input: { jobId: 'stalled' } }]);
+  });
   it('lets bounded Git reads and graceful browser stop finish after ten seconds while ordinary controls still time out without retry', async () => {
     vi.useFakeTimers();
     // Drive the real client-selected abort deadline with a deterministic clock.

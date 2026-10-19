@@ -1,3 +1,5 @@
+export const WINDOWS_IDENTITY_STARTUP_MS: number;
+export const PROCESS_IDENTITY_REQUEST_MS: number;
 export interface ProcessIdentity { readonly birth: string; readonly executable: string }
 export const UNPACKAGED_E2E_PROCESS_BIRTH: string;
 export function sameProcessIdentity(expected: ProcessIdentity | null | undefined, actual: ProcessIdentity | null | 'unknown' | undefined): boolean;

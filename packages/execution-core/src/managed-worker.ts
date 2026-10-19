@@ -6,7 +6,7 @@ import path from 'node:path';
 import { CoreError, type WorkerObservation } from './types.js';
 import { hash, secret, type WorkerRow } from './store.js';
 import type { GraceProfile } from './grace-profile.js';
-import { processIdentities, sameProcessIdentity, type ProcessIdentity } from './process-identity.mjs';
+import { processIdentities, sameProcessIdentity, WINDOWS_IDENTITY_STARTUP_MS, PROCESS_IDENTITY_REQUEST_MS, type ProcessIdentity } from './process-identity.mjs';
 import { signPreparedNativeOperation, type PreparedProductNativeOperation } from './product-native.js';
 import { signLibraryBinding } from './product-library.js';
 import { signPreparedBrowserOperation, type PreparedProductBrowserOperation } from './product-browser.js';
@@ -131,13 +131,31 @@ export async function launchWorker(worker: WorkerRow, effectRoot: string, operat
   const libraryWrapper = prepared?.kind === 'library' ? { path:fileURLToPath(new URL('./product-library-weekly-wrapper.py',import.meta.url)),sha256:hash(readFileSync(new URL('./product-library-weekly-wrapper.py',import.meta.url))) } : undefined;
   writeFileSync(config, JSON.stringify({ ...configuration, ...(nativeAuthorization ? { nativeAuthorization } : {}), ...(libraryAuthorization ? { libraryAuthorization } : {}), ...(libraryWrapper ? { libraryWrapper } : {}), ...(browserAuthorization ? { browserAuthorization } : {}) }), { mode: 0o600, flag: 'wx' });
   const child = spawn(process.execPath, [WORKER_FILE, config], { windowsHide: true, detached: true, stdio: 'ignore' });
-  const failed = new Promise<never>((_resolve, reject) => child.once('error', () => reject(new CoreError('WORKER_LAUNCH_FAILED'))));
   child.unref();
-  await Promise.race([failed, (async (): Promise<void> => {
-    for (let n = 0; n < 600; n++) {
-      if (signed(worker, 'ready.json')) { await callWorker(worker, 'status'); return; }
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    }
-    throw new CoreError('WORKER_READY_UNKNOWN');
-  })()]);
+  // The enclosing wait must include the existing cold OS-identity prerequisite before signed ready is published.
+  const deadline = performance.now() + 12_000 + WINDOWS_IDENTITY_STARTUP_MS + PROCESS_IDENTITY_REQUEST_MS;
+  await new Promise<void>((resolve, reject) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let settled = false;
+    const finish = (error?: unknown): void => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      child.removeListener('error', failed); child.removeListener('exit', failed);
+      if (error === undefined) resolve(); else reject(error);
+    };
+    const failed = (): void => finish(new CoreError('WORKER_LAUNCH_FAILED'));
+    const poll = (): void => {
+      if (settled) return;
+      try {
+        if (performance.now() >= deadline) throw new CoreError('WORKER_READY_UNKNOWN');
+        if (signed(worker, 'ready.json')) { if (performance.now() >= deadline) throw new CoreError('WORKER_READY_UNKNOWN'); finish(); return; }
+        timer = setTimeout(poll, Math.min(20, Math.max(0, deadline - performance.now())));
+      } catch (error) { finish(error); }
+    };
+    child.once('error', failed); child.once('exit', failed);
+    if (child.exitCode !== null || child.signalCode !== null) failed(); else poll();
+  });
+  // Readiness alone never authorizes an operation; Core still awaits this authenticated status and its own fences.
+  await callWorker(worker, 'status');
 }

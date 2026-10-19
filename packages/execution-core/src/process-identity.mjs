@@ -5,6 +5,8 @@ import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import path from 'node:path';
 import { childEnvironment } from './product-security.mjs';
 const exec = promisify(execFile);
+export const WINDOWS_IDENTITY_STARTUP_MS = 20_000;
+export const PROCESS_IDENTITY_REQUEST_MS = 5_000;
 let windowsProbeFailureReported = false;
 const windowsReader = createWindowsProcessIdentityReader({ onFailure: ({ code, elapsedMs }) => {
   if (!windowsProbeFailureReported) {
@@ -77,7 +79,7 @@ export function createWindowsProcessIdentityReader(options = {}) {
         const started = performance.now();
         try {
           const parsed = run
-            ? JSON.parse((await run(program, ['-NoLogo','-NoProfile','-NonInteractive','-Command',script], { windowsHide: true, env: childEnvironment(), timeout: 5000, maxBuffer: 65536 })).stdout.trim())
+            ? JSON.parse((await run(program, ['-NoLogo','-NoProfile','-NonInteractive','-Command',script], { windowsHide: true, env: childEnvironment(), timeout: PROCESS_IDENTITY_REQUEST_MS, maxBuffer: 65536 })).stdout.trim())
             : await (options.session ?? windowsPowerShellSession(program)).identity(requested);
           const observed = Object.fromEntries(requested.map((pid) => {
             const value = parsed?.[pid];
@@ -170,7 +172,7 @@ export function createWindowsPowerShellSession(options) {
   const outputLimit = options.outputLimit ?? 262_144;
   // Windows PowerShell can take seconds to start on a cold or loaded machine. Requests sent before a session's first
   // reply also get this allowance; otherwise a slow start times out, restarts cold and never answers.
-  const startupMs = options.startupMs ?? 20_000;
+  const startupMs = options.startupMs ?? WINDOWS_IDENTITY_STARTUP_MS;
   const waiting = new Map();
   let child; let buffer = ''; let next = 1; let idle; let answered = false;
   const failure = (code) => Object.assign(new Error(code), { code });
@@ -225,7 +227,7 @@ export function createWindowsPowerShellSession(options) {
   const invalid = () => Promise.reject(failure('POWERSHELL_SESSION_REQUEST_INVALID'));
   const dpapi = (operation, value, timeoutMs) => role !== 'dpapi' || typeof value !== 'string' || !BASE64.test(value) ? invalid() : send((id) => `${id}\t${operation}\t${value}`, timeoutMs);
   return {
-    identity: (pids, timeoutMs = 5000) => role !== 'identity' || !Array.isArray(pids) || !pids.length || pids.length > 64 || !pids.every((pid) => Number.isSafeInteger(pid) && pid > 0 && pid <= 0x7fffffff)
+    identity: (pids, timeoutMs = PROCESS_IDENTITY_REQUEST_MS) => role !== 'identity' || !Array.isArray(pids) || !pids.length || pids.length > 64 || !pids.every((pid) => Number.isSafeInteger(pid) && pid > 0 && pid <= 0x7fffffff)
       ? invalid() : send((id) => JSON.stringify({ id, pids: [...pids] }), timeoutMs),
     protect: (value, timeoutMs = 10_000) => dpapi('protect', value, timeoutMs),
     unprotect: (value, timeoutMs = 10_000) => dpapi('unprotect', value, timeoutMs),

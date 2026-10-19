@@ -127,8 +127,8 @@ export class GotzjiHostClient {
         body: JSON.stringify({ method: hostMethod, input }),
         // A control-call timeout never cancels or resubmits an independently owned job.
         // Git has independent bounded validation/config/copy/command phases plus owned-copy cleanup.
-        // Browser stop also waits for native absence and protected terminal persistence.
-        signal: AbortSignal.timeout(hostMethod === 'supportReport' || hostMethod === 'readProjectGit' || hostMethod === 'stopBrowserSession' ? 60_000 : 10_000),
+        // Browser stop waits for native absence; synchronous resume encloses worker startup and its status handshake.
+        signal: AbortSignal.timeout(hostMethod === 'supportReport' || hostMethod === 'readProjectGit' || hostMethod === 'stopBrowserSession' || hostMethod === 'resume' ? 60_000 : 10_000),
       });
     } catch {
       throw new GotzjiHostError('HOST_CONNECTION_LOST');
