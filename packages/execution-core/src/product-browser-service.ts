@@ -51,11 +51,13 @@ export class ProductBrowserService {
     if (!current.stopPhase || current.stopPhase === 'termination-unknown') {
       if (await this.busy()) throw new CoreError('BROWSER_SESSION_HAS_RETAINED_JOBS');
       current.stopPhase = 'termination-unknown';
-      await current.enrollment.stop();
+      try { await current.enrollment.stop(); }
+      catch (cause) { const error = new CoreError('BROWSER_TERMINATION_UNVERIFIED'); error.cause = cause; throw error; }
       current.stopPhase = 'provider-stopped';
     }
     if (current.stopPhase === 'provider-stopped') {
-      this.options.core.clearBrowserSession(this.options.credential, current.enrollment.options.session.sessionId);
+      // Cleanup-only restoration never enrolled a catalog in this fresh host.
+      if (!current.enrollment.cleanupOnly) this.options.core.clearBrowserSession(this.options.credential, current.enrollment.options.session.sessionId);
       current.stopPhase = 'catalog-cleared';
     }
     // A terminal record stays protected for restart reconstruction; it carries
@@ -64,7 +66,8 @@ export class ProductBrowserService {
     this.current = undefined;
     return { state: 'stopped', projectId };
   }); }
-  public async restore(): Promise<void> {
+  public restore(): Promise<void> { return this.serial(async () => {
+    if (this.current) return;
     const filename = this.statePath(); if (!existsSync(filename)) return;
     if (lstatSync(filename).isSymbolicLink()) throw new CoreError('BROWSER_ENROLLMENT_DENIED');
     const envelope = JSON.parse(readFileSync(filename, 'utf8')) as { schemaVersion: number; payload: string };
@@ -81,8 +84,9 @@ export class ProductBrowserService {
     const project = this.options.core.listProjects(this.options.credential).find((entry) => entry.projectId === record.projectId);
     if (!project || project.owner !== this.options.ownerId) throw new CoreError('BROWSER_PROJECT_DENIED');
     const enrollment = await module.restoreTrustedProductBrowserEnrollment(project, record.options) as TrustedProductBrowserEnrollment;
-    await this.options.core.enrollBrowserSession(this.options.credential, enrollment.options); this.current = { projectId: project.projectId, enrollment };
-  }
+    if (!enrollment.cleanupOnly) await this.options.core.enrollBrowserSession(this.options.credential, enrollment.options);
+    this.current = { projectId: project.projectId, enrollment, ...(enrollment.cleanupOnly ? { stopPhase: 'termination-unknown' as const } : {}) };
+  }); }
   public projection(): unknown { return this.current ? this.project() : { state: 'not-enrolled' }; }
   private project(): unknown { return this.current ? { state: this.current.stopPhase ? 'stopping' : 'ready', projectId: this.current.projectId, ...this.current.enrollment.publicBinding } : { state: 'not-enrolled' }; }
   private async busy(): Promise<boolean> { return (await this.options.core.activeJobs(this.options.credential)).some((entry) => entry.requestedOperation?.startsWith('browser.') && !['completed', 'cancelled', 'failed'].includes(entry.status)); }

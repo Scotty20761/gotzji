@@ -49,6 +49,8 @@ export interface TrustedProductBrowserLaunchOptions {
 }
 export interface ProductBrowserPublicBinding { readonly sessionId: string; readonly tabId: string; readonly expectedUrl: string; readonly expectedDocumentId: string; readonly allowedOrigins: readonly string[] }
 export interface TrustedProductBrowserEnrollment {
+  /** A restored owned root whose selected page cannot be re-established; never enroll for work. */
+  readonly cleanupOnly?: true;
   readonly options: TrustedProductBrowserOptions;
   readonly publicBinding: ProductBrowserPublicBinding;
   refresh(): Promise<{ readonly options: TrustedProductBrowserOptions; readonly publicBinding: ProductBrowserPublicBinding }>;

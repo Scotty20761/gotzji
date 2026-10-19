@@ -12,7 +12,7 @@ afterEach(async () => {
 });
 
 describe('gotzji desktop governed boundary', () => {
-  it('lets a bounded Git read finish after ten seconds while stalled job-control calls still time out without retry', async () => {
+  it('lets bounded Git reads and graceful browser stop finish after ten seconds while ordinary controls still time out without retry', async () => {
     vi.useFakeTimers();
     // Drive the real client-selected abort deadline with a deterministic clock.
     vi.spyOn(AbortSignal, 'timeout').mockImplementation((milliseconds: number): AbortSignal => {
@@ -24,28 +24,36 @@ describe('gotzji desktop governed boundary', () => {
     const transport: typeof fetch = async (_url, options): Promise<Response> => new Promise((resolve, reject) => {
       const request = JSON.parse(String(options?.body)) as { method: string; input: { projectId?: string } };
       calls.push(request.method);
-      const responseTimer = request.input.projectId === 'stalled' ? undefined : setTimeout(() => resolve(new Response(JSON.stringify({ ok: true, value: { view: 'status', entries: [], truncated: false } }))), 12000);
+      const value = request.method === 'stopBrowserSession' ? { state: 'stopped', projectId: request.input.projectId } : { view: 'status', entries: [], truncated: false };
+      const responseTimer = request.input.projectId === 'stalled' ? undefined : setTimeout(() => resolve(new Response(JSON.stringify({ ok: true, value }))), 12000);
       options?.signal?.addEventListener('abort', () => { clearTimeout(responseTimer); reject(options.signal?.reason); }, { once: true });
     });
     const client = new GotzjiHostClient(async () => ({ endpoint: 'http://127.0.0.1:1/rpc', token: 'secret', ownerId: 'owner' }), transport);
     const requests = Promise.allSettled([
       client.request({ method: 'readProjectGit', input: { projectId: 'repo', view: 'status' } }),
       client.request({ method: 'status', input: { jobId: 'job-one' } }),
+      client.request({ method: 'stopBrowserSession', input: { projectId: 'repo' } }),
     ]);
     await vi.advanceTimersByTimeAsync(12000);
-    const [git, control] = await requests;
+    const [git, control, browserStop] = await requests;
     expect(git).toEqual({ status: 'fulfilled', value: { view: 'status', entries: [], truncated: false } });
     expect(control.status).toBe('rejected');
     if (control.status === 'rejected') expect(control.reason).toMatchObject({ code: 'HOST_CONNECTION_LOST' });
-    expect(calls).toEqual(['readProjectGit', 'status']);
+    expect(browserStop).toEqual({ status: 'fulfilled', value: { state: 'stopped', projectId: 'repo' } });
+    expect(calls).toEqual(['readProjectGit', 'status', 'stopBrowserSession']);
     let settled = false;
     const stalled = client.request({ method: 'readProjectGit', input: { projectId: 'stalled', view: 'status' } })
       .then(() => 'unexpected-success', (error: unknown) => error).finally(() => { settled = true; });
+    let browserSettled = false;
+    const stalledStop = client.request({ method: 'stopBrowserSession', input: { projectId: 'stalled' } })
+      .then(() => 'unexpected-success', (error: unknown) => error).finally(() => { browserSettled = true; });
     await vi.advanceTimersByTimeAsync(59999);
     expect(settled).toBe(false);
+    expect(browserSettled).toBe(false);
     await vi.advanceTimersByTimeAsync(1);
     expect(await stalled).toMatchObject({ code: 'HOST_CONNECTION_LOST' });
-    expect(calls).toEqual(['readProjectGit', 'status', 'readProjectGit']);
+    expect(await stalledStop).toMatchObject({ code: 'HOST_CONNECTION_LOST' });
+    expect(calls).toEqual(['readProjectGit', 'status', 'stopBrowserSession', 'readProjectGit', 'stopBrowserSession']);
   });
   it('accepts only typed project Git views and denies raw arguments or caller identity', () => {
     const input = { projectId: 'selected-project', view: 'diff', path: 'note.txt', staged: true };

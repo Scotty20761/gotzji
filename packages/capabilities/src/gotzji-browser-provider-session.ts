@@ -86,11 +86,7 @@ export async function startGotzjiOwnedBrowser(options: {
       stop: async (): Promise<{ readonly stopped: true; readonly pid: number }> => {
         if (!await verifyOwnership()) throw new GotzjiBrowserProviderError('BROWSER_TERMINATION_UNVERIFIED', 'unknown');
         if (process.platform === 'win32') {
-          const tabs = await protocol.listTabs();
-          if (tabs.length < 1) throw new GotzjiBrowserProviderError('BROWSER_TERMINATION_UNVERIFIED', 'unknown');
-          const stopped = await stopGotzjiOwnedBrowserProcess({ pid: pid!, protocol, tabId: tabs[0]!.id }, verifyOwnership);
-          if (alive(child)) throw new GotzjiBrowserProviderError('BROWSER_TERMINATION_UNVERIFIED', 'unknown');
-          return stopped;
+          return stopGotzjiOwnedBrowserProcess({ pid: pid!, protocol }, verifyOwnership);
         }
         try { await terminator.stop(child, pid!); } catch (cause) { const error = new GotzjiBrowserProviderError('BROWSER_TERMINATION_UNVERIFIED', 'unknown'); error.cause = cause; throw error; }
         if (alive(child)) throw new GotzjiBrowserProviderError('BROWSER_TERMINATION_UNVERIFIED', 'unknown');
@@ -105,33 +101,56 @@ export async function startGotzjiOwnedBrowser(options: {
 }
 function alive(child: ChildProcess): boolean { return child.exitCode === null && child.signalCode === null; }
 /** Restored sessions use a pinned PID birth, never an ambient process. Host checks job/resource ownership before this control action. */
-export async function stopGotzjiOwnedBrowserProcess(session: { readonly pid: number; readonly pidBirth?: string; readonly tabId: string; readonly protocol: NodeBrowserCdpProtocol },
+export async function stopGotzjiOwnedBrowserProcess(session: { readonly pid: number; readonly pidBirth?: string; readonly protocol: NodeBrowserCdpProtocol },
   verifyOwnedSession: () => Promise<boolean>): Promise<{ readonly stopped: true; readonly pid: number }> {
-  if (process.platform !== 'win32' || typeof verifyOwnedSession !== 'function' || !Number.isSafeInteger(session.pid) || session.pid < 1 || !session.tabId || !await verifyOwnedSession()) throw new GotzjiBrowserProviderError('BROWSER_TERMINATION_UNVERIFIED', 'unknown');
+  if (process.platform !== 'win32' || typeof verifyOwnedSession !== 'function' || !Number.isSafeInteger(session.pid) || session.pid < 1 || !await verifyOwnedSession()) throw new GotzjiBrowserProviderError('BROWSER_TERMINATION_UNVERIFIED', 'unknown');
   const prior = await windowsProcessSnapshot(); const root = prior.find((entry) => entry.pid === session.pid);
-  if (!root || (session.pidBirth !== undefined && root.start !== session.pidBirth)) throw new GotzjiBrowserProviderError('BROWSER_TERMINATION_UNVERIFIED', 'unknown');
+  if (!root?.start || (session.pidBirth !== undefined && root.start !== session.pidBirth)) throw new GotzjiBrowserProviderError('BROWSER_TERMINATION_UNVERIFIED', 'unknown');
   const owned = new Map<number, string>([[root.pid, root.start]]); let changed = true;
-  while (changed) { changed = false; for (const entry of prior) if (owned.has(entry.parent) && !owned.has(entry.pid)) { owned.set(entry.pid, entry.start); changed = true; } }
+  while (changed) { changed = false; for (const entry of prior) if (owned.has(entry.parent) && !owned.has(entry.pid)) {
+    if (!entry.start) throw new GotzjiBrowserProviderError('BROWSER_TERMINATION_UNVERIFIED', 'unknown');
+    owned.set(entry.pid, entry.start); changed = true;
+  } }
   if (!await verifyOwnedSession()) throw new GotzjiBrowserProviderError('BROWSER_TERMINATION_UNVERIFIED', 'unknown');
-  try { await session.protocol.request(session.tabId, 'Browser.close', {}); } catch { /* A closed response socket is resolved only by native inspection below. */ }
-  const deadline = Date.now() + 5000;
-  while (Date.now() < deadline) {
-    const current = await windowsProcessSnapshot();
-    if (!current.some((entry) => owned.get(entry.pid) === entry.start)) return { stopped: true, pid: session.pid };
-    await new Promise<void>((resolve) => setTimeout(resolve, 50));
-  }
-  throw new GotzjiBrowserProviderError('BROWSER_TERMINATION_UNVERIFIED', 'unknown');
+  let closeError: unknown;
+  let lastObserved = prior.filter(entry => owned.get(entry.pid) === entry.start);
+  const controller = new AbortController();
+  // Browser.close acknowledges before Chrome finishes its normal native shutdown.
+  const deadline = performance.now() + 20_000;
+  const closing = session.protocol.requestBrowserClose(controller.signal).catch((error: unknown) => { closeError = error; });
+  try {
+    while (performance.now() < deadline) {
+      const current = await windowsProcessSnapshot([...owned.keys()], Math.min(5000, Math.max(1, Math.ceil(deadline - performance.now()))));
+      lastObserved = current.filter(entry => owned.get(entry.pid) === entry.start);
+      if (performance.now() >= deadline) break;
+      if (!current.some((entry) => owned.get(entry.pid) === entry.start)) return { stopped: true, pid: session.pid };
+      await new Promise<void>((resolve) => setTimeout(resolve, Math.min(50, Math.max(0, deadline - performance.now()))));
+    }
+  } finally { controller.abort(); await closing; }
+  const error = new GotzjiBrowserProviderError('BROWSER_TERMINATION_UNVERIFIED', 'unknown');
+  error.cause = closeError ?? new Error(`Owned browser close observation expired; last captured identities=${JSON.stringify(lastObserved)}`);
+  throw error;
 }
-async function windowsProcessSnapshot(): Promise<readonly { pid: number; parent: number; start: string }[]> {
+async function windowsProcessSnapshot(pids?: readonly number[], timeoutMs = 5000): Promise<readonly { pid: number; parent: number; start: string; name: string }[]> {
   return new Promise((resolve, reject) => {
-    const script = 'Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,@{Name="Start";Expression={$_.CreationDate.ToUniversalTime().ToString("o")}} | ConvertTo-Json -Compress';
-    execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { windowsHide: true, timeout: 5000, maxBuffer: 8 * 1024 * 1024 }, (error, stdout) => {
-      if (error) { reject(new GotzjiBrowserProviderError('BROWSER_TERMINATION_UNVERIFIED', 'unknown')); return; }
+    const started = performance.now(); const phase = pids === undefined ? 'capture' : 'absence';
+    const filter = pids === undefined ? '' : ` -Filter '${pids.map(pid => `ProcessId = ${pid}`).join(' OR ')}'`;
+    const script = `$rows=@(Get-CimInstance Win32_Process${filter} | Select-Object ProcessId,ParentProcessId,Name,@{Name="Start";Expression={if($null -ne $_.CreationDate){$_.CreationDate.ToUniversalTime().ToString("o")}else{''}}}); ConvertTo-Json -InputObject $rows -Compress`;
+    execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { windowsHide: true, timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024 }, (error, stdout) => {
+      if (error) {
+        const failure = new GotzjiBrowserProviderError('BROWSER_TERMINATION_UNVERIFIED', 'unknown');
+        failure.cause = new Error(`Owned browser census failed ${JSON.stringify({ phase, timeoutMs, elapsedMs: Math.round(performance.now() - started), code: error.code, killed: error.killed, signal: error.signal })}`);
+        reject(failure); return;
+      }
       try {
-        const rows = JSON.parse(stdout) as { ProcessId: number; ParentProcessId: number; Start: string }[];
-        if (!Array.isArray(rows) || rows.some((row) => !Number.isSafeInteger(row.ProcessId) || typeof row.Start !== 'string' || !row.Start)) throw new Error('Invalid native process identity census');
-        resolve(rows.map((row) => ({ pid: row.ProcessId, parent: row.ParentProcessId, start: row.Start })));
-      } catch { reject(new GotzjiBrowserProviderError('BROWSER_TERMINATION_UNVERIFIED', 'unknown')); }
+        const inventory = JSON.parse(stdout) as { ProcessId: number; ParentProcessId: number; Start: unknown; Name?: unknown }[];
+        if (!Array.isArray(inventory) || inventory.some(row => !row || !Number.isSafeInteger(row.ProcessId))) throw new Error('Invalid native process identity census');
+        const rows = pids === undefined ? inventory : inventory.filter(row => pids.includes(row.ProcessId));
+        if (rows.some(row => !Number.isSafeInteger(row.ParentProcessId) || (pids !== undefined && (typeof row.Start !== 'string' || !row.Start)))) throw new Error('Invalid owned process identity census');
+        resolve(rows.map((row) => ({ pid: row.ProcessId, parent: row.ParentProcessId, start: typeof row.Start === 'string' ? row.Start : '', name: typeof row.Name === 'string' ? row.Name : 'unknown' })));
+      } catch {
+        const failure = new GotzjiBrowserProviderError('BROWSER_TERMINATION_UNVERIFIED', 'unknown'); failure.cause = new Error(`Owned browser census invalid (${phase})`); reject(failure);
+      }
     });
   });
 }

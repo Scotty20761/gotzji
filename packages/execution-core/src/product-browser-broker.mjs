@@ -56,11 +56,14 @@ export async function restoreTrustedProductBrowserEnrollment(project, options) {
   const own = async value => value.owner === project.owner && value.projectId === project.projectId && value.sessionId === session.sessionId && await verifyOwnedProductBrowserSession(value);
   const transport = new GotzjiBrowserCdpTransport(protocol, { browserId: session.binding.browserId, contextId: session.binding.contextId, profileId: session.binding.profileId,
     tabId: session.binding.tabId, providerTabId: session.binding.providerTabId, cdpBrowserContextId: session.cdpBrowserContextId }, async () => own(session));
-  if (JSON.stringify(await transport.binding()) !== JSON.stringify(session.binding)) throw typed('BROWSER_DOCUMENT_CHANGED', 'none');
+  let cleanupOnly = false;
+  try { cleanupOnly = JSON.stringify(await transport.binding()) !== JSON.stringify(session.binding); }
+  catch { cleanupOnly = true; }
   const publicBinding = value => ({ sessionId: value.session.sessionId, tabId: value.session.binding.tabId, expectedUrl: value.session.binding.url,
     expectedDocumentId: value.session.binding.documentId, allowedOrigins: [...value.session.allowedOrigins] });
   const restored = { ...options, verifyOwnedSession: own };
   const refresh = async () => {
+    if (cleanupOnly) throw typed('BROWSER_SESSION_STOP_REQUIRED', 'none');
     await assertPins({ browser: options }); if (!await own(session)) throw typed('BROWSER_SESSION_UNVERIFIED', 'none');
     const latest = { ...session, binding: await transport.binding() }; assertGotzjiBrowserUrlScope(latest.binding.url, latest);
     const manifestPath = path.join(path.dirname(options.manifestPath), 'browser-manifest-' + randomUUID() + '.json');
@@ -68,8 +71,8 @@ export async function restoreTrustedProductBrowserEnrollment(project, options) {
     const next = { ...options, session: latest, manifestPath, manifestSha256: hash(body), verifyOwnedSession: own };
     return { options: next, publicBinding: publicBinding(next) };
   };
-  return { options: restored, publicBinding: publicBinding(restored), refresh,
-    stop: () => stopGotzjiOwnedBrowserProcess({ pid: session.pid, pidBirth: session.pidBirth, tabId: session.binding.tabId, protocol }, async () => { await assertPins({ browser: options }); return own(session); }) };
+  return { options: restored, publicBinding: publicBinding(restored), refresh, ...(cleanupOnly ? { cleanupOnly: true } : {}),
+    stop: () => stopGotzjiOwnedBrowserProcess({ pid: session.pid, pidBirth: session.pidBirth, protocol }, async () => { await assertPins({ browser: options }); return own(session); }) };
 }
 
 /** Trusted host helper for a fresh driver it already owns. Returned native facts are then pinned in a private manifest. */

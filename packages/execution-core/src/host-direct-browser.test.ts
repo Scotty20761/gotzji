@@ -8,7 +8,8 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { DatabaseSync } from 'node:sqlite';
 import { nativeDigest } from '@lnwjud/capabilities/gotzji-native-contract';
-import { describe, expect, it } from 'vitest';
+import { NodeBrowserCdpProtocol } from '@lnwjud/capabilities';
+import { describe, expect, it, vi } from 'vitest';
 import { ExecutionCore } from './core.js';
 import { canonicalTemporaryDirectory } from './test-fixtures.js';
 import { ensureProductControlDocuments } from './product-control-policy.js';
@@ -16,7 +17,7 @@ import { hash, type WorkerRow } from './store.js';
 import { processIdentities } from './process-identity.mjs';
 import { observeWorker, signed, stopWorker } from './managed-worker.js';
 import { childEnvironment } from './product-security.mjs';
-import { verifyOwnedProductBrowserSession } from './product-browser-broker.mjs';
+import { restoreTrustedProductBrowserEnrollment, verifyOwnedProductBrowserSession } from './product-browser-broker.mjs';
 import type { TrustedProductBrowserSessionManifest } from './product-browser.js';
 
 describe('owned synthetic browser provider through the full durable controller', () => {
@@ -47,6 +48,12 @@ describe('owned synthetic browser provider through the full durable controller',
       const product = direct ? { mode: 'host-direct' as const, libraryRoot: policy, testOnlyProviders: true as const } : { executable, libraryRoot: policy, testDriver: fileURLToPath(new URL('./grace-test-driver.mjs', import.meta.url)) };
       core = await ExecutionCore.open(state, { product, browserOptions: { session, manifestPath, manifestSha256: hash(JSON.stringify(session)), prerequisites: [{ path: transport, hash: hash(await readFile(transport)) }], verifyOwnedSession: verifyOwnedProductBrowserSession, testTransportModule: transport, deadlineMs: 20000 } });
       const credential = core.enrollAdapter('browser-fixture', 'owner'); core.registerProject(credential, { projectId: 'project', displayName: 'Owned synthetic browser', rootPath: project });
+      const missingPage = vi.spyOn(NodeBrowserCdpProtocol.prototype, 'listTabs').mockResolvedValue([]);
+      try {
+        const restored = await restoreTrustedProductBrowserEnrollment(core.listProjects(credential)[0]!, { session, manifestPath, manifestSha256: hash(JSON.stringify(session)), prerequisites: [{ path: transport, hash: hash(await readFile(transport)) }] });
+        expect(restored.cleanupOnly).toBe(true); expect(restored.publicBinding.sessionId).toBe(session.sessionId);
+        await expect(restored.refresh()).rejects.toMatchObject({ code: 'BROWSER_SESSION_STOP_REQUIRED' });
+      } finally { missingPage.mockRestore(); }
       const input = { requestId: 'owned-browser-effect', projectId: 'project', operation: 'browser.type' as const, sessionId: session.sessionId, tabId: session.binding.tabId, expectedUrl: session.binding.url, expectedDocumentId: session.binding.documentId, selector: '#owned-input', text: 'after' };
       const preparation = await core.prepareOperation(credential, input); const job = await core.submit(credential, preparation.preparationId); const binding = core.select(credential, job.jobId); await core.resume(credential, binding);
       const db = new DatabaseSync(path.join(state, 'core.sqlite'), { readOnly: true }); try { workers = db.prepare('SELECT * FROM gotzji_workers').all() as unknown as WorkerRow[]; } finally { db.close(); }

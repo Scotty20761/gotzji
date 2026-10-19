@@ -14,11 +14,16 @@ import { alive, observeWorker, stopWorker } from '../../../packages/execution-co
 import type { WorkerRow } from '../../../packages/execution-core/src/store.js';
 import { childEnvironment } from '../../../packages/execution-core/src/product-security.mjs';
 import { electronExecutablePath, terminateProcessTree } from './electron-runtime.js';
+import { assertChromeRootsPreserved, independentChromeRoots, ownedChromeProcesses } from './gotzji-browser-runtime.js';
+import { readProductConfiguration, testOnlyProductSecretProtector } from '../../../packages/execution-core/src/product-host.js';
+import { startGotzjiOwnedBrowser, type GotzjiOwnedBrowserDriver } from '../../../packages/capabilities/src/gotzji-browser-provider-session.js';
 
 const desktopRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const mainEntry = path.join(desktopRoot, 'dist', 'main', 'main.js');
 
 type GovernedFixture = {
+  readonly dataRoot: string;
+  beforeClose(action: () => Promise<void>): void;
   app: ElectronApplication;
   page: Page;
   temporaryProject(prefix: 'gotzji-library-panel-e2e-' | 'gotzji-files-panel-e2e-'): Promise<string>;
@@ -29,7 +34,15 @@ const test = base.extend<{ gotzji: GovernedFixture }>({
   // Playwright requires an object pattern; this Electron fixture has no browser-fixture dependency.
   // eslint-disable-next-line no-empty-pattern
   gotzji: async ({}, use) => {
-    const tempRoot = await realpath(os.tmpdir());
+    const systemTempRoot = await realpath(os.tmpdir());
+    let tempRoot = systemTempRoot;
+    if (process.env.GOTZJI_NATIVE_BROWSER_QUALIFICATION === '1') {
+      const scopedParent = path.join(systemTempRoot, 'gotzji'); await mkdir(scopedParent, { recursive: true });
+      if (await realpath(scopedParent) !== scopedParent) throw new Error('Native browser fixture parent was redirected');
+      tempRoot = scopedParent; // Shared parent is retained; only this fixture's unique children are removed.
+    }
+    const additionalCleanup: Array<() => Promise<void>> = [];
+    let additionalResourcesAbsent = true;
     const dataRoot = await mkdtemp(path.join(tempRoot, 'gotzji-desktop-e2e-'));
     let dataRootVerified = false;
     const roots: string[] = [];
@@ -94,7 +107,7 @@ const test = base.extend<{ gotzji: GovernedFixture }>({
 
 
       await use({
-        app, page,
+        app, page, dataRoot, beforeClose: (action) => { additionalCleanup.push(action); },
         temporaryProject: async (prefix) => {
           const root = await mkdtemp(path.join(tempRoot, prefix));
           const selected = path.relative(tempRoot, root);
@@ -109,6 +122,9 @@ const test = base.extend<{ gotzji: GovernedFixture }>({
         },
       });
     } catch (error) { failures.push(error); }
+    for (const close of additionalCleanup.reverse()) {
+      try { await close(); } catch (error) { additionalResourcesAbsent = false; failures.push(error); }
+    }
     // Keep SQLite coordination alive across the forced disposable-tree shutdown.
     // This historical read mark is released before taking the authoritative census.
     let workerDatabase: DatabaseSync | undefined;
@@ -169,7 +185,7 @@ const test = base.extend<{ gotzji: GovernedFixture }>({
       try { workerDatabase.close(); databaseClosed = true; }
       catch (error) { failures.push(error); }
     }
-    const resourcesAbsent = uiAbsent && hostAbsent && workersAbsent && launcherAbsent && databaseClosed;
+    const resourcesAbsent = uiAbsent && hostAbsent && workersAbsent && launcherAbsent && databaseClosed && additionalResourcesAbsent;
     if (!resourcesAbsent) failures.push(new Error(`Owned fixture processes unproved; retained ${dataRoot}, ${roots.join(', ')}`));
     const cleanup = await Promise.allSettled([
       dataRootVerified && resourcesAbsent ? expect.poll(async () => {
@@ -662,7 +678,201 @@ test('gotzji command lost acknowledgement survives whole-app page navigation', a
   expect(await page.evaluate(async () => (await window.gotzji.request({ method: 'listJobs', input: {} }) as unknown[]).length)).toBe(1);
 });
 
-async function waitForOwnedSubmission(page: Page, elementId: 'lost-ack-fixture' | 'command-app-proof'): Promise<void> {
+test('gotzji browser review retains synthetic renderer admission across hidden pages', async ({ gotzji }) => {
+  const { page } = gotzji; const fixturePath = gotzji.rendererFixturePath();
+  await build({ stdin: { resolveDir: desktopRoot, sourcefile: 'owned-browser-ui.tsx', loader: 'tsx', contents: `
+    import React, { StrictMode, useState } from 'react';
+    import { createRoot } from 'react-dom/client';
+    import { GotzjiBrowserPanel } from './src/renderer/GotzjiBrowserPanel.tsx';
+    document.getElementById('root').hidden = true;
+    const root = document.createElement('div'); root.id = 'browser-ui-proof'; document.body.append(root);
+    const calls = []; const oldReplies = []; const admissions = new Map(); let loseAck = true;
+    Reflect.set(root, 'calls', calls); Reflect.set(root, 'oldReplies', oldReplies); Reflect.set(root, 'documentId', 'document-a');
+    const request = (method, input) => {
+      calls.push({method,input});
+      const pending = (async () => {
+        if (method === 'browserSession') {
+          if (!Reflect.get(root, 'inspectionReady')) return new Promise(resolve => oldReplies.push(resolve));
+          return { state:'ready',projectId:'renderer-browser',sessionId:'session',tabId:'tab',expectedUrl:'https://example.org/',expectedDocumentId:Reflect.get(root,'documentId'),allowedOrigins:['https://example.org'] };
+        }
+        if (method === 'prepareOperation') return {preparationId:'preparation-'+calls.filter(entry=>entry.method==='prepareOperation').length};
+        if (method === 'submit') {
+          if (!admissions.has(input.preparationId)) admissions.set(input.preparationId,'c'.repeat(64));
+          root.dataset.syntheticAdmissionCount=String(admissions.size);
+          if (loseAck) {loseAck=false;throw new Error('OWNED_RENDERER_LOST_ACK');}
+          return {jobId:admissions.get(input.preparationId)};
+        }
+        throw new Error('UNEXPECTED_RENDERER_METHOD');
+      })();
+      if (method==='submit') Reflect.set(root,'ownedSubmitPromise',pending);
+      return pending;
+    };
+    function Harness(){const [visible,setVisible]=useState(true);return <div className="gotzji-app"><main>
+      <button onClick={()=>setVisible(false)}>ซ่อนแผงทดสอบ</button><button onClick={()=>setVisible(true)}>แสดงแผงทดสอบ</button>
+      <GotzjiBrowserPanel projectId="renderer-browser" projectName="Renderer browser fixture" visible={visible} disabled={false} request={request} onChanged={async()=>{}} onJob={id=>{root.dataset.observedJobId=id;}} />
+    </main></div>;}
+    createRoot(root,{identifierPrefix:'browser-renderer-'}).render(<StrictMode><Harness/></StrictMode>);
+  ` }, bundle: true, format: 'iife', platform: 'browser', jsx: 'automatic', outfile: fixturePath, define: { 'process.env.NODE_ENV': '"production"' } });
+  await page.addScriptTag({ url: pathToFileURL(fixturePath).href });
+  const ui = page.locator('#browser-ui-proof'); const panel = ui.locator('.gotzji-browser-panel');
+  await page.evaluate(() => Reflect.set(document.getElementById('browser-ui-proof')!, 'inspectionReady', true));
+  await panel.getByRole('button', { name: 'ตรวจหน้าปัจจุบัน', exact: true }).click();
+  await expect(panel.getByRole('button', { name: 'ตรวจหน้าที่จะอ่าน', exact: true })).toBeVisible();
+  await page.evaluate(() => { const root = document.getElementById('browser-ui-proof')!; const replies = Reflect.get(root, 'oldReplies') as Array<(value: object) => void>; for (const resolve of replies) resolve({ state: 'not-enrolled', projectId: 'renderer-browser' }); });
+  await expect(panel.getByRole('status')).toContainText('พร้อมให้เลือกเครื่องมือเบราว์เซอร์');
+  await panel.getByRole('button', { name: 'ตรวจหน้าที่จะอ่าน', exact: true }).click();
+  await expect(panel.getByRole('heading', { name: 'ตรวจหน้าเว็บก่อนเริ่ม', exact: true })).toBeVisible();
+  await expect(panel).toContainText('Renderer browser fixture'); await expect(panel).toContainText('https://example.org/');
+  expect(await ui.getAttribute('data-synthetic-admission-count')).toBeNull();
+  expect(await page.evaluate(async () => (await window.gotzji.request({ method: 'listJobs', input: {} }) as unknown[]).length)).toBe(0);
+  await ui.getByRole('button', { name: 'ซ่อนแผงทดสอบ', exact: true }).click(); await expect(panel).toBeHidden();
+  await ui.getByRole('button', { name: 'แสดงแผงทดสอบ', exact: true }).click();
+  await panel.getByRole('button', { name: 'เริ่มอ่านหน้านี้', exact: true }).click();
+  await expect(panel.getByRole('alert')).toContainText('ยืนยันงานเดิมอีกครั้ง');
+  await ui.getByRole('button', { name: 'ซ่อนแผงทดสอบ', exact: true }).click(); await ui.getByRole('button', { name: 'แสดงแผงทดสอบ', exact: true }).click();
+  await panel.getByRole('button', { name: 'ยืนยันงานอ่านเดิมอีกครั้ง', exact: true }).click();
+  await waitForOwnedSubmission(page, 'browser-ui-proof');
+  expect(await ui.getAttribute('data-observed-job-id')).toBe('c'.repeat(64)); expect(await ui.getAttribute('data-synthetic-admission-count')).toBe('1');
+  const calls = await page.evaluate(() => Reflect.get(document.getElementById('browser-ui-proof')!, 'calls') as Array<{method:string;input:Record<string,unknown>}>);
+  expect(calls.filter(entry=>entry.method==='submit').map(entry=>entry.input)).toEqual([{preparationId:'preparation-1'},{preparationId:'preparation-1'}]);
+  expect(calls.filter(entry=>entry.method==='prepareOperation')).toHaveLength(1);
+  expect(calls.find(entry=>entry.method==='prepareOperation')?.input).toMatchObject({projectId:'renderer-browser',operation:'browser.read',selector:'body',expectedDocumentId:'document-a'});
+  await page.evaluate(() => Reflect.set(document.getElementById('browser-ui-proof')!, 'documentId', 'document-b'));
+  await panel.getByRole('button', { name: 'ตรวจหน้าปัจจุบัน', exact: true }).click();
+  await expect(panel.getByRole('heading', { name: 'ตรวจหน้าเว็บก่อนเริ่ม', exact: true })).toHaveCount(0);
+  await panel.getByRole('button', { name: 'ตรวจหน้าที่จะอ่าน', exact: true }).click();
+  const preparations = await page.evaluate(() => (Reflect.get(document.getElementById('browser-ui-proof')!, 'calls') as Array<{method:string;input:Record<string,unknown>}>).filter(entry=>entry.method==='prepareOperation'));
+  expect(preparations).toHaveLength(2); expect(preparations[1]!.input.expectedDocumentId).toBe('document-b');
+  expect(preparations[1]!.input.requestId).not.toBe(preparations[0]!.input.requestId);
+  expect(await ui.getAttribute('data-synthetic-admission-count')).toBe('1');
+  expect(await page.evaluate(async () => (await window.gotzji.request({ method: 'listJobs', input: {} }) as unknown[]).length)).toBe(0);
+});
+
+test('gotzji whole-app browser navigation retains one modeled preparation and admission', async ({ gotzji }) => {
+  const { page } = gotzji; const root = await gotzji.temporaryProject('gotzji-files-panel-e2e-');
+  await page.evaluate(async rootPath => window.gotzji.request({ method: 'registerProject', input: { projectId: 'browser-navigation', displayName: 'Browser navigation fixture', rootPath } }), root);
+  const fixturePath = gotzji.rendererFixturePath();
+  // Renderer-model proof only. The independent real Core job count must stay zero.
+  await build({ stdin: { resolveDir: path.join(desktopRoot, 'src', 'renderer'), sourcefile: 'browser-navigation-fixture.tsx', loader: 'tsx', contents: `
+    import { StrictMode } from 'react'; import { createRoot } from 'react-dom/client';
+    import { GotzjiApp } from './GotzjiApp.tsx';
+    document.getElementById('root').hidden=true;
+    const root=document.createElement('div');root.id='browser-app-proof';document.body.append(root);
+    const preparations=[];const submissions=[];const jobId='d'.repeat(64);let admitted=false;let loseAck=true;
+    const job={jobId,projectId:'browser-navigation',status:'completed',requestedOperation:'browser.read'};
+    Reflect.set(root,'preparations',preparations);Reflect.set(root,'submissions',submissions);
+    const request=(method,input)=>{
+      const pending=(async()=>{
+        if(method==='browserSession')return {state:'ready',projectId:'browser-navigation',sessionId:'model-session',tabId:'model-tab',expectedUrl:'https://example.org/',expectedDocumentId:'model-document',allowedOrigins:['https://example.org']};
+        if(method==='prepareOperation'&&input.operation==='browser.read'){preparations.push(input);return {preparationId:'model-preparation-'+preparations.length};}
+        if(method==='submit'){
+          if(input.preparationId!=='model-preparation-1')throw new Error('Unexpected modeled preparation');
+          submissions.push(input);admitted=true;root.dataset.syntheticAdmissionCount='1';
+          if(loseAck){loseAck=false;throw new Error('MODELED_BROWSER_LOST_ACK');}
+          return {jobId};
+        }
+        if(method==='status'&&input.jobId===jobId)return job;
+        const value=await window.gotzji.request({method,input});
+        return method==='listJobs'&&admitted?[...value,job]:value;
+      })();
+      if(method==='submit')Reflect.set(root,'ownedSubmitPromise',pending);
+      return pending;
+    };
+    createRoot(root,{identifierPrefix:'browser-app-'}).render(<StrictMode><GotzjiApp requestPort={request}/></StrictMode>);
+  ` }, bundle: true, format: 'iife', platform: 'browser', jsx: 'automatic', loader: { '.css': 'empty', '.webp': 'dataurl' }, outfile: fixturePath, define: { 'process.env.NODE_ENV': '"production"' } });
+  await page.addScriptTag({ url: pathToFileURL(fixturePath).href });
+  const appView = page.locator('#browser-app-proof'); const panel = appView.locator('.gotzji-browser-panel');
+  await appView.getByRole('button', { name: 'โครงการ', exact: true }).click();
+  await appView.getByRole('button', { name: /^Browser navigation fixture ·/ }).click();
+  await panel.getByRole('button', { name: 'ตรวจหน้าที่จะอ่าน', exact: true }).click();
+  await expect(panel.getByRole('heading', { name: 'ตรวจหน้าเว็บก่อนเริ่ม', exact: true })).toBeVisible();
+  expect(await page.evaluate(async () => (await window.gotzji.request({ method: 'listJobs', input: {} }) as unknown[]).length)).toBe(0);
+  await panel.getByRole('button', { name: 'เริ่มอ่านหน้านี้', exact: true }).click();
+  await expect(panel.getByRole('alert')).toContainText('ยืนยันงานเดิมอีกครั้ง');
+  await appView.getByRole('button', { name: 'ภาพรวม', exact: true }).click(); await expect(panel).toBeHidden();
+  await appView.getByRole('button', { name: 'รีเฟรช', exact: true }).click();
+  await appView.getByRole('button', { name: 'เครื่องมือ', exact: true }).click();
+  await expect(panel.getByRole('heading', { name: 'ตรวจหน้าเว็บก่อนเริ่ม', exact: true })).toBeVisible();
+  await panel.getByRole('button', { name: 'ยืนยันงานอ่านเดิมอีกครั้ง', exact: true }).click();
+  await waitForOwnedSubmission(page, 'browser-app-proof');
+  await expect(appView.getByRole('heading', { name: `งาน ${'d'.repeat(64)}`, exact: true })).toBeVisible();
+  const evidence = await page.evaluate(() => {
+    const root = document.getElementById('browser-app-proof')!;
+    return { preparations: Reflect.get(root, 'preparations'), submissions: Reflect.get(root, 'submissions'), admissions: root.dataset.syntheticAdmissionCount };
+  }) as { preparations: unknown[]; submissions: { preparationId: string }[]; admissions: string };
+  expect(evidence.preparations).toHaveLength(1); expect(evidence.submissions).toHaveLength(2);
+  expect(evidence.submissions[1]).toEqual(evidence.submissions[0]); expect(evidence.admissions).toBe('1');
+  expect(await page.evaluate(async () => (await window.gotzji.request({ method: 'listJobs', input: {} }) as unknown[]).length)).toBe(0);
+});
+
+test.describe('actual Windows Chrome qualification', () => {
+  test.skip(process.platform !== 'win32' || process.env.GOTZJI_NATIVE_BROWSER_QUALIFICATION !== '1', 'Explicit owned Chrome/network qualification; renderer CI is separate evidence');
+  test('gotzji browser native read preserves independent Chrome and closes its own profiles', async ({ gotzji }, testInfo) => {
+    test.setTimeout(90000);
+    const { page, dataRoot } = gotzji; const projectId = 'native-browser';
+    const referenceUrl = 'https://raw.githubusercontent.com/Scotty20761/gotzji/2a5a5401c6dadcf46c6f2f9ab63156a7cc4c8ddf/README.md';
+    const priorRoots = await independentChromeRoots(); let control: GotzjiOwnedBrowserDriver | undefined;
+    gotzji.beforeClose(async () => {
+      const failures: unknown[] = [];
+      try { await page.evaluate(async (id) => window.gotzji.request({ method: 'stopBrowserSession', input: { projectId: id } }), projectId); }
+      catch (error) { failures.push(error); }
+      if (control) {
+        try { await control.stop(); control = undefined; }
+        catch (error) {
+          const failure = error as Error & { code?: string; cause?: Error };
+          failures.push(new Error(`Owned Chrome control stop failed: ${failure.stack}; cause=${failure.cause?.stack ?? failure.message}`, { cause: error }));
+        }
+      }
+      const checks = await Promise.allSettled([
+        (async (): Promise<void> => { expect(await ownedChromeProcesses(dataRoot)).toEqual([]); expect(await ownedChromeProcesses(dataRoot)).toEqual([]); })(),
+        assertChromeRootsPreserved(priorRoots),
+      ]);
+      for (const check of checks) if (check.status === 'rejected') failures.push(check.reason);
+      if (failures.length) throw new AggregateError(failures, `Native Chrome cleanup failed: ${failures.map(error => error instanceof Error ? error.message : String(error)).join('; ')}`);
+    });
+    const config = await readProductConfiguration(path.join(dataRoot, 'runtime'), testOnlyProductSecretProtector());
+    expect(config.browser, 'A privately pinned registered Chrome is required for this explicit native qualification').toBeDefined();
+    control = await startGotzjiOwnedBrowser({ profileParent: path.join(dataRoot, 'control-browser'), chromeExecutable: config.browser!.executable, startUrl: referenceUrl, allowedOrigins: ['https://raw.githubusercontent.com'], headless: true });
+    expect(await control.verifyOwnership()).toBe(true);
+    const root = await gotzji.temporaryProject('gotzji-files-panel-e2e-'); await writeFile(path.join(root, 'preserve.txt'), 'Owned browser source remains unchanged');
+    await page.evaluate(async ({ rootPath, id }) => window.gotzji.request({ method: 'registerProject', input: { projectId: id, displayName: 'Browser native fixture', rootPath, kind: 'project' } }), { rootPath: root, id: projectId });
+    await page.getByRole('button', { name: 'รีเฟรช', exact: true }).click(); await page.getByRole('button', { name: 'โครงการ', exact: true }).click();
+    await page.getByRole('button', { name: /^Browser native fixture ·/ }).click();
+    const panel = page.locator('.gotzji-browser-panel');
+    await panel.getByLabel('หน้าเริ่มต้น', { exact: true }).fill(referenceUrl);
+    await panel.getByRole('button', { name: 'เปิดเบราว์เซอร์โครงการ', exact: true }).click();
+    await expect(panel).toHaveAttribute('aria-busy', 'false', { timeout: 30000 });
+    await expect(panel.getByRole('status')).toContainText('พร้อมให้เลือกเครื่องมือเบราว์เซอร์');
+    expect((await ownedChromeProcesses(dataRoot, 'product')).length).toBeGreaterThan(0);
+    await panel.getByRole('button', { name: 'ตรวจหน้าที่จะอ่าน', exact: true }).click();
+    await expect(panel.getByRole('heading', { name: 'ตรวจหน้าเว็บก่อนเริ่ม', exact: true })).toBeVisible();
+    expect(await page.evaluate(async () => (await window.gotzji.request({ method: 'listJobs', input: {} }) as unknown[]).length)).toBe(0);
+    await page.screenshot({ path: path.join(desktopRoot, '..', '..', '.local-artifacts', 'parity-c4a-native-browser-review.png') });
+    await panel.getByRole('button', { name: 'เริ่มอ่านหน้านี้', exact: true }).click();
+    const heading = page.getByRole('heading', { name: /^งาน [a-f0-9]{64}$/u }); await expect(heading).toBeVisible();
+    await expect(page.getByText('เสร็จแล้ว', { exact: true })).toBeVisible({ timeout: testInfo.timeout });
+    const jobId = (await heading.textContent())!.replace('งาน ', '');
+    await page.getByRole('button', { name: 'ดูผลลัพธ์', exact: true }).click();
+    const readable = page.getByRole('region', { name: 'ผลการอ่านหน้าเว็บ', exact: true });
+    await expect(readable.getByRole('heading', { name: 'อ่านหน้าเว็บสำเร็จ', exact: true })).toBeVisible();
+    await expect(readable.locator('pre:visible')).toContainText('An open-source Windows MCP app controlled by ChatGPT through its gotzji plugin.');
+    await expect(readable).toContainText(referenceUrl);
+    await expect(readable.locator('details')).not.toHaveAttribute('open');
+    const result = await page.evaluate(async (id) => window.gotzji.request({ method: 'result', input: { jobId: id } }), jobId);
+    await page.getByRole('button', { name: 'เครื่องมือ', exact: true }).click(); await panel.getByRole('button', { name: 'ปิดเบราว์เซอร์โครงการ', exact: true }).click();
+    await expect(panel).toHaveAttribute('aria-busy', 'false', { timeout: 30000 });
+    await expect(panel.getByRole('alert')).toHaveCount(0);
+    await expect(panel.getByRole('button', { name: 'ปิดเบราว์เซอร์โครงการ', exact: true })).toBeDisabled();
+    expect(await page.evaluate(async (id) => window.gotzji.request({ method: 'browserSession', input: { projectId: id } }), projectId)).toMatchObject({ state: 'not-enrolled' });
+    expect(await ownedChromeProcesses(dataRoot, 'product')).toEqual([]); expect(await ownedChromeProcesses(dataRoot, 'product')).toEqual([]);
+    expect(await control.verifyOwnership()).toBe(true); await assertChromeRootsPreserved(priorRoots);
+    expect(await page.evaluate(async (id) => window.gotzji.request({ method: 'result', input: { jobId: id } }), jobId)).toEqual(result);
+    expect(await page.evaluate(async () => (await window.gotzji.request({ method: 'listJobs', input: {} }) as unknown[]).length)).toBe(1);
+    expect(await readFile(path.join(root, 'preserve.txt'), 'utf8')).toBe('Owned browser source remains unchanged');
+  });
+});
+
+async function waitForOwnedSubmission(page: Page, elementId: 'lost-ack-fixture' | 'command-app-proof' | 'browser-ui-proof' | 'browser-app-proof'): Promise<void> {
   await page.evaluate(async (id) => {
     const root = document.getElementById(id);
     const pending = root ? Reflect.get(root, 'ownedSubmitPromise') as unknown : undefined;

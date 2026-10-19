@@ -14,6 +14,7 @@ import { EMPTY_RECIPE_FORM, recipeRequest, recipeReviewLines, type RecipeForm } 
 import { GotzjiConnectionPanel } from './GotzjiConnectionPanel.js';
 import { GotzjiStartupPanel } from './GotzjiStartupPanel.js';
 import { GotzjiBrowserPanel } from './GotzjiBrowserPanel.js';
+import { browserReadResult } from './gotzji-browser-result.js';
 import { GotzjiLibraryChannelPanel } from './GotzjiLibraryChannelPanel.js';
 import { GotzjiVersionNotes } from './GotzjiVersionNotes.js';
 
@@ -146,6 +147,7 @@ export function GotzjiApp({ requestPort }: { readonly requestPort?: (method: Got
   const workflows = catalog.filter((item) => item.state === 'available' && item.name === 'library.workflow' && item.projectId === projectId);
   const recipes = catalog.filter((item) => item.state === 'available' && typeof item.recipeId === 'string');
   const selectedProject = projects.find((item) => item.projectId === projectId);
+  const browserResult = browserReadResult(result);
   const boundRecipeIds = Array.isArray(selectedProject?.recipeIds) ? selectedProject.recipeIds as string[] : [];
   const projectCommands = projectCommandOptions(boundRecipeIds, catalog);
 
@@ -184,10 +186,10 @@ export function GotzjiApp({ requestPort }: { readonly requestPort?: (method: Got
             {recipes.map((recipe) => <option key={String(recipe.recipeId)} value={String(recipe.recipeId)}>{String(recipe.description ?? recipe.recipeId)}</option>)}</select></label>
           <button disabled={busy || !recipeBinding.projectId || !recipeBinding.recipeId} onClick={() => void act(async () => { await request('bindProjectRecipe', recipeBinding); await refresh(); })}>เพิ่มคำสั่งให้โครงการ</button></section></>}
       {selectedProject && <GotzjiProjectCommands key={`${JSON.stringify(selectedProject)}:${JSON.stringify(projectCommands)}`} visible={page === 'tools'} projectId={projectId} projectName={String(selectedProject.displayName)} commands={projectCommands} disabled={busy || host?.state !== 'ready'} request={request} onSettings={() => setPage('projects')} onJob={(id) => { setJobId(id); setPage((current) => current === 'tools' ? 'worklog' : current); void refresh(); }} />}
+      {selectedProject && <GotzjiBrowserPanel key={projectId} visible={page === 'tools'} projectId={projectId} projectName={String(selectedProject.displayName)} disabled={busy || host?.state !== 'ready'} request={request} onChanged={refresh} onJob={(id) => { setJobId(id); setPage((current) => current === 'tools' ? 'worklog' : current); void refresh(); }} />}
       {page === 'tools' && <>{projectId ? <GotzjiProjectFiles key={projectId} projectId={projectId} request={request} disabled={busy || host?.state !== 'ready'} onJob={(id) => { setJobId(id); setPage('worklog'); void refresh(); }} /> : <section><h3>เลือกโครงการก่อนเริ่มงาน</h3><p>เปิดโครงการที่ต้องการเพื่อดูไฟล์และเครื่องมือที่ใช้ได้</p><button onClick={() => setPage('projects')}>เลือกโครงการ</button></section>}<section><h3>เครื่องมือ</h3><table><thead><tr><th>เครื่องมือ</th><th>สถานะ</th><th>รายละเอียด</th></tr></thead><tbody>{catalog.map((item) =>
         <tr key={`${item.name}:${item.projectId ?? ''}:${item.workflowId ?? ''}:${item.workflowVersion ?? ''}`}><td>{String(item.workflowId ?? item.name)}</td><td>{item.state === 'available' ? 'พร้อมใช้งาน' : 'ยังไม่พร้อม'}</td><td>{String(item.reason ?? item.description ?? '')}</td></tr>)}</tbody></table></section>
         <GotzjiToolReference />
-        <GotzjiBrowserPanel projectId={projectId} disabled={host?.state !== 'ready'} onChanged={refresh} />
         {selectedProject?.kind === 'library' && <GotzjiLibraryChannelPanel projectId={projectId} disabled={host?.state !== 'ready'} />}
         <details className="gotzji-advanced"><summary>เครื่องมือขั้นสูง</summary><section><h3>เตรียมคำสั่งของโครงการ</h3><label>โครงการ<select disabled={busy} value={projectId} onChange={(event) => setProjectId(event.target.value)}><option value="">เลือกโครงการ</option>
           {projects.map((project) => <option key={String(project.projectId)} value={String(project.projectId)}>{String(project.displayName)}</option>)}</select></label>
@@ -221,7 +223,7 @@ export function GotzjiApp({ requestPort }: { readonly requestPort?: (method: Got
           {record(selectedJob) && Array.isArray(selectedJob.settleDecisions) && <fieldset><legend>ตัดสินงานที่ค้าง</legend><p>งานนี้ทำงานจบหรือหยุดไปแล้ว แต่ยังถือโครงการไว้ เพราะระบบยืนยันผลเองไม่ได้ ตรวจไฟล์หรือผลในโครงการก่อน แล้วเลือกตามที่เห็น ระบบจะบันทึกการตัดสินและปล่อยโครงการให้งานถัดไป โดยไม่แก้ไฟล์ใด ๆ</p>
             <div className="gotzji-actions">{selectedJob.settleDecisions.includes('effect-present') && <button disabled={busy} onClick={() => void act(async () => { setSelectedJob(await request('settleJob', { jobId, decision: 'effect-present' })); await refresh(); })}>ผลเกิดแล้ว · ปล่อยโครงการ</button>}
             {selectedJob.settleDecisions.includes('no-effect') && <button disabled={busy} onClick={() => void act(async () => { setSelectedJob(await request('settleJob', { jobId, decision: 'no-effect' })); await refresh(); })}>ไม่มีผล · ปล่อยโครงการ</button>}</div></fieldset>}
-          {result !== null && <pre>{display(result)}</pre>}</section>}</>}
+          {result !== null && (browserResult ? <section aria-label="ผลการอ่านหน้าเว็บ"><h4>อ่านหน้าเว็บสำเร็จ</h4><p>{browserResult.url}</p><pre>{browserResult.text || 'หน้านี้ไม่มีข้อความ'}</pre><details><summary>รายละเอียดการตรวจยืนยัน</summary><pre>{display(result)}</pre></details></section> : <pre>{display(result)}</pre>)}</section>}</>}
       {page === 'queue' && <section><h3>งานที่กำลังรอ</h3><JobList jobs={queue} disabled={busy} select={(id) => { setJobId(id); setPage('worklog'); }} /></section>}
       {page === 'workflows' && <><section><label htmlFor={workflowProjectSelectId}>โครงการสำหรับเวิร์กโฟลว์</label><select id={workflowProjectSelectId} value={projectId} disabled={busy || host?.state !== 'ready'} onChange={(event) => setProjectId(event.target.value)}><option value="">เลือกโครงการ</option>{projects.map((project) => <option key={String(project.projectId)} value={String(project.projectId)}>{String(project.displayName)}</option>)}</select></section>
         <GotzjiWorkflowPrompts key={`${projectId}:${String(selectedProject?.displayName ?? '')}`} project={selectedProject ? { projectId, displayName: String(selectedProject.displayName) } : null} disabled={busy || host?.state !== 'ready'} />

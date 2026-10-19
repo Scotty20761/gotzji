@@ -6,11 +6,12 @@ import { ProductBrowserService } from './product-browser-service.js';
 import type { ExecutionCore } from './core.js';
 import type { TrustedProductBrowserEnrollment } from './product-browser.js';
 import type { JobView, RegisteredProject } from './types.js';
+import { CoreError } from './types.js';
 
-const broker = vi.hoisted(() => ({ create: vi.fn(), verify: vi.fn(async () => true) }));
-vi.mock('./product-browser-broker.mjs', () => ({ createTrustedProductBrowserEnrollment: broker.create, verifyOwnedProductBrowserSession: broker.verify }));
+const broker = vi.hoisted(() => ({ create: vi.fn(), restore: vi.fn(), verify: vi.fn(async () => true) }));
+vi.mock('./product-browser-broker.mjs', () => ({ createTrustedProductBrowserEnrollment: broker.create, restoreTrustedProductBrowserEnrollment: broker.restore, verifyOwnedProductBrowserSession: broker.verify }));
 const roots: string[] = [];
-async function fixture(): Promise<{ service: ProductBrowserService; stop: ReturnType<typeof vi.fn>; clear: ReturnType<typeof vi.fn>; protect: ReturnType<typeof vi.fn>; active: ReturnType<typeof vi.fn>; stored: () => Promise<unknown>; order: string[] }> {
+async function fixture(): Promise<{ service: ProductBrowserService; reopen: () => ProductBrowserService; enrollment: TrustedProductBrowserEnrollment; enroll: ReturnType<typeof vi.fn>; stop: ReturnType<typeof vi.fn>; clear: ReturnType<typeof vi.fn>; protect: ReturnType<typeof vi.fn>; active: ReturnType<typeof vi.fn>; stored: () => Promise<unknown>; order: string[] }> {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'gotzji-browser-service-')); roots.push(directory);
   const order: string[] = [];
   const stop = vi.fn(async () => { order.push('stop'); return { stopped: true as const, pid: 101 }; });
@@ -22,16 +23,50 @@ async function fixture(): Promise<{ service: ProductBrowserService; stop: Return
   // The service uses only these four Core methods; this test isolates sequencing, not native browser ownership.
   const project: RegisteredProject = { projectId: 'project', owner: 'owner', displayName: 'Fixture', rootPath: directory, resourceKey: 'fixture-project', recipeIds: [] };
   const active = vi.fn(async (): Promise<readonly JobView[]> => []);
-  const core: Pick<ExecutionCore, 'listProjects' | 'enrollBrowserSession' | 'activeJobs' | 'clearBrowserSession'> = { listProjects: () => [project], enrollBrowserSession: async () => undefined, activeJobs: active, clearBrowserSession: clear };
+  const enroll = vi.fn(async () => undefined);
+  const core: Pick<ExecutionCore, 'listProjects' | 'enrollBrowserSession' | 'activeJobs' | 'clearBrowserSession'> = { listProjects: () => [project], enrollBrowserSession: enroll, activeJobs: active, clearBrowserSession: clear };
   const protect = vi.fn(async (value: string): Promise<string> => value);
-  const service = new ProductBrowserService({ directory, ownerId: 'owner', credential: 'credential', executable: 'fixture', executableSha256: 'hash', prerequisite: { path: 'fixture', hash: 'hash' }, core: core as ExecutionCore, protector: { protect, unprotect: async (value: string): Promise<string> => value } });
+  const reopen = (): ProductBrowserService => new ProductBrowserService({ directory, ownerId: 'owner', credential: 'credential', executable: 'fixture', executableSha256: 'hash', prerequisite: { path: 'fixture', hash: 'hash' }, core: core as ExecutionCore, protector: { protect, unprotect: async (value: string): Promise<string> => value } });
+  const service = reopen();
   await service.start({ projectId: 'project', startUrl: 'https://example.com/' });
   const stored = async (): Promise<unknown> => JSON.parse(JSON.parse(await readFile(path.join(directory, 'product-browser.sealed.json'), 'utf8')).payload);
-  return { service, stop, clear, protect, active, stored, order };
+  return { service, reopen, enrollment, enroll, stop, clear, protect, active, stored, order };
 }
 afterEach(async () => { vi.clearAllMocks(); for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
 
 describe('browser service termination authority', () => {
+  it('translates an unproved provider stop into the typed Core failure used by real RPC', async () => {
+    const f = await fixture(); const cause = Object.assign(new Error('native absence unproved'), { code: 'BROWSER_TERMINATION_UNVERIFIED' });
+    f.stop.mockRejectedValueOnce(cause);
+    const failure = await f.service.stop('project').catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(CoreError);
+    expect(failure).toMatchObject({ code: 'BROWSER_TERMINATION_UNVERIFIED', cause });
+    expect(f.clear).not.toHaveBeenCalled(); expect(f.service.projection()).toMatchObject({ state: 'stopping' });
+  });
+  it('restores missing-page cleanup without enrolling stale operations or refreshing the session', async () => {
+    const f = await fixture(); const refresh = vi.fn(f.enrollment.refresh);
+    broker.restore.mockResolvedValueOnce({ ...f.enrollment, refresh, cleanupOnly: true });
+    const restored = f.reopen(); await restored.restore();
+    expect(f.enroll).toHaveBeenCalledTimes(1);
+    expect(restored.projection()).toMatchObject({ state: 'stopping', projectId: 'project', sessionId: 'session' });
+    expect(await restored.inspect('project')).toMatchObject({ state: 'stopping' });
+    expect(await restored.start({ projectId: 'project', startUrl: 'https://example.com/' })).toMatchObject({ state: 'stopping' });
+    expect(refresh).not.toHaveBeenCalled();
+    await expect(restored.stop('project')).resolves.toEqual({ state: 'stopped', projectId: 'project' });
+    expect(f.stop).toHaveBeenCalledOnce(); expect(f.clear).not.toHaveBeenCalled();
+    expect(await f.stored()).toEqual({ schemaVersion: 1, ownerId: 'owner', stopped: true });
+  });
+  it('queues owner start behind restoration so a pending owned root cannot launch a replacement', async () => {
+    const f = await fixture(); let enter!: () => void; let release!: () => void;
+    const entered = new Promise<void>(resolve => { enter = resolve; }); const barrier = new Promise<void>(resolve => { release = resolve; });
+    broker.restore.mockImplementationOnce(async () => { enter(); await barrier; return { ...f.enrollment, cleanupOnly: true }; });
+    const restored = f.reopen(); const pendingRestore = restored.restore(); await entered;
+    let started = false; const pendingStart = restored.start({ projectId: 'project', startUrl: 'https://example.com/' }).then(value => { started = true; return value; });
+    await new Promise(resolve => setTimeout(resolve, 10)); const before = { started, calls: broker.create.mock.calls.length };
+    release(); await pendingRestore; const result = await pendingStart;
+    expect(before).toEqual({ started: false, calls: 1 }); expect(result).toMatchObject({ state: 'stopping' });
+    expect(broker.create).toHaveBeenCalledTimes(1); expect(f.enroll).toHaveBeenCalledTimes(1);
+  });
   it('refuses to stop while a browser job is still active, before touching the provider', async () => {
     const f = await fixture();
     f.active.mockResolvedValueOnce([{ jobId: 'job', status: 'running', requestedOperation: 'browser.navigate' } as unknown as JobView]);

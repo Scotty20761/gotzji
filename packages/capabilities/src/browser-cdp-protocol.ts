@@ -1,4 +1,4 @@
-import { mkdir } from 'node:fs/promises';
+import { mkdir, readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -84,6 +84,17 @@ export class NodeBrowserCdpProtocol implements BrowserCdpProtocol {
     if (tab === undefined) throw new Error('Chrome tab was not found');
     const socketUrl = validateWebSocketUrl(tab.webSocketDebuggerUrl, this.port);
     return sendWebSocketRequest(socketUrl, method, params, signal);
+  }
+
+  /** Internal control for the enrolled profile; never accepts a caller-selected endpoint or method. */
+  public async requestBrowserClose(signal?: AbortSignal): Promise<void> {
+    const contents = await readFile(path.join(this.profileDir, 'DevToolsActivePort'), { encoding: 'utf8', ...(signal === undefined ? {} : { signal }) });
+    const lines = contents.trimEnd().split(/\r?\n/u);
+    if (lines.length !== 2 || !/^\d+$/u.test(lines[0]!) || Number(lines[0]) !== this.port
+      || !/^\/devtools\/browser\/[a-f\d]{8}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{12}$/iu.test(lines[1]!)) throw new Error('Chrome browser coordination was invalid');
+    const response = await sendWebSocketRequest(`ws://127.0.0.1:${this.port}${lines[1]}`, 'Browser.close', {}, signal, true);
+    if (response === closedAfterDispatch) return;
+    if (!isRecord(response) || 'error' in response || !isRecord(response.result)) throw new Error('Chrome browser close was rejected');
   }
 
   public async launch(url: string | undefined, signal?: AbortSignal): Promise<Result<unknown>> {
@@ -190,8 +201,11 @@ function validateWebSocketUrl(value: string, port: number): string {
   return url.toString();
 }
 
-function sendWebSocketRequest(url: string, method: string, params: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
+const closedAfterDispatch = Symbol('owned-browser-close-dispatched');
+
+function sendWebSocketRequest(url: string, method: string, params: Record<string, unknown>, signal?: AbortSignal, allowCloseAfterDispatch = false): Promise<unknown> {
   return new Promise((resolve, reject) => {
+    if (isAborted(signal)) { reject(new Error('Chrome CDP request was cancelled')); return; }
     if (typeof WebSocket === 'undefined') {
       reject(new Error('WebSocket is not available'));
       return;
@@ -199,10 +213,8 @@ function sendWebSocketRequest(url: string, method: string, params: Record<string
     const socket = new WebSocket(url);
     const id = 1;
     let settled = false;
-    const timer = setTimeout(() => {
-      socket.close();
-      reject(new Error('Chrome CDP request timed out'));
-    }, 30_000);
+    let sent = false;
+    const timer = setTimeout(() => finish(() => reject(new Error('Chrome CDP request timed out'))), 30_000);
     const finish = (callback: () => void): void => {
       if (settled) return;
       settled = true;
@@ -212,13 +224,21 @@ function sendWebSocketRequest(url: string, method: string, params: Record<string
       callback();
     };
     const onAbort = (): void => finish(() => reject(new Error('Chrome CDP request was cancelled')));
-    socket.addEventListener('open', () => socket.send(JSON.stringify({ id, method, params })));
+    socket.addEventListener('open', () => {
+      if (settled) return;
+      try { socket.send(JSON.stringify({ id, method, params })); sent = true; }
+      catch { finish(() => reject(new Error('Chrome CDP socket failed'))); }
+    });
     socket.addEventListener('message', (event: MessageEvent) => {
       const value: unknown = typeof event.data === 'string' ? parseJson(event.data) : undefined;
       if (!isRecord(value) || value.id !== id) return;
       finish(() => resolve(value));
     });
     socket.addEventListener('error', () => finish(() => reject(new Error('Chrome CDP socket failed'))));
+    socket.addEventListener('close', () => finish(() => {
+      if (allowCloseAfterDispatch && sent) resolve(closedAfterDispatch);
+      else reject(new Error('Chrome CDP socket closed before a response'));
+    }));
     signal?.addEventListener('abort', onAbort, { once: true });
     if (signal?.aborted === true) onAbort();
   });
