@@ -12,7 +12,8 @@ import { _electron, expect, test as base, type ElectronApplication, type Page } 
 import { UNPACKAGED_E2E_PROCESS_BIRTH } from '../../../packages/execution-core/src/process-identity.mjs';
 import { alive, observeWorker, stopWorker } from '../../../packages/execution-core/src/managed-worker.js';
 import type { WorkerRow } from '../../../packages/execution-core/src/store.js';
-import { childEnvironment } from '../../../packages/execution-core/src/product-security.mjs';
+import { parseGitReadDiagnostic, type GitReadDiagnostic } from '../../../packages/execution-core/src/git-read-diagnostics.js';
+import { childEnvironment, sanitizedStream } from '../../../packages/execution-core/src/product-security.mjs';
 import { electronExecutablePath, terminateProcessTree } from './electron-runtime.js';
 import { assertChromeRootsPreserved, independentChromeRoots, ownedChromeProcesses } from './gotzji-browser-runtime.js';
 import { readProductConfiguration, testOnlyProductSecretProtector } from '../../../packages/execution-core/src/product-host.js';
@@ -54,6 +55,8 @@ const test = base.extend<{ gotzji: GovernedFixture }>({
     let hostWasReady = false;
     let launchAttempted = false;
     const failures: unknown[] = [];
+    const gitDiagnostics: GitReadDiagnostic[] = [];
+    const diagnosticStream = sanitizedStream((line: string): void => { const value = parseGitReadDiagnostic(line); if (value && gitDiagnostics.length < 8) gitDiagnostics.push(value); });
     let expectedHostExecutable: string | undefined;
     try {
     const relative = path.relative(tempRoot, dataRoot);
@@ -70,6 +73,9 @@ const test = base.extend<{ gotzji: GovernedFixture }>({
       timeout: 40_000,
     });
     ownedAppProcess = app.process();
+    if (!ownedAppProcess.stderr) throw new Error('Owned Electron diagnostic pipe unavailable');
+    ownedAppProcess.stderr.on('data', (chunk: Buffer) => diagnosticStream.write(chunk));
+    ownedAppProcess.stderr.once('end', () => diagnosticStream.end());
     ownedUiPid = await app.evaluate(() => process.pid);
     if (!Number.isInteger(ownedUiPid) || ownedUiPid < 1) throw new Error('Owned native UI identity unavailable');
     const page = await app.firstWindow();
@@ -122,7 +128,14 @@ const test = base.extend<{ gotzji: GovernedFixture }>({
           rendererFiles.push(selected); return selected;
         },
       });
-    } catch (error) { failures.push(error); }
+    } catch (error) {
+      failures.push(error);
+      const budgetCode = error instanceof Error ? /\bGIT_(?:SNAPSHOT|VALIDATION)_BUDGET\b/u.exec(error.message)?.[0] : undefined;
+      if (budgetCode) {
+        try { await expect.poll(() => gitDiagnostics.some(value => value.code === budgetCode), { timeout: 2000, intervals: [20, 50, 100] }).toBe(true); }
+        catch (cause) { failures.push(new Error('Owned Git budget diagnostic missing before shutdown', { cause })); }
+      }
+    }
     for (const close of additionalCleanup.reverse()) {
       try { await close(); } catch (error) { additionalResourcesAbsent = false; failures.push(error); }
     }
@@ -186,6 +199,7 @@ const test = base.extend<{ gotzji: GovernedFixture }>({
       try { workerDatabase.close(); databaseClosed = true; }
       catch (error) { failures.push(error); }
     }
+    if (gitDiagnostics.length) console.info(JSON.stringify({ fixture: 'owned-git-budget-diagnostics', observations: gitDiagnostics }));
     const resourcesAbsent = uiAbsent && hostAbsent && workersAbsent && launcherAbsent && databaseClosed && additionalResourcesAbsent;
     if (!resourcesAbsent) failures.push(new Error(`Owned fixture processes unproved; retained ${dataRoot}, ${roots.join(', ')}`));
     let lastRootRemovalError: unknown;

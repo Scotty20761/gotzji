@@ -16,6 +16,7 @@ import { canonicalTemporaryDirectory } from './test-fixtures.js';
 import { childEnvironment } from './product-security.mjs';
 import { startProductHttp } from './product-http.js';
 import { readProjectGit } from './product-git-reads.js';
+import { parseGitReadDiagnostic, type GitReadDiagnostic } from './git-read-diagnostics.js';
 import { DirectGitRunner, type GitRunResult } from '@lnwjud/git';
 
 const run = promisify(execFile);
@@ -264,6 +265,8 @@ describe('owner project Git reads', () => {
     const f = await fixture(); const objects = path.join(f.projectRoot, '.git', 'objects');
     const index = await readFile(path.join(f.projectRoot, '.git', 'index'));
     let clock = 0; let copying = false; let crossed = false; let objectReads = 0;
+    const diagnostics: GitReadDiagnostic[] = [];
+    vi.spyOn(process.stderr, 'write').mockImplementation((chunk: string | Uint8Array): boolean => { const value = parseGitReadDiagnostic(Buffer.from(chunk).toString()); if (value) diagnostics.push(value); return true; });
     const native = DirectGitRunner.prototype.run; const resolvePath = fsPromises.realpath;
     vi.spyOn(performance, 'now').mockImplementation(() => clock);
     vi.spyOn(DirectGitRunner.prototype, 'run').mockImplementation(async function (this: DirectGitRunner, args, cwd, options): Promise<GitRunResult> {
@@ -282,13 +285,16 @@ describe('owner project Git reads', () => {
     if (finishedAt < 25000) await expect(pending).resolves.toMatchObject({ entries: [], truncated: false });
     else await expect(pending).rejects.toMatchObject({ code: 'GIT_SNAPSHOT_BUDGET' });
     expect(crossed).toBe(true); expect(objectReads).toBe(finishedAt < 25000 ? 1 : 0);
+    expect(diagnostics).toHaveLength(finishedAt < 25000 ? 0 : 1);
     expect(await readFile(path.join(f.projectRoot, '.git', 'index'))).toEqual(index);
     expect((await readdir(path.join(f.root, 'state'))).filter((name) => name.startsWith('git-read-'))).toEqual([]);
     expect(await f.core.list(f.credential)).toEqual([]);
   }), 20000);
 
-  it('charges config to the remaining snapshot allowance and refuses expiry before object copying', ownBody(async () => {
+  it.each([false, true])('charges config to the remaining snapshot allowance and refuses expiry before object copying (stderr refusal %s)', ownBody(async (writeRefused: boolean) => {
     const f = await fixture(); let clock = 0; let configTimeout: number | undefined; let objectReads = 0;
+    const diagnostics: GitReadDiagnostic[] = [];
+    vi.spyOn(process.stderr, 'write').mockImplementation((chunk: string | Uint8Array): boolean => { if (writeRefused) throw new Error('owned diagnostic pipe refused'); const value = parseGitReadDiagnostic(Buffer.from(chunk).toString()); if (value) diagnostics.push(value); return true; });
     const native = DirectGitRunner.prototype.run; const write = fsPromises.writeFile;
     vi.spyOn(performance, 'now').mockImplementation(() => clock);
     vi.spyOn(fsPromises, 'writeFile').mockImplementation(async (target, data, options): Promise<void> => {
@@ -306,6 +312,8 @@ describe('owner project Git reads', () => {
     syncBuiltinESMExports();
     await expect(f.core.readProjectGit(f.credential, { projectId: 'repo', view: 'status' })).rejects.toMatchObject({ code: 'GIT_SNAPSHOT_BUDGET' });
     expect(configTimeout).toBe(4000); expect(sourceOpens).not.toHaveBeenCalled(); expect(objectReads).toBe(0);
+    expect(diagnostics).toEqual(writeRefused ? [] : [expect.objectContaining({ code: 'GIT_SNAPSHOT_BUDGET', phase: 'config', elapsedMs: 25000, copiedObjects: 0 })]);
+    expect(JSON.stringify(diagnostics)).not.toContain(f.root);
     expect((await readdir(path.join(f.root, 'state'))).filter((name) => name.startsWith('git-read-'))).toEqual([]);
   }), 20000);
 

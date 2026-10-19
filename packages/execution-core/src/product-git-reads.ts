@@ -7,6 +7,7 @@ import { projectFileBytesSync, copyProjectFileSnapshot } from './project-file-sn
 import { readProjectFile } from './product-file-reads.js';
 import { projectTarget } from './product-projects.js';
 import { CoreError, type ProjectGitInput, type RegisteredProject } from './types.js';
+import { formatGitReadDiagnostic, type GitReadDiagnostic } from './git-read-diagnostics.js';
 
 const MAX_RESPONSE_BYTES = 64 * 1024;
 // Git for Windows does not accept Node's \\.\nul device spelling as a config path.
@@ -122,12 +123,27 @@ export async function readProjectGit(project: RegisteredProject, input: ProjectG
   // Census retains its own 10s ceiling; all snapshot work shares the original 10s+15s allowance.
   // Config now consumes that allowance too, rather than adding a separate 10s phase.
   const snapshotDeadline = started + 25000;
+  let phase: GitReadDiagnostic['phase'] = 'census'; let elapsedMs = 0; let totalObjects = 0; let copiedObjects = 0; let objectBytes = 0;
+  const phaseStartsMs: Partial<Record<GitReadDiagnostic['phase'], number>> = { census: 0 };
+  const markPhase = (next: GitReadDiagnostic['phase']): void => { phase = next; phaseStartsMs[next] = Math.max(0, Math.round(performance.now() - started)); };
+  let reportedBudget = false;
+  const reportBudget = (code: GitReadDiagnostic['code']): void => {
+    try {
+      if (reportedBudget) return; reportedBudget = true; elapsedMs = Math.max(0, Math.round(performance.now() - started));
+      const line = formatGitReadDiagnostic({ schemaVersion: 1, code, phase, elapsedMs, phaseStartsMs, totalObjects, copiedObjects, copiedBytes: objectBytes, ioThreads: Number(process.env.UV_THREADPOOL_SIZE ?? 0) });
+      if (line) process.stderr.write(line);
+    } catch { /* Observational diagnostics must not mask the original refusal. */ }
+  };
   const snapshotBudget = (): number => {
-    const remaining = snapshotDeadline - performance.now();
-    if (remaining <= 0) throw new CoreError('GIT_SNAPSHOT_BUDGET');
+    const now = performance.now(); const remaining = snapshotDeadline - now;
+    elapsedMs = Math.max(0, Math.round(now - started));
+    if (remaining <= 0) { reportBudget('GIT_SNAPSHOT_BUDGET'); throw new CoreError('GIT_SNAPSHOT_BUDGET'); }
     return Math.ceil(remaining);
   };
-  const selected = await repository(project, privateRoots, started + 10000, snapshotBudget);
+  let selected: Repository;
+  try { selected = await repository(project, privateRoots, started + 10000, snapshotBudget); }
+  catch (error) { if (error instanceof CoreError && error.code === 'GIT_VALIDATION_BUDGET') reportBudget(error.code); throw error; }
+  totalObjects = selected.objects.length; markPhase('metadata');
   if (input.view === 'diff') await diffTarget(project, input.path, privateRoots);
   snapshotBudget();
   const scratch = await mkdtemp(path.join(scratchRoot, 'git-read-'));
@@ -149,6 +165,7 @@ export async function readProjectGit(project: RegisteredProject, input: ProjectG
     }
     const env = { ...childEnvironment(), GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: gitNull, GIT_OPTIONAL_LOCKS: '0', GIT_NO_REPLACE_OBJECTS: '1', GIT_NO_LAZY_FETCH: '1' };
     const direct = new DirectGitRunner();
+    markPhase('config');
     const settings = await direct.run(['config', '--null', '--no-includes', '--file', path.join(scratch, 'source-config'), '--get-regexp', '^(core\\.(repositoryformatversion|filemode|ignorecase|symlinks)|extensions\\..*)$'], scratch, { env, timeoutMs: Math.min(10000, snapshotBudget()) });
     snapshotBudget();
     if (settings.exitCode !== 0 || settings.truncated) throw new CoreError('GIT_CONFIG_UNAVAILABLE');
@@ -161,7 +178,7 @@ export async function readProjectGit(project: RegisteredProject, input: ProjectG
     }
     const safeConfig = `[core]\nrepositoryformatversion = ${config.get('core.repositoryformatversion') ?? '0'}\nbare = false\nfilemode = ${config.get('core.filemode') ?? 'false'}\nignorecase = ${config.get('core.ignorecase') ?? 'false'}\nsymlinks = ${config.get('core.symlinks') ?? 'false'}\n${config.has('extensions.objectformat') ? `[extensions]\nobjectformat = ${config.get('extensions.objectformat')}\n` : ''}`;
     await writeFile(path.join(directory, 'config'), safeConfig); snapshotBudget();
-    let objectBytes = 0;
+    markPhase('object-directories');
     const copyBudget = (bytes: number): void => {
       snapshotBudget();
       objectBytes += bytes;
@@ -173,15 +190,17 @@ export async function readProjectGit(project: RegisteredProject, input: ProjectG
       await Promise.all(objectDirectories.slice(offset, offset + 32).map((destination) => mkdir(destination, { recursive: true })));
       copyBudget(0);
     }
+    markPhase('objects');
     for (let offset = 0; offset < selected.objects.length; offset += 16) {
       const copied = await Promise.allSettled(selected.objects.slice(offset, offset + 16).map(async (entry): Promise<void> => {
         const destination = path.join(directory, 'objects', entry.relative);
-        await copyProjectFileSnapshot(entry.source, destination, entry.stat, copyBudget);
+        await copyProjectFileSnapshot(entry.source, destination, entry.stat, copyBudget); copiedObjects++;
       }));
       const failure = copied.find((result) => result.status === 'rejected');
       if (failure?.status === 'rejected') { if (failure.reason instanceof CoreError) throw failure.reason; throw new CoreError('GIT_REPOSITORY_CHANGED'); }
       copyBudget(0);
     }
+    markPhase('worktree');
     let worktree = selected.root;
     if (input.view === 'diff' && !input.staged) {
       worktree = path.join(scratch, 'worktree'); await mkdir(worktree);
