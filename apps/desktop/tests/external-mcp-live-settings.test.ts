@@ -26,6 +26,8 @@ describe('Desktop live External MCP settings', () => {
           ...current,
           extensions: {
             ...current.extensions,
+            mode: 'allowlist',
+            enabledServers: ['live'],
             extraMcpServers: [{
               name: 'live',
               command: process.execPath,
@@ -60,6 +62,8 @@ describe('Desktop live External MCP settings', () => {
           ...current,
           extensions: {
             ...current.extensions,
+            mode: 'allowlist',
+            enabledServers: ['live'],
             extraMcpServers: [{
               name: 'live',
               command: process.execPath,

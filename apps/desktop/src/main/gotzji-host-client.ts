@@ -27,6 +27,13 @@ export function parseGotzjiRequest(value: unknown): GotzjiRequest {
     throw new GotzjiHostError('CALLER_AUTHORITY_DENIED');
   }
   const method = value.method as GotzjiMethod;
+  if (['readProjectFile', 'listProjectFiles', 'searchProjectFiles'].includes(method)) {
+    requiredText(input, 'projectId');
+    const allowed = method === 'searchProjectFiles' ? ['projectId', 'path', 'query'] : ['projectId', 'path'];
+    if (Object.keys(input).some((key) => !allowed.includes(key))) throw new GotzjiHostError('INVALID_GOTZJI_REQUEST');
+    if (method === 'readProjectFile' || input.path !== undefined) requiredText(input, 'path');
+    if (method === 'searchProjectFiles') requiredText(input, 'query');
+  }
   if (['startBrowserSession', 'browserSession', 'stopBrowserSession', 'authorizeLibraryDelivery'].includes(method)) {
     requiredText(value.input, 'projectId');
     const allowed = method === 'startBrowserSession' ? ['projectId', 'startUrl', 'allowedOrigins'] : method === 'authorizeLibraryDelivery' ? ['projectId', 'jobId', 'scope'] : ['projectId'];

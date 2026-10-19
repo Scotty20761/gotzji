@@ -1,0 +1,1774 @@
+{
+  "version": "5.8.6",
+  "capturedOn": "2026-10-19",
+  "source": "lnwjud live tool_search; 152 category queries plus unfiltered page; 205 unique tools",
+  "tools": [
+    {
+      "id": "accessibility",
+      "description": "accessibility local capability (window)",
+      "tags": [
+        "accessibility",
+        "window",
+        "capability"
+      ]
+    },
+    {
+      "id": "affected_modules",
+      "description": "Find modules affected by current changes.",
+      "tags": [
+        "git",
+        "module"
+      ]
+    },
+    {
+      "id": "agent_swarm_run",
+      "description": "Run or inspect a bounded, owner-scoped Codex agent swarm in enforced read-only mode.",
+      "tags": [
+        "agent",
+        "swarm",
+        "parallel",
+        "codex"
+      ]
+    },
+    {
+      "id": "apply_patch",
+      "description": "Apply a guarded workspace patch.",
+      "tags": [
+        "workspace",
+        "file",
+        "write"
+      ]
+    },
+    {
+      "id": "audio",
+      "description": "audio local capability (audio)",
+      "tags": [
+        "audio",
+        "audio",
+        "capability"
+      ]
+    },
+    {
+      "id": "automation_control",
+      "description": "Pause, resume, or cancel one durable automation run under its current Goal lease.",
+      "tags": [
+        "automation",
+        "goal",
+        "durable",
+        "control"
+      ]
+    },
+    {
+      "id": "automation_create",
+      "description": "Create a bounded owner-scoped durable shell automation plan beneath an existing leased Goal.",
+      "tags": [
+        "automation",
+        "goal",
+        "durable",
+        "shell"
+      ]
+    },
+    {
+      "id": "automation_events",
+      "description": "Read a bounded page of owner- and workspace-scoped durable automation events.",
+      "tags": [
+        "automation",
+        "goal",
+        "durable",
+        "events"
+      ]
+    },
+    {
+      "id": "automation_finalize",
+      "description": "Finalize a fully verified automation run only after its root Goal reaches confirmed terminal completion.",
+      "tags": [
+        "automation",
+        "goal",
+        "durable",
+        "verification"
+      ]
+    },
+    {
+      "id": "automation_run",
+      "description": "Advance one durable automation run to its next deterministic dispatch, observation, or verification boundary.",
+      "tags": [
+        "automation",
+        "goal",
+        "durable",
+        "shell"
+      ]
+    },
+    {
+      "id": "automation_status",
+      "description": "Read one owner- and workspace-scoped durable automation run.",
+      "tags": [
+        "automation",
+        "goal",
+        "durable",
+        "status"
+      ]
+    },
+    {
+      "id": "backend_context",
+      "description": "Gather backend project context.",
+      "tags": [
+        "backend",
+        "context"
+      ]
+    },
+    {
+      "id": "benchmark_run",
+      "description": "Preview or start the detected managed benchmark project command and retain bounded run evidence.",
+      "tags": [
+        "benchmark",
+        "regression"
+      ]
+    },
+    {
+      "id": "browser_debug_context",
+      "description": "Combine browser diagnostics for one request. Requires an exact dom_cdp tab_id from list_tabs or new_tab; never uses the active/first tab.",
+      "tags": [
+        "browser",
+        "debug"
+      ]
+    },
+    {
+      "id": "cache_clear",
+      "description": "Clear safe local runtime caches.",
+      "tags": [
+        "cache"
+      ]
+    },
+    {
+      "id": "cache_invalidate",
+      "description": "Invalidate cache entries for a path or workspace.",
+      "tags": [
+        "cache"
+      ]
+    },
+    {
+      "id": "cache_stats",
+      "description": "Return shared cache hit/miss telemetry.",
+      "tags": [
+        "cache",
+        "telemetry"
+      ]
+    },
+    {
+      "id": "call_hierarchy",
+      "description": "Return a deterministic call hierarchy approximation.",
+      "tags": [
+        "code",
+        "calls"
+      ]
+    },
+    {
+      "id": "capabilities",
+      "description": "Discover capability categories without requiring every full schema.",
+      "tags": [
+        "capability",
+        "discovery"
+      ]
+    },
+    {
+      "id": "capture_screenshot",
+      "description": "Capture screenshot metadata for visual validation. Requires an exact dom_cdp tab_id from list_tabs or new_tab; never uses the active/first tab.",
+      "tags": [
+        "visual",
+        "browser"
+      ]
+    },
+    {
+      "id": "capture_ui_state",
+      "description": "Capture a structured UI state. Requires an exact dom_cdp tab_id from list_tabs or new_tab; never uses the active/first tab.",
+      "tags": [
+        "browser",
+        "ui"
+      ]
+    },
+    {
+      "id": "change_context",
+      "description": "Gather changed files, symbols, dependencies, and tests.",
+      "tags": [
+        "change",
+        "git",
+        "context"
+      ]
+    },
+    {
+      "id": "changed_symbols",
+      "description": "Find symbols in changed files.",
+      "tags": [
+        "git",
+        "symbol"
+      ]
+    },
+    {
+      "id": "clipboard",
+      "description": "clipboard local capability (clipboard)",
+      "tags": [
+        "clipboard",
+        "clipboard",
+        "capability"
+      ]
+    },
+    {
+      "id": "compare_pdf_pages",
+      "description": "Compare two PDFs by bounded page/text metadata through the local PDF provider.",
+      "tags": [
+        "visual",
+        "pdf",
+        "provider"
+      ]
+    },
+    {
+      "id": "compare_screenshot",
+      "description": "Compare screenshot metadata or supplied artifacts.",
+      "tags": [
+        "visual",
+        "browser"
+      ]
+    },
+    {
+      "id": "compare_workbook_layout",
+      "description": "Compare two workbook sheet/layout samples through the local Excel/Office provider.",
+      "tags": [
+        "visual",
+        "excel",
+        "office"
+      ]
+    },
+    {
+      "id": "computer_use",
+      "description": "Codex-style native Windows desktop control with semantic, visual-mark, pointer, and keyboard routing.",
+      "tags": [
+        "computer",
+        "desktop",
+        "ui",
+        "mouse",
+        "keyboard",
+        "click",
+        "type",
+        "vision",
+        "execute"
+      ]
+    },
+    {
+      "id": "console_context",
+      "description": "Summarize browser console context when a retained CDP Runtime/Log event stream is available.",
+      "tags": [
+        "browser",
+        "console"
+      ]
+    },
+    {
+      "id": "context_economy_stats",
+      "description": "Return context discovery, deduplication, ledger, and token-efficiency telemetry.",
+      "tags": [
+        "context",
+        "economy",
+        "quota",
+        "telemetry"
+      ]
+    },
+    {
+      "id": "context_expand",
+      "description": "Return optional import, caller, type, test, and change references.",
+      "tags": [
+        "context",
+        "dependency"
+      ]
+    },
+    {
+      "id": "context_ranking",
+      "description": "Explain ranking signals without removing lower-ranked context.",
+      "tags": [
+        "context",
+        "ranking"
+      ]
+    },
+    {
+      "id": "coverage_context",
+      "description": "Return coverage context when project tooling provides it.",
+      "tags": [
+        "test",
+        "coverage"
+      ]
+    },
+    {
+      "id": "crash_trace",
+      "description": "Return bounded crash and service-diagnostic context from allowlisted user-mode sources.",
+      "tags": [
+        "windows",
+        "crash",
+        "diagnostics"
+      ]
+    },
+    {
+      "id": "db_inspect",
+      "description": "Inspect a local database schema through a configured, read-only connection.",
+      "tags": [
+        "database",
+        "schema",
+        "local"
+      ]
+    },
+    {
+      "id": "db_query",
+      "description": "Run a bounded read-only local SQLite SELECT, PRAGMA, or WITH...SELECT query.",
+      "tags": [
+        "database",
+        "query",
+        "local"
+      ]
+    },
+    {
+      "id": "debug_attach",
+      "description": "Attach to an already running numeric-loopback TCP DAP adapter with bounded initialization and attach-only configuration. The host retains sockets under the actual client, MCP session and registered workspace. dryRun validates without connecting. No debugger process is launched.",
+      "tags": [
+        "code",
+        "dap",
+        "debug"
+      ]
+    },
+    {
+      "id": "debug_context",
+      "description": "Gather deterministic debugging context and continuation metadata.",
+      "tags": [
+        "debug",
+        "context"
+      ]
+    },
+    {
+      "id": "debug_step",
+      "description": "Read bounded owned-session status/events by cursor, disconnect the adapter without terminating the debuggee, or issue a validated DAP command. Adapter replies and output retain their exact values. Event overflow and connection gaps are explicit. Control/evaluation uses current host permission, Engineering and Goal lease admission. dryRun sends no frame.",
+      "tags": [
+        "code",
+        "dap",
+        "debug"
+      ]
+    },
+    {
+      "id": "debug_ui",
+      "description": "Gather deterministic UI debugging context. Requires an exact dom_cdp tab_id from list_tabs or new_tab; never uses the active/first tab.",
+      "tags": [
+        "browser",
+        "ui",
+        "debug"
+      ]
+    },
+    {
+      "id": "delegate",
+      "description": "Delegate one bounded read-only task through the owned agent-swarm provider when configured.",
+      "tags": [
+        "agent",
+        "delegate"
+      ]
+    },
+    {
+      "id": "delegate_cancel",
+      "description": "Cancel an owned delegated agent task.",
+      "tags": [
+        "agent",
+        "delegate"
+      ]
+    },
+    {
+      "id": "delegate_result",
+      "description": "Read an owned delegated agent result.",
+      "tags": [
+        "agent",
+        "delegate"
+      ]
+    },
+    {
+      "id": "delegate_status",
+      "description": "Read delegated agent state from the owned agent-swarm provider.",
+      "tags": [
+        "agent",
+        "delegate"
+      ]
+    },
+    {
+      "id": "dependency_context",
+      "description": "Gather dependency-related context.",
+      "tags": [
+        "dependency",
+        "context"
+      ]
+    },
+    {
+      "id": "dependency_graph",
+      "description": "Return package and module dependency metadata.",
+      "tags": [
+        "code",
+        "dependency",
+        "graph"
+      ]
+    },
+    {
+      "id": "dev_context",
+      "description": "Run the unified deterministic development-context facade.",
+      "tags": [
+        "development",
+        "context"
+      ]
+    },
+    {
+      "id": "discover_tests",
+      "description": "Discover project tests without imposing an execution limit.",
+      "tags": [
+        "test",
+        "discover"
+      ]
+    },
+    {
+      "id": "docx_merge",
+      "description": "Create a deterministic DOCX merge plan and write only after approval.",
+      "tags": [
+        "document",
+        "docx",
+        "merge"
+      ]
+    },
+    {
+      "id": "dom_cdp",
+      "description": "dom_cdp local capability (browser)",
+      "tags": [
+        "dom_cdp",
+        "browser",
+        "capability"
+      ]
+    },
+    {
+      "id": "dom_snapshot",
+      "description": "Return a structured DOM snapshot. Requires an exact dom_cdp tab_id from list_tabs or new_tab; never uses the active/first tab.",
+      "tags": [
+        "visual",
+        "browser"
+      ]
+    },
+    {
+      "id": "dry_run",
+      "description": "Return a no-side-effect execution preview.",
+      "tags": [
+        "dry-run",
+        "preview"
+      ]
+    },
+    {
+      "id": "ecc_catalog",
+      "description": "Search the pinned ECC artifact catalog without eagerly loading artifact bodies.",
+      "tags": [
+        "ecc",
+        "provider",
+        "catalog",
+        "skills",
+        "agents",
+        "rules"
+      ]
+    },
+    {
+      "id": "ecc_configure",
+      "description": "Persist selective ECC activation settings without granting imported artifacts extra runtime authority.",
+      "tags": [
+        "ecc",
+        "provider",
+        "configuration"
+      ]
+    },
+    {
+      "id": "ecc_load",
+      "description": "Load one selected bounded ECC text artifact by stable catalog ID.",
+      "tags": [
+        "ecc",
+        "provider",
+        "context",
+        "skills",
+        "agents",
+        "rules"
+      ]
+    },
+    {
+      "id": "ecc_memory_doctor",
+      "description": "Validate ECC Memory Vault documents, symlinks, duplicates, and schema health without rewriting them.",
+      "tags": [
+        "ecc",
+        "memory",
+        "vault",
+        "diagnostics"
+      ]
+    },
+    {
+      "id": "ecc_memory_read",
+      "description": "Read one ECC Memory Vault entry by stable memory id after completeness checks.",
+      "tags": [
+        "ecc",
+        "memory",
+        "vault"
+      ]
+    },
+    {
+      "id": "ecc_memory_save",
+      "description": "Create one unreviewed ecc.memory.v1 document without overwriting existing memory.",
+      "tags": [
+        "ecc",
+        "memory",
+        "vault"
+      ]
+    },
+    {
+      "id": "ecc_memory_search",
+      "description": "Search active ECC Memory Vault entries with bounded local lexical retrieval.",
+      "tags": [
+        "ecc",
+        "memory",
+        "vault",
+        "search"
+      ]
+    },
+    {
+      "id": "ecc_security_scan",
+      "description": "Run the pinned bundled AgentShield scanner against ECC resources or a registered workspace with bounded JSON output.",
+      "tags": [
+        "ecc",
+        "security",
+        "agentshield"
+      ]
+    },
+    {
+      "id": "ecc_status",
+      "description": "Report the pinned ECC provider, provenance, activation policy, and bundled security-scanner readiness.",
+      "tags": [
+        "ecc",
+        "provider",
+        "security"
+      ]
+    },
+    {
+      "id": "edit_file",
+      "description": "First-choice exact guarded text replacement for narrow source and config repairs; use instead of shell editing scripts.",
+      "tags": [
+        "workspace",
+        "file",
+        "write",
+        "edit",
+        "replace",
+        "source",
+        "config",
+        "text"
+      ]
+    },
+    {
+      "id": "engineering_get_status",
+      "description": "Read the current Engineering Harness task projection, effective policy, required gates, blockers, and truthful delivery boundary without changing goal state.",
+      "tags": [
+        "engineering",
+        "harness",
+        "task",
+        "status",
+        "gates",
+        "workflow"
+      ]
+    },
+    {
+      "id": "engineering_prepare_task",
+      "description": "Read-only Engineering Harness preparation. Assess the registered workspace, applicable project instructions, effective Engineering policy, and policy digest without creating a goal, starting a process, scheduling work, or writing repository files.",
+      "tags": [
+        "engineering",
+        "harness",
+        "task",
+        "workflow",
+        "preflight",
+        "prepare"
+      ]
+    },
+    {
+      "id": "engineering_start_task",
+      "description": "Start or resume a substantive Engineering Harness task by reusing the existing durable Goal authority. This operation does not create or authorize a scheduled continuation.",
+      "tags": [
+        "engineering",
+        "harness",
+        "task",
+        "goal",
+        "workflow",
+        "start",
+        "resume"
+      ]
+    },
+    {
+      "id": "event_log_context",
+      "description": "Inspect host-native event and log context.",
+      "tags": [
+        "events",
+        "diagnostics"
+      ]
+    },
+    {
+      "id": "event_watch",
+      "description": "Watch an allowlisted user-mode ETW or Windows Event Log diagnostic stream.",
+      "tags": [
+        "windows",
+        "etw",
+        "events",
+        "diagnostics"
+      ]
+    },
+    {
+      "id": "execution_plan",
+      "description": "Return the cheapest deterministic execution plan and reason.",
+      "tags": [
+        "planner",
+        "telemetry"
+      ]
+    },
+    {
+      "id": "file_dialog",
+      "description": "file_dialog local capability (window)",
+      "tags": [
+        "file_dialog",
+        "window",
+        "capability"
+      ]
+    },
+    {
+      "id": "find_definition",
+      "description": "Find deterministic symbol definitions.",
+      "tags": [
+        "code",
+        "definition"
+      ]
+    },
+    {
+      "id": "find_implementations",
+      "description": "Find interface and class implementations.",
+      "tags": [
+        "code",
+        "implementation"
+      ]
+    },
+    {
+      "id": "find_references",
+      "description": "Find textual and indexed references to a symbol.",
+      "tags": [
+        "code",
+        "references"
+      ]
+    },
+    {
+      "id": "form_context",
+      "description": "Inspect form controls and values metadata. Requires an exact dom_cdp tab_id from list_tabs or new_tab; never uses the active/first tab.",
+      "tags": [
+        "browser",
+        "form"
+      ]
+    },
+    {
+      "id": "frontend_context",
+      "description": "Gather frontend project context.",
+      "tags": [
+        "frontend",
+        "context"
+      ]
+    },
+    {
+      "id": "git",
+      "description": "Run a guarded Git operation.",
+      "tags": [
+        "git",
+        "execute"
+      ]
+    },
+    {
+      "id": "git_blame_context",
+      "description": "Return line ownership context for a file.",
+      "tags": [
+        "git",
+        "blame"
+      ]
+    },
+    {
+      "id": "git_context",
+      "description": "Gather Git status, diff, and history context.",
+      "tags": [
+        "git",
+        "context"
+      ]
+    },
+    {
+      "id": "git_history_context",
+      "description": "Return relevant recent Git history.",
+      "tags": [
+        "git",
+        "history"
+      ]
+    },
+    {
+      "id": "git_worktree_remove",
+      "description": "Remove a ledger-owned Git worktree after dry-run and standard-mode confirmation; trusted Full Bypass skips lnwjud approval.",
+      "tags": [
+        "git",
+        "worktree",
+        "agent"
+      ]
+    },
+    {
+      "id": "git_worktree_spawn",
+      "description": "Create a confined, ledger-owned Git worktree for isolated agent work with collision metadata.",
+      "tags": [
+        "git",
+        "worktree",
+        "agent"
+      ]
+    },
+    {
+      "id": "handoff_context",
+      "description": "Recover the durable Goal, checkpoint, capsule and owned task receipts first, then observe optional workspace context with explicit provider states. Missing Git or search preserves available recovery state.",
+      "tags": [
+        "handoff",
+        "session"
+      ]
+    },
+    {
+      "id": "health",
+      "description": "health local capability (diagnostics)",
+      "tags": [
+        "health",
+        "diagnostics",
+        "capability"
+      ]
+    },
+    {
+      "id": "hook_list",
+      "description": "List registered lifecycle hooks.",
+      "tags": [
+        "hooks",
+        "lifecycle"
+      ]
+    },
+    {
+      "id": "hook_register",
+      "description": "Register a deterministic lifecycle hook descriptor.",
+      "tags": [
+        "hooks",
+        "lifecycle"
+      ]
+    },
+    {
+      "id": "hook_remove",
+      "description": "Remove a lifecycle hook descriptor.",
+      "tags": [
+        "hooks",
+        "lifecycle"
+      ]
+    },
+    {
+      "id": "import_graph",
+      "description": "Return indexed imports and exports for a module.",
+      "tags": [
+        "code",
+        "imports",
+        "graph"
+      ]
+    },
+    {
+      "id": "input_event",
+      "description": "input_event local capability (window)",
+      "tags": [
+        "input_event",
+        "window",
+        "capability"
+      ]
+    },
+    {
+      "id": "inspect_pdf",
+      "description": "Inspect PDF page structure and text through the local PDF provider.",
+      "tags": [
+        "visual",
+        "pdf",
+        "provider"
+      ]
+    },
+    {
+      "id": "inspect_web_app",
+      "description": "Combine DOM, console, network, URL, and screenshot metadata. Requires an exact dom_cdp tab_id from list_tabs or new_tab; never uses the active/first tab.",
+      "tags": [
+        "browser",
+        "ui"
+      ]
+    },
+    {
+      "id": "inspect_workbook",
+      "description": "Inspect workbook sheets, used ranges, and a bounded sample through Excel COM.",
+      "tags": [
+        "visual",
+        "excel",
+        "office"
+      ]
+    },
+    {
+      "id": "installed_runtime_context",
+      "description": "Inspect installed runtimes and package managers.",
+      "tags": [
+        "runtime",
+        "diagnostics"
+      ]
+    },
+    {
+      "id": "layout_metadata",
+      "description": "Return layout metadata for visual validation. Requires an exact dom_cdp tab_id from list_tabs or new_tab; never uses the active/first tab.",
+      "tags": [
+        "visual",
+        "browser"
+      ]
+    },
+    {
+      "id": "live_logs_query",
+      "description": "Query bounded structured MCP activity events with tool, workspace, phase, result, call/trace correlation filters.",
+      "tags": [
+        "logs",
+        "audit"
+      ]
+    },
+    {
+      "id": "live_logs_status",
+      "description": "Return the built-in MCP activity-log pipeline health and bounded source status.",
+      "tags": [
+        "logs",
+        "audit"
+      ]
+    },
+    {
+      "id": "lsp_diagnostics",
+      "description": "Read diagnostics from an owned language-server child process.",
+      "tags": [
+        "code",
+        "lsp",
+        "diagnostics"
+      ]
+    },
+    {
+      "id": "lsp_rename",
+      "description": "Create a cross-file LSP rename edit plan before any workspace write.",
+      "tags": [
+        "code",
+        "lsp",
+        "refactor"
+      ]
+    },
+    {
+      "id": "mcp_discover",
+      "description": "Discover external MCP servers without flattening native tools.",
+      "tags": [
+        "mcp",
+        "gateway"
+      ]
+    },
+    {
+      "id": "mcp_health",
+      "description": "Return external MCP connection health.",
+      "tags": [
+        "mcp",
+        "gateway",
+        "health"
+      ]
+    },
+    {
+      "id": "mcp_hub",
+      "description": "Describe the additive MCP hub boundary without flattening child tools or retaining credentials.",
+      "tags": [
+        "mcp",
+        "gateway",
+        "hub"
+      ]
+    },
+    {
+      "id": "mcp_resources",
+      "description": "List resources exposed by connected MCP servers when the child server supports resources/list.",
+      "tags": [
+        "mcp",
+        "gateway",
+        "resources"
+      ]
+    },
+    {
+      "id": "module_graph",
+      "description": "Return the workspace module graph.",
+      "tags": [
+        "code",
+        "module",
+        "graph"
+      ]
+    },
+    {
+      "id": "network_context",
+      "description": "Summarize browser network context when a retained CDP network event stream is available.",
+      "tags": [
+        "browser",
+        "network"
+      ]
+    },
+    {
+      "id": "notification",
+      "description": "notification local capability (notification)",
+      "tags": [
+        "notification",
+        "notification",
+        "capability"
+      ]
+    },
+    {
+      "id": "office",
+      "description": "office local capability (office)",
+      "tags": [
+        "office",
+        "office",
+        "capability"
+      ]
+    },
+    {
+      "id": "office_access",
+      "description": "Automate Microsoft Access only when a verified local Access provider is installed.",
+      "tags": [
+        "office",
+        "access",
+        "windows"
+      ]
+    },
+    {
+      "id": "office_batch",
+      "description": "Run a bounded ordered Office batch with per-step results, dry-run support, and fail-fast semantics; operations are not atomic across apps.",
+      "tags": [
+        "office",
+        "batch"
+      ]
+    },
+    {
+      "id": "office_calendar",
+      "description": "Read and manage Outlook/Microsoft 365 calendar events through a verified provider with guarded invite/cancel actions.",
+      "tags": [
+        "office",
+        "calendar"
+      ]
+    },
+    {
+      "id": "office_contacts",
+      "description": "Read and manage Outlook/Microsoft 365 contacts through a verified provider.",
+      "tags": [
+        "office",
+        "contacts"
+      ]
+    },
+    {
+      "id": "office_convert",
+      "description": "Convert supported Office formats through a verified provider and verify the produced artifact before reporting success.",
+      "tags": [
+        "office",
+        "convert"
+      ]
+    },
+    {
+      "id": "office_excel",
+      "description": "Automate structured Excel workbook reads, edits, formulas, sheets, formatting, exports, and validation through a verified provider.",
+      "tags": [
+        "office",
+        "excel",
+        "spreadsheet"
+      ]
+    },
+    {
+      "id": "office_onedrive",
+      "description": "Manage OneDrive files through Microsoft Graph while respecting Active Project boundaries for local transfers.",
+      "tags": [
+        "office",
+        "graph",
+        "onedrive"
+      ]
+    },
+    {
+      "id": "office_onenote",
+      "description": "Read and manage OneNote through Microsoft Graph when OAuth and required scopes are configured.",
+      "tags": [
+        "office",
+        "graph",
+        "onenote"
+      ]
+    },
+    {
+      "id": "office_outlook",
+      "description": "Read Outlook mail, create and update drafts, and perform guarded mailbox mutations through a verified provider.",
+      "tags": [
+        "office",
+        "outlook",
+        "mail"
+      ]
+    },
+    {
+      "id": "office_powerpoint",
+      "description": "Author, inspect, edit, export, and validate PowerPoint presentations through a verified provider.",
+      "tags": [
+        "office",
+        "powerpoint",
+        "presentation"
+      ]
+    },
+    {
+      "id": "office_ppt",
+      "description": "Read PowerPoint content or save a copy through the existing Office policy boundary.",
+      "tags": [
+        "office",
+        "powerpoint",
+        "com"
+      ]
+    },
+    {
+      "id": "office_project",
+      "description": "Automate Microsoft Project only when a verified local Project provider is installed.",
+      "tags": [
+        "office",
+        "project",
+        "windows"
+      ]
+    },
+    {
+      "id": "office_publisher",
+      "description": "Automate legacy Microsoft Publisher only when an installed automation provider is verified.",
+      "tags": [
+        "office",
+        "publisher",
+        "windows"
+      ]
+    },
+    {
+      "id": "office_sharepoint",
+      "description": "Read and manage bounded SharePoint sites, lists, drives, and files through Microsoft Graph.",
+      "tags": [
+        "office",
+        "graph",
+        "sharepoint"
+      ]
+    },
+    {
+      "id": "office_status",
+      "description": "Report truthful Office provider, app, action, dependency, and policy readiness without exposing credentials.",
+      "tags": [
+        "office",
+        "status",
+        "provider"
+      ]
+    },
+    {
+      "id": "office_tasks",
+      "description": "Read and manage Outlook/Microsoft 365 tasks only when the configured provider exposes a compatible task API.",
+      "tags": [
+        "office",
+        "tasks"
+      ]
+    },
+    {
+      "id": "office_teams",
+      "description": "Read and send guarded Microsoft Teams messages only through supported Microsoft Graph permissions.",
+      "tags": [
+        "office",
+        "graph",
+        "teams"
+      ]
+    },
+    {
+      "id": "office_visio",
+      "description": "Automate Microsoft Visio only when a verified local Visio provider is installed.",
+      "tags": [
+        "office",
+        "visio",
+        "windows"
+      ]
+    },
+    {
+      "id": "office_word",
+      "description": "Read, create, edit, inspect, merge, convert, and validate Word documents through a verified Office provider.",
+      "tags": [
+        "office",
+        "word",
+        "document"
+      ]
+    },
+    {
+      "id": "parallel_delegate",
+      "description": "Run up to four isolated read-only agent tasks through the owned swarm provider with explicit dependency/collision metadata.",
+      "tags": [
+        "agent",
+        "parallel"
+      ]
+    },
+    {
+      "id": "path_context",
+      "description": "Resolve executable and PATH context.",
+      "tags": [
+        "path",
+        "diagnostics"
+      ]
+    },
+    {
+      "id": "pdf_extract_tables",
+      "description": "Extract bounded PDF text and tables through a local document provider.",
+      "tags": [
+        "document",
+        "pdf",
+        "extract"
+      ]
+    },
+    {
+      "id": "permission_check",
+      "description": "Evaluate an action class without limiting allowed context reads.",
+      "tags": [
+        "permission",
+        "policy"
+      ]
+    },
+    {
+      "id": "permission_profile",
+      "description": "Return the active Permission v2 profile.",
+      "tags": [
+        "permission",
+        "policy"
+      ]
+    },
+    {
+      "id": "plugin_disable",
+      "description": "Disable an installed plugin descriptor in persistent shared runtime state.",
+      "tags": [
+        "plugin"
+      ]
+    },
+    {
+      "id": "plugin_enable",
+      "description": "Enable an installed plugin descriptor in persistent shared runtime state.",
+      "tags": [
+        "plugin"
+      ]
+    },
+    {
+      "id": "plugin_install",
+      "description": "Register a validated plugin descriptor in the locked shared runtime registry. This manages declared plugin state; it does not execute untrusted plugin code.",
+      "tags": [
+        "plugin"
+      ]
+    },
+    {
+      "id": "plugin_list",
+      "description": "List plugin descriptors from the locked shared runtime registry.",
+      "tags": [
+        "plugin"
+      ]
+    },
+    {
+      "id": "plugin_remove",
+      "description": "Remove an installed plugin descriptor from persistent shared runtime state.",
+      "tags": [
+        "plugin"
+      ]
+    },
+    {
+      "id": "port_context",
+      "description": "Inspect local listening-port context.",
+      "tags": [
+        "network",
+        "diagnostics"
+      ]
+    },
+    {
+      "id": "process_context",
+      "description": "Inspect host process-tree context.",
+      "tags": [
+        "process",
+        "diagnostics"
+      ]
+    },
+    {
+      "id": "project_profile_get",
+      "description": "Read the validated workspace project-intelligence profile.",
+      "tags": [
+        "project",
+        "profile"
+      ]
+    },
+    {
+      "id": "project_profile_set",
+      "description": "Persist validated workspace project-intelligence conventions through the guarded file boundary.",
+      "tags": [
+        "project",
+        "profile"
+      ]
+    },
+    {
+      "id": "read_file",
+      "description": "Read one guarded workspace file.",
+      "tags": [
+        "workspace",
+        "file",
+        "read"
+      ]
+    },
+    {
+      "id": "read_files",
+      "description": "Read multiple guarded workspace files.",
+      "tags": [
+        "workspace",
+        "file",
+        "read"
+      ]
+    },
+    {
+      "id": "recipe_catalog",
+      "description": "Return inspectable developer automation recipes.",
+      "tags": [
+        "recipe",
+        "automation"
+      ]
+    },
+    {
+      "id": "recipe_describe",
+      "description": "Describe a recipe plan and permissions.",
+      "tags": [
+        "recipe"
+      ]
+    },
+    {
+      "id": "recipe_list",
+      "description": "List built-in and user recipe names.",
+      "tags": [
+        "recipe"
+      ]
+    },
+    {
+      "id": "recipe_run",
+      "description": "Preview or run a deterministic recipe plan.",
+      "tags": [
+        "recipe",
+        "workflow"
+      ]
+    },
+    {
+      "id": "recovery_status",
+      "description": "Return reconnect, retry, continuation, cache, and worker recovery state.",
+      "tags": [
+        "resilience",
+        "recovery"
+      ]
+    },
+    {
+      "id": "registry_context",
+      "description": "Inspect Windows registry context through the Windows capability boundary.",
+      "tags": [
+        "windows",
+        "registry"
+      ]
+    },
+    {
+      "id": "regression_report",
+      "description": "Return retained local benchmark run evidence and regression comparisons for the current runtime session.",
+      "tags": [
+        "benchmark",
+        "regression"
+      ]
+    },
+    {
+      "id": "render_excel_preview",
+      "description": "Render a bounded structured Excel preview from sheet names and sampled cell values through the local Excel/Office provider.",
+      "tags": [
+        "visual",
+        "excel",
+        "office"
+      ]
+    },
+    {
+      "id": "repo_map",
+      "description": "Return a traversable repository structural map.",
+      "tags": [
+        "repository",
+        "map"
+      ]
+    },
+    {
+      "id": "response_mode",
+      "description": "Select compact, normal, verbose, or stream formatting.",
+      "tags": [
+        "response",
+        "stream"
+      ]
+    },
+    {
+      "id": "review_changes",
+      "description": "Review current Git changes and affected context.",
+      "tags": [
+        "git",
+        "review"
+      ]
+    },
+    {
+      "id": "review_context",
+      "description": "Gather code-review context.",
+      "tags": [
+        "review",
+        "context"
+      ]
+    },
+    {
+      "id": "route_intent",
+      "description": "Classify a prompt with a deterministic, overridable route.",
+      "tags": [
+        "router",
+        "intent"
+      ]
+    },
+    {
+      "id": "run_affected_tests",
+      "description": "Plan or run tests affected by changed files.",
+      "tags": [
+        "test",
+        "execute"
+      ]
+    },
+    {
+      "id": "sandbox_exec",
+      "description": "Run an artifact-based Windows Sandbox job with networking disabled and read-only mapped input.",
+      "tags": [
+        "windows",
+        "sandbox",
+        "detonation"
+      ]
+    },
+    {
+      "id": "scheduler",
+      "description": "scheduler local capability (scheduler)",
+      "tags": [
+        "scheduler",
+        "scheduler",
+        "capability"
+      ]
+    },
+    {
+      "id": "screen_record",
+      "description": "screen_record local capability (display)",
+      "tags": [
+        "screen_record",
+        "display",
+        "capability"
+      ]
+    },
+    {
+      "id": "search_files",
+      "description": "Search guarded workspace file paths.",
+      "tags": [
+        "workspace",
+        "search",
+        "read"
+      ]
+    },
+    {
+      "id": "search_text",
+      "description": "Search guarded workspace text.",
+      "tags": [
+        "workspace",
+        "search",
+        "read"
+      ]
+    },
+    {
+      "id": "self_heal_apply",
+      "description": "Apply a current reversible recovery plan without automatic destructive retries; standard mode requires confirmation and trusted Full Bypass skips lnwjud approval.",
+      "tags": [
+        "recovery",
+        "self-healing",
+        "safety"
+      ]
+    },
+    {
+      "id": "self_heal_plan",
+      "description": "Propose safe, deterministic, reversible recovery steps without applying mutations.",
+      "tags": [
+        "recovery",
+        "self-healing",
+        "safety"
+      ]
+    },
+    {
+      "id": "service_context",
+      "description": "Inspect host service-manager metadata.",
+      "tags": [
+        "services",
+        "diagnostics"
+      ]
+    },
+    {
+      "id": "session_checkpoint",
+      "description": "Persist a development-session checkpoint.",
+      "tags": [
+        "session"
+      ]
+    },
+    {
+      "id": "session_context",
+      "description": "Return persisted development-session context.",
+      "tags": [
+        "session",
+        "handoff"
+      ]
+    },
+    {
+      "id": "session_history",
+      "description": "Return session checkpoints and decisions.",
+      "tags": [
+        "session"
+      ]
+    },
+    {
+      "id": "session_resume",
+      "description": "Resume a persisted session context.",
+      "tags": [
+        "session"
+      ]
+    },
+    {
+      "id": "shell",
+      "description": "Run builds, tests, package managers, and system operations; not a text editor when edit_file, apply_patch, or write_file can perform the change.",
+      "tags": [
+        "shell",
+        "process",
+        "execute",
+        "build",
+        "test"
+      ]
+    },
+    {
+      "id": "skill_load",
+      "description": "Load a selected local skill by identifier.",
+      "tags": [
+        "skills"
+      ]
+    },
+    {
+      "id": "skill_match",
+      "description": "Match relevant local skills without loading all skill text.",
+      "tags": [
+        "skills",
+        "discovery"
+      ]
+    },
+    {
+      "id": "skills_import",
+      "description": "Import a validated local SKILL.md into the selected workspace skill catalog through guarded file read/write operations.",
+      "tags": [
+        "skills",
+        "compatibility",
+        "import"
+      ]
+    },
+    {
+      "id": "startup_context",
+      "description": "Inspect host startup configuration context.",
+      "tags": [
+        "startup",
+        "diagnostics"
+      ]
+    },
+    {
+      "id": "symbol_context",
+      "description": "Gather context around a symbol.",
+      "tags": [
+        "symbol",
+        "context"
+      ]
+    },
+    {
+      "id": "symbol_search",
+      "description": "Search indexed symbols across the workspace.",
+      "tags": [
+        "code",
+        "symbol",
+        "search"
+      ]
+    },
+    {
+      "id": "system_info",
+      "description": "system_info local capability (system)",
+      "tags": [
+        "system_info",
+        "system",
+        "capability"
+      ]
+    },
+    {
+      "id": "task_cancel",
+      "description": "Cancel a durable managed task by taskId using the same verified process-tree termination path as shell tasks.",
+      "tags": [
+        "task",
+        "runtime"
+      ]
+    },
+    {
+      "id": "task_create",
+      "description": "Create a durable background task through the local shell task runtime. When the task belongs to a durable goal, pass goalId (or the current goalLease envelope) so terminal goals reject stale task creation before launch. Pass executable plus arguments; command is only an executable alias, never a shell command line. Pass cwd, timeout_seconds, and workspaceId as needed.",
+      "tags": [
+        "task",
+        "runtime"
+      ]
+    },
+    {
+      "id": "task_list",
+      "description": "List durable managed tasks owned by the current client/session/workspace.",
+      "tags": [
+        "task",
+        "runtime"
+      ]
+    },
+    {
+      "id": "task_result",
+      "description": "Read the current durable managed task result and captured output by taskId.",
+      "tags": [
+        "task",
+        "runtime"
+      ]
+    },
+    {
+      "id": "task_status",
+      "description": "Read durable managed task state with bounded recent output by taskId; use task_result for the full captured result.",
+      "tags": [
+        "task",
+        "runtime"
+      ]
+    },
+    {
+      "id": "telemetry_dashboard",
+      "description": "Return measured MCP activity, latency, error, cache, and context-economy telemetry from the local runtime.",
+      "tags": [
+        "telemetry",
+        "dashboard"
+      ]
+    },
+    {
+      "id": "test_context",
+      "description": "Gather relevant test context.",
+      "tags": [
+        "test",
+        "context"
+      ]
+    },
+    {
+      "id": "test_failures",
+      "description": "Summarize recorded test failures.",
+      "tags": [
+        "test",
+        "failure"
+      ]
+    },
+    {
+      "id": "test_history",
+      "description": "Return recent test execution history.",
+      "tags": [
+        "test",
+        "history"
+      ]
+    },
+    {
+      "id": "tool_aliases",
+      "description": "List stable shorthand aliases and their primitive tool targets.",
+      "tags": [
+        "tool",
+        "alias",
+        "discovery"
+      ]
+    },
+    {
+      "id": "tool_batch",
+      "description": "Invoke registered tools with bounded dependency groups.",
+      "tags": [
+        "workflow",
+        "execute"
+      ]
+    },
+    {
+      "id": "tool_categories",
+      "description": "List tool categories and counts.",
+      "tags": [
+        "tool",
+        "discovery"
+      ]
+    },
+    {
+      "id": "tool_describe",
+      "description": "Describe one tool contract on demand.",
+      "tags": [
+        "tool",
+        "discovery"
+      ]
+    },
+    {
+      "id": "tool_dynamic_filter",
+      "description": "Return a bounded ranked tool set using deterministic scoring with optional local rerank fallback.",
+      "tags": [
+        "tool",
+        "search",
+        "router",
+        "filter"
+      ]
+    },
+    {
+      "id": "tool_function_find",
+      "description": "Find the best local tool/function candidates for a prompt.",
+      "tags": [
+        "tool",
+        "search"
+      ]
+    },
+    {
+      "id": "tool_schema_list",
+      "description": "List versioned tool schema metadata.",
+      "tags": [
+        "schema",
+        "registry"
+      ]
+    },
+    {
+      "id": "tool_schema_register",
+      "description": "Register a validated backward-compatible versioned tool schema descriptor in the local runtime registry.",
+      "tags": [
+        "schema",
+        "registry"
+      ]
+    },
+    {
+      "id": "tool_search",
+      "description": "Search tools, tags, phases, and descriptions deterministically.",
+      "tags": [
+        "tool",
+        "search",
+        "discovery"
+      ]
+    },
+    {
+      "id": "trace_symbol",
+      "description": "Combine definition, references, imports, tests, and recent context.",
+      "tags": [
+        "code",
+        "trace"
+      ]
+    },
+    {
+      "id": "type_search",
+      "description": "Search indexed TypeScript, JavaScript, and Python types.",
+      "tags": [
+        "code",
+        "type"
+      ]
+    },
+    {
+      "id": "ui_target_action",
+      "description": "Act on a revalidated visual mark.",
+      "tags": [
+        "vision",
+        "ui",
+        "execute"
+      ]
+    },
+    {
+      "id": "vision",
+      "description": "Capture local screen content or use the OCR boundary.",
+      "tags": [
+        "vision",
+        "display",
+        "read"
+      ]
+    },
+    {
+      "id": "vision_annotated_capture",
+      "description": "Capture an expiring Set-of-Marks observation.",
+      "tags": [
+        "vision",
+        "ui",
+        "read"
+      ]
+    },
+    {
+      "id": "visual_context",
+      "description": "Combine screenshot, DOM, layout, console, and network references. Requires an exact dom_cdp tab_id from list_tabs or new_tab; never uses the active/first tab.",
+      "tags": [
+        "visual",
+        "context"
+      ]
+    },
+    {
+      "id": "web_fetch",
+      "description": "web_fetch local capability (network)",
+      "tags": [
+        "web_fetch",
+        "network",
+        "capability"
+      ]
+    },
+    {
+      "id": "window",
+      "description": "window local capability (window)",
+      "tags": [
+        "window",
+        "window",
+        "capability"
+      ]
+    },
+    {
+      "id": "windows_environment",
+      "description": "Inspect Windows environment metadata.",
+      "tags": [
+        "windows",
+        "environment"
+      ]
+    },
+    {
+      "id": "workspace_list",
+      "description": "List registered workspaces.",
+      "tags": [
+        "workspace",
+        "read"
+      ]
+    },
+    {
+      "id": "workspace_tree",
+      "description": "Read a bounded registered workspace tree.",
+      "tags": [
+        "workspace",
+        "tree",
+        "read"
+      ]
+    },
+    {
+      "id": "write_file",
+      "description": "Guarded text file creation or replacement with checkpoint protection; prefer over shell filesystem scripts.",
+      "tags": [
+        "workspace",
+        "file",
+        "write",
+        "create",
+        "replace",
+        "text"
+      ]
+    },
+    {
+      "id": "wsl_exec",
+      "description": "wsl_exec local capability (workspace)",
+      "tags": [
+        "wsl_exec",
+        "workspace",
+        "capability"
+      ]
+    },
+    {
+      "id": "wsl_fs",
+      "description": "wsl_fs local capability (workspace)",
+      "tags": [
+        "wsl_fs",
+        "workspace",
+        "capability"
+      ]
+    }
+  ]
+}

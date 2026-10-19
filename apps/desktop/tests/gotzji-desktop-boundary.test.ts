@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { gotzjiIpcChannels, ipcChannels } from '@lnwjud/ipc-contracts';
 import { assertGotzjiInheritedChannel } from '../src/main/gotzji-desktop-boundary.js';
 import { registerGotzjiIpcHandlers } from '../src/main/gotzji-desktop-ipc.js';
-import { GotzjiHostClient } from '../src/main/gotzji-host-client.js';
+import { GotzjiHostClient, parseGotzjiRequest } from '../src/main/gotzji-host-client.js';
 
 const servers: http.Server[] = [];
 afterEach(async () => {
@@ -11,6 +11,16 @@ afterEach(async () => {
 });
 
 describe('gotzji desktop governed boundary', () => {
+  it('allows project-scoped read tools through the product boundary without renderer authority', () => {
+    for (const method of ['readProjectFile', 'listProjectFiles', 'searchProjectFiles']) {
+      const input = { projectId: 'selected-project', path: 'notes.txt', ...(method === 'searchProjectFiles' ? { query: 'needle' } : {}) };
+      expect(parseGotzjiRequest({ method, input })).toEqual({ method, input });
+      expect(() => parseGotzjiRequest({ method, input: { ...input, ownerId: 'spoofed' } })).toThrow('CALLER_AUTHORITY_DENIED');
+      expect(() => parseGotzjiRequest({ method, input: { ...input, shell: 'other-command' } })).toThrow('INVALID_GOTZJI_REQUEST');
+      expect(() => parseGotzjiRequest({ method, input: { path: 'notes.txt' } })).toThrow('projectId');
+    }
+  });
+
   it('blocks all inherited work routes including hidden read, native goal, shell, tunnel, updater and bypass settings', () => {
     for (const channel of [
       ipcChannels.startProcess, ipcChannels.stopProcess, ipcChannels.startMcp, ipcChannels.restartMcp,

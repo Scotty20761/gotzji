@@ -1,8 +1,9 @@
-import { mkdtemp, readFile, realpath, readdir, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, realpath, readdir, rm, writeFile } from 'node:fs/promises';
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { build } from 'esbuild';
 import { _electron, expect, test, type ElectronApplication } from '@playwright/test';
 import { UNPACKAGED_E2E_PROCESS_BIRTH } from '../../../packages/execution-core/src/process-identity.mjs';
 import { alive } from '../../../packages/execution-core/src/managed-worker.js';
@@ -20,6 +21,8 @@ test('gotzji production entry exposes governed controls and denies inherited wor
   }
   let app: ElectronApplication | undefined;
   let libraryProjectRoot: string | undefined;
+  let projectFilesRoot: string | undefined;
+  let lostAckFixturePath: string | undefined;
   let hostWasReady = false;
   const expectedHostExecutable = await realpath(electronExecutablePath(desktopRoot));
   try {
@@ -33,6 +36,9 @@ test('gotzji production entry exposes governed controls and denies inherited wor
     const page = await app.firstWindow();
     await expect(page.getByRole('heading', { name: 'gotzji', exact: true })).toBeVisible({ timeout: 30_000 });
     await expect(page.getByText('สั่งงานผ่านปลั๊กอิน ChatGPT', { exact: true })).toBeVisible();
+    await expect(page.getByRole('img', { name: 'Grace ผู้ช่วยส่วนตัว', exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'ตั้งค่า', exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'บันทึกสด', exact: true })).toBeVisible();
     const observation = await page.evaluate(async () => {
       const result = await Promise.race([
         window.gotzji.hostStatus().then((value) => ({ kind: 'status' as const, value })).catch((error: unknown) => ({ kind: 'error' as const, value: error instanceof Error ? error.message : String(error) })),
@@ -45,6 +51,9 @@ test('gotzji production entry exposes governed controls and denies inherited wor
       kind: 'status', value: { product: 'gotzji', state: 'ready', controller: 'chatgpt-plugin', automaticUpdates: false },
     });
     hostWasReady = true;
+    await page.getByRole('button', { name: 'รีเฟรช', exact: true }).click();
+    await expect(page.getByText('ระบบในเครื่องพร้อมทำงาน', { exact: true })).toBeVisible();
+    await page.screenshot({ path: path.join(desktopRoot, '..', '..', '.local-artifacts', 'parity-c1-home.png') });
     await expect(page.evaluate(() => ({
       process: typeof Reflect.get(window, 'process'),
       require: typeof Reflect.get(window, 'require'),
@@ -67,18 +76,108 @@ test('gotzji production entry exposes governed controls and denies inherited wor
     await page.getByRole('button', { name: /^Library route fixture ·/ }).click();
     await expect(page.getByRole('heading', { name: 'ช่องทาง Library สำหรับ lnwjud', exact: true })).toBeVisible();
     await expect(page.getByRole('button', { name: 'เชื่อมโครงการ Library นี้', exact: true })).toBeEnabled();
+
+    projectFilesRoot = await realpath(await mkdtemp(path.join(tempRoot, 'gotzji-files-panel-e2e-')));
+    const filesRelative = path.relative(tempRoot, projectFilesRoot);
+    if (!filesRelative || filesRelative.startsWith('..') || path.isAbsolute(filesRelative) || !path.basename(projectFilesRoot).startsWith('gotzji-files-panel-e2e-')) throw new Error('Unexpected project files fixture root');
+    await writeFile(path.join(projectFilesRoot, 'welcome.txt'), 'Original sample\n', 'utf8');
+    await page.evaluate(async (rootPath) => window.gotzji.request({ method: 'registerProject', input: { projectId: 'files-panel', displayName: 'Project files fixture', rootPath, kind: 'project' } }), projectFilesRoot);
+    await page.getByRole('button', { name: 'รีเฟรช', exact: true }).click();
+    await page.getByRole('button', { name: 'โครงการ', exact: true }).click();
+    await page.getByRole('button', { name: /^Project files fixture ·/ }).click();
+    await expect(page.getByRole('heading', { name: 'ไฟล์ในโครงการ', exact: true })).toBeVisible();
+    await page.getByText('เทียบความสามารถกับ lnwjud', { exact: true }).click();
+    await page.getByLabel('ค้นหาเครื่องมืออ้างอิง', { exact: true }).fill('read_file');
+    await expect(page.getByRole('row').filter({ has: page.getByText('read_file', { exact: true }) })).toContainText('รองรับบางส่วน');
+    await page.getByText('เทียบความสามารถกับ lnwjud', { exact: true }).click();
+    await page.getByRole('button', { name: 'อ่านโฟลเดอร์', exact: true }).click();
+    await page.getByRole('button', { name: 'welcome.txt', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'อ่านโฟลเดอร์', exact: true })).toBeEnabled();
+    await expect(page.getByLabel('เนื้อหาไฟล์', { exact: true }), await page.locator('body').innerText()).toHaveValue('Original sample\n');
+    await page.screenshot({ path: path.join(desktopRoot, '..', '..', '.local-artifacts', 'parity-c1-files.png') });
+    await page.getByLabel('เนื้อหาไฟล์', { exact: true }).fill('Edited through gotzji\n');
+    await page.getByRole('button', { name: 'ตรวจการแก้ไข', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'บันทึกไฟล์', exact: true })).toBeEnabled();
+    // Editing after preparation must make the old preparation unusable in the UI.
+    await page.getByLabel('เนื้อหาไฟล์', { exact: true }).fill('Final verified sample\n');
+    await expect(page.getByRole('button', { name: 'บันทึกไฟล์', exact: true })).toBeDisabled();
+    await page.getByRole('button', { name: 'ตรวจการแก้ไข', exact: true }).click();
+    await page.getByRole('button', { name: 'บันทึกไฟล์', exact: true }).click();
+    await expect(page.getByRole('heading', { name: /^งาน [a-f0-9]{64}$/ })).toBeVisible();
+    await expect.poll(() => readFile(path.join(projectFilesRoot!, 'welcome.txt'), 'utf8')).toBe('Final verified sample\n');
+    await expect(page.getByText('เสร็จแล้ว', { exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'ดูผลลัพธ์', exact: true }).click();
+
+    const firstJobHeading = await page.getByRole('heading', { name: /^งาน [a-f0-9]{64}$/ }).textContent();
+    const firstJobId = firstJobHeading?.match(/[a-f0-9]{64}/u)?.[0];
+    expect(firstJobId).toBeTruthy();
+    await expect(page.locator('pre:visible')).toContainText('"path": "welcome.txt"');
+    await expect(page.locator('pre:visible')).toContainText('1eb5f5d070d4535515a4636073d6d716a4f031b51a75255866e2723b37d6e443');
+
+    // Exercise the same public component/IPC/Core port with one discarded acknowledgement.
+    // The owned fixture imports the real component; no product fault hook or Core mock is installed.
+    lostAckFixturePath = path.join(desktopRoot, 'dist', 'renderer', `gotzji-lost-ack-e2e-${randomBytes(8).toString('hex')}.js`);
+    await build({ stdin: { resolveDir: path.join(desktopRoot, 'src', 'renderer'), sourcefile: 'lost-ack-fixture.tsx', loader: 'tsx', contents: `
+      import { createRoot } from 'react-dom/client';
+      import { GotzjiProjectFiles } from './GotzjiProjectFiles.tsx';
+      const host = document.getElementById('root'); host.hidden = true;
+      const root = document.createElement('div'); root.id = 'lost-ack-fixture'; document.body.append(root);
+      let discard = true;
+      const request = async (method, input) => {
+        const result = await window.gotzji.request({ method, input });
+        if (method === 'submit' && discard) {
+          if (!result || typeof result.jobId !== 'string') throw new Error('Expected actual admitted job');
+          discard = false; root.dataset.admittedJobId = result.jobId;
+          throw new Error('LOST_ACK_AFTER_REAL_ADMISSION');
+        }
+        return result;
+      };
+      createRoot(root).render(<GotzjiProjectFiles projectId="files-panel" disabled={false} request={request} onJob={(id) => { root.dataset.observedJobId = id; }} />);
+    ` }, bundle: true, format: 'iife', platform: 'browser', jsx: 'automatic', outfile: lostAckFixturePath, define: { 'process.env.NODE_ENV': '"production"' } });
+    await page.addScriptTag({ url: pathToFileURL(lostAckFixturePath).href });
+    await page.getByRole('button', { name: 'ไฟล์ใหม่', exact: true }).click();
+    await page.getByLabel('ไฟล์ที่เลือก', { exact: true }).fill('new-file.txt');
+    await page.getByLabel('เนื้อหาไฟล์', { exact: true }).fill('Created exactly once\n');
+    await page.getByRole('button', { name: 'ตรวจการแก้ไข', exact: true }).click();
+    await page.getByRole('button', { name: 'บันทึกไฟล์', exact: true }).click();
+    await expect(page.getByRole('alert')).toContainText('LOST_ACK_AFTER_REAL_ADMISSION');
+    const acceptedJobId = await page.locator('#lost-ack-fixture').getAttribute('data-admitted-job-id');
+    expect(acceptedJobId).toMatch(/^[a-f0-9]{64}$/u);
+    await page.getByRole('button', { name: 'บันทึกไฟล์', exact: true }).click();
+    await expect(page.locator('#lost-ack-fixture')).toHaveAttribute('data-observed-job-id', acceptedJobId!);
+    await page.evaluate(() => { document.getElementById('lost-ack-fixture')!.remove(); document.getElementById('root')!.hidden = false; });
+    await page.getByRole('button', { name: 'รีเฟรช', exact: true }).click();
+    await page.getByRole('button', { name: 'ประวัติงาน', exact: true }).click();
+    await page.getByRole('button').filter({ has: page.getByText(acceptedJobId!, { exact: true }) }).click();
+    await expect(page.getByRole('heading', { name: `งาน ${acceptedJobId}`, exact: true })).toBeVisible();
+    await expect(page.getByText('เสร็จแล้ว', { exact: true })).toBeVisible();
+    await expect.poll(() => readFile(path.join(projectFilesRoot!, 'new-file.txt'), 'utf8')).toBe('Created exactly once\n');
+    const createdJobs = await page.evaluate(async () => window.gotzji.request({ method: 'listJobs', input: {} }));
+    expect(Array.isArray(createdJobs)).toBe(true);
+    expect((createdJobs as { jobId: string; projectId?: string }[]).filter((job) => job.projectId === 'files-panel')).toHaveLength(2);
+    await page.getByRole('button', { name: 'ดูผลลัพธ์', exact: true }).click();
+    await expect(page.locator('pre:visible')).toContainText('"path": "new-file.txt"');
+    await expect(page.locator('pre:visible')).toContainText('"state": "completed"');
+
+
   } finally {
     try {
       const selfStopped = await stopOwnedTestHost(dataRoot, expectedHostExecutable);
       if (hostWasReady) expect(selfStopped).toBe(true);
     }
     finally {
-      if (app) await terminateProcessTree(app.process());
+      if (app) {
+        const ownedAppProcess = app.process();
+        try { await app.close(); }
+        finally { await terminateProcessTree(ownedAppProcess); }
+      }
       await expect.poll(async () => {
         try { await rm(dataRoot, { recursive: true, force: true }); return true; }
         catch { return false; }
       }, { timeout: 10_000, intervals: [50, 100, 250] }).toBe(true);
       if (libraryProjectRoot) await rm(libraryProjectRoot, { recursive: true, force: true });
+      if (projectFilesRoot) await rm(projectFilesRoot, { recursive: true, force: true });
+      if (lostAckFixturePath) await rm(lostAckFixturePath, { force: true });
     }
   }
 });
