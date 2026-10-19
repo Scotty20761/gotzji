@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useState, type ReactElement } from 'react';
+import { useCallback, useEffect, useId, useState, type ReactElement } from 'react';
 import type { GotzjiHostStatus, GotzjiMethod } from '@lnwjud/ipc-contracts';
 import './gotzji.css';
 import gracePortrait from './assets/grace.webp';
 import { GotzjiProjectFiles } from './GotzjiProjectFiles.js';
 import { GotzjiGitPanel } from './GotzjiGitPanel.js';
 import { GotzjiToolReference } from './GotzjiToolReference.js';
+import { GotzjiWorkflowPrompts } from './GotzjiWorkflowPrompts.js';
 import { buildNativeFormInput, nativeFormFields } from './gotzji-native-form.js';
 import { EMPTY_RECIPE_FORM, recipeRequest, recipeReviewLines, type RecipeForm } from './gotzji-recipe-form.js';
 import { GotzjiConnectionPanel } from './GotzjiConnectionPanel.js';
@@ -19,6 +20,7 @@ const labels: Record<Page, string> = { home: 'ภาพรวม', projects: '�
 
 /** Product controls address explicit canonical IDs, never the inherited provider API. */
 export function GotzjiApp(): ReactElement {
+  const workflowProjectSelectId = useId();
   const [page, setPage] = useState<Page>('home');
   const [host, setHost] = useState<GotzjiHostStatus | null>(null);
   const [projects, setProjects] = useState<readonly Row[]>([]);
@@ -224,9 +226,11 @@ export function GotzjiApp(): ReactElement {
             {selectedJob.settleDecisions.includes('no-effect') && <button disabled={busy} onClick={() => void act(async () => { setSelectedJob(await request('settleJob', { jobId, decision: 'no-effect' })); await refresh(); })}>ไม่มีผล · ปล่อยโครงการ</button>}</div></fieldset>}
           {logs && <pre>{logs}</pre>}{result !== null && <pre>{display(result)}</pre>}</section>}</>}
       {page === 'queue' && <section><h3>งานที่กำลังรอ</h3><JobList jobs={queue} disabled={busy} select={(id) => { setJobId(id); setPage('worklog'); }} /></section>}
-      {page === 'workflows' && <section><h3>เวิร์กโฟลว์ของโครงการ</h3><p>เลือกงานที่ระบบรองรับสำหรับโครงการนี้ แล้วตรวจรายละเอียดก่อนเริ่ม</p>
-        {workflows.length === 0 ? <><p>ยังไม่มีเวิร์กโฟลว์ที่พร้อมใช้งานสำหรับโครงการที่เลือก</p><button onClick={() => setPage('projects')}>เลือกโครงการ</button></> : workflows.map((workflow) => <article key={`${workflow.workflowId}:${workflow.workflowVersion}`}><h4>{String(workflow.workflowId)}</h4><p>{String(workflow.description)}</p><button onClick={() => { setOperation(`library:${workflow.workflowId}:${workflow.workflowVersion}`); setPage('tools'); }}>เปิดรายละเอียดและเตรียมงาน</button></article>)}
-      </section>}
+      {page === 'workflows' && <><section><label htmlFor={workflowProjectSelectId}>โครงการสำหรับเวิร์กโฟลว์</label><select id={workflowProjectSelectId} value={projectId} disabled={busy || host?.state !== 'ready'} onChange={(event) => setProjectId(event.target.value)}><option value="">เลือกโครงการ</option>{projects.map((project) => <option key={String(project.projectId)} value={String(project.projectId)}>{String(project.displayName)}</option>)}</select></section>
+        <GotzjiWorkflowPrompts key={`${projectId}:${String(selectedProject?.displayName ?? '')}`} project={selectedProject ? { projectId, displayName: String(selectedProject.displayName) } : null} disabled={busy || host?.state !== 'ready'} />
+        <section><h3>งาน Library ของโครงการ</h3><p>เลือกงานที่ระบบรองรับสำหรับโครงการนี้ แล้วตรวจรายละเอียดก่อนเริ่ม</p>
+          {workflows.length === 0 ? <><p>ยังไม่มีงาน Library ที่พร้อมใช้งานสำหรับโครงการนี้</p><button onClick={() => setPage('projects')}>เลือกโครงการ</button></> : workflows.map((workflow) => <article key={`${workflow.workflowId}:${workflow.workflowVersion}`}><h4>{String(workflow.workflowId)}</h4><p>{String(workflow.description)}</p><button onClick={() => { setOperation(`library:${workflow.workflowId}:${workflow.workflowVersion}`); setPage('tools'); }}>เปิดรายละเอียดและเตรียมงาน</button></article>)}
+        </section></>}
       {page === 'settings' && <><GotzjiConnectionPanel disabled={host?.state !== 'ready'} /><GotzjiStartupPanel /></>}
       {page === 'git' && (projectId ? <GotzjiGitPanel key={projectId} projectId={projectId} disabled={busy || host?.state !== 'ready'} request={request} /> : <section><h3>เลือกโครงการก่อนดู Git</h3><button onClick={() => setPage('projects')}>เลือกโครงการ</button></section>)}
       {page === 'live' && <section><h3>บันทึกสดของงาน</h3><p>เลือกงานที่ต้องการอ่านบันทึก โดยไม่เริ่มงานซ้ำ</p><JobList jobs={jobs} disabled={busy} select={(id) => { setJobId(id); setPage('worklog'); }} /></section>}

@@ -2,13 +2,15 @@ import { mkdtemp, readFile, realpath, readdir, rm, writeFile } from 'node:fs/pro
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { execFile, type ChildProcess } from 'node:child_process';
 import { promisify } from 'node:util';
+import { DatabaseSync } from 'node:sqlite';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { build } from 'esbuild';
 import { _electron, expect, test as base, type ElectronApplication, type Page } from '@playwright/test';
 import { UNPACKAGED_E2E_PROCESS_BIRTH } from '../../../packages/execution-core/src/process-identity.mjs';
-import { alive } from '../../../packages/execution-core/src/managed-worker.js';
+import { alive, observeWorker, stopWorker } from '../../../packages/execution-core/src/managed-worker.js';
+import type { WorkerRow } from '../../../packages/execution-core/src/store.js';
 import { childEnvironment } from '../../../packages/execution-core/src/product-security.mjs';
 import { electronExecutablePath, terminateProcessTree } from './electron-runtime.js';
 
@@ -33,7 +35,9 @@ const test = base.extend<{ gotzji: GovernedFixture }>({
     const rendererFiles: string[] = [];
     let app: ElectronApplication | undefined;
     let ownedAppProcess: ChildProcess | undefined;
+    let ownedUiPid: number | undefined;
     let hostWasReady = false;
+    let launchAttempted = false;
     const failures: unknown[] = [];
     let expectedHostExecutable: string | undefined;
     try {
@@ -42,6 +46,7 @@ const test = base.extend<{ gotzji: GovernedFixture }>({
     dataRootVerified = true;
     if (await realpath(dataRoot) !== dataRoot) throw new Error('Owned data root was redirected');
     expectedHostExecutable = await realpath(electronExecutablePath(desktopRoot));
+    launchAttempted = true;
     app = await _electron.launch({
       executablePath: expectedHostExecutable,
       args: [mainEntry],
@@ -50,6 +55,8 @@ const test = base.extend<{ gotzji: GovernedFixture }>({
       timeout: 40_000,
     });
     ownedAppProcess = app.process();
+    ownedUiPid = await app.evaluate(() => process.pid);
+    if (!Number.isInteger(ownedUiPid) || ownedUiPid < 1) throw new Error('Owned native UI identity unavailable');
     const page = await app.firstWindow();
     await expect(page.getByRole('heading', { name: 'gotzji', exact: true })).toBeVisible({ timeout: 30_000 });
     await expect(page.getByText('สั่งงานผ่านปลั๊กอิน ChatGPT', { exact: true })).toBeVisible();
@@ -101,41 +108,61 @@ const test = base.extend<{ gotzji: GovernedFixture }>({
         },
       });
     } catch (error) { failures.push(error); }
-    // Quit the owned UI first, so its refresh loop cannot restart the independent host.
-    // Node24 waits for an attached debugger at exit. Detach this test-owned inspector
-    // outside a CDP evaluation callback, then exercise the ordinary app.quit lifecycle.
-    if (app && ownedAppProcess) {
-      try {
-        await app.evaluate(({ app }) => { setImmediate(() => { process.getBuiltinModule('node:inspector').close(); app.quit(); }); });
-      } catch (error) {
-        if (!(error instanceof Error) || !error.message.includes('Target page, context or browser has been closed')) failures.push(error);
-      }
-      try { await expect.poll(() => ownedAppProcess.exitCode, { timeout: 5_000, intervals: [50, 100, 250] }).toBe(0); }
-      catch (error) { failures.push(error); }
-    }
-    try {
-      if (expectedHostExecutable) {
-        const stopped = await stopOwnedTestHost(dataRoot, expectedHostExecutable);
-        if (hostWasReady) expect(stopped).toBe(true);
-      }
-    } catch (error) { failures.push(error); }
+    // This fixture verifies UI actions, not graceful application shutdown. Force only
+    // its own disposable UI; normal installed quit/recovery remains a separate gate.
+    let uiAbsent = !launchAttempted;
+    let hostAbsent = !launchAttempted;
+    let workersAbsent = !launchAttempted;
+    let launcherAbsent = !launchAttempted;
     if (ownedAppProcess) {
+      // Preserve the live ancestry until the whole captured test tree is stopped,
+      // including its per-profile crash reporter; killing only the UI can orphan it.
       try { await terminateProcessTree(ownedAppProcess); } catch (error) { failures.push(error); }
     }
+    if (ownedUiPid !== undefined) {
+      try { await expect.poll(() => alive(ownedUiPid), { timeout: 5_000, intervals: [50, 100, 250] }).toBe(false); uiAbsent = true; }
+      catch (error) { failures.push(error); }
+    }
+    if (!uiAbsent && ownedAppProcess) {
+      try { await terminateProcessTree(ownedAppProcess); } catch (error) { failures.push(error); }
+      if (ownedUiPid !== undefined) {
+        try { await expect.poll(() => alive(ownedUiPid), { timeout: 5_000, intervals: [50, 100, 250] }).toBe(false); uiAbsent = true; }
+        catch (error) { failures.push(error); }
+      }
+    }
+    // A live UI could respawn the host. Unknown absence retains every fixture root.
+    if (uiAbsent && expectedHostExecutable && launchAttempted) {
+      try { hostAbsent = await stopOwnedTestHost(dataRoot, expectedHostExecutable); }
+      catch (error) { failures.push(error); }
+      if (hostWasReady && !hostAbsent) failures.push(new Error('Owned ready host absence unproved'));
+      // The supervisor must be absent before taking the worker census, or it can
+      // replace a stopped generation after the test has already observed absence.
+      if (hostAbsent) {
+        try { await stopOwnedTestWorkers(dataRoot); workersAbsent = true; }
+        catch (error) { failures.push(error); }
+      }
+    }
+    if (ownedAppProcess && uiAbsent && hostAbsent) {
+      try { await terminateProcessTree(ownedAppProcess); } catch (error) { failures.push(error); }
+      try { await expect.poll(() => ownedAppProcess.exitCode !== null || ownedAppProcess.signalCode !== null, { timeout: 5_000, intervals: [50, 100, 250] }).toBe(true); launcherAbsent = true; }
+      catch (error) { failures.push(error); }
+    }
+    const resourcesAbsent = uiAbsent && hostAbsent && workersAbsent && launcherAbsent;
+    if (!resourcesAbsent) failures.push(new Error(`Owned fixture processes unproved; retained ${dataRoot}, ${roots.join(', ')}`));
     const cleanup = await Promise.allSettled([
-      dataRootVerified ? expect.poll(async () => {
+      dataRootVerified && resourcesAbsent ? expect.poll(async () => {
         try { await rm(dataRoot, { recursive: true, force: true }); return true; }
         catch { return false; }
       }, { timeout: 10_000, intervals: [50, 100, 250] }).toBe(true) : Promise.reject(new Error('Unverified data-root cleanup refused')),
-      ...roots.map((root) => rm(root, { recursive: true, force: true })),
-      ...rendererFiles.map((file) => rm(file, { force: true })),
+      ...(resourcesAbsent ? roots.map((root) => rm(root, { recursive: true, force: true })) : []),
+      ...(resourcesAbsent ? rendererFiles.map((file) => rm(file, { force: true })) : []),
     ]);
     failures.push(...cleanup.filter((item) => item.status === 'rejected').map((item) => item.reason));
     if (failures.length) throw new AggregateError(failures, `Governed E2E setup or owned fixture cleanup failed:\n${failures.map((failure) => failure instanceof Error ? failure.stack ?? failure.message : String(failure)).join('\n')}`);
   },
 });
 
-test('gotzji entry, project search and file edit return canonical results', async ({ gotzji }) => {
+test('gotzji entry, project search and file edit return canonical results', async ({ gotzji }, testInfo) => {
     const { page } = gotzji;
     const libraryProjectRoot = await gotzji.temporaryProject('gotzji-library-panel-e2e-');
     await page.evaluate(async (rootPath) => window.gotzji.request({ method: 'registerProject', input: { projectId: 'library-panel', displayName: 'Library route fixture', rootPath, kind: 'library' } }), libraryProjectRoot);
@@ -182,8 +209,8 @@ test('gotzji entry, project search and file edit return canonical results', asyn
     await page.getByRole('button', { name: 'ตรวจการแก้ไข', exact: true }).click();
     await page.getByRole('button', { name: 'บันทึกไฟล์', exact: true }).click();
     await expect(page.getByRole('heading', { name: /^งาน [a-f0-9]{64}$/ })).toBeVisible();
-    await expect.poll(() => readFile(path.join(projectFilesRoot!, 'welcome.txt'), 'utf8')).toBe('Final verified sample\n');
-    await expect(page.getByText('เสร็จแล้ว', { exact: true })).toBeVisible();
+    await expect(page.getByText('เสร็จแล้ว', { exact: true })).toBeVisible({ timeout: testInfo.timeout });
+    expect(await readFile(path.join(projectFilesRoot, 'welcome.txt'), 'utf8')).toBe('Final verified sample\n');
     await page.getByRole('button', { name: 'ดูผลลัพธ์', exact: true }).click();
 
     const firstJobHeading = await page.getByRole('heading', { name: /^งาน [a-f0-9]{64}$/ }).textContent();
@@ -194,7 +221,7 @@ test('gotzji entry, project search and file edit return canonical results', asyn
 
 });
 
-test('gotzji new file retries one real admission after a lost acknowledgement', async ({ gotzji }) => {
+test('gotzji new file retries one real admission after a lost acknowledgement', async ({ gotzji }, testInfo) => {
     const { page } = gotzji;
     const projectFilesRoot = await gotzji.temporaryProject('gotzji-files-panel-e2e-');
     await writeFile(path.join(projectFilesRoot, 'welcome.txt'), 'Original sample\n', 'utf8');
@@ -241,8 +268,8 @@ test('gotzji new file retries one real admission after a lost acknowledgement', 
     await page.getByRole('button', { name: 'ประวัติงาน', exact: true }).click();
     await page.getByRole('button').filter({ has: page.getByText(acceptedJobId!, { exact: true }) }).click();
     await expect(page.getByRole('heading', { name: `งาน ${acceptedJobId}`, exact: true })).toBeVisible();
-    await expect(page.getByText('เสร็จแล้ว', { exact: true })).toBeVisible();
-    await expect.poll(() => readFile(path.join(projectFilesRoot!, 'new-file.txt'), 'utf8')).toBe('Created exactly once\n');
+    await expect(page.getByText('เสร็จแล้ว', { exact: true })).toBeVisible({ timeout: testInfo.timeout });
+    expect(await readFile(path.join(projectFilesRoot, 'new-file.txt'), 'utf8')).toBe('Created exactly once\n');
     const createdJobs = await page.evaluate(async () => window.gotzji.request({ method: 'listJobs', input: {} }));
     expect(Array.isArray(createdJobs)).toBe(true);
     expect((createdJobs as { jobId: string; projectId?: string }[]).filter((job) => job.projectId === 'files-panel')).toHaveLength(1);
@@ -283,6 +310,107 @@ test('gotzji Git status, selected diff and history preserve the source index', a
 
 });
 
+test('gotzji workflow review and copy preserve project identity without submitting jobs', async ({ gotzji }) => {
+  const { page } = gotzji;
+  await page.getByRole('button', { name: 'เวิร์กโฟลว์', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'เริ่มงานกับ ChatGPT', exact: true })).toBeVisible();
+  for (const title of ['ตรวจสอบโปรเจกต์', 'รีวิวโค้ด', 'ตรวจความพร้อมรีลีส', 'ตรวจการเชื่อมต่อ', 'ตรวจข้อมูล Excel/CSV', 'สร้างรายงานจากต้นแบบ']) {
+    await expect(page.getByRole('button', { name: new RegExp(`^${title}`) })).toBeDisabled();
+  }
+  const rootA = await gotzji.temporaryProject('gotzji-files-panel-e2e-');
+  const rootB = await gotzji.temporaryProject('gotzji-files-panel-e2e-');
+  await writeFile(path.join(rootA, 'data.csv'), 'id,value\n1,original\n');
+  await page.evaluate(async ([a, b]) => {
+    await window.gotzji.request({ method: 'registerProject', input: { projectId: 'workflow-a', displayName: 'Workflow A', rootPath: a, kind: 'project' } });
+    await window.gotzji.request({ method: 'registerProject', input: { projectId: 'workflow-b', displayName: 'Workflow B', rootPath: b, kind: 'project' } });
+    // Keep the owner's global clipboard untouched while observing the actual UI's browser API call.
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (text: string) => { Reflect.set(window, '__ownedWorkflowCopy', text); } } });
+  }, [rootA, rootB]);
+  await page.getByRole('button', { name: 'รีเฟรช', exact: true }).click();
+  await page.getByLabel('โครงการสำหรับเวิร์กโฟลว์', { exact: true }).selectOption('workflow-a');
+  await page.screenshot({ path: path.join(desktopRoot, '..', '..', '.local-artifacts', 'parity-c1b-workflow-cards.png') });
+  for (const journey of [
+    { title: 'ตรวจสอบโปรเจกต์', id: 'project-check', fields: [] },
+    { title: 'รีวิวโค้ด', id: 'code-review', fields: [['สาขาหรือรุ่นโค้ดที่ใช้เปรียบเทียบ', 'main']] },
+    { title: 'ตรวจความพร้อมรีลีส', id: 'release-readiness', fields: [['รุ่นเป้าหมาย', '1.0.0']] },
+    { title: 'ตรวจการเชื่อมต่อ', id: 'connection-check', fields: [['การเชื่อมต่อที่ต้องการตรวจ', 'ChatGPT']] },
+    { title: 'ตรวจข้อมูล Excel/CSV', id: 'data-audit', fields: [['ไฟล์ข้อมูลในโครงการ', 'data.csv'], ['คอลัมน์คีย์', 'id']] },
+  ] as const) {
+    await page.getByRole('button', { name: new RegExp(`^${journey.title}`) }).click();
+    for (const [label, value] of journey.fields) await page.getByLabel(label, { exact: true }).fill(value);
+    await page.getByRole('button', { name: 'ตรวจคำขอ', exact: true }).click();
+    await expect(page.getByRole('heading', { name: 'ตรวจรายละเอียดก่อนส่ง', exact: true })).toBeVisible();
+    await page.getByText('อ่านข้อความคำขอทั้งหมด', { exact: true }).click();
+    await expect(page.getByLabel('คำขอสำหรับ ChatGPT', { exact: true })).toHaveValue(new RegExp(`"templateId": "${journey.id}"`));
+    await expect(page.getByLabel('คำขอสำหรับ ChatGPT', { exact: true })).toHaveValue(/ห้ามรันคำสั่งใหม่/u);
+  }
+  await page.getByRole('button', { name: /^สร้างรายงานจากต้นแบบ/ }).click();
+  await page.getByLabel('ไฟล์ข้อมูลในโครงการ', { exact: true }).fill('data.csv');
+  await page.getByLabel('ไฟล์ต้นแบบในโครงการ', { exact: true }).fill('template.xlsx');
+  await page.getByLabel('ไฟล์แมปในโครงการ', { exact: true }).fill('mapping.json');
+  await page.getByLabel('ไฟล์ปลายทางใหม่ในโครงการ', { exact: true }).fill('reports/result.xlsx');
+  await page.getByRole('button', { name: 'ตรวจคำขอ', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'ตรวจรายละเอียดก่อนส่ง', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'คัดลอกคำขอ', exact: true }).click();
+  await expect(page.getByRole('status')).toContainText('คัดลอกแล้ว');
+  const copied = await page.evaluate(() => Reflect.get(window, '__ownedWorkflowCopy') as string);
+  expect(copied).toContain('"projectId": "workflow-a"');
+  expect(copied).toContain('"outputPath": "reports/result.xlsx"');
+  await page.screenshot({ path: path.join(desktopRoot, '..', '..', '.local-artifacts', 'parity-c1b-review.png') });
+  await page.getByLabel('ไฟล์ปลายทางใหม่ในโครงการ', { exact: true }).fill('../outside.xlsx');
+  await expect(page.getByRole('button', { name: 'คัดลอกคำขอ', exact: true })).toHaveCount(0);
+  await page.getByRole('button', { name: 'ตรวจคำขอ', exact: true }).click();
+  await expect(page.getByRole('alert')).toContainText('ใช้ชื่อไฟล์ภายในโครงการ');
+  await page.getByLabel('โครงการสำหรับเวิร์กโฟลว์', { exact: true }).selectOption('workflow-b');
+  await expect(page.getByRole('heading', { name: 'ตรวจรายละเอียดก่อนส่ง', exact: true })).toHaveCount(0);
+  await page.getByRole('button', { name: /^ตรวจสอบโปรเจกต์/ }).click();
+  await page.getByRole('button', { name: 'ตรวจคำขอ', exact: true }).click();
+  await page.evaluate(() => { Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async () => { throw new Error('Synthetic clipboard denial'); } } }); });
+  await page.getByRole('button', { name: 'คัดลอกคำขอ', exact: true }).click();
+  await expect(page.getByRole('alert')).toContainText('คัดลอกไม่สำเร็จ');
+  await page.getByText('อ่านข้อความคำขอทั้งหมด', { exact: true }).click();
+  await expect(page.getByLabel('คำขอสำหรับ ChatGPT', { exact: true })).toHaveValue(/"projectId": "workflow-b"/u);
+  expect(await page.evaluate(async () => window.gotzji.request({ method: 'listJobs', input: {} }))).toEqual([]);
+  expect(await readFile(path.join(rootA, 'data.csv'), 'utf8')).toBe('id,value\n1,original\n');
+  expect(await readdir(rootA)).toEqual(['data.csv']);
+  await page.screenshot({ path: path.join(desktopRoot, '..', '..', '.local-artifacts', 'parity-c1b-workflows.png') });
+});
+
+async function stopOwnedTestWorkers(dataRoot: string): Promise<void> {
+  const runtime = path.join(dataRoot, 'runtime');
+  const base = path.join(runtime, 'workers');
+  const databasePath = path.join(runtime, 'core.sqlite');
+  if (await realpath(databasePath) !== databasePath) throw new Error('Worker database cleanup scope denied');
+  const census = (): WorkerRow[] => {
+    // This private fixture may have a hot WAL after forced tree termination.
+    // Opening read/write lets SQLite recover it; do not create a missing database.
+    const db = new DatabaseSync(databasePath, { timeout: 5_000 });
+    try { return db.prepare('SELECT * FROM gotzji_workers ORDER BY epoch').all() as unknown as WorkerRow[]; }
+    catch (error) {
+      const details = error as Error & { code?: string; errcode?: number; errstr?: string };
+      throw new Error(`Owned worker census failed: ${details.message} (${details.code ?? ''}, ${details.errcode ?? ''}, ${details.errstr ?? ''})`, { cause: error });
+    }
+    finally { db.close(); }
+  };
+  const workers = census();
+  for (const worker of workers) {
+    const directory = path.resolve(worker.directory);
+    if (path.dirname(directory) !== base || await realpath(directory) !== directory) throw new Error('Worker cleanup scope denied');
+  }
+  let directories: string[];
+  try { directories = (await readdir(base)).sort(); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') directories = []; else throw error; }
+  if (JSON.stringify(directories) !== JSON.stringify(workers.map((worker) => path.basename(worker.directory)).sort())) throw new Error('Unrepresented worker directory; owned cleanup refused');
+  const failures: unknown[] = [];
+  for (const worker of workers) {
+    try { if (!await stopWorker(worker) || await observeWorker(worker) !== 'absent') throw new Error('Owned test worker absence unproved'); }
+    catch (error) { failures.push(error); }
+  }
+  if (failures.length) throw new AggregateError(failures, 'Owned E2E worker cleanup failed');
+  if (JSON.stringify(census()) !== JSON.stringify(workers)) throw new Error('Worker census changed after host shutdown');
+  for (const worker of workers) if (await observeWorker(worker) !== 'absent') throw new Error('Owned worker absence changed after cleanup');
+}
+
 async function stopOwnedTestHost(dataRoot: string, expectedExecutable: string): Promise<boolean> {
   let endpoint: { pid: number; port: number; buildIdentity: string; identity: { birth: string; executable: string }; ownerId: string };
   let daemonSecret = '';
@@ -303,6 +431,8 @@ async function stopOwnedTestHost(dataRoot: string, expectedExecutable: string): 
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
     throw error;
   }
+  // The authenticated owned endpoint can outlive its process after an exact fixture fallback.
+  if (alive(endpoint.pid) === false) return true;
   const shutdownUrl = `http://127.0.0.1:${endpoint.port}/rpc`;
   const denied = await fetch(shutdownUrl, { method: 'POST', headers: { Authorization: 'Bearer invalid-e2e-token', 'Content-Type': 'application/json', 'x-gotzji-build': endpoint.buildIdentity }, body: JSON.stringify({ method: 'testOnlyE2eShutdown', input: { nonce: randomBytes(32).toString('hex') } }), signal: AbortSignal.timeout(1_000), redirect: 'error' });
   const deniedBody = await denied.json() as { error?: string };

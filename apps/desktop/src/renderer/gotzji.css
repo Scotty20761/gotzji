@@ -64,3 +64,13 @@
 .gotzji-reference-table { max-height:450px; overflow:auto; }
 .gotzji-reference-table td { vertical-align:top; }
 .gotzji-reference-table td p { font-size:13px; color:var(--gz-muted); margin:5px 0; }
+.gotzji-workflow-cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:12px; margin:20px 0; }
+.gotzji-app .gotzji-workflow-cards button { display:grid; gap:8px; text-align:left; padding:18px; }
+.gotzji-workflow-cards span,.gotzji-workflow-cards small { color:var(--gz-muted); }
+.gotzji-app .gotzji-workflow-cards button[aria-pressed=true] { border-color:var(--gz-grace); background:#17302f; }
+.gotzji-workflow-form fieldset { border-color:#364856; padding:20px; border-radius:8px; }
+.gotzji-workflow-form label { display:grid; gap:8px; margin:14px 0; max-width:640px; }
+.gotzji-workflow-review { border-top:1px solid #364856; margin-top:22px; padding-top:10px; }
+.gotzji-workflow-review dt { color:var(--gz-muted); font-size:14px; }
+.gotzji-workflow-review dd { margin:0 0 12px; overflow-wrap:anywhere; }
+.gotzji-workflow-review textarea { width:100%; box-sizing:border-box; }
