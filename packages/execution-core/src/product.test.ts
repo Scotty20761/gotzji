@@ -315,7 +315,13 @@ describe('governed product operations — real native Goal, file and process sea
     await f.core.resume(f.credential, binding);
     const db = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'), { timeout: 5000 });
     const worker = db.prepare('SELECT * FROM gotzji_workers WHERE job_id=?').get(binding.jobId) as unknown as WorkerRow; db.close();
-    for (let i = 0; i < 100 && (await callWorker(worker, 'status')).state !== 'done'; i++) await new Promise((resolve) => setTimeout(resolve, 30));
+    await f.lifecycle.run((signal) => waitForFixture(signal, async () => {
+      const observation = signed<{ state: string }>(worker, 'observation.json');
+      if (observation?.state === 'failed') throw new Error('The owned write failed before the cancellation fixture could change its result');
+      return observation?.state === 'done' ? true : undefined;
+    }));
+    expect(await callWorker(worker, 'status')).toMatchObject({ state: 'done' });
+    expect(await readFile(target, 'utf8')).toBe('Approved\r\n');
     await writeFile(target, 'Unexpected external content');
     await expect(f.core.cancel(f.credential, binding)).rejects.toMatchObject({ code: 'EFFECT_RECONCILIATION_REQUIRED', field: 'path' });
     expect(await f.core.get(f.credential, binding)).toMatchObject({ status: 'blocked' });
