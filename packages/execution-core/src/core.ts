@@ -22,6 +22,7 @@ import { libraryRoute, libraryCatalog, assertHostDirectLibraryWorkflow, prepareL
 import type { LibraryRouteKind, LibraryDeliveryScope } from './library-workflow-contract.js';
 import { readProjectFile, listProjectFiles, searchProjectFiles } from './product-file-reads.js';
 import { readProjectGit, type ProjectGitResult } from './product-git-reads.js';
+import { decodeUtf8LogPage } from './utf8-log-page.js';
 import type { ProjectGitInput } from './types.js';
 import type { ProjectReadInput, ProjectFileResult, ProjectListInput, ProjectListResult, ProjectSearchInput, ProjectSearchResult } from './types.js';
 import { PRODUCT_BROWSER_OPERATIONS, prepareProductBrowserOperation, type ProductBrowserInput, type ProductBrowserOperationName, type TrustedProductBrowserOptions } from './product-browser.js';
@@ -657,7 +658,15 @@ export class ExecutionCore {
     const filename=path.join(worker.directory,this.#store.input(claim).operation==='grace.product-operation'?'product.stdout':'validation.stdout');
     if(!existsSync(filename)) return {text:'',nextCursor:cursor};
     const info=lstatSync(filename);if(info.isSymbolicLink()||cursor>info.size) throw new CoreError('INVALID_LOG_CURSOR');
-    const fd=openSync(filename,'r');try{const buffer=Buffer.alloc(Math.min(limit,info.size-cursor));const count=readSync(fd,buffer,0,buffer.length,cursor);return {text:buffer.subarray(0,count).toString('utf8'),nextCursor:cursor+count};}finally{closeSync(fd);}
+    const fd=openSync(filename,'r');
+    try {
+      const buffer=Buffer.alloc(Math.min(limit+3,info.size-cursor));
+      const count=readSync(fd,buffer,0,buffer.length,cursor);
+      const goal=this.#store.database.connection.prepare('SELECT status FROM goals WHERE id=?').get(claim.goal_id);
+      const final=!!goal&&['completed','cancelled','failed'].includes(String(goal.status));
+      const page=decodeUtf8LogPage(buffer.subarray(0,count),limit,final);
+      return {text:page.text,nextCursor:cursor+page.byteLength};
+    } finally {closeSync(fd);}
   }
   public async resume(credential: string, binding: TaskBinding): Promise<JobView> {
     const claim = this.bound(credential, binding, true);
@@ -956,7 +965,7 @@ export class ExecutionCore {
   private policyFingerprintComponents(): Record<string, unknown> {
     const source = (name: string): URL => { const authored = new URL(`../src/${name}.ts`, import.meta.url); return existsSync(authored) ? authored : new URL(`./${name}.js`, import.meta.url); };
     const libraryContracts = ['product-library','library-workflow-contract','library-workflow-adapter','library-workflow-registry'].map((name) => hash(readFileSync(source(name))));
-    return { version: 8, root: this.#root,privateRuntimeRoots:this.#privateRuntimeRoots, control:hash(readFileSync(source('core'))), readContract:hash(readFileSync(source('product-file-reads'))), productContract:hash(readFileSync(source('product-projects'))), ledger:hash(readFileSync(source('store'))), nativeContract:hash(readFileSync(source('product-native'))), browserContract:hash(readFileSync(source('product-browser'))), libraryContracts, finalMemoContract:hash(readFileSync(new URL('./product-library-final-memo.mjs',import.meta.url))),
+    return { version: 8, root: this.#root,privateRuntimeRoots:this.#privateRuntimeRoots, control:hash(readFileSync(source('core'))), readContract:hash(readFileSync(source('product-file-reads'))), logContract:hash(readFileSync(source('utf8-log-page'))), productContract:hash(readFileSync(source('product-projects'))), ledger:hash(readFileSync(source('store'))), nativeContract:hash(readFileSync(source('product-native'))), browserContract:hash(readFileSync(source('product-browser'))), libraryContracts, finalMemoContract:hash(readFileSync(new URL('./product-library-final-memo.mjs',import.meta.url))),
       nativeOptions:this.#native, nativeTestRunnerHash:this.#native?.testRunnerModule?hash(readFileSync(this.#native.testRunnerModule)):null,
       libraryOptions:this.#library?{pythonExecutable:this.#library.pythonExecutable,pythonSha256:this.#library.pythonSha256}:null, libraryTestRunnerHash:this.#library?.testRunnerModule?hash(readFileSync(this.#library.testRunnerModule)):null,
       browserRuntimeEnrollment:'private-pinned-session',browserTestTransportHash:this.#browser?.testTransportModule?hash(readFileSync(this.#browser.testTransportModule)):null,

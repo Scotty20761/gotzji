@@ -18,7 +18,7 @@ The original Tools screen reports286 internal readiness rows and15 external-MCP 
 | Tools | Internal/external tabs, search, enabled/category/permission/profile filters, readiness, refresh/toggles | Live governed catalog plus searchable273-name reference; complete readiness/filter/preference parity remains open |
 | Git | Project chooser and explicit non-repository state, refresh, branch/change/staged counts | Real status, selected staged/unstaged file diff and recent history; branch/write/complete project-selection interactions remain open |
 | Work Log | Tool activity, severity/workspace/session filters, search, detail/copy/export/clear | Canonical job history/detail/result; tool-activity ledger and original filters/export remain open |
-| Live Logs | Tunnel/MCP activity/Processes tabs, pause, filter, export, separate window, clear | Job log access; full original streams and their controls remain open |
+| Live Logs | Tunnel/MCP activity/Processes tabs, pause, filter, export, separate window, clear | Selected same-job paged output with follow/pause/manual read/filter, UTF-8 framing and bounded rendering; full original tunnel/MCP/process streams, export/window controls and installed recovery remain open |
 | Settings | General, security, engineering harness, tools, MCP/extensions, ChatGPT connection, recovery | Existing connection and owned startup controls; complete selected settings/recovery mappings remain open |
 | Doctor | Checks, MCP history, works/resources tabs, manual run/retest; stale local binding/tunnel-down observed | Core/tool readiness and support export; complete original diagnostic journeys remain open |
 
@@ -27,3 +27,5 @@ Only navigation was exercised in this census. Visible buttons are recorded as ob
 The renderer reference is a presentation of this frozen inventory. Explicit mapped operations remain PARTIAL, and every other entry remains unconnected; this is not273 accepted gotzji tools. Native/installed/actual ChatGPT, full visual/state and all remaining parity/release gates stay open. Original upstream MIT/dependency notices are retained by the repository.
 
 Run `node scripts/generate-gotzji-reference.mjs` to derive the renderer inventory from the captured catalog; `--check` rejects drift without rewriting. The renderer does not bundle the full schema/analysis payloads.
+
+C1b contract/UI evidence covers six prompt forms, preview invalidation, copy failure/manual text and zero admitted jobs; it does not prove provider execution. C3a native evidence covers three-page Thai/emoji command output, selected cancellation preserving an independent job, actual exit0/once markers and owned active-command fixture cleanup. Core preserves byte cursors and the existing log wire shape; a tiny limit that cannot hold its first complete character returns LOG_LIMIT_TOO_SMALL. Hosted CI, original complete state/action parity, normal installed lifecycle and actual ChatGPT qualification remain required.

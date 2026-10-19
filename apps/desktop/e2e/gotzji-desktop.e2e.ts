@@ -108,6 +108,18 @@ const test = base.extend<{ gotzji: GovernedFixture }>({
         },
       });
     } catch (error) { failures.push(error); }
+    // Keep SQLite coordination alive across the forced disposable-tree shutdown.
+    // This historical read mark is released before taking the authoritative census.
+    let workerDatabase: DatabaseSync | undefined;
+    if (hostWasReady && dataRootVerified) {
+      try {
+        const databasePath = path.join(dataRoot, 'runtime', 'core.sqlite');
+        if (await realpath(databasePath) !== databasePath) throw new Error('Worker database cleanup scope denied');
+        workerDatabase = new DatabaseSync(databasePath, { readOnly: true, timeout: 5_000 });
+        workerDatabase.exec('BEGIN;');
+        workerDatabase.prepare('SELECT COUNT(*) FROM gotzji_workers').get();
+      } catch (error) { failures.push(error); }
+    }
     // This fixture verifies UI actions, not graceful application shutdown. Force only
     // its own disposable UI; normal installed quit/recovery remains a separate gate.
     let uiAbsent = !launchAttempted;
@@ -138,7 +150,11 @@ const test = base.extend<{ gotzji: GovernedFixture }>({
       // The supervisor must be absent before taking the worker census, or it can
       // replace a stopped generation after the test has already observed absence.
       if (hostAbsent) {
-        try { await stopOwnedTestWorkers(dataRoot); workersAbsent = true; }
+        try {
+          if (!workerDatabase) throw new Error('Owned worker census connection unavailable');
+          workerDatabase.exec('COMMIT;');
+          await stopOwnedTestWorkers(dataRoot, workerDatabase); workersAbsent = true;
+        }
         catch (error) { failures.push(error); }
       }
     }
@@ -147,7 +163,12 @@ const test = base.extend<{ gotzji: GovernedFixture }>({
       try { await expect.poll(() => ownedAppProcess.exitCode !== null || ownedAppProcess.signalCode !== null, { timeout: 5_000, intervals: [50, 100, 250] }).toBe(true); launcherAbsent = true; }
       catch (error) { failures.push(error); }
     }
-    const resourcesAbsent = uiAbsent && hostAbsent && workersAbsent && launcherAbsent;
+    let databaseClosed = workerDatabase === undefined;
+    if (workerDatabase) {
+      try { workerDatabase.close(); databaseClosed = true; }
+      catch (error) { failures.push(error); }
+    }
+    const resourcesAbsent = uiAbsent && hostAbsent && workersAbsent && launcherAbsent && databaseClosed;
     if (!resourcesAbsent) failures.push(new Error(`Owned fixture processes unproved; retained ${dataRoot}, ${roots.join(', ')}`));
     const cleanup = await Promise.allSettled([
       dataRootVerified && resourcesAbsent ? expect.poll(async () => {
@@ -376,21 +397,15 @@ test('gotzji workflow review and copy preserve project identity without submitti
   await page.screenshot({ path: path.join(desktopRoot, '..', '..', '.local-artifacts', 'parity-c1b-workflows.png') });
 });
 
-async function stopOwnedTestWorkers(dataRoot: string): Promise<void> {
+async function stopOwnedTestWorkers(dataRoot: string, db: DatabaseSync): Promise<void> {
   const runtime = path.join(dataRoot, 'runtime');
   const base = path.join(runtime, 'workers');
-  const databasePath = path.join(runtime, 'core.sqlite');
-  if (await realpath(databasePath) !== databasePath) throw new Error('Worker database cleanup scope denied');
   const census = (): WorkerRow[] => {
-    // This private fixture may have a hot WAL after forced tree termination.
-    // Opening read/write lets SQLite recover it; do not create a missing database.
-    const db = new DatabaseSync(databasePath, { timeout: 5_000 });
     try { return db.prepare('SELECT * FROM gotzji_workers ORDER BY epoch').all() as unknown as WorkerRow[]; }
     catch (error) {
       const details = error as Error & { code?: string; errcode?: number; errstr?: string };
       throw new Error(`Owned worker census failed: ${details.message} (${details.code ?? ''}, ${details.errcode ?? ''}, ${details.errstr ?? ''})`, { cause: error });
     }
-    finally { db.close(); }
   };
   const workers = census();
   for (const worker of workers) {
@@ -446,3 +461,77 @@ async function stopOwnedTestHost(dataRoot: string, expectedExecutable: string): 
   await expect.poll(() => alive(endpoint.pid), { timeout: 10_000, intervals: [50, 100, 250] }).toBe(false);
   return true;
 }
+
+test('gotzji live logs page the same command and selected cancellation preserves independent work', async ({ gotzji }, testInfo) => {
+  const { page } = gotzji;
+  const rootA = await gotzji.temporaryProject('gotzji-files-panel-e2e-');
+  const rootB = await gotzji.temporaryProject('gotzji-files-panel-e2e-');
+  const script = `import{existsSync,writeFileSync}from'node:fs';writeFileSync('started.txt','one',{flag:'wx'});process.stdout.write('PAGE_FIRST\\n'+'x'.repeat(8180)+'ภาษาไทย🌟'.repeat(500)+'\\nPAGE_END\\n');const timer=setInterval(()=>{if(existsSync('finish.flag')){clearInterval(timer);console.log('FINISHED_ONCE');}},50);`;
+  await Promise.all([writeFile(path.join(rootA, 'job.mjs'), script), writeFile(path.join(rootB, 'job.mjs'), script)]);
+  const ids = await page.evaluate(async ({ a, b, executable }) => {
+    const recipe = await window.gotzji.request({ method: 'registerRecipe', input: { recipeId: 'owned-log-command', displayName: 'Owned log proof', executable, args: ['${projectRoot}/job.mjs'], dependencies: ['${projectRoot}/job.mjs'], timeoutMs: 60000, writeScope: 'project' } }) as { recipeId: string };
+    const jobs: string[] = [];
+    for (const [projectId, rootPath] of [['log-a', a], ['log-b', b]]) {
+      await window.gotzji.request({ method: 'registerProject', input: { projectId, displayName: projectId, rootPath, kind: 'project', recipeIds: [recipe.recipeId] } });
+      const prepared = await window.gotzji.request({ method: 'prepareOperation', input: { requestId: crypto.randomUUID(), projectId, operation: 'command.run', commandId: recipe.recipeId } }) as { preparationId: string };
+      const job = await window.gotzji.request({ method: 'submit', input: { preparationId: prepared.preparationId } }) as { jobId: string };
+      jobs.push(job.jobId);
+    }
+    return jobs;
+  }, { a: rootA, b: rootB, executable: await realpath(process.execPath) });
+  for (const jobId of ids) await expect.poll(async () => page.evaluate(async (id) => (await window.gotzji.request({ method: 'status', input: { jobId: id } }) as { status: string }).status, jobId), { timeout: testInfo.timeout }).toBe('running');
+  await page.getByRole('button', { name: 'รีเฟรช', exact: true }).click();
+  await page.getByRole('button', { name: 'ประวัติงาน', exact: true }).click();
+  await page.getByLabel('รหัสงาน', { exact: true }).fill(ids[0]!);
+  await expect(page.getByRole('heading', { name: `งาน ${ids[0]}`, exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'อ่านบันทึกต่อ', exact: true }).click();
+  const viewer = page.getByRole('region', { name: 'ข้อความบันทึกของงานที่เลือก', exact: true });
+  await expect(viewer.getByLabel('บันทึกของงาน', { exact: true })).toContainText('PAGE_FIRST');
+  await expect(viewer.getByLabel('บันทึกของงาน', { exact: true })).toContainText('PAGE_END');
+  expect((await viewer.getByLabel('บันทึกของงาน', { exact: true }).textContent())?.match(/PAGE_FIRST/gu)).toHaveLength(1);
+  await expect(viewer.getByLabel('บันทึกของงาน', { exact: true })).toContainText('ภาษาไทย🌟'.repeat(500));
+  await expect(viewer.getByLabel('บันทึกของงาน', { exact: true })).not.toContainText('\uFFFD');
+  await viewer.getByRole('button', { name: 'พักการติดตาม', exact: true }).click();
+  await expect(viewer.getByRole('status')).toContainText('พักการติดตามแล้ว');
+  await viewer.getByLabel('กรองข้อความที่แสดง', { exact: true }).fill('PAGE_END');
+  await expect(viewer.getByLabel('บันทึกของงาน', { exact: true })).toHaveText('PAGE_END');
+  await viewer.getByLabel('กรองข้อความที่แสดง', { exact: true }).fill('missing-filter');
+  await expect(viewer.getByText('ไม่พบข้อความที่ตรงกับตัวกรองในส่วนที่อ่านไว้', { exact: true })).toBeVisible();
+  await viewer.getByLabel('กรองข้อความที่แสดง', { exact: true }).fill('PAGE_END');
+  await viewer.getByRole('button', { name: 'อ่านบันทึกต่อ', exact: true }).click();
+  await expect(viewer.getByRole('status')).toContainText('พักการติดตามแล้ว');
+  await page.screenshot({ path: path.join(desktopRoot, '..', '..', '.local-artifacts', 'parity-c3a-live-logs.png') });
+  await page.getByRole('button', { name: 'ดูสถานะและผลลัพธ์', exact: true }).click();
+  await page.getByRole('button', { name: 'ยกเลิกงานนี้', exact: true }).click();
+  const selected = page.locator('section').filter({ has: page.getByRole('heading', { name: `งาน ${ids[0]}`, exact: true }) });
+  await expect(selected.getByText('ยกเลิกแล้ว', { exact: true })).toBeVisible({ timeout: testInfo.timeout });
+  expect(await page.evaluate(async (id) => (await window.gotzji.request({ method: 'status', input: { jobId: id } }) as { status: string }).status, ids[1]!)).toBe('running');
+  await writeFile(path.join(rootB, 'finish.flag'), 'finish owned job');
+  await page.getByLabel('รหัสงาน', { exact: true }).fill(ids[1]!);
+  const finished = page.locator('section').filter({ has: page.getByRole('heading', { name: `งาน ${ids[1]}`, exact: true }) });
+  await expect(finished.getByText('เสร็จแล้ว', { exact: true })).toBeVisible({ timeout: testInfo.timeout });
+  await page.getByRole('button', { name: 'ดูผลลัพธ์', exact: true }).click();
+  await expect(finished.locator('pre:visible')).toContainText('"exitCode": 0');
+  expect(await readFile(path.join(rootA, 'started.txt'), 'utf8')).toBe('one');
+  expect(await readFile(path.join(rootB, 'started.txt'), 'utf8')).toBe('one');
+  expect(await page.evaluate(async () => (await window.gotzji.request({ method: 'listJobs', input: {} }) as unknown[]).length)).toBe(2);
+});
+
+test('gotzji owned fixture proves cleanup while its command is still running', async ({ gotzji }, testInfo) => {
+  const root = await gotzji.temporaryProject('gotzji-files-panel-e2e-');
+  await writeFile(path.join(root, 'running.mjs'), `import{writeFileSync}from'node:fs';writeFileSync('started.txt','one',{flag:'wx'});console.log('OWNED_ACTIVE_COMMAND');setInterval(()=>undefined,100);`);
+  const jobId = await gotzji.page.evaluate(async ({ rootPath, executable }) => {
+    const recipe = await window.gotzji.request({ method: 'registerRecipe', input: { recipeId: 'owned-active-command', executable, args: ['${projectRoot}/running.mjs'], dependencies: ['${projectRoot}/running.mjs'], timeoutMs: 60000, writeScope: 'project' } }) as { recipeId: string };
+    await window.gotzji.request({ method: 'registerProject', input: { projectId: 'active-cleanup', displayName: 'Owned active cleanup', rootPath, recipeIds: [recipe.recipeId] } });
+    const preparation = await window.gotzji.request({ method: 'prepareOperation', input: { requestId: crypto.randomUUID(), projectId: 'active-cleanup', operation: 'command.run', commandId: recipe.recipeId } }) as { preparationId: string };
+    const job = await window.gotzji.request({ method: 'submit', input: { preparationId: preparation.preparationId } }) as { jobId: string };
+    return job.jobId;
+  }, { rootPath: root, executable: await realpath(process.execPath) });
+  await expect.poll(async () => {
+    try { return await readFile(path.join(root, 'started.txt'), 'utf8'); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null; throw error; }
+  }, { timeout: testInfo.timeout }).toBe('one');
+  expect(await gotzji.page.evaluate(async (id) => (await window.gotzji.request({ method: 'status', input: { jobId: id } }) as { status: string }).status, jobId)).toBe('running');
+  // Deliberately leave this isolated command active. The shared fixture must stop
+  // and independently prove every owned descendant absent before deleting roots.
+});

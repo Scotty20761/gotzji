@@ -6,6 +6,7 @@ import { GotzjiProjectFiles } from './GotzjiProjectFiles.js';
 import { GotzjiGitPanel } from './GotzjiGitPanel.js';
 import { GotzjiToolReference } from './GotzjiToolReference.js';
 import { GotzjiWorkflowPrompts } from './GotzjiWorkflowPrompts.js';
+import { GotzjiJobLogs } from './GotzjiJobLogs.js';
 import { buildNativeFormInput, nativeFormFields } from './gotzji-native-form.js';
 import { EMPTY_RECIPE_FORM, recipeRequest, recipeReviewLines, type RecipeForm } from './gotzji-recipe-form.js';
 import { GotzjiConnectionPanel } from './GotzjiConnectionPanel.js';
@@ -30,8 +31,6 @@ export function GotzjiApp(): ReactElement {
   const [projectId, setProjectId] = useState('');
   const [jobId, setJobId] = useState('');
   const [selectedJob, setSelectedJob] = useState<unknown>(null);
-  const [logs, setLogs] = useState('');
-  const [logCursor, setLogCursor] = useState(0);
   const [result, setResult] = useState<unknown>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -93,7 +92,7 @@ export function GotzjiApp(): ReactElement {
     return (): void => { disposed = true; window.clearInterval(timer); };
   }, [page, request]);
   useEffect(() => {
-    setSelectedJob(null); setLogs(''); setLogCursor(0); setResult(null);
+    setSelectedJob(null); setResult(null);
     if (!jobId) return;
     let disposed = false;
     const update = (): void => {
@@ -140,12 +139,6 @@ export function GotzjiApp(): ReactElement {
     if (!record(job) || typeof job.jobId !== 'string') throw new Error('JOB_RESPONSE_INVALID');
     setJobId(job.jobId); setPage('worklog'); await refresh();
     // Keep this preparation so a lost follow-up can select/retry the same request.
-  }
-  async function readLogs(): Promise<void> {
-    const value = await request('logs', { jobId, cursor: logCursor, limit: 4_000 });
-    if (!record(value) || typeof value.text !== 'string' || !Number.isSafeInteger(value.nextCursor)) throw new Error('LOG_RESPONSE_INVALID');
-    if (value.expired === true) { setLogs('บันทึกของงานนี้ถูกลบตามระยะเก็บรักษาแล้ว (30 วัน หรือเมื่อรวมกันเกิน 256 MiB) สถานะและประวัติของงานยังอยู่'); return; }
-    setLogs((previous) => previous + String(value.text)); setLogCursor(Number(value.nextCursor));
   }
   const available = catalog.filter((item) => item.state === 'available' && item.recipeId === undefined && item.name !== 'library.workflow');
   const workflows = catalog.filter((item) => item.state === 'available' && item.name === 'library.workflow' && item.projectId === projectId);
@@ -214,7 +207,7 @@ export function GotzjiApp(): ReactElement {
         {jobId && <section><h3>งาน {jobId}</h3><JobStatus value={selectedJob} /><div className="gotzji-actions">
           <button disabled={busy || host?.state !== 'ready'} onClick={() => void act(async () => { setSelectedJob(await request('resume', { jobId })); })}>ตรวจและทำต่อ</button>
           <button disabled={busy} onClick={() => void act(async () => { setSelectedJob(await request('cancel', { jobId })); await refresh(); })}>ยกเลิกงานนี้</button>
-          <button disabled={busy} onClick={() => void act(readLogs)}>อ่านบันทึกต่อ</button>
+          <button disabled={busy} onClick={() => setPage('live')}>อ่านบันทึกต่อ</button>
           <button disabled={busy} onClick={() => void act(async () => { setResult(await request('result', { jobId })); })}>ดูผลลัพธ์</button></div>
           {record(selectedJob) && selectedJob.status === 'queued' && <label>เปลี่ยนลำดับความสำคัญ<select disabled={busy || host?.state !== 'ready'} value={jobPriority} onChange={(event) => setJobPriority(event.target.value)}>{priorityOptions()}</select>
             <button disabled={busy || host?.state !== 'ready'} onClick={() => void act(async () => { setSelectedJob(await request('reprioritize', { jobId, priority: Number(jobPriority) })); await refresh(); })}>ปรับคิวงานนี้</button></label>}
@@ -224,7 +217,7 @@ export function GotzjiApp(): ReactElement {
           {record(selectedJob) && Array.isArray(selectedJob.settleDecisions) && <fieldset><legend>ตัดสินงานที่ค้าง</legend><p>งานนี้ทำงานจบหรือหยุดไปแล้ว แต่ยังถือโครงการไว้ เพราะระบบยืนยันผลเองไม่ได้ ตรวจไฟล์หรือผลในโครงการก่อน แล้วเลือกตามที่เห็น ระบบจะบันทึกการตัดสินและปล่อยโครงการให้งานถัดไป โดยไม่แก้ไฟล์ใด ๆ</p>
             <div className="gotzji-actions">{selectedJob.settleDecisions.includes('effect-present') && <button disabled={busy} onClick={() => void act(async () => { setSelectedJob(await request('settleJob', { jobId, decision: 'effect-present' })); await refresh(); })}>ผลเกิดแล้ว · ปล่อยโครงการ</button>}
             {selectedJob.settleDecisions.includes('no-effect') && <button disabled={busy} onClick={() => void act(async () => { setSelectedJob(await request('settleJob', { jobId, decision: 'no-effect' })); await refresh(); })}>ไม่มีผล · ปล่อยโครงการ</button>}</div></fieldset>}
-          {logs && <pre>{logs}</pre>}{result !== null && <pre>{display(result)}</pre>}</section>}</>}
+          {result !== null && <pre>{display(result)}</pre>}</section>}</>}
       {page === 'queue' && <section><h3>งานที่กำลังรอ</h3><JobList jobs={queue} disabled={busy} select={(id) => { setJobId(id); setPage('worklog'); }} /></section>}
       {page === 'workflows' && <><section><label htmlFor={workflowProjectSelectId}>โครงการสำหรับเวิร์กโฟลว์</label><select id={workflowProjectSelectId} value={projectId} disabled={busy || host?.state !== 'ready'} onChange={(event) => setProjectId(event.target.value)}><option value="">เลือกโครงการ</option>{projects.map((project) => <option key={String(project.projectId)} value={String(project.projectId)}>{String(project.displayName)}</option>)}</select></section>
         <GotzjiWorkflowPrompts key={`${projectId}:${String(selectedProject?.displayName ?? '')}`} project={selectedProject ? { projectId, displayName: String(selectedProject.displayName) } : null} disabled={busy || host?.state !== 'ready'} />
@@ -233,9 +226,10 @@ export function GotzjiApp(): ReactElement {
         </section></>}
       {page === 'settings' && <><GotzjiConnectionPanel disabled={host?.state !== 'ready'} /><GotzjiStartupPanel /></>}
       {page === 'git' && (projectId ? <GotzjiGitPanel key={projectId} projectId={projectId} disabled={busy || host?.state !== 'ready'} request={request} /> : <section><h3>เลือกโครงการก่อนดู Git</h3><button onClick={() => setPage('projects')}>เลือกโครงการ</button></section>)}
-      {page === 'live' && <section><h3>บันทึกสดของงาน</h3><p>เลือกงานที่ต้องการอ่านบันทึก โดยไม่เริ่มงานซ้ำ</p><JobList jobs={jobs} disabled={busy} select={(id) => { setJobId(id); setPage('worklog'); }} /></section>}
+      {page === 'live' && <section><h3>บันทึกสดของงาน</h3><p>เลือกงานที่ต้องการอ่านบันทึก โดยไม่เริ่มงานซ้ำ</p><JobList jobs={jobs} disabled={busy} select={setJobId} />{jobId && <><h3>งาน {jobId}</h3><JobStatus value={selectedJob} /><button onClick={() => setPage('worklog')}>ดูสถานะและผลลัพธ์</button></>}</section>}
       {page === 'doctor' && <><section><h3>ระบบควบคุมงาน</h3><p>{host?.state === 'ready' ? 'ระบบในเครื่องพร้อมทำงาน' : host?.state === 'control-only' ? 'ควบคุมงานเดิมได้ · รอตรวจความเข้ากันได้ของรุ่น' : 'ยังไม่พร้อม'}</p>{host?.errorCode && <p>{host.errorCode}</p>}<p>อัปเดตด้วยไฟล์รุ่นที่ตรวจแล้ว</p>
         <h3>เครื่องมือและโปรแกรม</h3>{catalog.map((item) => <p key={`${item.name}:${item.projectId ?? ''}:${item.workflowId ?? ''}:${item.workflowVersion ?? ''}`}>{String(item.workflowId ?? item.name)}: {String(item.state)} {String(item.reason ?? '')}</p>)}</section><section><h3>รายงานช่วยเหลือ</h3><p>บันทึกเหตุผลของงานที่ล้มหรือค้าง ใครกำลังถือโครงการหรือทรัพยากรอะไร คิวงาน และสถานะของ CAD, Office และเบราว์เซอร์ ลงไฟล์ที่คุณเลือก รายงานมีชื่อโครงการตามที่คุณตั้ง แต่ไม่มีเนื้อหาไฟล์ path หรือ URL และไม่ถูกส่งไปที่ไหน</p><button disabled={busy || !host || host.state === 'unavailable'} onClick={() => void act(async () => { const saved = await window.gotzji.exportSupportReport(); setReportExport(saved.exported ? 'บันทึกรายงานแล้ว' : 'ยกเลิกการบันทึก'); })}>บันทึกรายงานช่วยเหลือ</button>{reportExport && <p>{reportExport}</p>}</section><GotzjiConnectionPanel disabled={host?.state !== 'ready'} /><GotzjiStartupPanel /></>}
+      {jobId && <GotzjiJobLogs key={jobId} jobId={jobId} visible={page === 'live'} request={request} />}
     </main>
   </div>;
 }
