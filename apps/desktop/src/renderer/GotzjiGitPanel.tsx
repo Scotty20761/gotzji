@@ -13,8 +13,13 @@ const explanations: Record<string, string> = {
   GIT_REPOSITORY_REQUIRED: 'โครงการนี้ยังไม่มีคลัง Git ของตัวเอง',
   GIT_LAYOUT_UNSUPPORTED: 'คลังนี้ใช้โครงสร้าง Git แบบเชื่อมหรือแชร์ ซึ่งยังต้องตรวจเพิ่มเติม',
   GIT_PRIVATE_RUNTIME_OVERLAP: 'โครงการนี้มีพื้นที่ข้อมูลส่วนตัวของระบบอยู่ภายใน จึงยังเปิดมุมมอง Git ทั้งคลังไม่ได้',
-  GIT_FILTERS_UNSUPPORTED: 'คลังนี้ใช้โปรแกรมแปลงเนื้อหาไฟล์ ซึ่งยังต้องตรวจเพิ่มเติมก่อนเปิดมุมมองนี้',
+  GIT_NETWORK_ROOT_DENIED: 'เลือกคลัง Git ในโฟลเดอร์ของเครื่องนี้เพื่อเปิดมุมมองนี้',
   GIT_OUTPUT_LIMIT: 'ข้อมูลเกินขนาดที่แสดงได้ กรุณาเลือกดูไฟล์ที่เล็กลง',
+  GIT_OBJECT_BYTES_LIMIT: 'ข้อมูล Git เกินขนาดที่มุมมองนี้รองรับในรุ่นนี้',
+  GIT_OBJECT_COPY_BUDGET: 'เตรียมข้อมูล Git ไม่เสร็จในเวลาที่กำหนด กรุณาลองใหม่ภายหลัง',
+  GIT_VALIDATION_BUDGET: 'ยังตรวจข้อมูล Git ได้ไม่ครบในรอบนี้ กรุณาลองใหม่เมื่อคลังว่างจากงานอื่น',
+  GIT_REPOSITORY_CHANGED: 'ข้อมูล Git เปลี่ยนระหว่างอ่าน กรุณาอ่านใหม่',
+  GIT_READ_FAILED: 'อ่านคลัง Git ไม่สำเร็จ ตรวจสิทธิ์โฟลเดอร์แล้วลองใหม่',
 };
 function record(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === 'object' && !Array.isArray(value); }
 

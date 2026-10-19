@@ -6,6 +6,7 @@ const mappings: Readonly<Record<string, string>> = {
   read_file: 'อ่านไฟล์ในโครงการ', list_files: 'อ่านโฟลเดอร์ในโครงการ', search_text: 'ค้นหาข้อความในโครงการ',
   write_file: 'เตรียมและบันทึกไฟล์', edit_file: 'แก้ไฟล์จากรุ่นที่อ่านแล้ว',
   git: 'อ่านสถานะ ประวัติ และความต่างของไฟล์ที่เลือก',
+  git_status: 'อ่านสถานะ Git ของโครงการ', git_diff: 'อ่านความต่างของไฟล์ที่เลือก', git_log: 'อ่านประวัติ Git ล่าสุด',
   shell: 'คำสั่งที่เจ้าของตรวจและผูกกับโครงการ', process_start: 'งานคำสั่งที่มีประวัติ',
   get_goal: 'สถานะงานที่เลือก', list_goals: 'ประวัติงาน', run_goal: 'ตรวจและทำงานเดิมต่อ', cancel_goal: 'ยกเลิกงานที่เลือก',
 };
@@ -17,7 +18,8 @@ export function GotzjiToolReference(): ReactElement {
   const normalized = query.trim().toLocaleLowerCase();
   const matches = baseline.tools.filter((tool) => `${tool.id} ${tool.description} ${tool.tags.join(' ')}`.toLocaleLowerCase().includes(normalized));
   return <details className="gotzji-reference"><summary>เทียบความสามารถกับ lnwjud</summary>
-    <p>รายการอ้างอิงรุ่น {baseline.version} จำนวน {baseline.tools.length} รายการ ที่เก็บเมื่อ {baseline.capturedOn} การมีทางใช้งานบางส่วนยังไม่ถือว่าทำได้ครบตามต้นทาง ดูสถานะพร้อมใช้งานจริงในรายการเครื่องมือของเครื่องนี้</p>
+    <p>รายการเทียบแอปเดิมรุ่น {baseline.version} จำนวน {baseline.tools.length} ชื่อ จากแคตตาล็อกและช่องทางเชื่อมต่อ เก็บเมื่อ {baseline.capturedOn} บางชื่อเป็นทางเรียกงานเดียวกัน การมีทางใช้งานบางส่วนยังไม่ถือว่าทำได้ครบตามต้นทาง ดูสถานะพร้อมใช้งานจริงในรายการเครื่องมือของเครื่องนี้</p>
+    <p>คำอธิบายต้นทางเป็นของ lnwjud การใช้งาน gotzji ยึดสิทธิ์และสถานะที่แอปนี้แสดง</p>
     <label htmlFor={inputId}>ค้นหาเครื่องมืออ้างอิง</label><input id={inputId} type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="ชื่อเครื่องมือหรือประเภทงาน" />
     <p aria-live="polite">พบ {matches.length} รายการ</p>
     {matches.length === 0 ? <p>ไม่พบเครื่องมือที่ตรงกับคำค้นนี้</p> : <div className="gotzji-reference-table"><table>

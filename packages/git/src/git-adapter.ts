@@ -116,7 +116,7 @@ export class GitAdapter {
     if (error !== null) return error;
     const bounded = this.bound(result.stdout, maxBytes);
     const entries = bounded.text.split('\u001e').flatMap((record) => {
-      const fields = record.split('\u001f');
+      const fields = record.replace(/^\r?\n/u, '').split('\u001f');
       return fields.length === 4 && fields.every((field) => field.length > 0)
         ? [{ hash: fields[0] ?? '', author: fields[1] ?? '', date: fields[2] ?? '', subject: fields[3] ?? '' }]
         : [];

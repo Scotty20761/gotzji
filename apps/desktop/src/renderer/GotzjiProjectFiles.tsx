@@ -10,6 +10,7 @@ interface Props {
 interface Entry { readonly path: string; readonly type: 'file' | 'directory' }
 interface Snapshot { readonly path: string; readonly content: string; readonly sha256: string }
 interface Preparation { readonly id: string; readonly requestId: string }
+interface SearchHit { readonly path: string; readonly line: number; readonly text: string }
 function record(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === 'object' && !Array.isArray(value); }
 
 /** Reads and writes use the same project and expected-version authority as the plugin. */
@@ -26,6 +27,8 @@ export function GotzjiProjectFiles({ projectId, disabled, request, onJob }: Prop
   const [error, setError] = useState<string | null>(null);
   const [incomplete, setIncomplete] = useState(false);
   const [listed, setListed] = useState(false);
+  const [query, setQuery] = useState('');
+  const [search, setSearch] = useState<{ matches: readonly SearchHit[]; truncated: boolean } | null>(null);
   const mounted = useRef(true);
   useEffect(() => { mounted.current = true; return (): void => { mounted.current = false; }; }, []);
   const locked = disabled || busy;
@@ -41,7 +44,7 @@ export function GotzjiProjectFiles({ projectId, disabled, request, onJob }: Prop
     const value = await request('listProjectFiles', { projectId, path: selectedDirectory });
     if (!record(value) || !Array.isArray(value.entries) || value.entries.some((entry: unknown) => !record(entry) || typeof entry.path !== 'string' || !['file', 'directory'].includes(String(entry.type)))) throw new Error('รายการไฟล์ไม่สมบูรณ์ กรุณาอ่านโฟลเดอร์ใหม่');
     if (!mounted.current) return;
-    setDirectory(selectedDirectory); setEntries(value.entries as Entry[]); setIncomplete(value.truncated === true); setListed(true);
+    setDirectory(selectedDirectory); setEntries(value.entries as Entry[]); setIncomplete(value.truncated === true); setListed(true); setSearch(null);
   }
   async function read(selectedPath: string): Promise<void> {
     const value = await request('readProjectFile', { projectId, path: selectedPath });
@@ -49,6 +52,11 @@ export function GotzjiProjectFiles({ projectId, disabled, request, onJob }: Prop
     if (!mounted.current) return;
     setPath(selectedPath); setSnapshot({ path: selectedPath, content: value.content, sha256: value.sha256 });
     setContent(value.content); setCreateNew(false); setPreparation(null);
+  }
+  async function find(): Promise<void> {
+    const value = await request('searchProjectFiles', { projectId, path: directory, query });
+    if (!record(value) || typeof value.truncated !== 'boolean' || !Array.isArray(value.matches) || value.matches.some((hit: unknown) => !record(hit) || typeof hit.path !== 'string' || !Number.isSafeInteger(hit.line) || Number(hit.line) < 1 || typeof hit.text !== 'string')) throw new Error('ผลการค้นหาไม่สมบูรณ์ กรุณาค้นหาใหม่');
+    if (mounted.current) setSearch({ matches: value.matches as SearchHit[], truncated: value.truncated });
   }
   async function prepare(): Promise<void> {
     if (!createNew && (!snapshot || snapshot.path !== path)) throw new Error('เปิดไฟล์เดิมก่อนตรวจการแก้ไข');
@@ -70,13 +78,17 @@ export function GotzjiProjectFiles({ projectId, disabled, request, onJob }: Prop
       <button disabled={locked} onClick={() => { setCreateNew(true); setPath(''); setContent(''); setSnapshot(null); setPreparation(null); }}>ไฟล์ใหม่</button></div>
     {error && <p role="alert" className="gotzji-file-error">{error}</p>}
     <div className="gotzji-file-layout"><div className="gotzji-file-browser">
-      <label>โฟลเดอร์ในโครงการ<input disabled={locked} value={directory} onChange={(event) => setDirectory(event.target.value)} /></label>
+      <label>โฟลเดอร์ในโครงการ<input disabled={locked} value={directory} onChange={(event) => { setDirectory(event.target.value); setSearch(null); }} /></label>
       <button disabled={locked || !directory} onClick={() => void act(() => list())}>อ่านโฟลเดอร์</button>
       {incomplete && <p role="status">แสดงรายการได้บางส่วน ลองเลือกโฟลเดอร์ย่อยเพื่อดูให้ครบ</p>}
       <div className="gotzji-file-list">{entries.map((entry) => <button key={entry.path} disabled={locked} title={entry.path}
         onClick={() => void act(() => entry.type === 'directory' ? list(entry.path) : read(entry.path))}>
         <span aria-hidden="true">{entry.type === 'directory' ? '▸' : '·'}</span> {entry.path.split('/').at(-1)}</button>)}</div>
       {listed && entries.length === 0 && <p>ไม่มีไฟล์ในรายการนี้</p>}
+      <label htmlFor={`${editorId}-search`}>ข้อความที่ต้องการค้นหา</label><input id={`${editorId}-search`} disabled={locked} value={query} onChange={(event) => { setQuery(event.target.value); setSearch(null); }} />
+      <p className="gotzji-muted">ค้นหาข้อความตรงตามที่พิมพ์ในโฟลเดอร์ที่เลือก</p><button disabled={locked || !query || !directory} onClick={() => void act(find)}>ค้นหาในโครงการ</button>
+      {search && <div className="gotzji-search-results"><h4>ผลการค้นหา</h4>{search.truncated && <p role="status">ค้นหาได้บางส่วน ลองเลือกโฟลเดอร์ย่อยหรือข้อความที่เจาะจงขึ้น</p>}
+        {search.matches.length ? <ul>{search.matches.map((hit) => <li key={`${hit.path}:${hit.line}`}><button disabled={locked} onClick={() => void act(() => read(hit.path))}>{hit.path}:{hit.line}</button><p>{hit.text}</p></li>)}</ul> : <p>{search.truncated ? 'ยังไม่พบข้อความในส่วนที่ค้นหาได้' : 'ไม่พบข้อความที่ค้นหา'}</p>}</div>}
     </div><div className="gotzji-file-editor">
       <label>ไฟล์ที่เลือก<input disabled={locked || !createNew} value={path} placeholder="ชื่อไฟล์ภายในโครงการ" onChange={(event) => { setPath(event.target.value); setPreparation(null); }} /></label>
       {!snapshot && !createNew ? <p className="gotzji-empty">เลือกไฟล์จากรายการ หรือเริ่มสร้างไฟล์ใหม่</p> : <>

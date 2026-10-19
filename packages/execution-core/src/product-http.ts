@@ -6,7 +6,7 @@ import { assertHostDirectLibraryWorkflow, libraryCatalog } from './product-libra
 
 export type ProductRpc = (method: string, input: Record<string, unknown>, surface: 'app' | 'mcp', expectedBuild?: string) => Promise<unknown>;
 export const PRODUCT_MCP_TOOLS = [
-  { name: 'gotzji_git', method: 'readProjectGit', readOnly: true, description: 'Read status, recent history or one selected-file diff in an enrolled ordinary project repository. Uses controlled read configuration with no repository programs, Git mutation or network. Refuses linked/shared metadata.' },
+  { name: 'gotzji_git', method: 'readProjectGit', readOnly: true, description: 'Read status, recent history or one selected-file diff in an enrolled ordinary project repository. Uses controlled read configuration without repository programs, Git mutations, fetch, push or remote commands. Refuses UNC roots and linked/shared metadata.' },
   { name: 'gotzji_health', method: 'health', readOnly: true, description: 'Inspect the gotzji host control availability. This does not start a model turn.' },
   { name: 'gotzji_projects', method: 'listProjects', readOnly: true, description: 'List projects already enrolled by the owner in the gotzji app.' },
   { name: 'gotzji_tools', method: 'catalog', readOnly: true, description: 'List typed operations and provider readiness.' },

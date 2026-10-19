@@ -174,6 +174,8 @@ describe('direct project file reads', () => {
     const f = await fixture();
     await Promise.all(Array.from({ length: 501 }, (_, index) => writeFile(path.join(f.projectRoot, `${index}.txt`), 'match\n')));
     expect(await f.core.listProjectFiles(f.credential, { projectId: 'project' })).toMatchObject({ entries: expect.any(Array), truncated: true, incompleteReasons: ['ENTRY_LIMIT'] });
+    // Isolate the match cap from the independently covered elapsed-time budget.
+    vi.spyOn(performance, 'now').mockReturnValue(0);
     const matches = await f.core.searchProjectFiles(f.credential, { projectId: 'project', query: 'match' });
     expect(matches.matches).toHaveLength(100);
     expect(matches).toMatchObject({ truncated: true, incompleteReasons: ['MATCH_LIMIT'] });

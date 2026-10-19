@@ -1,12 +1,12 @@
 import { mkdtemp, readFile, realpath, readdir, rm, writeFile } from 'node:fs/promises';
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
-import { execFile } from 'node:child_process';
+import { execFile, type ChildProcess } from 'node:child_process';
 import { promisify } from 'node:util';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { build } from 'esbuild';
-import { _electron, expect, test, type ElectronApplication } from '@playwright/test';
+import { _electron, expect, test as base, type ElectronApplication, type Page } from '@playwright/test';
 import { UNPACKAGED_E2E_PROCESS_BIRTH } from '../../../packages/execution-core/src/process-identity.mjs';
 import { alive } from '../../../packages/execution-core/src/managed-worker.js';
 import { childEnvironment } from '../../../packages/execution-core/src/product-security.mjs';
@@ -15,21 +15,33 @@ import { electronExecutablePath, terminateProcessTree } from './electron-runtime
 const desktopRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const mainEntry = path.join(desktopRoot, 'dist', 'main', 'main.js');
 
-test('gotzji production entry exposes governed controls and denies inherited work IPC', async () => {
-  const tempRoot = await realpath(os.tmpdir());
-  const dataRoot = await realpath(await mkdtemp(path.join(tempRoot, 'gotzji-desktop-e2e-')));
-  const relative = path.relative(tempRoot, dataRoot);
-  if (!relative || relative.startsWith('..') || path.isAbsolute(relative) || !path.basename(dataRoot).startsWith('gotzji-desktop-e2e-')) {
-    throw new Error('Unexpected gotzji E2E cleanup root');
-  }
-  let app: ElectronApplication | undefined;
-  let libraryProjectRoot: string | undefined;
-  let projectFilesRoot: string | undefined;
-  let lostAckFixturePath: string | undefined;
-  let hostWasReady = false;
-  const failures: unknown[] = [];
-  const expectedHostExecutable = await realpath(electronExecutablePath(desktopRoot));
-  try {
+type GovernedFixture = {
+  app: ElectronApplication;
+  page: Page;
+  temporaryProject(prefix: 'gotzji-library-panel-e2e-' | 'gotzji-files-panel-e2e-'): Promise<string>;
+  rendererFixturePath(): string;
+};
+
+const test = base.extend<{ gotzji: GovernedFixture }>({
+  // Playwright requires an object pattern; this Electron fixture has no browser-fixture dependency.
+  // eslint-disable-next-line no-empty-pattern
+  gotzji: async ({}, use) => {
+    const tempRoot = await realpath(os.tmpdir());
+    const dataRoot = await mkdtemp(path.join(tempRoot, 'gotzji-desktop-e2e-'));
+    let dataRootVerified = false;
+    const roots: string[] = [];
+    const rendererFiles: string[] = [];
+    let app: ElectronApplication | undefined;
+    let ownedAppProcess: ChildProcess | undefined;
+    let hostWasReady = false;
+    const failures: unknown[] = [];
+    let expectedHostExecutable: string | undefined;
+    try {
+    const relative = path.relative(tempRoot, dataRoot);
+    if (!relative || relative.startsWith('..') || path.isAbsolute(relative) || !path.basename(dataRoot).startsWith('gotzji-desktop-e2e-')) throw new Error('Unexpected gotzji E2E cleanup root');
+    dataRootVerified = true;
+    if (await realpath(dataRoot) !== dataRoot) throw new Error('Owned data root was redirected');
+    expectedHostExecutable = await realpath(electronExecutablePath(desktopRoot));
     app = await _electron.launch({
       executablePath: expectedHostExecutable,
       args: [mainEntry],
@@ -37,6 +49,7 @@ test('gotzji production entry exposes governed controls and denies inherited wor
       env: { ...process.env, GOTZJI_DATA_PATH: dataRoot, GOTZJI_E2E_MODE: '1' },
       timeout: 40_000,
     });
+    ownedAppProcess = app.process();
     const page = await app.firstWindow();
     await expect(page.getByRole('heading', { name: 'gotzji', exact: true })).toBeVisible({ timeout: 30_000 });
     await expect(page.getByText('สั่งงานผ่านปลั๊กอิน ChatGPT', { exact: true })).toBeVisible();
@@ -71,9 +84,60 @@ test('gotzji production entry exposes governed controls and denies inherited wor
     const browserWindow = await app.browserWindow(page);
     expect(await browserWindow.evaluate((window) => window.webContents.getLastWebPreferences().sandbox)).toBe(true);
 
-    libraryProjectRoot = await realpath(await mkdtemp(path.join(tempRoot, 'gotzji-library-panel-e2e-')));
-    const libraryRelative = path.relative(tempRoot, libraryProjectRoot);
-    if (!libraryRelative || libraryRelative.startsWith('..') || path.isAbsolute(libraryRelative) || !path.basename(libraryProjectRoot).startsWith('gotzji-library-panel-e2e-')) throw new Error('Unexpected Library panel fixture root');
+
+      await use({
+        app, page,
+        temporaryProject: async (prefix) => {
+          const root = await mkdtemp(path.join(tempRoot, prefix));
+          const selected = path.relative(tempRoot, root);
+          if (!selected || selected.startsWith('..') || path.isAbsolute(selected) || !path.basename(root).startsWith(prefix)) throw new Error('Unexpected owned project fixture root');
+          roots.push(root);
+          if (await realpath(root) !== root) throw new Error('Owned project fixture root was redirected');
+          return root;
+        },
+        rendererFixturePath: () => {
+          const selected = path.join(desktopRoot, 'dist', 'renderer', `gotzji-lost-ack-e2e-${randomBytes(8).toString('hex')}.js`);
+          rendererFiles.push(selected); return selected;
+        },
+      });
+    } catch (error) { failures.push(error); }
+    // Quit the owned UI first, so its refresh loop cannot restart the independent host.
+    // Node24 waits for an attached debugger at exit. Detach this test-owned inspector
+    // outside a CDP evaluation callback, then exercise the ordinary app.quit lifecycle.
+    if (app && ownedAppProcess) {
+      try {
+        await app.evaluate(({ app }) => { setImmediate(() => { process.getBuiltinModule('node:inspector').close(); app.quit(); }); });
+      } catch (error) {
+        if (!(error instanceof Error) || !error.message.includes('Target page, context or browser has been closed')) failures.push(error);
+      }
+      try { await expect.poll(() => ownedAppProcess.exitCode, { timeout: 5_000, intervals: [50, 100, 250] }).toBe(0); }
+      catch (error) { failures.push(error); }
+    }
+    try {
+      if (expectedHostExecutable) {
+        const stopped = await stopOwnedTestHost(dataRoot, expectedHostExecutable);
+        if (hostWasReady) expect(stopped).toBe(true);
+      }
+    } catch (error) { failures.push(error); }
+    if (ownedAppProcess) {
+      try { await terminateProcessTree(ownedAppProcess); } catch (error) { failures.push(error); }
+    }
+    const cleanup = await Promise.allSettled([
+      dataRootVerified ? expect.poll(async () => {
+        try { await rm(dataRoot, { recursive: true, force: true }); return true; }
+        catch { return false; }
+      }, { timeout: 10_000, intervals: [50, 100, 250] }).toBe(true) : Promise.reject(new Error('Unverified data-root cleanup refused')),
+      ...roots.map((root) => rm(root, { recursive: true, force: true })),
+      ...rendererFiles.map((file) => rm(file, { force: true })),
+    ]);
+    failures.push(...cleanup.filter((item) => item.status === 'rejected').map((item) => item.reason));
+    if (failures.length) throw new AggregateError(failures, `Governed E2E setup or owned fixture cleanup failed:\n${failures.map((failure) => failure instanceof Error ? failure.stack ?? failure.message : String(failure)).join('\n')}`);
+  },
+});
+
+test('gotzji entry, project search and file edit return canonical results', async ({ gotzji }) => {
+    const { page } = gotzji;
+    const libraryProjectRoot = await gotzji.temporaryProject('gotzji-library-panel-e2e-');
     await page.evaluate(async (rootPath) => window.gotzji.request({ method: 'registerProject', input: { projectId: 'library-panel', displayName: 'Library route fixture', rootPath, kind: 'library' } }), libraryProjectRoot);
     await page.getByRole('button', { name: 'รีเฟรช', exact: true }).click();
     await page.getByRole('button', { name: 'โครงการ', exact: true }).click();
@@ -81,10 +145,9 @@ test('gotzji production entry exposes governed controls and denies inherited wor
     await expect(page.getByRole('heading', { name: 'ช่องทาง Library สำหรับ lnwjud', exact: true })).toBeVisible();
     await expect(page.getByRole('button', { name: 'เชื่อมโครงการ Library นี้', exact: true })).toBeEnabled();
 
-    projectFilesRoot = await realpath(await mkdtemp(path.join(tempRoot, 'gotzji-files-panel-e2e-')));
-    const filesRelative = path.relative(tempRoot, projectFilesRoot);
-    if (!filesRelative || filesRelative.startsWith('..') || path.isAbsolute(filesRelative) || !path.basename(projectFilesRoot).startsWith('gotzji-files-panel-e2e-')) throw new Error('Unexpected project files fixture root');
+    const projectFilesRoot = await gotzji.temporaryProject('gotzji-files-panel-e2e-');
     await writeFile(path.join(projectFilesRoot, 'welcome.txt'), 'Original sample\n', 'utf8');
+    await writeFile(path.join(projectFilesRoot, 'many-matches.txt'), 'MATCH_LITERAL\n'.repeat(101), 'utf8');
     await page.evaluate(async (rootPath) => window.gotzji.request({ method: 'registerProject', input: { projectId: 'files-panel', displayName: 'Project files fixture', rootPath, kind: 'project' } }), projectFilesRoot);
     await page.getByRole('button', { name: 'รีเฟรช', exact: true }).click();
     await page.getByRole('button', { name: 'โครงการ', exact: true }).click();
@@ -94,6 +157,17 @@ test('gotzji production entry exposes governed controls and denies inherited wor
     await page.getByLabel('ค้นหาเครื่องมืออ้างอิง', { exact: true }).fill('read_file');
     await expect(page.getByRole('row').filter({ has: page.getByText('read_file', { exact: true }) })).toContainText('รองรับบางส่วน');
     await page.getByText('เทียบความสามารถกับ lnwjud', { exact: true }).click();
+    await expect(page.getByLabel('ข้อความที่ต้องการค้นหา', { exact: true })).toBeVisible();
+    await page.getByLabel('ข้อความที่ต้องการค้นหา', { exact: true }).fill('not-in-this-fixture');
+    await page.getByRole('button', { name: 'ค้นหาในโครงการ', exact: true }).click();
+    await expect(page.getByText('ไม่พบข้อความที่ค้นหา', { exact: true })).toBeVisible();
+    await page.getByLabel('ข้อความที่ต้องการค้นหา', { exact: true }).fill('MATCH_LITERAL');
+    await page.getByRole('button', { name: 'ค้นหาในโครงการ', exact: true }).click();
+    await expect(page.getByText('ค้นหาได้บางส่วน ลองเลือกโฟลเดอร์ย่อยหรือข้อความที่เจาะจงขึ้น', { exact: true })).toBeVisible();
+    await page.getByLabel('ข้อความที่ต้องการค้นหา', { exact: true }).fill('Original sample');
+    await page.getByRole('button', { name: 'ค้นหาในโครงการ', exact: true }).click();
+    await page.getByRole('button', { name: 'welcome.txt:1', exact: true }).click();
+    await expect(page.getByLabel('เนื้อหาไฟล์', { exact: true })).toHaveValue('Original sample\n');
     await page.getByRole('button', { name: 'อ่านโฟลเดอร์', exact: true }).click();
     await page.getByRole('button', { name: 'welcome.txt', exact: true }).click();
     await expect(page.getByRole('button', { name: 'อ่านโฟลเดอร์', exact: true })).toBeEnabled();
@@ -118,9 +192,21 @@ test('gotzji production entry exposes governed controls and denies inherited wor
     await expect(page.locator('pre:visible')).toContainText('"path": "welcome.txt"');
     await expect(page.locator('pre:visible')).toContainText('1eb5f5d070d4535515a4636073d6d716a4f031b51a75255866e2723b37d6e443');
 
+});
+
+test('gotzji new file retries one real admission after a lost acknowledgement', async ({ gotzji }) => {
+    const { page } = gotzji;
+    const projectFilesRoot = await gotzji.temporaryProject('gotzji-files-panel-e2e-');
+    await writeFile(path.join(projectFilesRoot, 'welcome.txt'), 'Original sample\n', 'utf8');
+    await writeFile(path.join(projectFilesRoot, 'many-matches.txt'), 'MATCH_LITERAL\n'.repeat(101), 'utf8');
+    await page.evaluate(async (rootPath) => window.gotzji.request({ method: 'registerProject', input: { projectId: 'files-panel', displayName: 'Project files fixture', rootPath, kind: 'project' } }), projectFilesRoot);
+    await page.getByRole('button', { name: 'รีเฟรช', exact: true }).click();
+    await page.getByRole('button', { name: 'โครงการ', exact: true }).click();
+    await page.getByRole('button', { name: /^Project files fixture ·/ }).click();
+    await expect(page.getByRole('heading', { name: 'ไฟล์ในโครงการ', exact: true })).toBeVisible();
     // Exercise the same public component/IPC/Core port with one discarded acknowledgement.
     // The owned fixture imports the real component; no product fault hook or Core mock is installed.
-    lostAckFixturePath = path.join(desktopRoot, 'dist', 'renderer', `gotzji-lost-ack-e2e-${randomBytes(8).toString('hex')}.js`);
+    const lostAckFixturePath = gotzji.rendererFixturePath();
     await build({ stdin: { resolveDir: path.join(desktopRoot, 'src', 'renderer'), sourcefile: 'lost-ack-fixture.tsx', loader: 'tsx', contents: `
       import { createRoot } from 'react-dom/client';
       import { GotzjiProjectFiles } from './GotzjiProjectFiles.tsx';
@@ -136,18 +222,19 @@ test('gotzji production entry exposes governed controls and denies inherited wor
         }
         return result;
       };
-      createRoot(root).render(<GotzjiProjectFiles projectId="files-panel" disabled={false} request={request} onJob={(id) => { root.dataset.observedJobId = id; }} />);
+      createRoot(root, { identifierPrefix: 'lost-ack-' }).render(<GotzjiProjectFiles projectId="files-panel" disabled={false} request={request} onJob={(id) => { root.dataset.observedJobId = id; }} />);
     ` }, bundle: true, format: 'iife', platform: 'browser', jsx: 'automatic', outfile: lostAckFixturePath, define: { 'process.env.NODE_ENV': '"production"' } });
     await page.addScriptTag({ url: pathToFileURL(lostAckFixturePath).href });
-    await page.getByRole('button', { name: 'ไฟล์ใหม่', exact: true }).click();
-    await page.getByLabel('ไฟล์ที่เลือก', { exact: true }).fill('new-file.txt');
-    await page.getByLabel('เนื้อหาไฟล์', { exact: true }).fill('Created exactly once\n');
-    await page.getByRole('button', { name: 'ตรวจการแก้ไข', exact: true }).click();
-    await page.getByRole('button', { name: 'บันทึกไฟล์', exact: true }).click();
-    await expect(page.getByRole('alert')).toContainText('LOST_ACK_AFTER_REAL_ADMISSION');
+    const lostAck = page.locator('#lost-ack-fixture');
+    await lostAck.getByRole('button', { name: 'ไฟล์ใหม่', exact: true }).click();
+    await lostAck.getByLabel('ไฟล์ที่เลือก', { exact: true }).fill('new-file.txt');
+    await lostAck.getByLabel('เนื้อหาไฟล์', { exact: true }).fill('Created exactly once\n');
+    await lostAck.getByRole('button', { name: 'ตรวจการแก้ไข', exact: true }).click();
+    await lostAck.getByRole('button', { name: 'บันทึกไฟล์', exact: true }).click();
+    await expect(lostAck.getByRole('alert')).toContainText('LOST_ACK_AFTER_REAL_ADMISSION');
     const acceptedJobId = await page.locator('#lost-ack-fixture').getAttribute('data-admitted-job-id');
     expect(acceptedJobId).toMatch(/^[a-f0-9]{64}$/u);
-    await page.getByRole('button', { name: 'บันทึกไฟล์', exact: true }).click();
+    await lostAck.getByRole('button', { name: 'บันทึกไฟล์', exact: true }).click();
     await expect(page.locator('#lost-ack-fixture')).toHaveAttribute('data-observed-job-id', acceptedJobId!);
     await page.evaluate(() => { document.getElementById('lost-ack-fixture')!.remove(); document.getElementById('root')!.hidden = false; });
     await page.getByRole('button', { name: 'รีเฟรช', exact: true }).click();
@@ -158,11 +245,23 @@ test('gotzji production entry exposes governed controls and denies inherited wor
     await expect.poll(() => readFile(path.join(projectFilesRoot!, 'new-file.txt'), 'utf8')).toBe('Created exactly once\n');
     const createdJobs = await page.evaluate(async () => window.gotzji.request({ method: 'listJobs', input: {} }));
     expect(Array.isArray(createdJobs)).toBe(true);
-    expect((createdJobs as { jobId: string; projectId?: string }[]).filter((job) => job.projectId === 'files-panel')).toHaveLength(2);
+    expect((createdJobs as { jobId: string; projectId?: string }[]).filter((job) => job.projectId === 'files-panel')).toHaveLength(1);
     await page.getByRole('button', { name: 'ดูผลลัพธ์', exact: true }).click();
     await expect(page.locator('pre:visible')).toContainText('"path": "new-file.txt"');
     await expect(page.locator('pre:visible')).toContainText('"state": "completed"');
 
+});
+
+test('gotzji Git status, selected diff and history preserve the source index', async ({ gotzji }) => {
+    const { page } = gotzji;
+    const projectFilesRoot = await gotzji.temporaryProject('gotzji-files-panel-e2e-');
+    await writeFile(path.join(projectFilesRoot, 'welcome.txt'), 'Original sample\n', 'utf8');
+    await writeFile(path.join(projectFilesRoot, 'many-matches.txt'), 'MATCH_LITERAL\n'.repeat(101), 'utf8');
+    await page.evaluate(async (rootPath) => window.gotzji.request({ method: 'registerProject', input: { projectId: 'files-panel', displayName: 'Project files fixture', rootPath, kind: 'project' } }), projectFilesRoot);
+    await page.getByRole('button', { name: 'รีเฟรช', exact: true }).click();
+    await page.getByRole('button', { name: 'โครงการ', exact: true }).click();
+    await page.getByRole('button', { name: /^Project files fixture ·/ }).click();
+    await expect(page.getByRole('heading', { name: 'ไฟล์ในโครงการ', exact: true })).toBeVisible();
     const git = (args: string[]): Promise<{ stdout: string; stderr: string }> => promisify(execFile)('git', ['-c', 'core.hooksPath=', '-c', 'commit.gpgSign=false', ...args], {
       cwd: projectFilesRoot!, windowsHide: true,
       env: { ...childEnvironment(), GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: process.platform === 'win32' ? 'NUL' : '/dev/null', GIT_TEMPLATE_DIR: '', GIT_AUTHOR_NAME: 'Synthetic Owner', GIT_AUTHOR_EMAIL: 'owner@example.invalid', GIT_COMMITTER_NAME: 'Synthetic Owner', GIT_COMMITTER_EMAIL: 'owner@example.invalid' },
@@ -179,33 +278,8 @@ test('gotzji production entry exposes governed controls and denies inherited wor
     await expect(page.getByLabel('ความต่างของไฟล์', { exact: true })).toContainText('+Git UI change');
     await page.getByRole('button', { name: 'อ่านประวัติ Git', exact: true }).click();
     await expect(page.getByText('Synthetic UI Git proof', { exact: true })).toBeVisible();
+    await page.screenshot({ path: path.join(desktopRoot, '..', '..', '.local-artifacts', 'parity-c2-git.png') });
     expect(await readFile(path.join(projectFilesRoot!, '.git', 'index'))).toEqual(indexBefore);
-
-  } catch (error) { failures.push(error); }
-  try {
-    const selfStopped = await stopOwnedTestHost(dataRoot, expectedHostExecutable);
-    if (hostWasReady) expect(selfStopped).toBe(true);
-  } catch (error) { failures.push(error); }
-  const closeResult = await Promise.allSettled([(async (): Promise<void> => {
-    if (app) {
-      const ownedAppProcess = app.process();
-      const errors: unknown[] = [];
-      try { await app.close(); } catch (error) { errors.push(error); }
-      try { await terminateProcessTree(ownedAppProcess); } catch (error) { errors.push(error); }
-      if (errors.length) throw new AggregateError(errors, 'Owned Electron close failed');
-    }
-  })()]);
-  const cleanup = await Promise.allSettled([
-    expect.poll(async () => {
-      try { await rm(dataRoot, { recursive: true, force: true }); return true; }
-      catch { return false; }
-    }, { timeout: 10_000, intervals: [50, 100, 250] }).toBe(true),
-    libraryProjectRoot ? rm(libraryProjectRoot, { recursive: true, force: true }) : undefined,
-    projectFilesRoot ? rm(projectFilesRoot, { recursive: true, force: true }) : undefined,
-    lostAckFixturePath ? rm(lostAckFixturePath, { force: true }) : undefined,
-  ]);
-  failures.push(...[...closeResult, ...cleanup].filter((item) => item.status === 'rejected').map((item) => item.reason));
-  if (failures.length) throw new AggregateError(failures, 'Governed E2E assertions or owned fixture cleanup failed');
 
 });
 

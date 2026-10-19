@@ -1,9 +1,9 @@
-import { lstat, readdir, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { realpathSync } from 'node:fs';
+import { lstat, realpath, opendir, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { realpathSync, type BigIntStats } from 'node:fs';
 import path from 'node:path';
 import { DirectGitRunner, GitAdapter, type GitRunner, type GitStatusEntry, type GitLogEntry } from '@lnwjud/git';
 import { childEnvironment } from './product-security.mjs';
-import { projectFileBytesSync } from './project-file-snapshot.mjs';
+import { projectFileBytesSync, copyProjectFileSnapshot } from './project-file-snapshot.mjs';
 import { readProjectFile } from './product-file-reads.js';
 import { projectTarget } from './product-projects.js';
 import { CoreError, type ProjectGitInput, type RegisteredProject } from './types.js';
@@ -11,11 +11,12 @@ import { CoreError, type ProjectGitInput, type RegisteredProject } from './types
 const MAX_RESPONSE_BYTES = 64 * 1024;
 // Git for Windows does not accept Node's \\.\nul device spelling as a config path.
 const gitNull = process.platform === 'win32' ? 'NUL' : '/dev/null';
-type Repository = { root: string; gitDirectory: string; identity: string; metadata: { source: string; relative: string; size: number }[] };
+type Repository = { root: string; gitDirectory: string; identity: string; metadata: { source: string; relative: string; size: number }[]; objects: { source: string; relative: string; stat: BigIntStats }[] };
 export type ProjectGitResult = { projectId: string; truncated: boolean } & ({ view: 'status'; entries: readonly GitStatusEntry[] } | { view: 'log'; entries: readonly GitLogEntry[]; limit: number } | { view: 'diff'; patch: string; path: string; staged: boolean });
 const invalidLayout = (): never => { throw new CoreError('GIT_LAYOUT_UNSUPPORTED', 'Use an ordinary project repository without redirected or shared Git metadata', 'projectId'); };
 
 async function repository(project: RegisteredProject, privateRoots: readonly string[]): Promise<Repository> {
+  if (/^[\\/]{2}/u.test(project.rootPath)) throw new CoreError('GIT_NETWORK_ROOT_DENIED', 'Select a local project repository for this view', 'projectId');
   const root = projectTarget(project, '.', privateRoots, true);
   // Git inspects a repository as a whole. A nested private root cannot be excluded by a pathname filter.
   if (privateRoots.some((item) => { const relative = path.relative(root, item); return !relative || !relative.startsWith('..') && !path.isAbsolute(relative); })) throw new CoreError('GIT_PRIVATE_RUNTIME_OVERLAP');
@@ -24,25 +25,83 @@ async function repository(project: RegisteredProject, privateRoots: readonly str
   const info = await lstat(gitDirectory, { bigint: true }).catch(() => undefined);
   if (!info) throw new CoreError('GIT_REPOSITORY_REQUIRED', 'The selected project must contain its own .git directory', 'projectId');
   if (!info.isDirectory() || info.isSymbolicLink() || realpathSync(gitDirectory) !== gitDirectory) invalidLayout();
-  const pending = [gitDirectory];
-  let scanned = 0;
   const metadata: Repository['metadata'] = [];
+  const deadline = performance.now() + 10000;
+  const checkBudget = (): void => { if (performance.now() >= deadline) throw new CoreError('GIT_VALIDATION_BUDGET'); };
+  const inspect = async (selected: string): Promise<BigIntStats> => {
+    checkBudget();
+    const [stat, resolved] = await Promise.all([lstat(selected, { bigint: true }), realpath(selected)]);
+    checkBudget();
+    if (stat.isSymbolicLink() || resolved !== selected || (!stat.isDirectory() && (!stat.isFile() || stat.nlink > 1n))) invalidLayout();
+    return stat;
+  };
+  const addMetadata = async (selected: string): Promise<void> => {
+    const stat = await inspect(selected);
+    if (!stat.isFile()) invalidLayout();
+    if (metadata.length >= 10000) throw new CoreError('GIT_METADATA_LIMIT');
+    metadata.push({ source: selected, relative: path.relative(gitDirectory, selected).split(path.sep).join('/'), size: Number(stat.size) });
+  };
+  const pending: string[] = [];
+  for await (const item of await opendir(gitDirectory)) {
+    checkBudget();
+    const selected = path.join(gitDirectory, item.name);
+    if (item.name === 'commondir' || item.name.startsWith('sharedindex.')) invalidLayout();
+    if (['HEAD', 'index', 'packed-refs', 'shallow', 'config'].includes(item.name)) await addMetadata(selected);
+    if (item.name === 'refs') { if (!(await inspect(selected)).isDirectory()) invalidLayout(); pending.push(selected); }
+  }
   while (pending.length) {
-    for (const item of await readdir(pending.pop()!, { withFileTypes: true })) {
-      if (++scanned > 10000) throw new CoreError('GIT_METADATA_LIMIT');
-      const selected = path.join(item.parentPath, item.name);
-      const stat = await lstat(selected);
-      if (stat.isSymbolicLink() || realpathSync(selected) !== selected || (!stat.isDirectory() && (!stat.isFile() || stat.nlink > 1))) invalidLayout();
-      if (item.name.startsWith('sharedindex.')) invalidLayout();
-      if (['alternates', 'http-alternates', 'commondir', 'grafts'].includes(item.name)) invalidLayout();
-      if (stat.isDirectory()) pending.push(selected);
-      else {
-        const relative = path.relative(gitDirectory, selected).split(path.sep).join('/');
-        if (['HEAD', 'index', 'packed-refs', 'shallow', 'config', 'info/exclude'].includes(relative) || relative.startsWith('refs/')) metadata.push({ source: selected, relative, size: stat.size });
-      }
+    const directory = pending.pop()!;
+    for await (const item of await opendir(directory)) {
+      const selected = path.join(directory, item.name);
+      const stat = await inspect(selected);
+      if (stat.isDirectory()) pending.push(selected); else await addMetadata(selected);
     }
   }
-  return { root, gitDirectory, identity: `${info.dev}:${info.ino}`, metadata };
+  const infoDirectory = path.join(gitDirectory, 'info');
+  const infoStat = await lstat(infoDirectory).catch((error: NodeJS.ErrnoException) => { if (error.code === 'ENOENT') return undefined; throw error; });
+  if (infoStat) {
+    if (!(await inspect(infoDirectory)).isDirectory()) invalidLayout();
+    for await (const item of await opendir(infoDirectory)) {
+      if (item.name === 'grafts') invalidLayout();
+      if (item.name === 'exclude') await addMetadata(path.join(infoDirectory, item.name));
+    }
+  }
+  const objects = path.join(gitDirectory, 'objects');
+  const objectInfo = await inspect(objects);
+  if (!objectInfo.isDirectory()) invalidLayout();
+  const objectIdentity = `${objectInfo.dev}:${objectInfo.ino}`;
+  const objectsToCopy: Repository['objects'] = [];
+  let objectBytes = 0n;
+  const objectDirectories = [objects];
+  // Validate every object Git may consult, without treating objects as copied refs/index metadata.
+  while (objectDirectories.length) {
+    const directory = objectDirectories.pop()!;
+    let batch: string[] = [];
+    const validateBatch = async (): Promise<void> => {
+      checkBudget();
+      const results = await Promise.allSettled(batch.map(async (selected): Promise<void> => {
+        const stat = await inspect(selected);
+        if (stat.isDirectory()) objectDirectories.push(selected);
+        else {
+          objectBytes += stat.size;
+          if (objectBytes > 512n * 1024n * 1024n) throw new CoreError('GIT_OBJECT_BYTES_LIMIT');
+          objectsToCopy.push({ source: selected, relative: path.relative(objects, selected), stat });
+        }
+      }));
+      batch = [];
+      const failure = results.find((result) => result.status === 'rejected');
+      if (failure?.status === 'rejected') throw failure.reason;
+      checkBudget();
+    };
+    for await (const item of await opendir(directory)) {
+      if (['alternates', 'http-alternates'].includes(item.name)) invalidLayout();
+      batch.push(path.join(directory, item.name));
+      if (batch.length === 32) await validateBatch();
+    }
+    await validateBatch();
+  }
+  checkBudget();
+  return { root, gitDirectory, identity: `${info.dev}:${info.ino}:${objectIdentity}`, metadata, objects: objectsToCopy };
 }
 
 async function diffTarget(project: RegisteredProject, selected: string, privateRoots: readonly string[]): Promise<void> {
@@ -89,7 +148,27 @@ export async function readProjectGit(project: RegisteredProject, input: ProjectG
     }
     const safeConfig = `[core]\nrepositoryformatversion = ${config.get('core.repositoryformatversion') ?? '0'}\nbare = false\nfilemode = ${config.get('core.filemode') ?? 'false'}\nignorecase = ${config.get('core.ignorecase') ?? 'false'}\nsymlinks = ${config.get('core.symlinks') ?? 'false'}\n${config.has('extensions.objectformat') ? `[extensions]\nobjectformat = ${config.get('extensions.objectformat')}\n` : ''}`;
     await writeFile(path.join(directory, 'config'), safeConfig);
-    await writeFile(path.join(directory, 'objects', 'info', 'alternates'), JSON.stringify(path.join(selected.gitDirectory, 'objects').split(path.sep).join('/')) + '\n');
+    let objectBytes = 0;
+    const copyDeadline = performance.now() + 15000;
+    const copyBudget = (bytes: number): void => {
+      if (performance.now() >= copyDeadline) throw new CoreError('GIT_OBJECT_COPY_BUDGET');
+      objectBytes += bytes;
+      if (objectBytes > 512 * 1024 * 1024) throw new CoreError('GIT_OBJECT_BYTES_LIMIT');
+    };
+    const objectDirectories = [...new Set(selected.objects.map((entry) => path.dirname(path.join(directory, 'objects', entry.relative))))];
+    for (let offset = 0; offset < objectDirectories.length; offset += 32) {
+      await Promise.all(objectDirectories.slice(offset, offset + 32).map((destination) => mkdir(destination, { recursive: true })));
+      copyBudget(0);
+    }
+    for (let offset = 0; offset < selected.objects.length; offset += 16) {
+      const copied = await Promise.allSettled(selected.objects.slice(offset, offset + 16).map(async (entry): Promise<void> => {
+        const destination = path.join(directory, 'objects', entry.relative);
+        await copyProjectFileSnapshot(entry.source, destination, entry.stat, copyBudget);
+      }));
+      const failure = copied.find((result) => result.status === 'rejected');
+      if (failure?.status === 'rejected') { if (failure.reason instanceof CoreError) throw failure.reason; throw new CoreError('GIT_REPOSITORY_CHANGED'); }
+      copyBudget(0);
+    }
     let worktree = selected.root;
     if (input.view === 'diff' && !input.staged) {
       worktree = path.join(scratch, 'worktree'); await mkdir(worktree);
@@ -99,10 +178,10 @@ export async function readProjectGit(project: RegisteredProject, input: ProjectG
         await mkdir(path.dirname(destination), { recursive: true }); await writeFile(destination, file.content);
       } catch (error) { if (!(error instanceof CoreError) || error.code !== 'FILE_NOT_FOUND') throw error; }
     }
-    const prefix = ['--no-pager', '--no-optional-locks', '--literal-pathspecs', '--git-dir', directory, '--work-tree', worktree, '-c', 'core.fsmonitor=false', '-c', 'core.untrackedCache=false', '-c', `core.attributesFile=${gitNull}`];
-    const runner: GitRunner = { run: async (args, cwd, options) => {
+    const prefix = ['--no-pager', '--no-optional-locks', '--literal-pathspecs', '--git-dir', directory, '--work-tree', worktree, '-c', 'core.fsmonitor=false', '-c', 'core.untrackedCache=false', '-c', 'status.relativePaths=false', '-c', `core.attributesFile=${gitNull}`];
+    const runner: GitRunner = { run: async (args, _cwd, options) => {
       const safeArgs = args[0] === 'diff' ? [...args.slice(0, 1), '--no-textconv', '--ignore-submodules=all', ...args.slice(1)] : args[0] === 'status' ? [...args, '--ignore-submodules=all'] : [...args];
-      const result = await direct.run([...prefix, ...safeArgs], cwd, { ...options, env, timeoutMs: 10000 });
+      const result = await direct.run([...prefix, ...safeArgs], scratch, { ...options, env, timeoutMs: 10000 });
       if (result.truncated) throw new CoreError('GIT_OUTPUT_LIMIT', 'The Git output exceeds this bounded view');
       return result;
     } };
@@ -121,8 +200,9 @@ export async function readProjectGit(project: RegisteredProject, input: ProjectG
       if (!result.ok) throw new CoreError(result.error.code, 'The selected Git view could not be read', 'view');
       value = { projectId: project.projectId, view: 'diff', ...result.value, path: input.path, staged: input.staged ?? false };
     }
-    const current = await repository(project, privateRoots);
-    if (current.identity !== selected.identity) throw new CoreError('GIT_REPOSITORY_CHANGED');
+    projectTarget(project, '.', privateRoots, true);
+    const [gitIdentity, objectIdentity] = await Promise.all([lstat(selected.gitDirectory, { bigint: true }), lstat(path.join(selected.gitDirectory, 'objects'), { bigint: true })]);
+    if (gitIdentity.isSymbolicLink() || objectIdentity.isSymbolicLink() || `${gitIdentity.dev}:${gitIdentity.ino}:${objectIdentity.dev}:${objectIdentity.ino}` !== selected.identity) throw new CoreError('GIT_REPOSITORY_CHANGED');
     if (input.view === 'diff') await diffTarget(project, input.path, privateRoots);
     if (Buffer.byteLength(JSON.stringify(value)) > MAX_RESPONSE_BYTES) throw new CoreError('GIT_OUTPUT_LIMIT');
     return value;

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
+import { watch } from 'node:fs';
 import { link, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -10,7 +11,7 @@ import { testOnlyProductSecretProtector, writeProductConfiguration } from './pro
 import { childEnvironment } from './product-security.mjs';
 
 describe('direct reads through the actual product server', () => {
-  it('serves all three MCP tools without starting a Grace job', async () => {
+  it('serves all three MCP tools without starting a Grace job', async ({ signal }) => {
     const root = await canonicalTemporaryDirectory('gotzji-direct-http-');
     const directory = path.join(root, 'private', 'runtime');
     const project = path.join(root, 'project');
@@ -26,11 +27,35 @@ describe('direct reads through the actual product server', () => {
     const exited = once(child, 'exit');
     let endpoint = '';
     try {
-      for (let attempt = 0; attempt < 100; attempt++) {
-        if (child.exitCode !== null) throw new Error(`Owned host failed: ${stderr}`);
-        try { endpoint = `http://127.0.0.1:${(JSON.parse((JSON.parse(await readFile(path.join(directory, 'product-endpoint.json'), 'utf8')) as { body: string }).body) as { port: number }).port}`; break; } catch { await new Promise((resolve) => setTimeout(resolve, 50)); }
-      }
-      expect(endpoint).not.toBe('');
+      endpoint = await new Promise<string>((resolve, reject) => {
+        let settled = false;
+        let reading = false;
+        let dirty = false;
+        const finish = (error?: Error, value?: string): void => {
+          if (settled) return;
+          settled = true; watcher.close(); child.off('exit', failed); signal.removeEventListener('abort', aborted);
+          if (error) reject(error); else resolve(value!);
+        };
+        const failed = (): void => finish(new Error(`Owned host exited before endpoint publication: ${stderr}`));
+        const aborted = (): void => finish(new Error(`Owned host did not publish readiness before the existing test deadline: ${stderr}`));
+        const inspect = async (): Promise<void> => {
+          if (settled) return;
+          if (reading) { dirty = true; return; }
+          reading = true;
+          try {
+            const envelope = JSON.parse(await readFile(path.join(directory, 'product-endpoint.json'), 'utf8')) as { body: string };
+            const value = JSON.parse(envelope.body) as { port: number; pid: number; ownerId: string };
+            if (!Number.isInteger(value.port) || value.port < 1 || value.port > 65535 || value.pid !== child.pid || value.ownerId !== config.ownerId) throw new Error('Owned endpoint identity mismatch');
+            finish(undefined, `http://127.0.0.1:${value.port}`);
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== 'ENOENT' && !(error instanceof SyntaxError)) finish(error instanceof Error ? error : new Error(String(error)));
+          } finally { reading = false; if (dirty && !settled) { dirty = false; void inspect(); } }
+        };
+        const watcher = watch(directory, () => { void inspect(); });
+        watcher.once('error', (error) => finish(error));
+        child.once('exit', failed); signal.addEventListener('abort', aborted, { once: true });
+        if (signal.aborted) aborted(); else if (child.exitCode !== null) failed(); else void inspect();
+      });
       const rpc = async (method: string, input: object): Promise<{ ok: boolean; value: unknown }> => (await (await fetch(`${endpoint}/rpc`, { method: 'POST', headers: { Authorization: `Bearer ${config.daemonSecret}` }, body: JSON.stringify({ method, input }) })).json()) as { ok: boolean; value: unknown };
       const tool = async (name: string, input: object): Promise<{ result: { isError: boolean; structuredContent?: unknown; content: { text: string }[] } }> => (await (await fetch(`${endpoint}/mcp/${config.mcpPathSecret}`, { method: 'POST', body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: input } }) })).json()) as { result: { isError: boolean; structuredContent?: unknown; content: { text: string }[] } };
       expect((await rpc('registerProject', { projectId: 'project', displayName: 'Synthetic', rootPath: project })).ok).toBe(true);
