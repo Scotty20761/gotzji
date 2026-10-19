@@ -1,7 +1,10 @@
 {
   "version": "5.8.6",
   "capturedOn": "2026-10-19",
-  "source": "Runtime catalog205 plus connected adapter259; union273 callable names including aliases. Installed/source/caller acceptance remains separate.",
+  "referenceUpdatedOn": "2026-10-20",
+  "advertisedCallableNames": 273,
+  "staticOnlyNames": 13,
+  "source": "Runtime catalog205 plus connected adapter259; union273 callable names.13additional static-only names reconcile286Desktop reference names, including compatibility aliases. This is not readiness or complete behavior acceptance.",
   "tools": [
     {
       "id": "accessibility",
@@ -189,6 +192,14 @@
       "surface": "both"
     },
     {
+      "id": "call_history",
+      "description": "พบชื่อในชุดโปรแกรมต้นฉบับ ยังไม่มีรายละเอียดสัญญาการเรียกผ่านช่องทางเชื่อมต่อที่เก็บไว้ ต้องเทียบพฤติกรรมและตรวจผลก่อนใช้งาน",
+      "tags": [
+        "static-only"
+      ],
+      "surface": "static-only"
+    },
+    {
       "id": "cancel_goal",
       "description": "Cancel a durable goal independently of any scheduled watchdog. It records the goal as cancelled, aborts in-flight fenced MCP requests for that goal, and attempts to stop only tracked tasks whose cancelWithGoal policy is true; shared supporting services remain running by default and are reported as taskCancellations status=skipped. An explicitly bound provider that is unavailable or cannot verify termination is reported as failed, so allTasksStopped remains false until the unresolved task is inspected. Inspect requestCancellation, taskCancellations, and allRequestsStopped/allTasksStopped for unresolved work. If scheduledTaskCancellation requests make_native_task_non_runnable, use cancel_scheduled_continuation separately, resolve the actual native ChatGPT cleanup operation exposed by the host, and record exact proof that the pending task is non-runnable.",
       "tags": [
@@ -259,6 +270,14 @@
       "surface": "adapter-only"
     },
     {
+      "id": "checkpoint_goal_engineering",
+      "description": "ชื่อเรียกสำรองของ checkpoint_goal ที่พบในชุดโปรแกรมต้นฉบับ ยังไม่มีหลักฐานการประกาศผ่านช่องทางเชื่อมต่อที่เก็บไว้",
+      "tags": [
+        "static-only"
+      ],
+      "surface": "static-only"
+    },
+    {
       "id": "claim_scheduled_continuation",
       "description": "Scheduled-wake entrypoint and the first lnwjud action before any workspace mutation. Native watchdogs should pass the expected goalId and workspaceId from their wake metadata so the host-visible WRITE scope is explicit and lnwjud can reject mismatched identity before liveness or lease mutation; legacy callers that only have continuationId remain compatible. For occurrence=interval, the same native hourly task remains scheduled across firings: a live/uncertain worker returns worker_busy_noop without lease theft or host-task mutation, a true concurrent/stale duplicate whose observation predates an already-recorded lease acquisition returns already_claimed, an existing interval runKey alone never suppresses a fresh current-liveness check, a safely available lease returns recurring_acquired, and a still-valid stale lease with trustworthy no-worker/no-blocking-work evidence is recovered in the same hourly tick after the bounded 60-second stale-heartbeat grace rather than waiting for expiry or a second hourly firing. Only recurring_acquired may include a read-only automationResume hint; busy/no-op claims never inspect or mutate automation state. After recurring_acquired, discovering a fixable CI, test, code-scanning, packaging, release, or tool failure is not permission to yield: continue diagnosis, repair, and relevant validation in the same host turn while safe useful actions remain, rather than ending the hourly wake with a status-only report. Ordinary recurring wakes never create a successor, never consume the native task, and never retime its cadence. terminal_noop performs no work; if terminal cleanup is pending, make the exact recurring native task non-runnable rather than resuming goal work. Historical occurrence=once rows retain the v4.52 acquired/successor_required/reschedule compatibility paths. Never count prepared as confirmed and never mutate the workspace without the acquired goal lease.",
       "tags": [
@@ -275,6 +294,54 @@
         "capability"
       ],
       "surface": "both"
+    },
+    {
+      "id": "codex_run",
+      "description": "พบชื่อในชุดโปรแกรมต้นฉบับ ยังไม่มีรายละเอียดสัญญาการเรียกผ่านช่องทางเชื่อมต่อที่เก็บไว้ ต้องเทียบพฤติกรรมและตรวจผลก่อนใช้งาน",
+      "tags": [
+        "static-only"
+      ],
+      "surface": "static-only"
+    },
+    {
+      "id": "codex_status",
+      "description": "พบชื่อในชุดโปรแกรมต้นฉบับ ยังไม่มีรายละเอียดสัญญาการเรียกผ่านช่องทางเชื่อมต่อที่เก็บไว้ ต้องเทียบพฤติกรรมและตรวจผลก่อนใช้งาน",
+      "tags": [
+        "static-only"
+      ],
+      "surface": "static-only"
+    },
+    {
+      "id": "codex_stop",
+      "description": "พบชื่อในชุดโปรแกรมต้นฉบับ ยังไม่มีรายละเอียดสัญญาการเรียกผ่านช่องทางเชื่อมต่อที่เก็บไว้ ต้องเทียบพฤติกรรมและตรวจผลก่อนใช้งาน",
+      "tags": [
+        "static-only"
+      ],
+      "surface": "static-only"
+    },
+    {
+      "id": "codex_task_list",
+      "description": "พบชื่อในชุดโปรแกรมต้นฉบับ ยังไม่มีรายละเอียดสัญญาการเรียกผ่านช่องทางเชื่อมต่อที่เก็บไว้ ต้องเทียบพฤติกรรมและตรวจผลก่อนใช้งาน",
+      "tags": [
+        "static-only"
+      ],
+      "surface": "static-only"
+    },
+    {
+      "id": "codex_task_logs",
+      "description": "พบชื่อในชุดโปรแกรมต้นฉบับ ยังไม่มีรายละเอียดสัญญาการเรียกผ่านช่องทางเชื่อมต่อที่เก็บไว้ ต้องเทียบพฤติกรรมและตรวจผลก่อนใช้งาน",
+      "tags": [
+        "static-only"
+      ],
+      "surface": "static-only"
+    },
+    {
+      "id": "codex_task_status",
+      "description": "พบชื่อในชุดโปรแกรมต้นฉบับ ยังไม่มีรายละเอียดสัญญาการเรียกผ่านช่องทางเชื่อมต่อที่เก็บไว้ ต้องเทียบพฤติกรรมและตรวจผลก่อนใช้งาน",
+      "tags": [
+        "static-only"
+      ],
+      "surface": "static-only"
     },
     {
       "id": "compare_pdf_pages",
@@ -944,6 +1011,14 @@
         "agent"
       ],
       "surface": "both"
+    },
+    {
+      "id": "goal_result",
+      "description": "พบชื่อในชุดโปรแกรมต้นฉบับ ยังไม่มีรายละเอียดสัญญาการเรียกผ่านช่องทางเชื่อมต่อที่เก็บไว้ ต้องเทียบพฤติกรรมและตรวจผลก่อนใช้งาน",
+      "tags": [
+        "static-only"
+      ],
+      "surface": "static-only"
     },
     {
       "id": "handoff_context",
@@ -1806,6 +1881,14 @@
       "surface": "both"
     },
     {
+      "id": "resource_snapshot",
+      "description": "พบชื่อในชุดโปรแกรมต้นฉบับ ยังไม่มีรายละเอียดสัญญาการเรียกผ่านช่องทางเชื่อมต่อที่เก็บไว้ ต้องเทียบพฤติกรรมและตรวจผลก่อนใช้งาน",
+      "tags": [
+        "static-only"
+      ],
+      "surface": "static-only"
+    },
+    {
       "id": "response_mode",
       "description": "Select compact, normal, verbose, or stream formatting.",
       "tags": [
@@ -2378,6 +2461,30 @@
         "environment"
       ],
       "surface": "both"
+    },
+    {
+      "id": "workflow_prepare",
+      "description": "พบชื่อในชุดโปรแกรมต้นฉบับ ยังไม่มีรายละเอียดสัญญาการเรียกผ่านช่องทางเชื่อมต่อที่เก็บไว้ ต้องเทียบพฤติกรรมและตรวจผลก่อนใช้งาน",
+      "tags": [
+        "static-only"
+      ],
+      "surface": "static-only"
+    },
+    {
+      "id": "workflow_start",
+      "description": "พบชื่อในชุดโปรแกรมต้นฉบับ ยังไม่มีรายละเอียดสัญญาการเรียกผ่านช่องทางเชื่อมต่อที่เก็บไว้ ต้องเทียบพฤติกรรมและตรวจผลก่อนใช้งาน",
+      "tags": [
+        "static-only"
+      ],
+      "surface": "static-only"
+    },
+    {
+      "id": "workflow_templates",
+      "description": "พบชื่อในชุดโปรแกรมต้นฉบับ ยังไม่มีรายละเอียดสัญญาการเรียกผ่านช่องทางเชื่อมต่อที่เก็บไว้ ต้องเทียบพฤติกรรมและตรวจผลก่อนใช้งาน",
+      "tags": [
+        "static-only"
+      ],
+      "surface": "static-only"
     },
     {
       "id": "workspace_context",

@@ -204,6 +204,10 @@ test('gotzji entry, project search and file edit return canonical results', asyn
     await page.getByText('เทียบความสามารถกับ lnwjud', { exact: true }).click();
     await page.getByLabel('ค้นหาเครื่องมืออ้างอิง', { exact: true }).fill('read_file');
     await expect(page.getByRole('row').filter({ has: page.getByText('read_file', { exact: true }) })).toContainText('รองรับบางส่วน');
+    await page.getByLabel('ค้นหาเครื่องมืออ้างอิง', { exact: true }).fill('checkpoint_goal_engineering');
+    const aliasRow = page.getByRole('row').filter({ has: page.getByText('checkpoint_goal_engineering', { exact: true }) });
+    await expect(aliasRow).toContainText('ยังต้องเชื่อม');
+    await expect(aliasRow).toContainText('รายการจากชุดโปรแกรมต้นฉบับ');
     await page.getByText('เทียบความสามารถกับ lnwjud', { exact: true }).click();
     await expect(page.getByLabel('ข้อความที่ต้องการค้นหา', { exact: true })).toBeVisible();
     await page.getByLabel('ข้อความที่ต้องการค้นหา', { exact: true }).fill('not-in-this-fixture');

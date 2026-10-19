@@ -5,21 +5,22 @@
   "source": {
     "tag": "v5.8.6",
     "tagObject": "fc5555fa366c485e1261173aa1c704e02befe984",
-    "method": "Inert TypeScript AST: literal defineTool definitions, upgrade catalog helper calls, and the five projectCommandTools definitions; specialized upgrade duplicates collapsed."
+    "method": "Inert TypeScript AST: literal defineTool definitions, upgrade catalog helper calls, and the five projectCommandTools definitions; specialized upgrade duplicates collapsed. The object-spread goalTools compatibility alias is independently included."
   },
   "package": {
     "asarSha256": "d62201e34a29c85d31a718992118fe383f293da7ac932ad5437d3eb242e276d4",
-    "method": "Same inert AST name extraction from packaged JavaScript under @lnwjud/mcp-server/dist; no original module imported or tool executed."
+    "method": "Same inert AST name extraction from packaged JavaScript under @lnwjud/mcp-server/dist; no original module imported or tool executed. The same object-spread compatibility alias is pinned in the packaged goal-tools module."
   },
   "counts": {
-    "staticSourceAndPackageNames": 285,
+    "staticSourceAndPackageNames": 286,
     "callableUnion": 273,
-    "staticOnly": 12,
+    "staticOnly": 13,
     "observedDesktopInternalRows": 286,
-    "unreconciledDesktopCount": 1
+    "unreconciledDesktopCount": 0
   },
   "staticOnly": [
     "call_history",
+    "checkpoint_goal_engineering",
     "codex_run",
     "codex_status",
     "codex_stop",
@@ -61,6 +62,7 @@
     "change_context",
     "changed_symbols",
     "checkpoint_goal",
+    "checkpoint_goal_engineering",
     "claim_scheduled_continuation",
     "clipboard",
     "codex_run",
@@ -321,7 +323,24 @@
   ],
   "limitations": [
     "Static factory-name equality is not full compiled-behavior equality or proof that a tool is callable/ready.",
-    "The Desktop view reports286 internal readiness rows. The one-row difference remains unresolved; this capture is not a complete Desktop contract census.",
-    "Codex-named features require an explicit compatible ChatGPT mapping; no Codex/Claude runtime is added."
+    "Codex-named features require an explicit compatible ChatGPT mapping; no Codex/Claude runtime is added.",
+    "The286static names now reconcile the observed286Desktop internal rows.13static-only names lack callable-advertisement evidence in the captured interfaces; complete schema/semantic/action/state and readiness acceptance remains open."
+  ],
+  "compatibilityAliases": [
+    {
+      "name": "checkpoint_goal_engineering",
+      "canonicalName": "checkpoint_goal",
+      "method": "Inert AST of goalTools: clone the existing canonical definition by object spread and insert the compatibility name; no invocation.",
+      "source": {
+        "path": "packages/mcp-server/src/tools/goal-tools.ts",
+        "line": 716,
+        "sha256": "d7b2ac0ac934f3eaa3969ead2791040d1b008d3adb233511abc5e40ad95d4f9f"
+      },
+      "package": {
+        "path": "node_modules/@lnwjud/mcp-server/dist/tools/goal-tools.js",
+        "line": 700,
+        "sha256": "af4f2bcfa6bc5be2c5a94d777678802c87d9aa79b6c8631cf0e5abf8dc253f98"
+      }
+    }
   ]
 }
