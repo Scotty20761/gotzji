@@ -7,7 +7,7 @@ import { projectFileBytesSync, copyProjectFileSnapshot } from './project-file-sn
 import { readProjectFile } from './product-file-reads.js';
 import { projectTarget } from './product-projects.js';
 import { CoreError, type ProjectGitInput, type RegisteredProject } from './types.js';
-import { formatGitReadDiagnostic, type GitReadDiagnostic } from './git-read-diagnostics.js';
+import { writeGitReadDiagnostic, type GitReadDiagnostic } from './git-read-diagnostics.js';
 
 const MAX_RESPONSE_BYTES = 64 * 1024;
 // Git for Windows does not accept Node's \\.\nul device spelling as a config path.
@@ -130,8 +130,7 @@ export async function readProjectGit(project: RegisteredProject, input: ProjectG
   const reportBudget = (code: GitReadDiagnostic['code']): void => {
     try {
       if (reportedBudget) return; reportedBudget = true; elapsedMs = Math.max(0, Math.round(performance.now() - started));
-      const line = formatGitReadDiagnostic({ schemaVersion: 1, code, phase, elapsedMs, phaseStartsMs, totalObjects, copiedObjects, copiedBytes: objectBytes, ioThreads: Number(process.env.UV_THREADPOOL_SIZE ?? 0) });
-      if (line) process.stderr.write(line);
+      writeGitReadDiagnostic({ schemaVersion: 1, code, phase, elapsedMs, phaseStartsMs, totalObjects, copiedObjects, copiedBytes: objectBytes, ioThreads: Number(process.env.UV_THREADPOOL_SIZE ?? 0) });
     } catch { /* Observational diagnostics must not mask the original refusal. */ }
   };
   const snapshotBudget = (): number => {

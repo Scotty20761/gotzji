@@ -4,7 +4,7 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSy
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { CoreError } from './types.js';
-import { formatGitReadDiagnostic, parseGitReadDiagnostic } from './git-read-diagnostics.js';
+import { writeGitReadDiagnostic, parseGitReadDiagnostic } from './git-read-diagnostics.js';
 import { PRODUCT_IO_THREADPOOL_SIZE } from './product-runtime-settings.mjs';
 import { ensureProductControlDocuments } from './product-control-policy.js';
 import { childEnvironment, sanitizedStream } from './product-security.mjs';
@@ -283,7 +283,7 @@ async function bootGotzjiProductHost(options: ProductHostOptions, directory: str
     for (const secret of [config.daemonSecret, config.mcpPathSecret, config.credential].filter((value): value is string => !!value)) line = line.replaceAll(secret, '[REDACTED]');
     stderr = (stderr + line).slice(-16384);
     const diagnostic = parseGitReadDiagnostic(line);
-    if (diagnostic) { try { process.stderr.write(formatGitReadDiagnostic(diagnostic)!); } catch { /* Keep runtime-error reporting observational. */ } }
+    if (diagnostic) writeGitReadDiagnostic(diagnostic);
   });
   const child = spawn(process.execPath, [entry, directory, ...(options.packaged ? ['--packaged'] : []), ...(options.testOnlyInsecureSecretProtector ? ['--test-only-insecure-secret-protector'] : [])], { detached: true, windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'], env: { ...childEnvironment(), ELECTRON_RUN_AS_NODE: '1', UV_THREADPOOL_SIZE: PRODUCT_IO_THREADPOOL_SIZE } });
   child.stderr.on('data', (data: Buffer) => stream.write(data));

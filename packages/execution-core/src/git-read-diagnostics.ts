@@ -1,3 +1,4 @@
+import { Console } from 'node:console';
 const PREFIX = '[gotzji-git-read-budget] ';
 const PHASES = ['census', 'metadata', 'config', 'object-directories', 'objects', 'worktree'] as const;
 type Phase = typeof PHASES[number];
@@ -23,4 +24,12 @@ export function formatGitReadDiagnostic(value: unknown): string | undefined {
 export function parseGitReadDiagnostic(line: string): GitReadDiagnostic | undefined {
   if (!line.startsWith(PREFIX) || Buffer.byteLength(line) > 2048) return undefined;
   try { const value: unknown = JSON.parse(line.slice(PREFIX.length)); return valid(value) ? value : undefined; } catch { return undefined; }
+}
+
+/** Emit bounded private diagnostics without promoting a failed pipe to a runtime failure. */
+export function writeGitReadDiagnostic(value: unknown, destination: NodeJS.WritableStream = process.stderr): void {
+  try {
+    const line = formatGitReadDiagnostic(value);
+    if (line) new Console({ stdout: destination, stderr: destination, ignoreErrors: true }).error('%s', line.slice(0, -1));
+  } catch { /* Observations must preserve the original runtime outcome. */ }
 }
