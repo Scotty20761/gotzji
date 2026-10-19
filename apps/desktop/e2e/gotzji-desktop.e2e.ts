@@ -1,7 +1,8 @@
-import { mkdtemp, readFile, realpath, readdir, rm, writeFile } from 'node:fs/promises';
-import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import { mkdir, mkdtemp, readFile, realpath, readdir, rm, writeFile } from 'node:fs/promises';
+import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { execFile, type ChildProcess } from 'node:child_process';
 import { promisify } from 'node:util';
+import { deflateSync } from 'node:zlib';
 import { DatabaseSync } from 'node:sqlite';
 import os from 'node:os';
 import path from 'node:path';
@@ -265,14 +266,18 @@ test('gotzji new file retries one real admission after a lost acknowledgement', 
       const host = document.getElementById('root'); host.hidden = true;
       const root = document.createElement('div'); root.id = 'lost-ack-fixture'; document.body.append(root);
       let discard = true;
-      const request = async (method, input) => {
-        const result = await window.gotzji.request({ method, input });
-        if (method === 'submit' && discard) {
-          if (!result || typeof result.jobId !== 'string') throw new Error('Expected actual admitted job');
-          discard = false; root.dataset.admittedJobId = result.jobId;
-          throw new Error('LOST_ACK_AFTER_REAL_ADMISSION');
-        }
-        return result;
+      const request = (method, input) => {
+        const pending = (async () => {
+          const result = await window.gotzji.request({ method, input });
+          if (method === 'submit' && discard) {
+            if (!result || typeof result.jobId !== 'string') throw new Error('Expected actual admitted job');
+            discard = false; root.dataset.admittedJobId = result.jobId;
+            throw new Error('LOST_ACK_AFTER_REAL_ADMISSION');
+          }
+          return result;
+        })();
+        if (method === 'submit') Reflect.set(root, 'ownedSubmitPromise', pending);
+        return pending;
       };
       createRoot(root, { identifierPrefix: 'lost-ack-' }).render(<GotzjiProjectFiles projectId="files-panel" disabled={false} request={request} onJob={(id) => { root.dataset.observedJobId = id; }} />);
     ` }, bundle: true, format: 'iife', platform: 'browser', jsx: 'automatic', outfile: lostAckFixturePath, define: { 'process.env.NODE_ENV': '"production"' } });
@@ -287,7 +292,8 @@ test('gotzji new file retries one real admission after a lost acknowledgement', 
     const acceptedJobId = await page.locator('#lost-ack-fixture').getAttribute('data-admitted-job-id');
     expect(acceptedJobId).toMatch(/^[a-f0-9]{64}$/u);
     await lostAck.getByRole('button', { name: 'บันทึกไฟล์', exact: true }).click();
-    await expect(page.locator('#lost-ack-fixture')).toHaveAttribute('data-observed-job-id', acceptedJobId!);
+    await waitForOwnedSubmission(page, 'lost-ack-fixture');
+    expect(await page.locator('#lost-ack-fixture').getAttribute('data-observed-job-id')).toBe(acceptedJobId);
     await page.evaluate(() => { document.getElementById('lost-ack-fixture')!.remove(); document.getElementById('root')!.hidden = false; });
     await page.getByRole('button', { name: 'รีเฟรช', exact: true }).click();
     await page.getByRole('button', { name: 'ประวัติงาน', exact: true }).click();
@@ -331,6 +337,19 @@ test('gotzji Git status, selected diff and history preserve the source index', a
     await page.getByRole('button', { name: 'อ่านประวัติ Git', exact: true }).click();
     await expect(page.getByText('Synthetic UI Git proof', { exact: true })).toBeVisible();
     await page.screenshot({ path: path.join(desktopRoot, '..', '..', '.local-artifacts', 'parity-c2-git.png') });
+    // Prove the 10,020-object case in the separately spawned real Core, through Desktop IPC.
+    const objects = Array.from({ length: 10020 }, (_, index) => {
+      const text = `Synthetic owned Desktop object ${index}`;
+      const content = Buffer.from(`blob ${Buffer.byteLength(text)}\0${text}`);
+      const hash = createHash('sha1').update(content).digest('hex');
+      return { path: path.join(projectFilesRoot!, '.git', 'objects', hash.slice(0, 2), hash.slice(2)), content: deflateSync(content) };
+    });
+    await Promise.all([...new Set(objects.map((entry) => path.dirname(entry.path)))].map((directory) => mkdir(directory, { recursive: true })));
+    for (let offset = 0; offset < objects.length; offset += 64) await Promise.all(objects.slice(offset, offset + 64).map((entry) => writeFile(entry.path, entry.content)));
+    const started = performance.now();
+    const result = await page.evaluate(() => window.gotzji.request({ method: 'readProjectGit', input: { projectId: 'files-panel', view: 'status' } }));
+    expect(result).toMatchObject({ view: 'status', truncated: false, entries: expect.arrayContaining([expect.objectContaining({ path: 'welcome.txt', kind: 'modified' })]) });
+    console.info(JSON.stringify({ fixture: 'desktop-10020-objects', phase: 'read-completed', elapsedMs: Math.round(performance.now() - started) }));
     expect(await readFile(path.join(projectFilesRoot!, '.git', 'index'))).toEqual(indexBefore);
 
 });
@@ -572,6 +591,7 @@ test('gotzji guided project command prepares without effects and starts one revi
   expect(await page.evaluate(async () => window.gotzji.request({ method: 'listJobs', input: {} }))).toEqual([]);
   await commands.screenshot({ path: path.join(desktopRoot, '..', '..', '.local-artifacts', 'parity-c2c-command-review.png') });
   await commands.getByRole('button', { name: 'เริ่มคำสั่งนี้', exact: true }).click();
+  await expect(page.locator('.gotzji-command-review [role="status"]')).toHaveText('ยืนยันรับงานนี้แล้ว', { timeout: testInfo.timeout });
   const heading = page.getByRole('heading', { name: /^งาน [a-f0-9]{64}$/u });
   await expect(heading).toBeVisible();
   await expect(page.getByText('เสร็จแล้ว', { exact: true })).toBeVisible({ timeout: testInfo.timeout });
@@ -598,14 +618,18 @@ test('gotzji command lost acknowledgement survives whole-app page navigation', a
     document.getElementById('root').hidden = true;
     const root = document.createElement('div'); root.id = 'command-app-proof'; document.body.append(root);
     let discard = true;
-    const request = async (method, input) => {
-      const value = await window.gotzji.request({ method, input });
-      if (method === 'submit' && discard) {
-        if (!value || typeof value.jobId !== 'string') throw new Error('Expected actual admitted command');
-        root.dataset.admittedJobId = value.jobId; discard = false;
-        throw new Error('LOST_ACK_AFTER_REAL_COMMAND_ADMISSION');
-      }
-      return value;
+    const request = (method, input) => {
+      const pending = (async () => {
+        const value = await window.gotzji.request({ method, input });
+        if (method === 'submit' && discard) {
+          if (!value || typeof value.jobId !== 'string') throw new Error('Expected actual admitted command');
+          root.dataset.admittedJobId = value.jobId; discard = false;
+          throw new Error('LOST_ACK_AFTER_REAL_COMMAND_ADMISSION');
+        }
+        return value;
+      })();
+      if (method === 'submit') Reflect.set(root, 'ownedSubmitPromise', pending);
+      return pending;
     };
     createRoot(root, { identifierPrefix: 'command-navigation-' }).render(<StrictMode><GotzjiApp requestPort={request} /></StrictMode>);
   ` }, bundle: true, format: 'iife', platform: 'browser', jsx: 'automatic', loader: { '.css': 'empty', '.webp': 'dataurl' }, outfile: fixturePath, define: { 'process.env.NODE_ENV': '"production"' } });
@@ -625,6 +649,7 @@ test('gotzji command lost acknowledgement survives whole-app page navigation', a
   await appView.getByRole('button', { name: 'เครื่องมือ', exact: true }).click();
   await expect(commands.getByRole('heading', { name: 'ตรวจคำสั่งก่อนเริ่ม', exact: true })).toBeVisible();
   await commands.getByRole('button', { name: 'เริ่มคำสั่งนี้', exact: true }).click();
+  await waitForOwnedSubmission(page, 'command-app-proof');
   await expect(appView.getByRole('heading', { name: `งาน ${admitted}`, exact: true })).toBeVisible();
   await expect(appView.getByText('เสร็จแล้ว', { exact: true })).toBeVisible({ timeout: testInfo.timeout });
   expect(await readFile(path.join(root, 'started.txt'), 'utf8')).toBe('one');
@@ -636,3 +661,12 @@ test('gotzji command lost acknowledgement survives whole-app page navigation', a
   await expect(commands.getByRole('heading', { name: 'ตรวจคำสั่งก่อนเริ่ม', exact: true })).toHaveCount(0);
   expect(await page.evaluate(async () => (await window.gotzji.request({ method: 'listJobs', input: {} }) as unknown[]).length)).toBe(1);
 });
+
+async function waitForOwnedSubmission(page: Page, elementId: 'lost-ack-fixture' | 'command-app-proof'): Promise<void> {
+  await page.evaluate(async (id) => {
+    const root = document.getElementById(id);
+    const pending = root ? Reflect.get(root, 'ownedSubmitPromise') as unknown : undefined;
+    if (!pending || typeof pending !== 'object' || typeof Reflect.get(pending, 'then') !== 'function') throw new Error('Owned submit promise was not captured');
+    await pending;
+  }, elementId);
+}

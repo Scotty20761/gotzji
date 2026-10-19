@@ -34,7 +34,7 @@
     "bundle:host": "node scripts/bundle-host.mjs",
     "pretest": "tsc --outDir dist && node scripts/copy-worker.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run --fileParallelism=false",
+    "test": "node scripts/run-tests.mjs",
     "qualify": "node dist/qualification.js",
     "qualify:grace": "node dist/grace-qualification.js"
   },

@@ -49,18 +49,24 @@ describe('private product enrollment storage', () => {
   it('retains a redacted startup-exit incident and excludes inherited Node hooks from the daemon', async () => {
     const directory = canonicalTemporaryDirectorySync('gotzji-startup-failure-');
     const entry = path.join(directory, 'intentional-startup-failure.mjs');
-    writeFileSync(entry, "import{readFileSync}from'node:fs';import path from'node:path';const c=JSON.parse(JSON.parse(readFileSync(path.join(process.argv[2],'product-host.sealed.json'),'utf8')).payload);process.stderr.write('password='+c.daemonSecret+'\\nuri=http://127.0.0.1/mcp/'+c.mcpPathSecret+'\\ncredential='+c.credential+'\\nNODE_OPTIONS='+(process.env.NODE_OPTIONS??'absent')+'\\n');process.exit(1);");
+    writeFileSync(entry, "import{readFileSync}from'node:fs';import path from'node:path';const c=JSON.parse(JSON.parse(readFileSync(path.join(process.argv[2],'product-host.sealed.json'),'utf8')).payload);process.stderr.write('password='+c.daemonSecret+'\\nuri=http://127.0.0.1/mcp/'+c.mcpPathSecret+'\\ncredential='+c.credential+'\\nNODE_OPTIONS='+(process.env.NODE_OPTIONS??'absent')+'\\nUV_THREADPOOL_SIZE='+(process.env.UV_THREADPOOL_SIZE??'absent')+'\\n');process.exit(1);");
     const protector = { protect: async (value: string): Promise<string> => value, unprotect: async (value: string): Promise<string> => value };
     const original = process.env.NODE_OPTIONS; process.env.NODE_OPTIONS = '--require deliberately-absent-hook.cjs';
+    const originalPool = process.env.UV_THREADPOOL_SIZE; process.env.UV_THREADPOOL_SIZE = '7';
     try {
       await expect(ensureGotzjiProductHost({ directory, dataPath: directory, resourcesPath: directory, packaged: false, executable: process.execPath, hostEntryPath: entry, secretProtector: protector, startupBudgetMs: 2000 })).rejects.toMatchObject({ code: 'PRODUCT_HOST_STARTUP_EXITED', layer: 'host-startup' });
-    } finally { if (original === undefined) delete process.env.NODE_OPTIONS; else process.env.NODE_OPTIONS = original; }
+      expect(process.env.UV_THREADPOOL_SIZE).toBe('7');
+    } finally {
+      if (original === undefined) delete process.env.NODE_OPTIONS; else process.env.NODE_OPTIONS = original;
+      if (originalPool === undefined) delete process.env.UV_THREADPOOL_SIZE; else process.env.UV_THREADPOOL_SIZE = originalPool;
+    }
     const config = await readProductConfiguration(directory, protector);
     const incidentFile = readdirSync(directory).find((name) => /^product-startup-.+\.json$/u.test(name));
     expect(incidentFile).toBeDefined();
     const incident = readFileSync(path.join(directory, incidentFile!), 'utf8');
     expect(incident).not.toContain(config.daemonSecret); expect(incident).not.toContain(config.mcpPathSecret); expect(incident).not.toContain(config.credential);
     expect(incident).toContain('NODE_OPTIONS=absent'); expect(incident).toContain('REDACTED');
+    expect(incident).toContain('UV_THREADPOOL_SIZE=16');
   });
   it('re-pins shipped provider scripts on every start and drops only a script present with other bytes (incident I6)', () => {
     const directory = canonicalTemporaryDirectorySync('gotzji-provider-pins-');

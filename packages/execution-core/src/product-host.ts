@@ -4,6 +4,7 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSy
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { CoreError } from './types.js';
+import { PRODUCT_IO_THREADPOOL_SIZE } from './product-runtime-settings.mjs';
 import { ensureProductControlDocuments } from './product-control-policy.js';
 import { childEnvironment, sanitizedStream } from './product-security.mjs';
 import { processIdentities, sameProcessIdentity, windowsPowerShellSession, type ProcessIdentity, type WindowsPowerShellSession } from './process-identity.mjs';
@@ -281,7 +282,7 @@ async function bootGotzjiProductHost(options: ProductHostOptions, directory: str
     for (const secret of [config.daemonSecret, config.mcpPathSecret, config.credential].filter((value): value is string => !!value)) line = line.replaceAll(secret, '[REDACTED]');
     stderr = (stderr + line).slice(-16384);
   });
-  const child = spawn(process.execPath, [entry, directory, ...(options.packaged ? ['--packaged'] : []), ...(options.testOnlyInsecureSecretProtector ? ['--test-only-insecure-secret-protector'] : [])], { detached: true, windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'], env: { ...childEnvironment(), ELECTRON_RUN_AS_NODE: '1' } });
+  const child = spawn(process.execPath, [entry, directory, ...(options.packaged ? ['--packaged'] : []), ...(options.testOnlyInsecureSecretProtector ? ['--test-only-insecure-secret-protector'] : [])], { detached: true, windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'], env: { ...childEnvironment(), ELECTRON_RUN_AS_NODE: '1', UV_THREADPOOL_SIZE: PRODUCT_IO_THREADPOOL_SIZE } });
   child.stderr.on('data', (data: Buffer) => stream.write(data));
   child.stderr.once('end', () => { stream.end(); if (!settledReady) saveIncident('stderr-closed-before-ready'); });
   (child.stderr as typeof child.stderr & { unref?: () => void }).unref?.();

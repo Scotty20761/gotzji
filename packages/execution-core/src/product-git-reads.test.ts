@@ -228,6 +228,78 @@ describe('owner project Git reads', () => {
     expect(injected).toBe(true); expect(objectReads).toBe(0);
   }, 20000);
 
+  it('rejects a redirected ancestor even when the census-authorized pack inode is unchanged', async () => {
+    const f = await fixture(); await f.git(['repack', '-ad']);
+    const packs = path.join(f.projectRoot, '.git', 'objects', 'pack');
+    const pack = (await readdir(packs)).find((name) => name.endsWith('.pack'))!;
+    const originalBytes = await readFile(path.join(packs, pack));
+    const moved = path.join(f.root, 'state', 'original-pack-directory');
+    const native = DirectGitRunner.prototype.run; let injected = false; let objectReads = 0;
+    vi.spyOn(DirectGitRunner.prototype, 'run').mockImplementation(async function (this: DirectGitRunner, args, cwd, options): Promise<GitRunResult> {
+      if (!injected && args[0] === 'config') {
+        injected = true;
+        await rename(packs, moved);
+        await symlink(moved, packs, process.platform === 'win32' ? 'junction' : 'dir');
+      }
+      if (args.includes('--git-dir')) objectReads++;
+      return native.call(this, args, cwd, options);
+    });
+    await expect(f.core.readProjectGit(f.credential, { projectId: 'repo', view: 'log' })).rejects.toMatchObject({ code: 'GIT_REPOSITORY_CHANGED' });
+    expect(injected).toBe(true); expect(objectReads).toBe(0);
+    expect(await readFile(path.join(moved, pack))).toEqual(originalBytes);
+    expect((await readdir(path.join(f.root, 'state'))).filter((name) => name.startsWith('git-read-'))).toEqual([]);
+    expect(await f.core.list(f.credential)).toEqual([]);
+  }, 20000);
+
+  it.each([17000, 24999, 25000])('uses one snapshot allowance and rejects the exact cumulative boundary at %ims', async (finishedAt) => {
+    const f = await fixture(); const objects = path.join(f.projectRoot, '.git', 'objects');
+    const index = await readFile(path.join(f.projectRoot, '.git', 'index'));
+    let clock = 0; let copying = false; let crossed = false; let objectReads = 0;
+    const native = DirectGitRunner.prototype.run; const resolvePath = fsPromises.realpath;
+    vi.spyOn(performance, 'now').mockImplementation(() => clock);
+    vi.spyOn(DirectGitRunner.prototype, 'run').mockImplementation(async function (this: DirectGitRunner, args, cwd, options): Promise<GitRunResult> {
+      if (args.includes('--git-dir')) objectReads++;
+      const result = await native.call(this, args, cwd, options);
+      if (args[0] === 'config') { clock = 1000; copying = true; }
+      return result;
+    });
+    vi.spyOn(fsPromises, 'realpath').mockImplementation(async (selected): Promise<string> => {
+      const result = await resolvePath(selected);
+      if (copying && typeof selected === 'string' && selected.startsWith(objects + path.sep)) { crossed = true; clock = finishedAt; }
+      return result;
+    });
+    syncBuiltinESMExports();
+    const pending = f.core.readProjectGit(f.credential, { projectId: 'repo', view: 'status' });
+    if (finishedAt < 25000) await expect(pending).resolves.toMatchObject({ entries: [], truncated: false });
+    else await expect(pending).rejects.toMatchObject({ code: 'GIT_SNAPSHOT_BUDGET' });
+    expect(crossed).toBe(true); expect(objectReads).toBe(finishedAt < 25000 ? 1 : 0);
+    expect(await readFile(path.join(f.projectRoot, '.git', 'index'))).toEqual(index);
+    expect((await readdir(path.join(f.root, 'state'))).filter((name) => name.startsWith('git-read-'))).toEqual([]);
+    expect(await f.core.list(f.credential)).toEqual([]);
+  }, 20000);
+
+  it('charges config to the remaining snapshot allowance and refuses expiry before object copying', async () => {
+    const f = await fixture(); let clock = 0; let configTimeout: number | undefined; let objectReads = 0;
+    const native = DirectGitRunner.prototype.run; const write = fsPromises.writeFile;
+    vi.spyOn(performance, 'now').mockImplementation(() => clock);
+    vi.spyOn(fsPromises, 'writeFile').mockImplementation(async (target, data, options): Promise<void> => {
+      await write(target, data, options);
+      if (typeof target === 'string' && path.basename(target) === 'source-config') clock = 21000;
+    });
+    const sourceOpens = vi.spyOn(fsPromises, 'open');
+    vi.spyOn(DirectGitRunner.prototype, 'run').mockImplementation(async function (this: DirectGitRunner, args, cwd, options): Promise<GitRunResult> {
+      if (args.includes('--git-dir')) objectReads++;
+      if (args[0] === 'config') configTimeout = options?.timeoutMs;
+      const result = await native.call(this, args, cwd, options);
+      if (args[0] === 'config') clock = 25000;
+      return result;
+    });
+    syncBuiltinESMExports();
+    await expect(f.core.readProjectGit(f.credential, { projectId: 'repo', view: 'status' })).rejects.toMatchObject({ code: 'GIT_SNAPSHOT_BUDGET' });
+    expect(configTimeout).toBe(4000); expect(sourceOpens).not.toHaveBeenCalled(); expect(objectReads).toBe(0);
+    expect((await readdir(path.join(f.root, 'state'))).filter((name) => name.startsWith('git-read-'))).toEqual([]);
+  }, 20000);
+
   it('checks the validation deadline after the final real asynchronous object lookup', async () => {
     const f = await fixture(); const objects = path.join(f.projectRoot, '.git', 'objects');
     await rm(objects, { recursive: true, force: true });

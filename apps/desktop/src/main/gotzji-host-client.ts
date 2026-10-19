@@ -126,7 +126,8 @@ export class GotzjiHostClient {
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${descriptor.token}`, ...(descriptor.buildIdentity === undefined ? {} : { 'x-gotzji-build': descriptor.buildIdentity }) },
         body: JSON.stringify({ method: hostMethod, input }),
         // A control-call timeout never cancels or resubmits an independently owned job.
-        signal: AbortSignal.timeout(hostMethod === 'supportReport' ? 60_000 : 10_000),
+        // Git has independent bounded validation/config/copy/command phases plus owned-copy cleanup.
+        signal: AbortSignal.timeout(hostMethod === 'supportReport' || hostMethod === 'readProjectGit' ? 60_000 : 10_000),
       });
     } catch {
       throw new GotzjiHostError('HOST_CONNECTION_LOST');

@@ -15,7 +15,7 @@ type Repository = { root: string; gitDirectory: string; identity: string; metada
 export type ProjectGitResult = { projectId: string; truncated: boolean } & ({ view: 'status'; entries: readonly GitStatusEntry[] } | { view: 'log'; entries: readonly GitLogEntry[]; limit: number } | { view: 'diff'; patch: string; path: string; staged: boolean });
 const invalidLayout = (): never => { throw new CoreError('GIT_LAYOUT_UNSUPPORTED', 'Use an ordinary project repository without redirected or shared Git metadata', 'projectId'); };
 
-async function repository(project: RegisteredProject, privateRoots: readonly string[]): Promise<Repository> {
+async function repository(project: RegisteredProject, privateRoots: readonly string[], deadline: number, snapshotBudget: () => number): Promise<Repository> {
   if (/^[\\/]{2}/u.test(project.rootPath)) throw new CoreError('GIT_NETWORK_ROOT_DENIED', 'Select a local project repository for this view', 'projectId');
   const root = projectTarget(project, '.', privateRoots, true);
   // Git inspects a repository as a whole. A nested private root cannot be excluded by a pathname filter.
@@ -26,8 +26,7 @@ async function repository(project: RegisteredProject, privateRoots: readonly str
   if (!info) throw new CoreError('GIT_REPOSITORY_REQUIRED', 'The selected project must contain its own .git directory', 'projectId');
   if (!info.isDirectory() || info.isSymbolicLink() || realpathSync(gitDirectory) !== gitDirectory) invalidLayout();
   const metadata: Repository['metadata'] = [];
-  const deadline = performance.now() + 10000;
-  const checkBudget = (): void => { if (performance.now() >= deadline) throw new CoreError('GIT_VALIDATION_BUDGET'); };
+  const checkBudget = (): void => { snapshotBudget(); if (performance.now() >= deadline) throw new CoreError('GIT_VALIDATION_BUDGET'); };
   const inspect = async (selected: string): Promise<BigIntStats> => {
     checkBudget();
     const [stat, resolved] = await Promise.all([lstat(selected, { bigint: true }), realpath(selected)]);
@@ -119,25 +118,39 @@ async function diffTarget(project: RegisteredProject, selected: string, privateR
 }
 
 export async function readProjectGit(project: RegisteredProject, input: ProjectGitInput, privateRoots: readonly string[], scratchRoot: string): Promise<ProjectGitResult> {
-  const selected = await repository(project, privateRoots);
+  const started = performance.now();
+  // Census retains its own 10s ceiling; all snapshot work shares the original 10s+15s allowance.
+  // Config now consumes that allowance too, rather than adding a separate 10s phase.
+  const snapshotDeadline = started + 25000;
+  const snapshotBudget = (): number => {
+    const remaining = snapshotDeadline - performance.now();
+    if (remaining <= 0) throw new CoreError('GIT_SNAPSHOT_BUDGET');
+    return Math.ceil(remaining);
+  };
+  const selected = await repository(project, privateRoots, started + 10000, snapshotBudget);
   if (input.view === 'diff') await diffTarget(project, input.path, privateRoots);
+  snapshotBudget();
   const scratch = await mkdtemp(path.join(scratchRoot, 'git-read-'));
   try {
+    snapshotBudget();
     const directory = path.join(scratch, 'repository');
-    await mkdir(path.join(directory, 'refs'), { recursive: true });
-    await mkdir(path.join(directory, 'objects', 'info'), { recursive: true });
+    await mkdir(path.join(directory, 'refs'), { recursive: true }); snapshotBudget();
+    await mkdir(path.join(directory, 'objects', 'info'), { recursive: true }); snapshotBudget();
     let copiedBytes = 0;
     for (const entry of selected.metadata) {
+      snapshotBudget();
       if (copiedBytes + entry.size > 8 * 1024 * 1024) throw new CoreError('GIT_METADATA_LIMIT');
       const bytes = projectFileBytesSync(entry.source, Math.min(8 * 1024 * 1024 - copiedBytes, entry.size + 1));
+      snapshotBudget();
       copiedBytes += bytes.length;
       const destination = entry.relative === 'config' ? path.join(scratch, 'source-config') : path.join(directory, entry.relative);
-      await mkdir(path.dirname(destination), { recursive: true });
-      await writeFile(destination, bytes);
+      await mkdir(path.dirname(destination), { recursive: true }); snapshotBudget();
+      await writeFile(destination, bytes); snapshotBudget();
     }
     const env = { ...childEnvironment(), GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: gitNull, GIT_OPTIONAL_LOCKS: '0', GIT_NO_REPLACE_OBJECTS: '1', GIT_NO_LAZY_FETCH: '1' };
     const direct = new DirectGitRunner();
-    const settings = await direct.run(['config', '--null', '--no-includes', '--file', path.join(scratch, 'source-config'), '--get-regexp', '^(core\\.(repositoryformatversion|filemode|ignorecase|symlinks)|extensions\\..*)$'], scratch, { env, timeoutMs: 10000 });
+    const settings = await direct.run(['config', '--null', '--no-includes', '--file', path.join(scratch, 'source-config'), '--get-regexp', '^(core\\.(repositoryformatversion|filemode|ignorecase|symlinks)|extensions\\..*)$'], scratch, { env, timeoutMs: Math.min(10000, snapshotBudget()) });
+    snapshotBudget();
     if (settings.exitCode !== 0 || settings.truncated) throw new CoreError('GIT_CONFIG_UNAVAILABLE');
     const config = new Map<string, string>();
     for (const item of settings.stdout.split('\0').filter(Boolean)) {
@@ -147,14 +160,14 @@ export async function readProjectGit(project: RegisteredProject, input: ProjectG
       config.set(key, value);
     }
     const safeConfig = `[core]\nrepositoryformatversion = ${config.get('core.repositoryformatversion') ?? '0'}\nbare = false\nfilemode = ${config.get('core.filemode') ?? 'false'}\nignorecase = ${config.get('core.ignorecase') ?? 'false'}\nsymlinks = ${config.get('core.symlinks') ?? 'false'}\n${config.has('extensions.objectformat') ? `[extensions]\nobjectformat = ${config.get('extensions.objectformat')}\n` : ''}`;
-    await writeFile(path.join(directory, 'config'), safeConfig);
+    await writeFile(path.join(directory, 'config'), safeConfig); snapshotBudget();
     let objectBytes = 0;
-    const copyDeadline = performance.now() + 15000;
     const copyBudget = (bytes: number): void => {
-      if (performance.now() >= copyDeadline) throw new CoreError('GIT_OBJECT_COPY_BUDGET');
+      snapshotBudget();
       objectBytes += bytes;
       if (objectBytes > 512 * 1024 * 1024) throw new CoreError('GIT_OBJECT_BYTES_LIMIT');
     };
+    copyBudget(0);
     const objectDirectories = [...new Set(selected.objects.map((entry) => path.dirname(path.join(directory, 'objects', entry.relative))))];
     for (let offset = 0; offset < objectDirectories.length; offset += 32) {
       await Promise.all(objectDirectories.slice(offset, offset + 32).map((destination) => mkdir(destination, { recursive: true })));
@@ -178,6 +191,7 @@ export async function readProjectGit(project: RegisteredProject, input: ProjectG
         await mkdir(path.dirname(destination), { recursive: true }); await writeFile(destination, file.content);
       } catch (error) { if (!(error instanceof CoreError) || error.code !== 'FILE_NOT_FOUND') throw error; }
     }
+    snapshotBudget();
     const prefix = ['--no-pager', '--no-optional-locks', '--literal-pathspecs', '--git-dir', directory, '--work-tree', worktree, '-c', 'core.fsmonitor=false', '-c', 'core.untrackedCache=false', '-c', 'status.relativePaths=false', '-c', `core.attributesFile=${gitNull}`];
     const runner: GitRunner = { run: async (args, _cwd, options) => {
       const safeArgs = args[0] === 'diff' ? [...args.slice(0, 1), '--no-textconv', '--ignore-submodules=all', ...args.slice(1)] : args[0] === 'status' ? [...args, '--ignore-submodules=all'] : [...args];
