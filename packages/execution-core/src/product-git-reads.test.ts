@@ -143,18 +143,24 @@ describe('owner project Git reads', () => {
   }, 20000);
 
   it('accepts a large ordinary object store without counting unrelated metadata as copied inputs', async () => {
-    const f = await fixture();
+    const started = performance.now();
+    const phase = (name: string): void => { console.info(JSON.stringify({ fixture: 'ordinary-10020-objects', phase: name, elapsedMs: Math.round(performance.now() - started) })); };
+    const f = await fixture(); phase('fixture-ready');
     const entries = Array.from({ length: 10020 }, (_, index) => {
       const text = `Synthetic owned object ${index}`;
       const content = Buffer.from(`blob ${Buffer.byteLength(text)}\0${text}`);
       const hash = createHash('sha1').update(content).digest('hex');
       return { path: path.join(f.projectRoot, '.git', 'objects', hash.slice(0, 2), hash.slice(2)), content: deflateSync(content) };
     });
+    phase('objects-compressed');
     await Promise.all([...new Set(entries.map((entry) => path.dirname(entry.path)))].map((directory) => mkdir(directory, { recursive: true })));
     for (let offset = 0; offset < entries.length; offset += 64) await Promise.all(entries.slice(offset, offset + 64).map((entry) => writeFile(entry.path, entry.content)));
+    phase('objects-materialized');
     await mkdir(path.join(f.projectRoot, '.git', 'logs', 'unrelated'), { recursive: true });
     await symlink(path.join(f.root, 'state'), path.join(f.projectRoot, '.git', 'logs', 'unrelated', 'not-consumed'), process.platform === 'win32' ? 'junction' : 'dir');
+    phase('read-start');
     expect(await f.core.readProjectGit(f.credential, { projectId: 'repo', view: 'status' })).toMatchObject({ entries: [], truncated: false });
+    phase('read-completed');
   }, 30000);
 
   it('rejects hard-linked loose objects, packs, indexes, commit graphs and redirected object directories', async () => {

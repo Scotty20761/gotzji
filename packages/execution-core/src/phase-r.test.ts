@@ -88,14 +88,15 @@ it('a changed authorization record cannot launch the requested local effect',asy
  const after=new DatabaseSync(path.join(f.root,'core','core.sqlite'), { timeout: 5000 });try{expect(after.prepare('SELECT COUNT(*) n FROM gotzji_workers').get()?.n).toBe(0);}finally{after.close();}
 });
 it('cancellation stops the owned validation command and preserves the cancelled job',async()=>{
- const f=await codeFixture(3000);const p=f.core.prepareCodeChange(f.credential,'cancel-code');const job=await f.core.submit(f.credential,p.preparationId);const binding=f.core.select(f.credential,job.jobId);
- await f.core.resume(f.credential,binding);
- await waitFor(async()=>!!(await f.core.get(f.credential,binding)).progress);
+ const started=performance.now();const phase=(name:string):void=>{console.info(JSON.stringify({fixture:'phase-r-cancel',phase:name,elapsedMs:Math.round(performance.now()-started)}));};
+ const f=await codeFixture(3000);phase('fixture-ready');const p=f.core.prepareCodeChange(f.credential,'cancel-code');const job=await f.core.submit(f.credential,p.preparationId);const binding=f.core.select(f.credential,job.jobId);
+ await f.core.resume(f.credential,binding);phase('resumed');
+ await waitFor(async()=>!!(await f.core.get(f.credential,binding)).progress);phase('progress-observed');
  const db=new DatabaseSync(path.join(f.root,'core','core.sqlite'), { timeout: 5000 });let directory='';try{directory=String(db.prepare('SELECT directory FROM gotzji_workers WHERE job_id=?').get(job.jobId)?.directory);}finally{db.close();}
- expect((await f.core.cancel(f.credential,binding)).status).toBe('cancelled');
+ phase('cancel-start');expect((await f.core.cancel(f.credential,binding)).status).toBe('cancelled');phase('cancel-returned');
  const stopped=JSON.parse(JSON.parse(await readFile(path.join(directory,'stopped.json'),'utf8')).body) as {descendants:number[]};
  expect(stopped.descendants.every((pid)=>alive(pid)===false)).toBe(true);
- expect((await f.core.get(f.credential,binding)).status).toBe('cancelled');
+ expect((await f.core.get(f.credential,binding)).status).toBe('cancelled');phase('absence-verified');
 },10000*BUDGET);
 
 it('rejects native gate evidence when the observed run is rebound to another goal',async()=>{
