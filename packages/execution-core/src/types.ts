@@ -67,6 +67,7 @@ export interface BasicProductOperationInput {
 }
 export type ProductOperationInput = BasicProductOperationInput | import('./product-native.js').ProductNativeInput | import('./product-browser.js').ProductBrowserInput | import('./product-library.js').ProductLibraryInput;
 export interface ProjectReadInput { readonly projectId: string; readonly path: string }
+export type ProjectGitInput = { readonly projectId: string; readonly view: 'status' } | { readonly projectId: string; readonly view: 'log' } | { readonly projectId: string; readonly view: 'diff'; readonly path: string; readonly staged?: boolean };
 export interface ProjectFileResult { readonly content: string; readonly sha256: string }
 export interface ProjectListInput { readonly projectId: string; readonly path?: string }
 export interface ProjectReadCoverage { readonly truncated: boolean; readonly incompleteReasons: readonly string[]; readonly skippedCount: number }

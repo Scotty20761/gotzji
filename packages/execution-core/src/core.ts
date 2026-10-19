@@ -21,6 +21,8 @@ import { PRODUCT_NATIVE_OPERATIONS, prepareProductNativeOperation, type ProductN
 import { libraryRoute, libraryCatalog, assertHostDirectLibraryWorkflow, prepareLibraryOperation, verifiedLibraryNavigationEvolution, type ProductLibraryInput, type TrustedLibraryOptions } from './product-library.js';
 import type { LibraryRouteKind, LibraryDeliveryScope } from './library-workflow-contract.js';
 import { readProjectFile, listProjectFiles, searchProjectFiles } from './product-file-reads.js';
+import { readProjectGit } from './product-git-reads.js';
+import type { ProjectGitInput } from './types.js';
 import type { ProjectReadInput, ProjectFileResult, ProjectListInput, ProjectListResult, ProjectSearchInput, ProjectSearchResult } from './types.js';
 import { PRODUCT_BROWSER_OPERATIONS, prepareProductBrowserOperation, type ProductBrowserInput, type ProductBrowserOperationName, type TrustedProductBrowserOptions } from './product-browser.js';
 
@@ -363,6 +365,13 @@ export class ExecutionCore {
     if (!input || !Object.hasOwn(input, 'projectId') || !Object.hasOwn(input, 'query') || Object.keys(input).some((key) => !['projectId', 'path', 'query'].includes(key))) throw new CoreError('PRODUCT_SCHEMA_INVALID', 'Select a project, a literal query and an optional directory');
     const project = this.readProject(credential, input.projectId);
     const result = await searchProjectFiles(project, input.path ?? '.', input.query, this.privateRuntimeRoots());
+    this.assertReadProjectCurrent(credential, project);
+    return result;
+  }
+  public async readProjectGit(credential: string, input: ProjectGitInput) {
+    if (!input || !['status', 'diff', 'log'].includes(input.view) || !Object.hasOwn(input, 'projectId') || Object.keys(input).some((key) => !(input.view === 'diff' ? ['projectId', 'view', 'path', 'staged'] : ['projectId', 'view']).includes(key)) || input.view === 'diff' && (typeof input.path !== 'string' || input.staged !== undefined && typeof input.staged !== 'boolean')) throw new CoreError('PRODUCT_SCHEMA_INVALID');
+    const project = this.readProject(credential, input.projectId);
+    const result = await readProjectGit(project, input, this.privateRuntimeRoots(), this.#root);
     this.assertReadProjectCurrent(credential, project);
     return result;
   }

@@ -6,6 +6,7 @@ import { assertHostDirectLibraryWorkflow, libraryCatalog } from './product-libra
 
 export type ProductRpc = (method: string, input: Record<string, unknown>, surface: 'app' | 'mcp', expectedBuild?: string) => Promise<unknown>;
 export const PRODUCT_MCP_TOOLS = [
+  { name: 'gotzji_git', method: 'readProjectGit', readOnly: true, description: 'Read status, recent history or one selected-file diff in an enrolled ordinary project repository. Uses controlled read configuration with no repository programs, Git mutation or network. Refuses linked/shared metadata.' },
   { name: 'gotzji_health', method: 'health', readOnly: true, description: 'Inspect the gotzji host control availability. This does not start a model turn.' },
   { name: 'gotzji_projects', method: 'listProjects', readOnly: true, description: 'List projects already enrolled by the owner in the gotzji app.' },
   { name: 'gotzji_tools', method: 'catalog', readOnly: true, description: 'List typed operations and provider readiness.' },
@@ -23,7 +24,7 @@ export const PRODUCT_MCP_TOOLS = [
   { name: 'gotzji_resume', method: 'resume', readOnly: false, description: 'Inspect and resume a selected admitted job without submitting it again.' },
   { name: 'gotzji_cancel', method: 'cancel', readOnly: false, description: 'Cancel only the explicitly selected owner job and inspect its termination result.' },
 ] as const;
-const ALLOWED_APP_METHODS = new Set(['health', 'registerProject', 'registerRecipe', 'bindProjectRecipe', 'supportReport', 'listProjects', 'catalog', 'readProjectFile', 'listProjectFiles', 'searchProjectFiles', 'prepareOperation', 'submit', 'list', 'inspectQueue', 'reprioritize', 'status', 'logs', 'result', 'cancel', 'settleJob', 'resume', 'connectionStatus', 'configureConnection', 'startConnection', 'stopConnection', 'startBrowserSession', 'browserSession', 'stopBrowserSession', 'authorizeLibraryDelivery', 'enrollLibraryChannel', 'libraryChannelStatus', 'configureLibraryConnection', 'startLibraryConnection', 'stopLibraryConnection', 'testOnlyE2eShutdown']);
+const ALLOWED_APP_METHODS = new Set(['readProjectGit', 'health', 'registerProject', 'registerRecipe', 'bindProjectRecipe', 'supportReport', 'listProjects', 'catalog', 'readProjectFile', 'listProjectFiles', 'searchProjectFiles', 'prepareOperation', 'submit', 'list', 'inspectQueue', 'reprioritize', 'status', 'logs', 'result', 'cancel', 'settleJob', 'resume', 'connectionStatus', 'configureConnection', 'startConnection', 'stopConnection', 'startBrowserSession', 'browserSession', 'stopBrowserSession', 'authorizeLibraryDelivery', 'enrollLibraryChannel', 'libraryChannelStatus', 'configureLibraryConnection', 'startLibraryConnection', 'stopLibraryConnection', 'testOnlyE2eShutdown']);
 type Schema = Record<string, unknown>;
 const text = { type: 'string', minLength: 1 };
 const priority = { type: 'integer', minimum: 0, maximum: 3 };
@@ -43,6 +44,10 @@ const fields: Record<string, Schema> = {
 };
 /** One advertised schema is enforced on both app and MCP before core dispatch. */
 export function productControlSchema(method: string): Schema {
+  if (method === 'readProjectGit') {
+    const projectId = { ...text, pattern: '^[a-zA-Z0-9_-]{1,64}$' };
+    return { oneOf: [objectSchema({ projectId, view: { type: 'string', enum: ['status', 'log'] } }, ['projectId', 'view']), objectSchema({ projectId, view: { type: 'string', const: 'diff' }, path: { ...text, maxLength: 4096 }, staged: { type: 'boolean' } }, ['projectId', 'view', 'path'])] };
+  }
   if (['readProjectFile', 'listProjectFiles', 'searchProjectFiles'].includes(method)) {
     return objectSchema({ projectId: { ...text, pattern: '^[a-zA-Z0-9_-]{1,64}$' }, path: { ...text, maxLength: 4096 }, ...(method === 'searchProjectFiles' ? { query: { ...text, maxLength: 1024, pattern: '^[^\\r\\n]+$' } } : {}) }, ['projectId', ...(method === 'readProjectFile' ? ['path'] : method === 'searchProjectFiles' ? ['query'] : [])]);
   }

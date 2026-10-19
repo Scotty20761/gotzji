@@ -23,6 +23,7 @@
     "@lnwjud/audit": "workspace:*",
     "@lnwjud/application": "workspace:*",
     "@lnwjud/domain": "workspace:*",
+    "@lnwjud/git": "workspace:*",
     "@lnwjud/mcp-server": "workspace:*",
     "@lnwjud/storage": "workspace:*",
     "@lnwjud/workspace": "workspace:*",

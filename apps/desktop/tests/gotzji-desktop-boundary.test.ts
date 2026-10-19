@@ -11,6 +11,12 @@ afterEach(async () => {
 });
 
 describe('gotzji desktop governed boundary', () => {
+  it('accepts only typed project Git views and denies raw arguments or caller identity', () => {
+    const input = { projectId: 'selected-project', view: 'diff', path: 'note.txt', staged: true };
+    expect(parseGotzjiRequest({ method: 'readProjectGit', input })).toEqual({ method: 'readProjectGit', input });
+    for (const extra of [{ args: ['push'] }, { view: 'push' }, { staged: 'yes' }]) expect(() => parseGotzjiRequest({ method: 'readProjectGit', input: { ...input, ...extra } })).toThrow('INVALID_GOTZJI_REQUEST');
+    expect(() => parseGotzjiRequest({ method: 'readProjectGit', input: { ...input, ownerId: 'spoofed' } })).toThrow('CALLER_AUTHORITY_DENIED');
+  });
   it('allows project-scoped read tools through the product boundary without renderer authority', () => {
     for (const method of ['readProjectFile', 'listProjectFiles', 'searchProjectFiles']) {
       const input = { projectId: 'selected-project', path: 'notes.txt', ...(method === 'searchProjectFiles' ? { query: 'needle' } : {}) };

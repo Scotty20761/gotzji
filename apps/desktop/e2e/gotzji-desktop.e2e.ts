@@ -1,5 +1,7 @@
 import { mkdtemp, readFile, realpath, readdir, rm, writeFile } from 'node:fs/promises';
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -7,6 +9,7 @@ import { build } from 'esbuild';
 import { _electron, expect, test, type ElectronApplication } from '@playwright/test';
 import { UNPACKAGED_E2E_PROCESS_BIRTH } from '../../../packages/execution-core/src/process-identity.mjs';
 import { alive } from '../../../packages/execution-core/src/managed-worker.js';
+import { childEnvironment } from '../../../packages/execution-core/src/product-security.mjs';
 import { electronExecutablePath, terminateProcessTree } from './electron-runtime.js';
 
 const desktopRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -24,6 +27,7 @@ test('gotzji production entry exposes governed controls and denies inherited wor
   let projectFilesRoot: string | undefined;
   let lostAckFixturePath: string | undefined;
   let hostWasReady = false;
+  const failures: unknown[] = [];
   const expectedHostExecutable = await realpath(electronExecutablePath(desktopRoot));
   try {
     app = await _electron.launch({
@@ -159,27 +163,50 @@ test('gotzji production entry exposes governed controls and denies inherited wor
     await expect(page.locator('pre:visible')).toContainText('"path": "new-file.txt"');
     await expect(page.locator('pre:visible')).toContainText('"state": "completed"');
 
+    const git = (args: string[]): Promise<{ stdout: string; stderr: string }> => promisify(execFile)('git', ['-c', 'core.hooksPath=', '-c', 'commit.gpgSign=false', ...args], {
+      cwd: projectFilesRoot!, windowsHide: true,
+      env: { ...childEnvironment(), GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: process.platform === 'win32' ? 'NUL' : '/dev/null', GIT_TEMPLATE_DIR: '', GIT_AUTHOR_NAME: 'Synthetic Owner', GIT_AUTHOR_EMAIL: 'owner@example.invalid', GIT_COMMITTER_NAME: 'Synthetic Owner', GIT_COMMITTER_EMAIL: 'owner@example.invalid' },
+    });
+    await git(['init']); await git(['add', 'welcome.txt']); await git(['commit', '-m', 'Synthetic UI Git proof']);
+    const indexBefore = await readFile(path.join(projectFilesRoot!, '.git', 'index'));
+    await writeFile(path.join(projectFilesRoot!, 'welcome.txt'), 'Git UI change\n');
+    await page.getByRole('button', { name: 'โครงการ', exact: true }).click();
+    await page.getByRole('button', { name: /^Project files fixture ·/ }).click();
+    await page.getByRole('button', { name: 'Git', exact: true }).click();
+    await page.getByRole('button', { name: 'อ่านสถานะ Git', exact: true }).click();
+    await page.getByRole('button', { name: 'welcome.txt', exact: true }).click();
+    await page.getByRole('button', { name: 'ดูความต่างของไฟล์', exact: true }).click();
+    await expect(page.getByLabel('ความต่างของไฟล์', { exact: true })).toContainText('+Git UI change');
+    await page.getByRole('button', { name: 'อ่านประวัติ Git', exact: true }).click();
+    await expect(page.getByText('Synthetic UI Git proof', { exact: true })).toBeVisible();
+    expect(await readFile(path.join(projectFilesRoot!, '.git', 'index'))).toEqual(indexBefore);
 
-  } finally {
-    try {
-      const selfStopped = await stopOwnedTestHost(dataRoot, expectedHostExecutable);
-      if (hostWasReady) expect(selfStopped).toBe(true);
+  } catch (error) { failures.push(error); }
+  try {
+    const selfStopped = await stopOwnedTestHost(dataRoot, expectedHostExecutable);
+    if (hostWasReady) expect(selfStopped).toBe(true);
+  } catch (error) { failures.push(error); }
+  const closeResult = await Promise.allSettled([(async (): Promise<void> => {
+    if (app) {
+      const ownedAppProcess = app.process();
+      const errors: unknown[] = [];
+      try { await app.close(); } catch (error) { errors.push(error); }
+      try { await terminateProcessTree(ownedAppProcess); } catch (error) { errors.push(error); }
+      if (errors.length) throw new AggregateError(errors, 'Owned Electron close failed');
     }
-    finally {
-      if (app) {
-        const ownedAppProcess = app.process();
-        try { await app.close(); }
-        finally { await terminateProcessTree(ownedAppProcess); }
-      }
-      await expect.poll(async () => {
-        try { await rm(dataRoot, { recursive: true, force: true }); return true; }
-        catch { return false; }
-      }, { timeout: 10_000, intervals: [50, 100, 250] }).toBe(true);
-      if (libraryProjectRoot) await rm(libraryProjectRoot, { recursive: true, force: true });
-      if (projectFilesRoot) await rm(projectFilesRoot, { recursive: true, force: true });
-      if (lostAckFixturePath) await rm(lostAckFixturePath, { force: true });
-    }
-  }
+  })()]);
+  const cleanup = await Promise.allSettled([
+    expect.poll(async () => {
+      try { await rm(dataRoot, { recursive: true, force: true }); return true; }
+      catch { return false; }
+    }, { timeout: 10_000, intervals: [50, 100, 250] }).toBe(true),
+    libraryProjectRoot ? rm(libraryProjectRoot, { recursive: true, force: true }) : undefined,
+    projectFilesRoot ? rm(projectFilesRoot, { recursive: true, force: true }) : undefined,
+    lostAckFixturePath ? rm(lostAckFixturePath, { force: true }) : undefined,
+  ]);
+  failures.push(...[...closeResult, ...cleanup].filter((item) => item.status === 'rejected').map((item) => item.reason));
+  if (failures.length) throw new AggregateError(failures, 'Governed E2E assertions or owned fixture cleanup failed');
+
 });
 
 async function stopOwnedTestHost(dataRoot: string, expectedExecutable: string): Promise<boolean> {

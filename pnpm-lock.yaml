@@ -272,6 +272,9 @@ importers:
       '@lnwjud/domain':
         specifier: workspace:*
         version: link:../domain
+      '@lnwjud/git':
+        specifier: workspace:*
+        version: link:../git
       '@lnwjud/mcp-server':
         specifier: workspace:*
         version: link:../mcp-server

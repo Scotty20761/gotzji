@@ -5,11 +5,14 @@ export interface GitRunResult {
   readonly exitCode: number;
   readonly stdout: string;
   readonly stderr: string;
+  readonly truncated?: true;
 }
 
 export interface GitRunOptions {
   readonly timeoutMs?: number;
   readonly signal?: AbortSignal;
+  /** Internal host-supplied environment; never a caller command argument. */
+  readonly env?: NodeJS.ProcessEnv;
 }
 
 export interface GitRunner {
@@ -37,7 +40,7 @@ export class DirectGitRunner implements GitRunner {
       try {
         child = spawn('git', [...args], {
           cwd,
-          env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+          env: { ...(options.env ?? process.env), GIT_TERMINAL_PROMPT: '0' },
           shell: false,
           detached: process.platform !== 'win32',
           windowsHide: true,
@@ -48,11 +51,16 @@ export class DirectGitRunner implements GitRunner {
       }
       let stdout = '';
       let stderr = '';
+      let truncated = false;
       let settled = false;
       let terminationRequested = false;
       let terminationReason = '';
       let terminationFailureReported = false;
-      const append = (current: string, chunk: Buffer): string => `${current}${chunk.toString('utf8')}`.slice(-MAX_CAPTURE_BYTES);
+      const append = (current: string, chunk: Buffer): string => {
+        const combined = `${current}${chunk.toString('utf8')}`;
+        if (Buffer.byteLength(combined) > MAX_CAPTURE_BYTES) truncated = true;
+        return combined.slice(-MAX_CAPTURE_BYTES);
+      };
       const finish = (exitCode: number, extraStderr = ''): void => {
         if (settled) return;
         settled = true;
@@ -62,7 +70,7 @@ export class DirectGitRunner implements GitRunner {
         child.stderr?.removeListener('data', captureStderr);
         child.removeListener('error', handleError);
         child.removeListener('close', handleClose);
-        resolve({ exitCode, stdout, stderr: extraStderr.length === 0 ? stderr : `${stderr}${extraStderr}` });
+        resolve({ exitCode, stdout, stderr: extraStderr.length === 0 ? stderr : `${stderr}${extraStderr}`, ...(truncated ? { truncated: true as const } : {}) });
       };
       const terminate = (reason: string): void => {
         if (settled || terminationRequested) return;

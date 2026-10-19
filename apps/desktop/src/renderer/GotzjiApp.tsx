@@ -3,6 +3,7 @@ import type { GotzjiHostStatus, GotzjiMethod } from '@lnwjud/ipc-contracts';
 import './gotzji.css';
 import gracePortrait from './assets/grace.webp';
 import { GotzjiProjectFiles } from './GotzjiProjectFiles.js';
+import { GotzjiGitPanel } from './GotzjiGitPanel.js';
 import { GotzjiToolReference } from './GotzjiToolReference.js';
 import { buildNativeFormInput, nativeFormFields } from './gotzji-native-form.js';
 import { EMPTY_RECIPE_FORM, recipeRequest, recipeReviewLines, type RecipeForm } from './gotzji-recipe-form.js';
@@ -227,7 +228,7 @@ export function GotzjiApp(): ReactElement {
         {workflows.length === 0 ? <><p>ยังไม่มีเวิร์กโฟลว์ที่พร้อมใช้งานสำหรับโครงการที่เลือก</p><button onClick={() => setPage('projects')}>เลือกโครงการ</button></> : workflows.map((workflow) => <article key={`${workflow.workflowId}:${workflow.workflowVersion}`}><h4>{String(workflow.workflowId)}</h4><p>{String(workflow.description)}</p><button onClick={() => { setOperation(`library:${workflow.workflowId}:${workflow.workflowVersion}`); setPage('tools'); }}>เปิดรายละเอียดและเตรียมงาน</button></article>)}
       </section>}
       {page === 'settings' && <><GotzjiConnectionPanel disabled={host?.state !== 'ready'} /><GotzjiStartupPanel /></>}
-      {page === 'git' && <section><h3>Git ของโครงการ</h3><p>คำสั่ง Git ใช้คำสั่งที่เจ้าของตรวจและผูกกับโครงการไว้ ผลและบันทึกอยู่ในงานเดียวกัน</p><p>การเชื่อมเครื่องมือ Git แบบละเอียดตาม lnwjud ยังอยู่ระหว่างพัฒนา</p><button onClick={() => setPage('projects')}>จัดการโครงการและคำสั่ง</button><button onClick={() => setPage('tools')}>เปิดเครื่องมือของโครงการ</button></section>}
+      {page === 'git' && (projectId ? <GotzjiGitPanel key={projectId} projectId={projectId} disabled={busy || host?.state !== 'ready'} request={request} /> : <section><h3>เลือกโครงการก่อนดู Git</h3><button onClick={() => setPage('projects')}>เลือกโครงการ</button></section>)}
       {page === 'live' && <section><h3>บันทึกสดของงาน</h3><p>เลือกงานที่ต้องการอ่านบันทึก โดยไม่เริ่มงานซ้ำ</p><JobList jobs={jobs} disabled={busy} select={(id) => { setJobId(id); setPage('worklog'); }} /></section>}
       {page === 'doctor' && <><section><h3>ระบบควบคุมงาน</h3><p>{host?.state === 'ready' ? 'ระบบในเครื่องพร้อมทำงาน' : host?.state === 'control-only' ? 'ควบคุมงานเดิมได้ · รอตรวจความเข้ากันได้ของรุ่น' : 'ยังไม่พร้อม'}</p>{host?.errorCode && <p>{host.errorCode}</p>}<p>อัปเดตด้วยไฟล์รุ่นที่ตรวจแล้ว</p>
         <h3>เครื่องมือและโปรแกรม</h3>{catalog.map((item) => <p key={`${item.name}:${item.projectId ?? ''}:${item.workflowId ?? ''}:${item.workflowVersion ?? ''}`}>{String(item.workflowId ?? item.name)}: {String(item.state)} {String(item.reason ?? '')}</p>)}</section><section><h3>รายงานช่วยเหลือ</h3><p>บันทึกเหตุผลของงานที่ล้มหรือค้าง ใครกำลังถือโครงการหรือทรัพยากรอะไร คิวงาน และสถานะของ CAD, Office และเบราว์เซอร์ ลงไฟล์ที่คุณเลือก รายงานมีชื่อโครงการตามที่คุณตั้ง แต่ไม่มีเนื้อหาไฟล์ path หรือ URL และไม่ถูกส่งไปที่ไหน</p><button disabled={busy || !host || host.state === 'unavailable'} onClick={() => void act(async () => { const saved = await window.gotzji.exportSupportReport(); setReportExport(saved.exported ? 'บันทึกรายงานแล้ว' : 'ยกเลิกการบันทึก'); })}>บันทึกรายงานช่วยเหลือ</button>{reportExport && <p>{reportExport}</p>}</section><GotzjiConnectionPanel disabled={host?.state !== 'ready'} /><GotzjiStartupPanel /></>}
