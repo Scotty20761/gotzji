@@ -7,6 +7,8 @@ import { GotzjiGitPanel } from './GotzjiGitPanel.js';
 import { GotzjiToolReference } from './GotzjiToolReference.js';
 import { GotzjiWorkflowPrompts } from './GotzjiWorkflowPrompts.js';
 import { GotzjiJobLogs } from './GotzjiJobLogs.js';
+import { GotzjiProjectCommands } from './GotzjiProjectCommands.js';
+import { projectCommandOptions } from './gotzji-project-commands.js';
 import { buildNativeFormInput, nativeFormFields } from './gotzji-native-form.js';
 import { EMPTY_RECIPE_FORM, recipeRequest, recipeReviewLines, type RecipeForm } from './gotzji-recipe-form.js';
 import { GotzjiConnectionPanel } from './GotzjiConnectionPanel.js';
@@ -20,7 +22,7 @@ type Page = 'home' | 'projects' | 'workflows' | 'tools' | 'git' | 'worklog' | 'l
 const labels: Record<Page, string> = { home: 'ภาพรวม', projects: 'โครงการ', workflows: 'เวิร์กโฟลว์', tools: 'เครื่องมือ', git: 'Git', worklog: 'ประวัติงาน', live: 'บันทึกสด', queue: 'คิวงาน', settings: 'ตั้งค่า', doctor: 'ตรวจระบบ' };
 
 /** Product controls address explicit canonical IDs, never the inherited provider API. */
-export function GotzjiApp(): ReactElement {
+export function GotzjiApp({ requestPort }: { readonly requestPort?: (method: GotzjiMethod, input: Record<string, unknown>) => Promise<unknown> } = {}): ReactElement {
   const workflowProjectSelectId = useId();
   const [page, setPage] = useState<Page>('home');
   const [host, setHost] = useState<GotzjiHostStatus | null>(null);
@@ -56,7 +58,7 @@ export function GotzjiApp(): ReactElement {
   const [queue, setQueue] = useState<readonly Row[]>([]);
   const [jobPriority, setJobPriority] = useState('1');
 
-  const request = useCallback((method: GotzjiMethod, input: Record<string, unknown> = {}): Promise<unknown> => window.gotzji.request({ method, input }), []);
+  const request = useCallback((method: GotzjiMethod, input: Record<string, unknown> = {}): Promise<unknown> => requestPort ? requestPort(method, input) : window.gotzji.request({ method, input }), [requestPort]);
   const refresh = useCallback(async (): Promise<void> => {
     const status = await window.gotzji.hostStatus();
     setHost(status);
@@ -145,6 +147,7 @@ export function GotzjiApp(): ReactElement {
   const recipes = catalog.filter((item) => item.state === 'available' && typeof item.recipeId === 'string');
   const selectedProject = projects.find((item) => item.projectId === projectId);
   const boundRecipeIds = Array.isArray(selectedProject?.recipeIds) ? selectedProject.recipeIds as string[] : [];
+  const projectCommands = projectCommandOptions(boundRecipeIds, catalog);
 
   return <div className="gotzji-app"><div className="gotzji-titlebar">gotzji</div>
     <aside><div className="gotzji-brand"><img src={gracePortrait} alt="Grace ผู้ช่วยส่วนตัว" /><div><h1>gotzji</h1><p>สั่งงานผ่านปลั๊กอิน ChatGPT</p></div></div><nav>{(Object.keys(labels) as Page[]).map((name) =>
@@ -180,6 +183,7 @@ export function GotzjiApp(): ReactElement {
           <label>คำสั่ง<select disabled={busy} value={recipeBinding.recipeId} onChange={(event) => setRecipeBinding({ ...recipeBinding, recipeId: event.target.value })}><option value="">เลือกคำสั่ง</option>
             {recipes.map((recipe) => <option key={String(recipe.recipeId)} value={String(recipe.recipeId)}>{String(recipe.description ?? recipe.recipeId)}</option>)}</select></label>
           <button disabled={busy || !recipeBinding.projectId || !recipeBinding.recipeId} onClick={() => void act(async () => { await request('bindProjectRecipe', recipeBinding); await refresh(); })}>เพิ่มคำสั่งให้โครงการ</button></section></>}
+      {selectedProject && <GotzjiProjectCommands key={`${JSON.stringify(selectedProject)}:${JSON.stringify(projectCommands)}`} visible={page === 'tools'} projectId={projectId} projectName={String(selectedProject.displayName)} commands={projectCommands} disabled={busy || host?.state !== 'ready'} request={request} onSettings={() => setPage('projects')} onJob={(id) => { setJobId(id); setPage((current) => current === 'tools' ? 'worklog' : current); void refresh(); }} />}
       {page === 'tools' && <>{projectId ? <GotzjiProjectFiles key={projectId} projectId={projectId} request={request} disabled={busy || host?.state !== 'ready'} onJob={(id) => { setJobId(id); setPage('worklog'); void refresh(); }} /> : <section><h3>เลือกโครงการก่อนเริ่มงาน</h3><p>เปิดโครงการที่ต้องการเพื่อดูไฟล์และเครื่องมือที่ใช้ได้</p><button onClick={() => setPage('projects')}>เลือกโครงการ</button></section>}<section><h3>เครื่องมือ</h3><table><thead><tr><th>เครื่องมือ</th><th>สถานะ</th><th>รายละเอียด</th></tr></thead><tbody>{catalog.map((item) =>
         <tr key={`${item.name}:${item.projectId ?? ''}:${item.workflowId ?? ''}:${item.workflowVersion ?? ''}`}><td>{String(item.workflowId ?? item.name)}</td><td>{item.state === 'available' ? 'พร้อมใช้งาน' : 'ยังไม่พร้อม'}</td><td>{String(item.reason ?? item.description ?? '')}</td></tr>)}</tbody></table></section>
         <GotzjiToolReference />

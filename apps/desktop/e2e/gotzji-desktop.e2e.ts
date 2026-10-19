@@ -535,3 +535,100 @@ test('gotzji owned fixture proves cleanup while its command is still running', a
   // Deliberately leave this isolated command active. The shared fixture must stop
   // and independently prove every owned descendant absent before deleting roots.
 });
+
+test('gotzji guided project command prepares without effects and starts one reviewed command', async ({ gotzji }, testInfo) => {
+  const { page } = gotzji;
+  const root = await gotzji.temporaryProject('gotzji-files-panel-e2e-');
+  await writeFile(path.join(root, 'check.mjs'), `import{writeFileSync}from'node:fs';writeFileSync('started.txt','one',{flag:'wx'});writeFileSync('verified.txt','Verified by the reviewed command');console.log('ตรวจเสร็จแล้ว 🌟');`);
+  const recipeId = await page.evaluate(async ({ rootPath, executable }) => {
+    const recipe = await window.gotzji.request({ method: 'registerRecipe', input: { recipeId: 'guide-check', displayName: 'ตรวจโครงการตัวอย่าง', executable, args: ['${projectRoot}/check.mjs'], dependencies: ['${projectRoot}/check.mjs'], timeoutMs: 30000, writeScope: 'project' } }) as { recipeId: string };
+    await window.gotzji.request({ method: 'registerRecipe', input: { recipeId: 'unbound-check', displayName: 'คำสั่งที่ไม่ผูกกับโครงการ', executable, args: ['${projectRoot}/check.mjs'], dependencies: ['${projectRoot}/check.mjs'], timeoutMs: 30000, writeScope: 'project' } });
+    await window.gotzji.request({ method: 'registerProject', input: { projectId: 'guide-project', displayName: 'โครงการคำสั่งตัวอย่าง', rootPath, recipeIds: [recipe.recipeId] } });
+    return recipe.recipeId;
+  }, { rootPath: root, executable: await realpath(process.execPath) });
+  await page.getByRole('button', { name: 'รีเฟรช', exact: true }).click();
+  await page.getByRole('button', { name: 'โครงการ', exact: true }).click();
+  await page.getByRole('button', { name: /^โครงการคำสั่งตัวอย่าง ·/u }).click();
+  const commands = page.getByRole('region', { name: 'คำสั่งที่ผูกกับโครงการ', exact: true });
+  await expect(commands.getByRole('heading', { name: 'รันคำสั่งของโครงการ', exact: true })).toBeVisible();
+  await expect(commands.getByLabel('คำสั่งของโครงการ', { exact: true }).locator('option')).toHaveText(['เลือกคำสั่ง', 'ตรวจโครงการตัวอย่าง']);
+  await commands.getByLabel('คำสั่งของโครงการ', { exact: true }).selectOption(recipeId);
+  await commands.getByRole('button', { name: 'ตรวจและเตรียมคำสั่ง', exact: true }).click();
+  await expect(commands.getByRole('heading', { name: 'ตรวจคำสั่งก่อนเริ่ม', exact: true })).toBeVisible();
+  expect(await page.evaluate(async () => window.gotzji.request({ method: 'listJobs', input: {} }))).toEqual([]);
+  expect(await readdir(root)).toEqual(['check.mjs']);
+  await commands.getByLabel('ความสำคัญของคำสั่ง', { exact: true }).selectOption('2');
+  await expect(commands.getByRole('button', { name: 'เริ่มคำสั่งนี้', exact: true })).toHaveCount(0);
+  await commands.getByRole('button', { name: 'ตรวจและเตรียมคำสั่ง', exact: true }).click();
+  await expect(commands.getByText('ความสำคัญ: สูง', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'ภาพรวม', exact: true }).click();
+  await expect(commands).toBeHidden();
+  await page.getByRole('button', { name: 'เครื่องมือ', exact: true }).click();
+  await expect(commands.getByRole('heading', { name: 'ตรวจคำสั่งก่อนเริ่ม', exact: true })).toBeVisible();
+  expect(await page.evaluate(async () => window.gotzji.request({ method: 'listJobs', input: {} }))).toEqual([]);
+  await commands.screenshot({ path: path.join(desktopRoot, '..', '..', '.local-artifacts', 'parity-c2c-command-review.png') });
+  await commands.getByRole('button', { name: 'เริ่มคำสั่งนี้', exact: true }).click();
+  const heading = page.getByRole('heading', { name: /^งาน [a-f0-9]{64}$/u });
+  await expect(heading).toBeVisible();
+  await expect(page.getByText('เสร็จแล้ว', { exact: true })).toBeVisible({ timeout: testInfo.timeout });
+  expect(await readFile(path.join(root, 'started.txt'), 'utf8')).toBe('one');
+  expect(await readFile(path.join(root, 'verified.txt'), 'utf8')).toBe('Verified by the reviewed command');
+  await page.getByRole('button', { name: 'ดูผลลัพธ์', exact: true }).click();
+  await expect(page.locator('pre:visible')).toContainText('"exitCode": 0');
+  expect(await page.evaluate(async () => (await window.gotzji.request({ method: 'listJobs', input: {} }) as unknown[]).length)).toBe(1);
+});
+
+test('gotzji command lost acknowledgement survives whole-app page navigation', async ({ gotzji }, testInfo) => {
+  const { page } = gotzji;
+  const root = await gotzji.temporaryProject('gotzji-files-panel-e2e-');
+  await writeFile(path.join(root, 'once.mjs'), `import{writeFileSync}from'node:fs';writeFileSync('started.txt','one',{flag:'wx'});console.log('COMMAND_ONCE');`);
+  await page.evaluate(async ({ rootPath, executable }) => {
+    const recipe = await window.gotzji.request({ method: 'registerRecipe', input: { recipeId: 'navigation-once', displayName: 'คำสั่งลองใหม่รายการเดิม', executable, args: ['${projectRoot}/once.mjs'], dependencies: ['${projectRoot}/once.mjs'], timeoutMs: 30000, writeScope: 'project' } }) as { recipeId: string };
+    await window.gotzji.request({ method: 'registerProject', input: { projectId: 'navigation-once', displayName: 'โครงการลองใหม่รายการเดิม', rootPath, recipeIds: [recipe.recipeId] } });
+  }, { rootPath: root, executable: await realpath(process.execPath) });
+  const fixturePath = gotzji.rendererFixturePath();
+  await build({ stdin: { resolveDir: path.join(desktopRoot, 'src', 'renderer'), sourcefile: 'command-navigation-fixture.tsx', loader: 'tsx', contents: `
+    import { StrictMode } from 'react';
+    import { createRoot } from 'react-dom/client';
+    import { GotzjiApp } from './GotzjiApp.tsx';
+    document.getElementById('root').hidden = true;
+    const root = document.createElement('div'); root.id = 'command-app-proof'; document.body.append(root);
+    let discard = true;
+    const request = async (method, input) => {
+      const value = await window.gotzji.request({ method, input });
+      if (method === 'submit' && discard) {
+        if (!value || typeof value.jobId !== 'string') throw new Error('Expected actual admitted command');
+        root.dataset.admittedJobId = value.jobId; discard = false;
+        throw new Error('LOST_ACK_AFTER_REAL_COMMAND_ADMISSION');
+      }
+      return value;
+    };
+    createRoot(root, { identifierPrefix: 'command-navigation-' }).render(<StrictMode><GotzjiApp requestPort={request} /></StrictMode>);
+  ` }, bundle: true, format: 'iife', platform: 'browser', jsx: 'automatic', loader: { '.css': 'empty', '.webp': 'dataurl' }, outfile: fixturePath, define: { 'process.env.NODE_ENV': '"production"' } });
+  await page.addScriptTag({ url: pathToFileURL(fixturePath).href });
+  const appView = page.locator('#command-app-proof');
+  await appView.getByRole('button', { name: 'โครงการ', exact: true }).click();
+  await appView.getByRole('button', { name: /^โครงการลองใหม่รายการเดิม ·/u }).click();
+  const commands = appView.getByRole('region', { name: 'คำสั่งที่ผูกกับโครงการ', exact: true });
+  await commands.getByLabel('คำสั่งของโครงการ', { exact: true }).selectOption({ label: 'คำสั่งลองใหม่รายการเดิม' });
+  await commands.getByRole('button', { name: 'ตรวจและเตรียมคำสั่ง', exact: true }).click();
+  await commands.getByRole('button', { name: 'เริ่มคำสั่งนี้', exact: true }).click();
+  await expect(commands.getByRole('alert')).toContainText('ดำเนินการไม่สำเร็จ');
+  const admitted = await appView.getAttribute('data-admitted-job-id'); expect(admitted).toMatch(/^[a-f0-9]{64}$/u);
+  await appView.getByRole('button', { name: 'ภาพรวม', exact: true }).click();
+  await expect(commands).toBeHidden();
+  await appView.getByRole('button', { name: 'รีเฟรช', exact: true }).click();
+  await appView.getByRole('button', { name: 'เครื่องมือ', exact: true }).click();
+  await expect(commands.getByRole('heading', { name: 'ตรวจคำสั่งก่อนเริ่ม', exact: true })).toBeVisible();
+  await commands.getByRole('button', { name: 'เริ่มคำสั่งนี้', exact: true }).click();
+  await expect(appView.getByRole('heading', { name: `งาน ${admitted}`, exact: true })).toBeVisible();
+  await expect(appView.getByText('เสร็จแล้ว', { exact: true })).toBeVisible({ timeout: testInfo.timeout });
+  expect(await readFile(path.join(root, 'started.txt'), 'utf8')).toBe('one');
+  expect(await page.evaluate(async () => (await window.gotzji.request({ method: 'listJobs', input: {} }) as unknown[]).length)).toBe(1);
+  await appView.getByRole('button', { name: 'เครื่องมือ', exact: true }).click();
+  await expect(commands.getByRole('status')).toContainText('ยืนยันรับงานนี้แล้ว');
+  await expect(commands.getByRole('button', { name: 'เริ่มคำสั่งนี้', exact: true })).toBeDisabled();
+  await commands.getByRole('button', { name: 'เตรียมคำสั่งรอบใหม่', exact: true }).click();
+  await expect(commands.getByRole('heading', { name: 'ตรวจคำสั่งก่อนเริ่ม', exact: true })).toHaveCount(0);
+  expect(await page.evaluate(async () => (await window.gotzji.request({ method: 'listJobs', input: {} }) as unknown[]).length)).toBe(1);
+});
