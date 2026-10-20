@@ -8,6 +8,7 @@ import { readProjectFile } from './product-file-reads.js';
 import { projectTarget } from './product-projects.js';
 import { CoreError, type ProjectGitInput, type RegisteredProject } from './types.js';
 import { writeGitReadDiagnostic, type GitReadDiagnostic } from './git-read-diagnostics.js';
+import { GIT_VALIDATION_BUDGET_MS, GIT_SNAPSHOT_BUDGET_MS, GIT_COMMAND_BUDGET_MS } from './git-read-policy.js';
 
 const MAX_RESPONSE_BYTES = 64 * 1024;
 // Git for Windows does not accept Node's \\.\nul device spelling as a config path.
@@ -120,9 +121,9 @@ async function diffTarget(project: RegisteredProject, selected: string, privateR
 
 export async function readProjectGit(project: RegisteredProject, input: ProjectGitInput, privateRoots: readonly string[], scratchRoot: string): Promise<ProjectGitResult> {
   const started = performance.now();
-  // Census retains its own 10s ceiling; all snapshot work shares the original 10s+15s allowance.
+  // Census keeps its own ceiling; config and all copies share one attested snapshot allowance.
   // Config now consumes that allowance too, rather than adding a separate 10s phase.
-  const snapshotDeadline = started + 25000;
+  const snapshotDeadline = started + GIT_SNAPSHOT_BUDGET_MS;
   let phase: GitReadDiagnostic['phase'] = 'census'; let elapsedMs = 0; let totalObjects = 0; let copiedObjects = 0; let objectBytes = 0;
   const phaseStartsMs: Partial<Record<GitReadDiagnostic['phase'], number>> = { census: 0 };
   const markPhase = (next: GitReadDiagnostic['phase']): void => { phase = next; phaseStartsMs[next] = Math.max(0, Math.round(performance.now() - started)); };
@@ -140,7 +141,7 @@ export async function readProjectGit(project: RegisteredProject, input: ProjectG
     return Math.ceil(remaining);
   };
   let selected: Repository;
-  try { selected = await repository(project, privateRoots, started + 10000, snapshotBudget); }
+  try { selected = await repository(project, privateRoots, started + GIT_VALIDATION_BUDGET_MS, snapshotBudget); }
   catch (error) { if (error instanceof CoreError && error.code === 'GIT_VALIDATION_BUDGET') reportBudget(error.code); throw error; }
   totalObjects = selected.objects.length; markPhase('metadata');
   if (input.view === 'diff') await diffTarget(project, input.path, privateRoots);
@@ -165,7 +166,7 @@ export async function readProjectGit(project: RegisteredProject, input: ProjectG
     const env = { ...childEnvironment(), GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: gitNull, GIT_OPTIONAL_LOCKS: '0', GIT_NO_REPLACE_OBJECTS: '1', GIT_NO_LAZY_FETCH: '1' };
     const direct = new DirectGitRunner();
     markPhase('config');
-    const settings = await direct.run(['config', '--null', '--no-includes', '--file', path.join(scratch, 'source-config'), '--get-regexp', '^(core\\.(repositoryformatversion|filemode|ignorecase|symlinks)|extensions\\..*)$'], scratch, { env, timeoutMs: Math.min(10000, snapshotBudget()) });
+    const settings = await direct.run(['config', '--null', '--no-includes', '--file', path.join(scratch, 'source-config'), '--get-regexp', '^(core\\.(repositoryformatversion|filemode|ignorecase|symlinks)|extensions\\..*)$'], scratch, { env, timeoutMs: Math.min(GIT_COMMAND_BUDGET_MS, snapshotBudget()) });
     snapshotBudget();
     if (settings.exitCode !== 0 || settings.truncated) throw new CoreError('GIT_CONFIG_UNAVAILABLE');
     const config = new Map<string, string>();
@@ -213,7 +214,7 @@ export async function readProjectGit(project: RegisteredProject, input: ProjectG
     const prefix = ['--no-pager', '--no-optional-locks', '--literal-pathspecs', '--git-dir', directory, '--work-tree', worktree, '-c', 'core.fsmonitor=false', '-c', 'core.untrackedCache=false', '-c', 'status.relativePaths=false', '-c', `core.attributesFile=${gitNull}`];
     const runner: GitRunner = { run: async (args, _cwd, options) => {
       const safeArgs = args[0] === 'diff' ? [...args.slice(0, 1), '--no-textconv', '--ignore-submodules=all', ...args.slice(1)] : args[0] === 'status' ? [...args, '--ignore-submodules=all'] : [...args];
-      const result = await direct.run([...prefix, ...safeArgs], scratch, { ...options, env, timeoutMs: 10000 });
+      const result = await direct.run([...prefix, ...safeArgs], scratch, { ...options, env, timeoutMs: GIT_COMMAND_BUDGET_MS });
       if (result.truncated) throw new CoreError('GIT_OUTPUT_LIMIT', 'The Git output exceeds this bounded view');
       return result;
     } };

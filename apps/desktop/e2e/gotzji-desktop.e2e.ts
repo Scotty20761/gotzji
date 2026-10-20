@@ -346,6 +346,8 @@ test('gotzji new file retries one real admission after a lost acknowledgement', 
 });
 
 test('gotzji Git status, selected diff and history preserve the source index', async ({ gotzji }) => {
+    // Enclose fixture entry/materialization, the 90s read transport and owned teardown.
+    test.setTimeout(180_000);
     const { page } = gotzji;
     const projectFilesRoot = await gotzji.temporaryProject('gotzji-files-panel-e2e-');
     await writeFile(path.join(projectFilesRoot, 'welcome.txt'), 'Original sample\n', 'utf8');
@@ -382,7 +384,17 @@ test('gotzji Git status, selected diff and history preserve the source index', a
     await Promise.all([...new Set(objects.map((entry) => path.dirname(entry.path)))].map((directory) => mkdir(directory, { recursive: true })));
     for (let offset = 0; offset < objects.length; offset += 64) await Promise.all(objects.slice(offset, offset + 64).map((entry) => writeFile(entry.path, entry.content)));
     const started = performance.now();
-    const result = await page.evaluate(() => window.gotzji.request({ method: 'readProjectGit', input: { projectId: 'files-panel', view: 'status' } }));
+    let readSettled = false;
+    const pendingRead = page.evaluate(() => window.gotzji.request({ method: 'readProjectGit', input: { projectId: 'files-panel', view: 'status' } })).finally(() => { readSettled = true; });
+    const controlProbe = page.evaluate(() => window.gotzji.hostStatus()).then((status) => {
+      expect(status.state).toBe('ready'); expect(readSettled).toBe(false);
+    });
+    // Neither a failed control probe nor a failed read may abandon the other owned call.
+    const [read, control] = await Promise.allSettled([pendingRead, controlProbe]);
+    if (read.status === 'rejected' && control.status === 'rejected') throw new AggregateError([read.reason, control.reason], `Owned Git read and concurrent control failed: ${read.reason instanceof Error ? read.reason.message : String(read.reason)}; ${control.reason instanceof Error ? control.reason.message : String(control.reason)}`);
+    if (read.status === 'rejected') throw read.reason;
+    if (control.status === 'rejected') throw control.reason;
+    const result = read.value;
     expect(result).toMatchObject({ view: 'status', truncated: false, entries: expect.arrayContaining([expect.objectContaining({ path: 'welcome.txt', kind: 'modified' })]) });
     console.info(JSON.stringify({ fixture: 'desktop-10020-objects', phase: 'read-completed', elapsedMs: Math.round(performance.now() - started) }));
     expect(await readFile(path.join(projectFilesRoot!, '.git', 'index'))).toEqual(indexBefore);
