@@ -10,6 +10,8 @@ Owner decisions Q2/Q3/Q5/Q6 add persistent shared project selection, optimistic-
 
 Full tool execution parity, complete original action/state/settings/recovery behavior, licensed native provider qualification, installed adoption, actual ChatGPT Pro acceptance, companion and official release remain unfinished. Source integration and source-name accounting do not close these gates.
 
+The C2d delivery path adds exact-preparation owner decisions in the existing ledger. ChatGPT prepares a reviewed delivery recipe; Desktop reviews/approves or rejects without admission; ChatGPT submits that preparation through the same Core. Owner/project/adapter/digest checks, bounded expiration and refreshed command/instruction fingerprints protect admission. This source change is separate from installed and actual ChatGPT acceptance. See FULL_README's delivery contract and the scoped test evidence; no native provider, companion or release gate is inferred from it.
+
 ## Historical lnwjud 5.8.6 reference capture
 
 Captured2026-10-19 through the original connected lnwjud, without modifying its installation/settings/jobs or creating product work. `lnwjud-5.8.6-live-tools.json` contains205 unique tool definitions: union of the first100 unfiltered matches and197 matches across all152 categories, equal to the host-reported total205. The separate schema response has170 schemas; these counts describe different interfaces and are not readiness scores. All category queries completed without error or result truncation.

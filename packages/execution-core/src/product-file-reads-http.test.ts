@@ -88,6 +88,20 @@ describe('direct reads through the actual product server', () => {
       }
       const catalog = await rpc('catalog', {});
       expect(catalog.value).toEqual(expect.arrayContaining([{ name: 'file.read.direct', state: 'available', description: expect.any(String), controller: 'host' }]));
+      await writeFile(path.join(project, 'ship.mjs'), "console.log('owned delivery fixture');");
+      expect((await rpc('registerRecipe', { recipeId: 'ship', executable: process.execPath, args: ['${projectRoot}/ship.mjs'], dependencies: ['${projectRoot}/ship.mjs'], delivery: true })).ok).toBe(true);
+      expect((await rpc('bindProjectRecipe', { projectId: 'project', recipeId: 'ship' })).ok).toBe(true);
+      const deliveryInput = { requestId: 'delivery', projectId: 'project', operation: 'command.run', commandId: 'ship' };
+      expect(await rpc('prepareOperation', deliveryInput)).toMatchObject({ ok: false, error: { code: 'CHATGPT_START_REQUIRED' } });
+      const delivery = await tool('gotzji_prepare_operation', deliveryInput);
+      expect(delivery.result.isError).toBe(false);
+      const prepared = JSON.parse(delivery.result.content[0]!.text) as { preparationId: string; digest: string };
+      expect(JSON.parse((await tool('gotzji_submit', { preparationId: prepared.preparationId })).result.content[0]!.text)).toMatchObject({ error: { code: 'DELIVERY_APPROVAL_REQUIRED' } });
+      expect((await tool('gotzji_delivery_request', { preparationId: prepared.preparationId, decision: 'approved' })).result.isError).toBe(true);
+      expect((await tool('decideDeliveryApproval', { preparationId: prepared.preparationId, expectedDigest: prepared.digest, decision: 'approved' })).result.isError).toBe(true);
+      expect(await rpc('decideDeliveryApproval', { preparationId: prepared.preparationId, expectedDigest: prepared.digest, decision: 'approved' })).toMatchObject({ ok: true, value: { decision: 'approved' } });
+      expect(JSON.parse((await tool('gotzji_delivery_request', { preparationId: prepared.preparationId })).result.content[0]!.text)).toMatchObject({ decision: 'approved' });
+      expect(await rpc('submit', { preparationId: prepared.preparationId })).toMatchObject({ ok: false, error: { code: 'CHATGPT_START_REQUIRED' } });
       expect(await rpc('list', {})).toEqual({ ok: true, value: [] });
     } finally {
       if (endpoint && child.exitCode === null) await fetch(`${endpoint}/rpc`, { method: 'POST', headers: { Authorization: `Bearer ${config.daemonSecret}` }, body: JSON.stringify({ method: 'testOnlyE2eShutdown', input: { nonce: 'd'.repeat(64) } }) }).catch(() => undefined);

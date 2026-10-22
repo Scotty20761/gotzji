@@ -143,6 +143,9 @@ export class CoreStore {
         CREATE TABLE gotzji_project_selection (owner TEXT PRIMARY KEY,project_id TEXT NOT NULL);
         CREATE TABLE gotzji_project_memory (owner TEXT NOT NULL,project_id TEXT NOT NULL,revision INTEGER NOT NULL,body TEXT NOT NULL,updated_at TEXT NOT NULL,PRIMARY KEY(owner,project_id));
       ` });
+      this.database.applyMigration({ id: 'gotzji_012_delivery_approval', sql: `
+        CREATE TABLE gotzji_delivery_approvals (preparation_id TEXT PRIMARY KEY,owner TEXT NOT NULL,adapter TEXT NOT NULL,digest TEXT NOT NULL,decision TEXT NOT NULL,created_at INTEGER NOT NULL,expires_at INTEGER NOT NULL);
+      ` });
       this.database.connection.prepare('INSERT INTO gotzji_meta SELECT 1, ?, ? WHERE NOT EXISTS (SELECT 1 FROM gotzji_meta)').run(policy, authority);
       const meta = this.database.connection.prepare('SELECT version,policy,authority_id FROM gotzji_meta').get();
       if (meta?.version !== 1 || meta.policy !== policy || meta.authority_id !== authority) throw new CoreError('CORE_VERSION_OR_POLICY_CHANGED');

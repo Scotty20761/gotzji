@@ -60,7 +60,9 @@ describe('ChatGPT production controller through real HTTP and durable worker', (
       const appPreparation = await rpc('prepareOperation', { requestId: 'fresh-app-direct-read', projectId: 'project', operation: 'file.read', path: 'proof.txt' });
       expect(appPreparation).toMatchObject({ ok: false, error: { code: 'CHATGPT_START_REQUIRED' } });
       expect(await rpc('submit', { preparationId: (written.preparation as { preparationId: string }).preparationId })).toMatchObject({ ok: false, error: { code: 'CHATGPT_START_REQUIRED' } });
-      await expect(tool('gotzji_prepare_operation', { requestId: 'delivery-not-granted', projectId: 'project', operation: 'command.run', commandId: 'synthetic-delivery' })).rejects.toThrow('DELIVERY_OWNER_ONLY');
+      const delivery = await tool('gotzji_prepare_operation', { requestId: 'delivery-not-granted', projectId: 'project', operation: 'command.run', commandId: 'synthetic-delivery' });
+      await expect(tool('gotzji_submit', { preparationId: delivery.preparationId })).rejects.toThrow('DELIVERY_APPROVAL_REQUIRED');
+      expect(await tool('gotzji_delivery_request', { preparationId: delivery.preparationId })).toMatchObject({ decision: 'pending' });
       expect(await rpc('status', { jobId: (written.job as { jobId: string }).jobId })).toMatchObject({ ok: true, value: { status: 'completed' } });
       expect(await tool('gotzji_select_project', { projectId: 'project' })).toMatchObject({ projectId: 'project' });
       expect(await rpc('selectedProject')).toMatchObject({ ok: true, value: { projectId: 'project' } });

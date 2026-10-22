@@ -93,11 +93,11 @@ export interface ReviewedCommandRegistration {
   /** Owner-declared (incident I3): the command writes only inside the selected project folder and runs no Git or
    * whole-repository build. Absent means it may write anywhere in its workspace. */
   readonly writeScope?: 'project';
-  /** Owner-declared (incident I5): a delivery command (push, publish, promote) runs only when the owner starts it in the app. */
+  /** Owner-declared delivery (push, publish, promote): host-direct requires exact-request owner approval before ChatGPT submission. */
   readonly delivery?: true;
 }
 export interface FileFingerprint { readonly path: string; readonly hash: string }
-/** Set only by the owner's app surface. */
+/** Trusted legacy composition only; the host-direct app never prepares or submits new work. */
 export interface PrepareOptions { readonly ownerRun?: boolean }
 export interface ReviewedCommand {
   readonly commandId: string;

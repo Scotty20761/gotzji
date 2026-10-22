@@ -259,7 +259,7 @@ describe('governed product operations — real native Goal, file and process sea
     await f.core.cancel(f.credential, f.bindings[0]!);
     expect((await f.core.submit(f.credential, overflow.preparationId)).status).toBe('queued');
     expect((await f.core.list(f.credential)).length).toBe(33);
-    // About 8 s locally, mostly re-hashing node.exe per submit; hosted Windows runners have taken over 15 s.
+    // Keep all 32 real admissions and this deadline. Identity-bound executable verification avoids repeated full reads.
   }), process.env.CI ? 45_000 : 15_000);
   it('waits for dependencies and rejects failed dependency work without starting an effect', ownBody(async () => {
     const f = await fixture(); await project(f, 'one'); await project(f, 'two');

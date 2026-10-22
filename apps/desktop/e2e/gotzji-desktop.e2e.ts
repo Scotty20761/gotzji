@@ -681,6 +681,46 @@ test('gotzji project selection survives page reload and Desktop cannot start new
   expect(await page.evaluate(async () => window.gotzji.request({ method: 'listJobs', input: {} }))).toEqual([]);
 });
 
+test('gotzji owner approves one ChatGPT delivery request without starting it from Desktop', async ({ gotzji }) => {
+  const { page } = gotzji;
+  const root = await gotzji.temporaryProject('gotzji-files-panel-e2e-');
+  await writeFile(path.join(root, 'ship.mjs'), "import {appendFileSync} from 'node:fs';appendFileSync('delivered.txt','once\\n');console.log('delivered once');");
+  const prepared = await page.evaluate(async ({ rootPath, executable }) => {
+    await Reflect.get(window, 'ownedTestRequest')({ method: 'registerRecipe', input: { recipeId: 'ship-proof', displayName: 'ส่งผลงานทดสอบ', executable, args: ['${projectRoot}/ship.mjs'], dependencies: ['${projectRoot}/ship.mjs'], delivery: true } });
+    await Reflect.get(window, 'ownedTestRequest')({ method: 'registerProject', input: { projectId: 'delivery-proof', displayName: 'โครงการส่งผลงาน', rootPath, recipeIds: ['ship-proof'] } });
+    return Reflect.get(window, 'ownedTestRequest')({ method: 'prepareOperation', input: { requestId: 'delivery-proof-once', projectId: 'delivery-proof', operation: 'command.run', commandId: 'ship-proof' } }) as Promise<{ preparationId: string; digest: string }>;
+  }, { rootPath: root, executable: await realpath(process.execPath) });
+  const panel = page.getByRole('region', { name: 'อนุมัติคำขอส่งมอบ' });
+  await panel.getByRole('button', { name: 'อ่านคำขอส่งมอบล่าสุด', exact: true }).click();
+  await expect(panel.getByText('โครงการส่งผลงาน · ship-proof', { exact: true })).toBeVisible();
+  await expect(panel.getByRole('button', { name: 'อนุมัติคำขอนี้', exact: true })).toBeDisabled();
+  await panel.getByText('ตรวจโปรแกรม คำสั่ง และไฟล์ที่ตรึงไว้', { exact: true }).click();
+  await expect(panel.getByText(`รหัสยืนยันรายละเอียด: ${prepared.digest}`, { exact: true })).toBeVisible();
+  await panel.getByRole('checkbox').check();
+  await panel.getByRole('button', { name: 'อนุมัติคำขอนี้', exact: true }).click();
+  await expect(panel.getByText('อนุมัติแล้ว · ยังไม่ได้เริ่มงาน', { exact: true })).toBeVisible();
+  expect(await page.evaluate(() => window.gotzji.request({ method: 'listJobs', input: {} }))).toEqual([]);
+  await page.evaluate(() => {
+    Reflect.set(window, '__ownedDeliveryClipboardCalls', 0);
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (): Promise<void> => { Reflect.set(window, '__ownedDeliveryClipboardCalls', Number(Reflect.get(window, '__ownedDeliveryClipboardCalls')) + 1); throw new Error('Owned clipboard denial'); } } });
+  });
+  await panel.getByRole('button', { name: 'คัดลอกคำสั่งกลับไป ChatGPT', exact: true }).click();
+  await page.screenshot({ path: path.join(desktopRoot, '..', '..', '.local-artifacts', 'c2d-delivery-copy.png') });
+  expect(await page.evaluate(() => Reflect.get(window, '__ownedDeliveryClipboardCalls'))).toBe(1);
+  await expect(panel.getByRole('status')).toContainText('คัดลอกอัตโนมัติไม่ได้');
+  await expect(panel.getByRole('textbox')).toHaveValue(new RegExp(prepared.preparationId));
+  await expect(panel.getByLabel('ข้อความสำหรับ ChatGPT', { exact: true })).toHaveValue(new RegExp(prepared.preparationId));
+  const job = await page.evaluate(preparationId => Reflect.get(window, 'ownedTestRequest')({ method: 'submit', input: { preparationId } }) as Promise<{ jobId: string }>, prepared.preparationId);
+  const replay = await page.evaluate(preparationId => Reflect.get(window, 'ownedTestRequest')({ method: 'submit', input: { preparationId } }) as Promise<{ jobId: string }>, prepared.preparationId);
+  expect(replay.jobId).toBe(job.jobId);
+  await expect.poll(async () => {
+    try { return await readFile(path.join(root, 'delivered.txt'), 'utf8'); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return ''; throw error; }
+  }, { timeout: 30000 }).toBe('once\n');
+  await expect.poll(() => page.evaluate(jobId => window.gotzji.request({ method: 'result', input: { jobId } }).then(() => true).catch(() => false), job.jobId), { timeout: 20000 }).toBe(true);
+  expect(await readFile(path.join(root, 'delivered.txt'), 'utf8')).toBe('once\n');
+});
+
 test('gotzji browser review retains synthetic renderer admission across hidden pages', async ({ gotzji }) => {
   const { page } = gotzji; const fixturePath = gotzji.rendererFixturePath();
   await build({ stdin: { resolveDir: desktopRoot, sourcefile: 'owned-browser-ui.tsx', loader: 'tsx', contents: `

@@ -1,13 +1,19 @@
 import { describe, expect, it } from 'vitest';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
-import { startProductHttp } from './product-http.js';
+import { PRODUCT_MCP_TOOLS, startProductHttp } from './product-http.js';
 import { CoreError } from './types.js';
 import { request as httpRequest } from 'node:http';
 import { libraryCatalog } from './product-library.js';
 import { startProductTunnelBridge } from './product-connection.js';
 
 describe('governed product HTTP and MCP boundary', () => {
+  it('keeps the owned MCP tool table aligned with its facade rather than the retained upstream inventory', async () => {
+    const readme = await readFile(fileURLToPath(new URL('../../../FULL_README.md', import.meta.url)), 'utf8');
+    const section = readme.split('## MCP control catalog')[1]?.split('## Internal upstream compatibility catalog')[0] ?? '';
+    const names = [...section.matchAll(/^\| (gotzji_[a-z_]+) \|/gmu)].map(match => match[1]!);
+    expect(names.sort()).toEqual(PRODUCT_MCP_TOOLS.map(tool => tool.name).sort());
+  });
   it('keeps the entire direct-read response within the bridge budget when a valid request ID is large', async () => {
     const secret = 'b'.repeat(64);
     const token = 'a'.repeat(64);
@@ -194,10 +200,13 @@ describe('governed product HTTP and MCP boundary', () => {
       expect(fields.filter((field) => /lease|proof/iu.test(field))).toEqual([]);
       expect(await tool(2, 'gotzji_status', { jobId: 'job', goalLease: 'lease-from-another-call' })).toBe(true);
       expect(await tool(3, 'gotzji_status', { jobId: 'job' })).toBe(false);
-      // I5: lnwjud read "Do not commit, push, release, or deploy." as a deploy task. Here no model tool names a delivery
-      // scope, owner delivery authority stays on the app surface, and instruction text has no field to arrive in.
+      // I5: instruction text cannot confer delivery authority. The new request inspector is read-only;
+      // owner approval stays on the authenticated app surface.
       expect(fields.filter((field) => /scope|deliver|deploy|release/iu.test(field))).toEqual([]);
-      expect(list.result.tools.map((entry) => entry.name).filter((name) => /authori|deliver|deploy/iu.test(name))).toEqual([]);
+      expect(list.result.tools.map((entry) => entry.name).filter((name) => /authori|deliver|deploy/iu.test(name))).toEqual(['gotzji_delivery_request']);
+      expect(list.result.tools.find(entry => entry.name === 'gotzji_delivery_request')).toMatchObject({ annotations: { readOnlyHint: true } });
+      expect(await tool(4, 'gotzji_delivery_request', { preparationId: 'request', decision: 'approved' })).toBe(true);
+      expect(await tool(5, 'decideDeliveryApproval', { preparationId: 'request', expectedDigest: 'a'.repeat(64), decision: 'approved' })).toBe(true);
       for (const [index, sentence] of ['Do not commit, push, release, or deploy.', 'PLAN ONLY: write documentation for later Official release. Do not build, publish, or promote anything.', 'Commit the fix and deploy to production.'].entries()) {
         expect(await tool(10 + index, 'gotzji_prepare_operation', { requestId: `instruction-${index}`, projectId: 'project', operation: 'file.read', path: 'notes.md', instruction: sentence })).toBe(true);
         expect(await tool(20 + index, 'authorizeLibraryDelivery', { projectId: 'project', jobId: 'job', scope: 'deploy', reason: sentence })).toBe(true);

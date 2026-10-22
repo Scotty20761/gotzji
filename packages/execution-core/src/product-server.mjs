@@ -145,7 +145,10 @@ const listener = await startProductHttp({ token: config.daemonSecret, mcpPathSec
     case 'registerRecipe': { if (surface !== 'app') throw new CoreError('RECIPE_REGISTRATION_DENIED'); const entry = core.registerReviewedCommand(credential, input); return { ...entry, review: core.recipeReview(credential, entry.recipeId) }; }
     case 'bindProjectRecipe': if (surface !== 'app') throw new CoreError('RECIPE_REGISTRATION_DENIED'); return core.bindProjectRecipe(credential, input);
     case 'catalog': { const session = browser?.projection(); return core.catalog(credential).map((entry) => entry.name.startsWith('browser.') && session?.state === 'ready' ? { ...entry, browserSession: session } : entry); }
-    // Only the owner's app may start a delivery command (incident I5); every other surface prepares as Grace.
+    case 'deliveryApproval': return core.deliveryApproval(credential, input.preparationId);
+    case 'listDeliveryApprovals': if (surface !== 'app') throw new CoreError('DELIVERY_APPROVAL_DENIED'); return core.listDeliveryApprovals(credential);
+    case 'decideDeliveryApproval': if (surface !== 'app') throw new CoreError('DELIVERY_APPROVAL_DENIED'); return core.decideDeliveryApproval(credential, input.preparationId, input.expectedDigest, input.decision);
+    // ChatGPT starts work. Desktop may approve the exact delivery request without admitting it.
     case 'prepareOperation': if (surface === 'app') throw new CoreError('CHATGPT_START_REQUIRED'); return core.prepareOperation(credential, input);
     case 'submit': if (surface === 'app') throw new CoreError('CHATGPT_START_REQUIRED'); return core.submit(credential, input.preparationId);
     case 'list': return core.list(credential, surface === 'app' ? input : { limit: 25, ...input });

@@ -3,6 +3,7 @@ import path from 'node:path';
 import { CoreError, type ProjectRegistration, type RegisteredProject, type BasicProductOperationInput, type ProductOperation, type CatalogEntry, type ReviewedCommandRegistration, type ReviewedCommand, type FileFingerprint } from './types.js';
 import { hash } from './store.js';
 import { projectFileBytesSync } from './project-file-snapshot.mjs';
+import { verifyFingerprint } from './fingerprints.mjs';
 
 function invalid(field: string, reason: string): never { throw new CoreError('INVALID_REQUEST', reason, field, 'request', 'Correct the named field and prepare again'); }
 export function filesystem<T>(field: string, action: () => T): T {
@@ -134,7 +135,9 @@ export function productOperation(project: RegisteredProject, input: BasicProduct
     const substitute = (item: string): string => item.replaceAll('${projectRoot}', project.rootPath);
     const dependencies = recipe.dependencies.map((item) => fingerprint(substitute(item)));
     for (const previous of recipe.fixedDependencies) if (!dependencies.some((entry) => entry.path === previous.path && entry.hash === previous.hash)) throw new CoreError('COMMAND_DEPENDENCIES_CHANGED', 'A reviewed fixed script/config changed; enroll a new trusted recipe', 'commandId', 'recipe', 'Have the host review the changed dependency');
-    if (hash(readFileSync(recipe.executable)) !== recipe.executableHash) throw new CoreError('COMMAND_DEPENDENCIES_CHANGED', undefined, 'commandId');
+    // Reuse the identity-bound verifier used by profile admission. Execution still re-hashes the full executable.
+    try { verifyFingerprint(recipe.executable, recipe.executableHash); }
+    catch { throw new CoreError('COMMAND_DEPENDENCIES_CHANGED', undefined, 'commandId'); }
     const command: ReviewedCommand & { executableHash: string } = { commandId: recipe.recipeId, executable: recipe.executable, executableHash: recipe.executableHash, args: recipe.args.map(substitute), timeoutMs: recipe.timeoutMs, dependencies, ...(recipe.writeScope ? { writeScope: recipe.writeScope } : {}) };
     const targetDirectories = dependencies.filter((entry) => !path.relative(project.rootPath, entry.path).startsWith('..')).map((entry) => path.dirname(entry.path));
     return { input: { ...input }, project, command, ...discoverPolicies(project.rootPath, targetDirectories) };

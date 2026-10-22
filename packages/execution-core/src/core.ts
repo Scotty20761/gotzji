@@ -290,7 +290,7 @@ export class ExecutionCore {
   /** A delivery command is listed for the model as the owner's to run, so Grace can ask instead of trying (incident I5). */
   private recipeCatalogText(recipeId: string, recipe: ReviewedCommandRegistration): Pick<CatalogEntry, 'description' | 'controller'> {
     const name = recipe.displayName ?? recipeId;
-    return recipe.delivery ? { description: `${name} (delivery: the owner runs it from the gotzji app)`, controller: 'owner' } : { description: name, controller: this.#grace?.mode === 'host-direct' ? 'chatgpt-plugin' : 'grace' };
+    return recipe.delivery ? { description: `${name} (delivery: ${this.#grace?.mode === 'host-direct' ? 'ChatGPT prepares the exact request; the owner approves it in the gotzji app before ChatGPT submits' : 'the owner runs it from the gotzji app'})`, controller: 'owner' } : { description: name, controller: this.#grace?.mode === 'host-direct' ? 'chatgpt-plugin' : 'grace' };
   }
   private boundRecipeIds(owner: string, projectId: string): readonly string[] {
     return this.#store.database.connection.prepare('SELECT recipe_id FROM gotzji_project_recipes WHERE owner=? AND project_id=? ORDER BY bound_at,recipe_id').all(owner, projectId).map((entry) => String(entry.recipe_id));
@@ -475,7 +475,7 @@ export class ExecutionCore {
     const basic = input as BasicProductOperationInput;
     const recipe = basic.operation === 'command.run' ? this.#store.database.connection.prepare('SELECT recipe FROM gotzji_reviewed_recipes WHERE owner=? AND recipe_id=?').get(adapter.owner, basic.commandId ?? '') : undefined;
     const reviewed = recipe ? JSON.parse(String(recipe.recipe)) as ReturnType<typeof reviewedRecipe> : undefined;
-    if (reviewed?.delivery && options.ownerRun !== true) throw new CoreError('DELIVERY_OWNER_ONLY', 'A delivery command runs only when the owner starts it in the gotzji app', 'commandId', 'request', 'Ask the owner to run this delivery from the gotzji app');
+    if (reviewed?.delivery && options.ownerRun !== true && this.#grace.mode !== 'host-direct') throw new CoreError('DELIVERY_OWNER_ONLY', 'A delivery command runs only when the owner starts it in the gotzji app', 'commandId', 'request', 'Ask the owner to run this delivery from the gotzji app');
     const existing = this.#store.database.connection.prepare('SELECT * FROM gotzji_claims WHERE id=? AND owner=?').get(hash(`${adapter.owner}\0${input.requestId}`), adapter.owner) as unknown as ClaimRow | undefined;
     if (existing) {
       const replay = (): Preparation => {
@@ -515,7 +515,42 @@ export class ExecutionCore {
       return prepareProductNativeOperation(JSON.parse(String(row.registration)) as RegisteredProject, input, this.#native).then((operation) => this.createPreparation(credential, { requestId: input.requestId, operation: 'grace.product-operation', text: JSON.stringify(operation) }));
     }
     const operation = productOperation(JSON.parse(String(row.registration)) as RegisteredProject, basic, reviewed,{privateRuntimeRoots:this.privateRuntimeRoots(),boundRecipeIds:this.boundRecipeIds(adapter.owner,basic.projectId)});
-    return this.createPreparation(credential, { requestId: input.requestId, operation: 'grace.product-operation', text: JSON.stringify(operation) });
+    const preparation = this.createPreparation(credential, { requestId: input.requestId, operation: 'grace.product-operation', text: JSON.stringify(operation) });
+    if (reviewed?.delivery) this.#store.database.connection.prepare('INSERT INTO gotzji_delivery_approvals VALUES (?,?,?,?,?,?,?)').run(preparation.preparationId, adapter.owner, adapter.id, preparation.digest, options.ownerRun === true ? 'approved' : 'pending', this.#now().getTime(), this.#now().getTime() + 30 * 60_000);
+    return preparation;
+  }
+  /** Private owner decision over one immutable request; neither review nor approval admits work. */
+  public deliveryApproval(credential: string, preparationId: string): Record<string, unknown> {
+    const adapter = this.authorize(credential);
+    const row = this.#store.database.connection.prepare('SELECT a.*,p.input,p.policy FROM gotzji_delivery_approvals a JOIN gotzji_preparations p ON p.id=a.preparation_id WHERE a.preparation_id=? AND a.owner=? AND p.digest=a.digest AND p.owner=a.owner AND p.adapter=a.adapter').get(preparationId, adapter.owner);
+    if (!row || row.policy !== this.#policy) throw new CoreError('DELIVERY_APPROVAL_DENIED');
+    const request = JSON.parse(String(row.input)) as RequestInput;
+    const operation = JSON.parse(request.text) as ProductOperation;
+    return { preparationId, digest: String(row.digest), decision: Number(row.expires_at) <= this.#now().getTime() ? 'expired' : String(row.decision), expiresAt: new Date(Number(row.expires_at)).toISOString(), project: operation.project, request: operation.input, command: operation.command, projectPolicies: operation.projectPolicies };
+  }
+  public listDeliveryApprovals(credential: string): readonly Record<string, unknown>[] {
+    const adapter = this.authorize(credential);
+    return this.#store.database.connection.prepare(`SELECT a.preparation_id FROM gotzji_delivery_approvals a JOIN gotzji_preparations p ON p.id=a.preparation_id WHERE a.owner=? AND a.decision IN ('pending','approved') AND a.expires_at>? AND p.policy=? AND NOT EXISTS(SELECT 1 FROM gotzji_claims c WHERE c.owner=a.owner AND c.digest=a.digest) ORDER BY a.created_at DESC,a.rowid DESC LIMIT 25`).all(adapter.owner, this.#now().getTime(), this.#policy).map(row => this.deliveryApproval(credential, String(row.preparation_id)));
+  }
+  public decideDeliveryApproval(credential: string, preparationId: string, expectedDigest: string, decision: 'approved' | 'rejected'): Record<string, unknown> {
+    this.authorize(credential, true);
+    const review = this.deliveryApproval(credential, preparationId);
+    if (!['approved', 'rejected'].includes(decision) || review.digest !== expectedDigest || review.decision !== 'pending') throw new CoreError('DELIVERY_APPROVAL_DENIED');
+    const request = review.request as BasicProductOperationInput;
+    if (decision === 'approved') this.assertDeliveryPreparationCurrent(credential, request, review.command, review.projectPolicies);
+    const changed = this.#store.database.connection.prepare("UPDATE gotzji_delivery_approvals SET decision=? WHERE preparation_id=? AND digest=? AND decision='pending' AND expires_at>?").run(decision, preparationId, expectedDigest, this.#now().getTime());
+    if (Number(changed.changes) !== 1) throw new CoreError('DELIVERY_APPROVAL_DENIED');
+    return this.deliveryApproval(credential, preparationId);
+  }
+  private assertDeliveryPreparationCurrent(credential: string, input: BasicProductOperationInput, command: unknown, projectPolicies: unknown): void {
+    const adapter = this.authorize(credential);
+    const project = this.readProject(credential, input.projectId);
+    const row = this.#store.database.connection.prepare('SELECT recipe FROM gotzji_reviewed_recipes WHERE owner=? AND recipe_id=?').get(adapter.owner, input.commandId ?? '');
+    if (!row) throw new CoreError('RECIPE_NOT_REGISTERED');
+    const recipe = JSON.parse(String(row.recipe)) as ReturnType<typeof reviewedRecipe>;
+    if (!recipe.delivery) throw new CoreError('DELIVERY_APPROVAL_DENIED');
+    const current = productOperation(project, input, recipe, { privateRuntimeRoots: this.privateRuntimeRoots(), boundRecipeIds: this.boundRecipeIds(adapter.owner, input.projectId) });
+    if (JSON.stringify(current.command) !== JSON.stringify(command) || JSON.stringify(current.projectPolicies) !== JSON.stringify(projectPolicies)) throw new CoreError('DELIVERY_PREPARATION_CHANGED', 'The command or project instructions changed; prepare and review a new request');
   }
   /**
    * The owner's newest jobs, one page at a time (incident I8: lnwjud's task list took 10.9 s). `before` is the last job
@@ -616,6 +651,17 @@ export class ExecutionCore {
     const database = this.#store.database.connection;
     database.exec('BEGIN IMMEDIATE;');
     try {
+      if (input.operation === 'grace.product-operation' && !database.prepare('SELECT 1 FROM gotzji_claims WHERE id=?').get(id)) {
+        const operation = JSON.parse(input.text) as ProductOperation;
+        if (operation.input.operation === 'command.run') {
+          const recipe = database.prepare('SELECT recipe FROM gotzji_reviewed_recipes WHERE owner=? AND recipe_id=?').get(adapter.owner, operation.input.commandId ?? '');
+          if (recipe && (JSON.parse(String(recipe.recipe)) as ReviewedCommandRegistration).delivery) {
+            const approval = database.prepare('SELECT * FROM gotzji_delivery_approvals WHERE preparation_id=? AND owner=? AND adapter=? AND digest=?').get(preparationId, adapter.owner, adapter.id, String(preparation.digest));
+            if (!approval || approval.decision !== 'approved' || Number(approval.expires_at) <= this.#now().getTime()) throw new CoreError('DELIVERY_APPROVAL_REQUIRED', 'Ask the owner to review this exact request in the gotzji app, then submit the same preparation');
+            this.assertDeliveryPreparationCurrent(credential, operation.input, operation.command, operation.projectPolicies);
+          }
+        }
+      }
       if (input.operation === 'grace.product-operation' && !database.prepare('SELECT 1 FROM gotzji_claims WHERE id=?').get(id)) {
         const waiting = database.prepare("SELECT COUNT(*) AS count FROM gotzji_claims c LEFT JOIN goals g ON c.goal_id=g.id WHERE c.owner=? AND json_extract(c.input,'$.operation')='grace.product-operation' AND (g.status='active' OR c.goal_id IS NULL) AND NOT EXISTS(SELECT 1 FROM gotzji_workers w WHERE w.job_id=c.id)").get(adapter.owner);
         if (Number(waiting?.count) >= 32) throw new CoreError('QUEUE_CAPACITY_REACHED', 'Wait for a queued job to start or cancel a selected job');

@@ -18,6 +18,7 @@ import { browserReadResult } from './gotzji-browser-result.js';
 import { GotzjiLibraryChannelPanel } from './GotzjiLibraryChannelPanel.js';
 import { GotzjiProjectContext } from './GotzjiProjectContext.js';
 import { GotzjiVersionNotes } from './GotzjiVersionNotes.js';
+import { GotzjiDeliveryApprovals } from './GotzjiDeliveryApprovals.js';
 
 type Row = Readonly<Record<string, unknown>>;
 type Page = 'home' | 'projects' | 'workflows' | 'tools' | 'git' | 'worklog' | 'live' | 'queue' | 'settings' | 'doctor';
@@ -153,7 +154,7 @@ export function GotzjiApp({ requestPort }: { readonly requestPort?: (method: Got
       {error !== null && <div role="alert" className="gotzji-error">{error}<button onClick={() => setError(null)}>ปิด</button></div>}
       {page === 'home' && <><div className="gotzji-welcome"><div><p className="gotzji-greeting">Grace ผู้ช่วยงานบนคอมพิวเตอร์</p><h3>วันนี้มีอะไรให้ช่วยคะ</h3><p>เลือกโครงการ แล้วสั่งงานต่อจาก ChatGPT หรือเปิดดูงานเดิมได้ที่นี่</p><button onClick={() => setPage('projects')}>เปิดโครงการ</button></div><img src={gracePortrait} alt="" /></div><section><h3>เรื่องที่รอคุณดูแล</h3>{!jobsLoaded ? <p>กำลังตรวจงานที่รอคุณดูแล</p> : jobs.filter((job) => ['blocked', 'failed'].includes(String(job.status))).length === 0 ? <p>ไม่พบเรื่องที่รอคุณตอบจากข้อมูลล่าสุด</p> : <JobList jobs={jobs.filter((job) => ['blocked', 'failed'].includes(String(job.status)))} disabled={busy} select={(id) => { setJobId(id); setPage('worklog'); }} />}</section><section><h3>ระบบควบคุม</h3><p>{host?.state === 'ready' ? 'ระบบในเครื่องพร้อมทำงาน' : host?.state === 'control-only' ? 'ดูผลและยกเลิกงานเดิมได้ · ต้องตรวจระบบก่อนเริ่มงานใหม่' : 'กำลังรอระบบ'}</p>
         {host?.errorCode && <p>{host.errorCode}</p>}{host?.action && <p>{host.action}</p>}<p>งานที่เริ่มแล้วมีประวัติแยกกัน เปิดกลับมาดูและควบคุมได้จากประวัติงาน</p></section>
-        <section><h3>งานล่าสุด {jobs.length} งาน</h3><JobList jobs={jobs} disabled={busy} select={(id) => { setJobId(id); setPage('worklog'); }} /></section><GotzjiConnectionPanel disabled={host?.state !== 'ready'} /></>}
+        <section><h3>งานล่าสุด {jobs.length} งาน</h3><JobList jobs={jobs} disabled={busy} select={(id) => { setJobId(id); setPage('worklog'); }} /></section><GotzjiDeliveryApprovals request={request} disabled={busy || host?.state !== 'ready'} /><GotzjiConnectionPanel disabled={host?.state !== 'ready'} /></>}
       {page === 'projects' && <>{projectId && <GotzjiProjectContext key={projectId} projectId={projectId} request={request} />}<section><h3>โครงการที่ลงทะเบียน</h3>{projects.map((project) => <button disabled={busy} key={String(project.projectId)}
         onClick={() => void act(async () => { await request('selectProject', { projectId: project.projectId }); setProjectId(String(project.projectId)); setPage('tools'); })}>{String(project.displayName)} · {String(project.rootPath)}</button>)}</section>
         <section><h3>เพิ่มโครงการ</h3>{(['projectId', 'displayName', 'rootPath'] as const).map((field) => <label key={field}>{field === 'projectId' ? 'รหัสโครงการ' : field === 'displayName' ? 'ชื่อโครงการ' : 'โฟลเดอร์โครงการ'}

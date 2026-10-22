@@ -27,6 +27,13 @@ export function parseGotzjiRequest(value: unknown): GotzjiRequest {
     throw new GotzjiHostError('CALLER_AUTHORITY_DENIED');
   }
   const method = value.method as GotzjiMethod;
+  if (method === 'listDeliveryApprovals' && Object.keys(input).length > 0) throw new GotzjiHostError('INVALID_GOTZJI_REQUEST');
+  if (method === 'deliveryApproval' || method === 'decideDeliveryApproval') {
+    requiredText(input, 'preparationId');
+    const allowed = method === 'deliveryApproval' ? ['preparationId'] : ['preparationId', 'expectedDigest', 'decision'];
+    if (Object.keys(input).some(key => !allowed.includes(key))) throw new GotzjiHostError('INVALID_GOTZJI_REQUEST');
+    if (method === 'decideDeliveryApproval' && (typeof input.expectedDigest !== 'string' || !/^[a-f0-9]{64}$/u.test(input.expectedDigest) || !['approved', 'rejected'].includes(String(input.decision)))) throw new GotzjiHostError('INVALID_GOTZJI_REQUEST');
+  }
   if (method === 'selectedProject' && Object.keys(input).length > 0) throw new GotzjiHostError('INVALID_GOTZJI_REQUEST');
   if (method === 'selectProject' || method === 'projectContext') {
     if (Object.keys(input).some((key) => key !== 'projectId')) throw new GotzjiHostError('INVALID_GOTZJI_REQUEST');

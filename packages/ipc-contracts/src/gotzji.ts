@@ -10,6 +10,7 @@ export const gotzjiIpcChannels = {
 } as const;
 
 export const gotzjiMethods = [
+  'listDeliveryApprovals', 'deliveryApproval', 'decideDeliveryApproval',
   'selectProject', 'selectedProject', 'projectContext', 'saveProjectMemory',
   'readProjectFile', 'listProjectFiles', 'searchProjectFiles', 'readProjectGit',
   'listProjects', 'registerProject', 'registerRecipe', 'bindProjectRecipe', 'supportReport', 'listCatalog', 'prepareOperation', 'submit',

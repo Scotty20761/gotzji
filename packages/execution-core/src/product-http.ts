@@ -6,6 +6,7 @@ import { assertHostDirectLibraryWorkflow, libraryCatalog } from './product-libra
 
 export type ProductRpc = (method: string, input: Record<string, unknown>, surface: 'app' | 'mcp', expectedBuild?: string) => Promise<unknown>;
 export const PRODUCT_MCP_TOOLS = [
+  { name: 'gotzji_delivery_request', method: 'deliveryApproval', readOnly: true, description: 'Inspect one prepared delivery request and its owner decision. No work starts during preparation or approval. Ask the owner to approve the exact request in the gotzji app, then submit the same preparation. This tool cannot grant approval.' },
   { name: 'gotzji_git', method: 'readProjectGit', readOnly: true, description: 'Read status, recent history or one selected-file diff in an enrolled ordinary project repository. Uses controlled read configuration without repository programs, Git mutations, fetch, push or remote commands. Refuses UNC roots and linked/shared metadata.' },
   { name: 'gotzji_health', method: 'health', readOnly: true, description: 'Inspect the gotzji host control availability. This does not start a model turn.' },
   { name: 'gotzji_projects', method: 'listProjects', readOnly: true, description: 'List projects already enrolled by the owner in the gotzji app.' },
@@ -27,7 +28,7 @@ export const PRODUCT_MCP_TOOLS = [
   { name: 'gotzji_resume', method: 'resume', readOnly: false, description: 'Inspect and resume a selected admitted job without submitting it again.' },
   { name: 'gotzji_cancel', method: 'cancel', readOnly: false, description: 'Cancel only the explicitly selected owner job and inspect its termination result.' },
 ] as const;
-const ALLOWED_APP_METHODS = new Set(['selectProject', 'selectedProject', 'projectContext', 'saveProjectMemory', 'readProjectGit', 'health', 'registerProject', 'registerRecipe', 'bindProjectRecipe', 'supportReport', 'listProjects', 'catalog', 'readProjectFile', 'listProjectFiles', 'searchProjectFiles', 'prepareOperation', 'submit', 'list', 'inspectQueue', 'reprioritize', 'status', 'logs', 'result', 'cancel', 'settleJob', 'resume', 'connectionStatus', 'configureConnection', 'startConnection', 'stopConnection', 'startBrowserSession', 'browserSession', 'stopBrowserSession', 'authorizeLibraryDelivery', 'enrollLibraryChannel', 'libraryChannelStatus', 'configureLibraryConnection', 'startLibraryConnection', 'stopLibraryConnection', 'testOnlyE2eShutdown']);
+const ALLOWED_APP_METHODS = new Set(['listDeliveryApprovals', 'deliveryApproval', 'decideDeliveryApproval', 'selectProject', 'selectedProject', 'projectContext', 'saveProjectMemory', 'readProjectGit', 'health', 'registerProject', 'registerRecipe', 'bindProjectRecipe', 'supportReport', 'listProjects', 'catalog', 'readProjectFile', 'listProjectFiles', 'searchProjectFiles', 'prepareOperation', 'submit', 'list', 'inspectQueue', 'reprioritize', 'status', 'logs', 'result', 'cancel', 'settleJob', 'resume', 'connectionStatus', 'configureConnection', 'startConnection', 'stopConnection', 'startBrowserSession', 'browserSession', 'stopBrowserSession', 'authorizeLibraryDelivery', 'enrollLibraryChannel', 'libraryChannelStatus', 'configureLibraryConnection', 'startLibraryConnection', 'stopLibraryConnection', 'testOnlyE2eShutdown']);
 type Schema = Record<string, unknown>;
 const text = { type: 'string', minLength: 1 };
 const priority = { type: 'integer', minimum: 0, maximum: 3 };
@@ -48,6 +49,9 @@ const fields: Record<string, Schema> = {
 /** One advertised schema is enforced on both app and MCP before core dispatch. */
 export function productControlSchema(method: string): Schema {
   if (method === 'selectProject') return objectSchema({ projectId: text }, ['projectId']);
+  if (method === 'deliveryApproval') return objectSchema({ preparationId: text }, ['preparationId']);
+  if (method === 'listDeliveryApprovals') return objectSchema({}, []);
+  if (method === 'decideDeliveryApproval') return objectSchema({ preparationId: text, expectedDigest: { type: 'string', pattern: '^[a-f0-9]{64}$' }, decision: { type: 'string', enum: ['approved', 'rejected'] } }, ['preparationId', 'expectedDigest', 'decision']);
   if (method === 'selectedProject') return objectSchema({}, []);
   if (method === 'projectContext') return objectSchema({ projectId: text }, []);
   if (method === 'saveProjectMemory') {

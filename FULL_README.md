@@ -52,12 +52,14 @@ The host advertises the definitions in packages/execution-core/src/product-http.
 
 | Tool | Mode | Purpose |
 |---|---|---|
+| gotzji_git | READ | Project status, recent history and selected-file diff |
 | gotzji_health | READ | Host/readiness |
 | gotzji_projects | READ | Enrolled projects |
 | gotzji_select_project | CONTEXT | Persist selection of an enrolled project; starts no job |
 | gotzji_project_context | READ | Current selected-project instructions, summary and bounded canonical history |
 | gotzji_save_project_memory | CONTEXT | Version-checked conversation notes and result references |
 | gotzji_tools | READ | Current operation availability |
+| gotzji_delivery_request | READ | Exact prepared delivery request and owner decision; cannot grant approval |
 | gotzji_read_file | READ | Immediate project UTF-8 content and SHA-256, no model/job |
 | gotzji_list_files | READ | Immediate bounded project directory listing |
 | gotzji_search_files | READ | Immediate bounded literal project-text search |
@@ -73,6 +75,8 @@ The host advertises the definitions in packages/execution-core/src/product-http.
 | gotzji_cancel | CONTROL | Cancel selected owned work |
 
 Project/recipe/connection enrollment stays in the local app. Neither raw workspace_list nor a general shell is inherited into this catalog.
+
+Delivery recipes keep an additional owner decision. ChatGPT prepares an exact request and reads its state with `gotzji_delivery_request(preparationId)`. The app's home page shows the project, command arguments, executable/dependency hashes and current instruction fingerprints for owner review. Approving or rejecting creates no job. Approval is limited to that preparation and expires 30 minutes after preparation. ChatGPT then submits the same preparation; an unapproved, rejected, expired or changed command/policy is refused. Duplicate submissions return the original canonical job rather than repeating the delivery. The app cannot prepare or submit new work. Decisions persist in migration 012 of the same owner ledger; no second authority or model runtime is added.
 
 ## Internal upstream compatibility catalog
 

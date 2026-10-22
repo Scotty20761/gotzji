@@ -40,7 +40,7 @@ export function GotzjiProjectCommands({ projectId, projectName, commands, disabl
   if (chatgptOnly) return <section hidden={!visible} aria-label="คำสั่งที่ผูกกับโครงการ"><h3>คำสั่งสำหรับ ChatGPT</h3><p>โครงการ: {projectName}</p>
     <p>เลือกคำสั่งที่ผูกไว้ แล้วคัดลอกไปสั่งใน ChatGPT งานที่เริ่มแล้วจะปรากฏในประวัติของโครงการนี้</p>
     {commands.map((command) => <p key={command.recipeId}><button disabled={locked} onClick={() => void act(async () => {
-      await navigator.clipboard.writeText(`อ่านบริบทโครงการ ${projectId} แล้วช่วยรันคำสั่ง ${command.recipeId} ในโครงการนี้ ตรวจผลและบันทึกสรุปเมื่อเสร็จ`);
+      await navigator.clipboard.writeText(`อ่านบริบทโครงการ ${projectId} แล้วช่วยเตรียมคำสั่ง ${command.recipeId} ในโครงการนี้${command.ownerOnly ? " ให้เราตรวจและอนุมัติคำขอส่งมอบที่แน่นอนในแอปก่อน แล้วส่งคำขอเดิมเมื่ออนุมัติแล้ว" : " แล้วส่งคำขอผ่าน gotzji"} ตรวจผลและบันทึกสรุปเมื่อเสร็จ`);
       setSelectedId(command.recipeId);
     })}>คัดลอกคำสั่ง {command.title}</button></p>)}
     {commands.length === 0 && <button onClick={onSettings}>ตั้งค่าคำสั่งของโครงการ</button>}
