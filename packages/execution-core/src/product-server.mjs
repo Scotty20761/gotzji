@@ -133,6 +133,8 @@ const listener = await startProductHttp({ token: config.daemonSecret, mcpPathSec
       return { accepted: true, nonce: input.nonce };
     }
     case 'registerProject': { if (surface !== 'app') throw new CoreError('PROJECT_REGISTRATION_DENIED'); const project = core.registerProject(credential, input); if (project.kind === 'library') core.enrollLibraryRoute(credential, { projectId: project.projectId, route: 'gotzji-library' }); return project; }
+    case 'listManagedProjects': if (surface !== 'app') throw new CoreError('PROJECT_MANAGEMENT_DENIED'); return core.listManagedProjects(credential);
+    case 'setProjectArchived': if (surface !== 'app') throw new CoreError('PROJECT_MANAGEMENT_DENIED'); return core.setProjectArchived(credential, input);
     case 'selectProject': return core.selectProject(credential, input.projectId);
     case 'selectedProject': return core.selectedProject(credential);
     case 'projectContext': return core.projectContext(credential, input.projectId);

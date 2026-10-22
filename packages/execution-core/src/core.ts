@@ -277,11 +277,16 @@ export class ExecutionCore {
   public bindProjectRecipe(credential: string, binding: { readonly projectId: string; readonly recipeId: string }): RegisteredProject {
     const adapter = this.authorize(credential, true);
     if (this.#grace?.recipe !== 'product') throw new CoreError('PRODUCT_PROFILE_REQUIRED');
-    const project = this.readProject(credential, binding.projectId);
-    if (project.kind === 'library') throw new CoreError('RECIPE_BINDING_UNSUPPORTED', 'Library projects run their own workflows', 'projectId');
-    if (!this.#store.database.connection.prepare('SELECT 1 FROM gotzji_reviewed_recipes WHERE owner=? AND recipe_id=?').get(adapter.owner, binding.recipeId)) throw new CoreError('RECIPE_NOT_REGISTERED', 'Choose a recipe from the server catalog', 'recipeId');
-    this.#store.database.connection.prepare('INSERT OR IGNORE INTO gotzji_project_recipes VALUES (?,?,?,?)').run(adapter.owner, project.projectId, binding.recipeId, this.#now().toISOString());
-    return { ...project, recipeIds: this.projectRecipeIds(credential, project) };
+    const database = this.#store.database.connection;
+    database.exec('BEGIN IMMEDIATE;');
+    try {
+      const project = this.readProject(credential, binding.projectId);
+      if (project.kind === 'library') throw new CoreError('RECIPE_BINDING_UNSUPPORTED', 'Library projects run their own workflows', 'projectId');
+      if (!database.prepare('SELECT 1 FROM gotzji_reviewed_recipes WHERE owner=? AND recipe_id=?').get(adapter.owner, binding.recipeId)) throw new CoreError('RECIPE_NOT_REGISTERED', 'Choose a recipe from the server catalog', 'recipeId');
+      database.prepare('INSERT OR IGNORE INTO gotzji_project_recipes VALUES (?,?,?,?)').run(adapter.owner, project.projectId, binding.recipeId, this.#now().toISOString());
+      const result = { ...project, recipeIds: this.projectRecipeIds(credential, project) };
+      database.exec('COMMIT;'); return result;
+    } catch (error) { try { database.exec('ROLLBACK;'); } catch { /* transaction already closed */ } throw error; }
   }
   /** Recipes a project may run: its registration's own plus every owner binding, in that order. */
   public projectRecipeIds(credential: string, project: RegisteredProject): readonly string[] {
@@ -322,9 +327,13 @@ export class ExecutionCore {
   /** Selects existing enrollment only; never enrolls a caller-supplied path or starts work. */
   public selectProject(credential: string, projectId: string): RegisteredProject {
     const adapter = this.authorize(credential, true);
-    const project = this.readProject(credential, projectId);
-    this.#store.database.connection.prepare('INSERT INTO gotzji_project_selection VALUES (?,?) ON CONFLICT(owner) DO UPDATE SET project_id=excluded.project_id').run(adapter.owner, projectId);
-    return project;
+    const database = this.#store.database.connection;
+    database.exec('BEGIN IMMEDIATE;');
+    try {
+      const project = this.readProject(credential, projectId);
+      database.prepare('INSERT INTO gotzji_project_selection VALUES (?,?) ON CONFLICT(owner) DO UPDATE SET project_id=excluded.project_id').run(adapter.owner, projectId);
+      database.exec('COMMIT;'); return project;
+    } catch (error) { try { database.exec('ROLLBACK;'); } catch { /* transaction already closed */ } throw error; }
   }
   /** App-only archive/restore. It changes discoverability, never registration, history, memory, routes or files. */
   public setProjectArchived(credential: string, input: { readonly projectId: string; readonly archived: boolean }): ManagedProject {
@@ -370,7 +379,9 @@ export class ExecutionCore {
       catch { throw new CoreError('PROJECT_BUSY', 'An admitted project claim has unknown retained state', 'projectId'); }
       if (!prepared?.project?.projectId || prepared.project.owner !== owner || (claim.indexed_project_id && claim.indexed_project_id !== prepared.project.projectId)) throw new CoreError('PROJECT_BUSY', 'An admitted project claim has unknown retained state', 'projectId');
       if (prepared.project.projectId !== projectId) continue;
-      const held = !!database.prepare('SELECT 1 FROM gotzji_writers WHERE job_id=? UNION ALL SELECT 1 FROM gotzji_resource_claims WHERE job_id=? UNION ALL SELECT 1 FROM gotzji_workers WHERE job_id=? LIMIT 1').get(claim.id, claim.id, claim.id);
+      const held = !!database.prepare(`SELECT 1 FROM gotzji_writers WHERE job_id=? UNION ALL SELECT 1 FROM gotzji_resource_claims WHERE job_id=?
+        UNION ALL SELECT 1 FROM gotzji_workers w WHERE w.job_id=? AND NOT EXISTS(
+          SELECT 1 FROM gotzji_worker_history h WHERE h.epoch=w.epoch AND h.job_id=w.job_id AND h.reason IN ('stopped','absent')) LIMIT 1`).get(claim.id, claim.id, claim.id);
       if (claim.goal_id === null || !claim.actual_goal_id || claim.actual_goal_key !== claim.goal_key || claim.goal_status === 'active' || held || ['started', 'uncertain'].includes(claim.operation_phase ?? '')) throw new CoreError('PROJECT_BUSY', 'Wait for, cancel or settle this project’s admitted work before archiving it', 'projectId');
     }
     const ambiguous = database.prepare(`
@@ -379,7 +390,8 @@ export class ExecutionCore {
       WHERE p.project_id=? AND (c.id IS NULL OR (c.owner=? AND (
         EXISTS(SELECT 1 FROM gotzji_writers w WHERE w.job_id=p.job_id)
         OR EXISTS(SELECT 1 FROM gotzji_resource_claims r WHERE r.job_id=p.job_id)
-        OR EXISTS(SELECT 1 FROM gotzji_workers w WHERE w.job_id=p.job_id)
+        OR EXISTS(SELECT 1 FROM gotzji_workers w WHERE w.job_id=p.job_id AND NOT EXISTS(
+          SELECT 1 FROM gotzji_worker_history h WHERE h.epoch=w.epoch AND h.job_id=w.job_id AND h.reason IN ('stopped','absent')))
       ))) LIMIT 1
     `).get(projectId, owner);
     if (ambiguous) throw new CoreError('PROJECT_BUSY', 'The project still has retained execution authority', 'projectId');
@@ -412,8 +424,13 @@ export class ExecutionCore {
   }
   public saveProjectMemory(credential: string, input: { readonly projectId: string; readonly expectedRevision: number; readonly memory: ProjectMemory }): ProjectMemorySnapshot {
     const adapter = this.authorize(credential, true);
-    this.readProject(credential, input.projectId);
-    return writeProjectMemory(this.#store.database.connection, adapter.owner, input.projectId, input, this.#now().toISOString());
+    const database = this.#store.database.connection;
+    database.exec('BEGIN IMMEDIATE;');
+    try {
+      this.readProject(credential, input.projectId);
+      const result = writeProjectMemory(database, adapter.owner, input.projectId, input, this.#now().toISOString());
+      database.exec('COMMIT;'); return result;
+    } catch (error) { try { database.exec('ROLLBACK;'); } catch { /* transaction already closed */ } throw error; }
   }
   /** App-only enrollment of one host-owned browser session; never expose private session facts through MCP. */
   public async enrollBrowserSession(credential: string, options: CoreBrowserOptions): Promise<void> {
@@ -1145,7 +1162,7 @@ export class ExecutionCore {
   private policyFingerprintComponents(): Record<string, unknown> {
     const source = (name: string): URL => { const authored = new URL(`../src/${name}.ts`, import.meta.url); return existsSync(authored) ? authored : new URL(`./${name}.js`, import.meta.url); };
     const libraryContracts = ['product-library','library-workflow-contract','library-workflow-adapter','library-workflow-registry'].map((name) => hash(readFileSync(source(name))));
-    return { version: 8, root: this.#root,privateRuntimeRoots:this.#privateRuntimeRoots, control:hash(readFileSync(source('core'))), readContract:hash(readFileSync(source('product-file-reads'))), gitReadContract:hash(readFileSync(source('product-git-reads'))), gitReadDiagnosticContract:hash(readFileSync(source('git-read-diagnostics'))), gitReadPolicyContract:hash(readFileSync(source('git-read-policy'))), snapshotContract:hash(readFileSync(new URL('./project-file-snapshot.mjs',import.meta.url))), logContract:hash(readFileSync(source('utf8-log-page'))), productContract:hash(readFileSync(source('product-projects'))), ledger:hash(readFileSync(source('store'))), nativeContract:hash(readFileSync(source('product-native'))), browserContract:hash(readFileSync(source('product-browser'))), libraryContracts, finalMemoContract:hash(readFileSync(new URL('./product-library-final-memo.mjs',import.meta.url))),
+    return { version: 8, root: this.#root,privateRuntimeRoots:this.#privateRuntimeRoots, control:hash(readFileSync(source('core'))), lifecycleContract:hash(readFileSync(source('project-lifecycle'))), readContract:hash(readFileSync(source('product-file-reads'))), gitReadContract:hash(readFileSync(source('product-git-reads'))), gitReadDiagnosticContract:hash(readFileSync(source('git-read-diagnostics'))), gitReadPolicyContract:hash(readFileSync(source('git-read-policy'))), snapshotContract:hash(readFileSync(new URL('./project-file-snapshot.mjs',import.meta.url))), logContract:hash(readFileSync(source('utf8-log-page'))), productContract:hash(readFileSync(source('product-projects'))), ledger:hash(readFileSync(source('store'))), nativeContract:hash(readFileSync(source('product-native'))), browserContract:hash(readFileSync(source('product-browser'))), libraryContracts, finalMemoContract:hash(readFileSync(new URL('./product-library-final-memo.mjs',import.meta.url))),
       nativeOptions:this.#native, nativeTestRunnerHash:this.#native?.testRunnerModule?hash(readFileSync(this.#native.testRunnerModule)):null,
       libraryOptions:this.#library?{pythonExecutable:this.#library.pythonExecutable,pythonSha256:this.#library.pythonSha256}:null, libraryTestRunnerHash:this.#library?.testRunnerModule?hash(readFileSync(this.#library.testRunnerModule)):null,
       browserRuntimeEnrollment:'private-pinned-session',browserTestTransportHash:this.#browser?.testTransportModule?hash(readFileSync(this.#browser.testTransportModule)):null,

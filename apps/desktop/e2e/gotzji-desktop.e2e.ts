@@ -681,6 +681,58 @@ test('gotzji project selection survives page reload and Desktop cannot start new
   expect(await page.evaluate(async () => window.gotzji.request({ method: 'listJobs', input: {} }))).toEqual([]);
 });
 
+test('gotzji app archives and restores one project while retaining files, memory and canonical history', async ({ gotzji }, testInfo) => {
+  const { page } = gotzji;
+  const root = await gotzji.temporaryProject('gotzji-files-panel-e2e-');
+  await writeFile(path.join(root, 'AGENTS.md'), 'Current archive-project instructions\n');
+  await writeFile(path.join(root, 'source.txt'), 'Original project file\n');
+  await page.evaluate(async (rootPath) => window.gotzji.request({ method: 'registerProject', input: { projectId: 'archive-proof', displayName: 'โครงการเก็บและนำกลับ', rootPath } }), root);
+  await page.getByRole('button', { name: 'รีเฟรช', exact: true }).click();
+  await page.getByRole('button', { name: 'โครงการ', exact: true }).click();
+  await page.getByRole('button', { name: /^โครงการเก็บและนำกลับ ·/u }).click();
+  const prepared = await page.evaluate(async () => {
+    await window.gotzji.request({ method: 'saveProjectMemory', input: { projectId: 'archive-proof', expectedRevision: 0, memory: { summary: 'สรุปก่อนเก็บโครงการ', decisions: ['ใช้ไฟล์เดิม'], openQuestions: ['ตรวจผลเมื่อเปิดกลับ'], resultPaths: ['verified.txt'] } } });
+    const stale = await Reflect.get(window, 'ownedTestRequest')({ method: 'prepareOperation', input: { requestId: 'archive-stale-preparation', projectId: 'archive-proof', operation: 'file.read', path: 'source.txt' } });
+    const creation = await Reflect.get(window, 'ownedTestRequest')({ method: 'prepareOperation', input: { requestId: 'archive-verified-output', projectId: 'archive-proof', operation: 'file.write', path: 'verified.txt', expectedSha256: null, content: 'One canonical result\n' } });
+    const job = await Reflect.get(window, 'ownedTestRequest')({ method: 'submit', input: { preparationId: creation.preparationId } });
+    return { staleId: stale.preparationId as string, jobId: job.jobId as string };
+  });
+  await expect.poll(async () => page.evaluate(async (jobId) => {
+    const status = await window.gotzji.request({ method: 'status', input: { jobId } }) as { status: string };
+    return status.status;
+  }, prepared.jobId), { timeout: testInfo.timeout }).toBe('completed');
+  expect(await readFile(path.join(root, 'verified.txt'), 'utf8')).toBe('One canonical result\n');
+  await page.getByRole('button', { name: 'โครงการ', exact: true }).click();
+  await page.getByRole('button', { name: 'เก็บโครงการ โครงการเก็บและนำกลับ', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'โครงการที่เก็บไว้', exact: true })).toBeVisible();
+  await expect(page.getByRole('region', { name: 'จัดการโครงการ', exact: true })).toBeFocused();
+  await expect(page.getByText('โครงการที่เลือก: โครงการเก็บและนำกลับ', { exact: true })).toHaveCount(0);
+  expect(await page.evaluate(async () => window.gotzji.request({ method: 'selectedProject', input: {} }))).toBeNull();
+  expect(await page.evaluate(async () => window.gotzji.request({ method: 'listProjects', input: {} }))).toEqual([]);
+  const retained = await page.evaluate(async () => window.gotzji.request({ method: 'listJobs', input: {} })) as { jobId: string }[];
+  expect(retained.map((job) => job.jobId)).toEqual([prepared.jobId]);
+  expect(await readFile(path.join(root, 'source.txt'), 'utf8')).toBe('Original project file\n');
+  await page.screenshot({ path: path.join(desktopRoot, '..', '..', '.local-artifacts', 'parity-c1-project-archived.png') });
+  await page.reload();
+  await page.getByRole('button', { name: 'โครงการ', exact: true }).click();
+  await page.getByRole('button', { name: 'นำโครงการ โครงการเก็บและนำกลับ กลับมาใช้', exact: true }).focus();
+  await page.getByRole('button', { name: 'นำโครงการ โครงการเก็บและนำกลับ กลับมาใช้', exact: true }).press('Enter');
+  await expect(page.getByRole('button', { name: /^โครงการเก็บและนำกลับ ·/u })).toBeVisible();
+  await expect(page.getByRole('region', { name: 'จัดการโครงการ', exact: true })).toBeFocused();
+  expect(await page.evaluate(async () => window.gotzji.request({ method: 'selectedProject', input: {} }))).toBeNull();
+  const refused = await page.evaluate(async (preparationId) => {
+    try { await Reflect.get(window, 'ownedTestRequest')({ method: 'submit', input: { preparationId } }); return 'unexpected'; }
+    catch (error) { return error instanceof Error ? error.message : String(error); }
+  }, prepared.staleId);
+  expect(refused).toContain('PROJECT_LIFECYCLE_CHANGED');
+  await page.getByRole('button', { name: /^โครงการเก็บและนำกลับ ·/u }).click();
+  const context = await page.evaluate(async () => window.gotzji.request({ method: 'projectContext', input: {} }));
+  expect(context).toMatchObject({ project: { projectId: 'archive-proof' }, memory: { revision: 1, summary: 'สรุปก่อนเก็บโครงการ', decisions: ['ใช้ไฟล์เดิม'], openQuestions: ['ตรวจผลเมื่อเปิดกลับ'], resultPaths: ['verified.txt'] }, instructions: [{ content: 'Current archive-project instructions\n' }], jobs: [{ jobId: prepared.jobId, status: 'completed' }] });
+  await expect(page.evaluate(async () => window.gotzji.request({ method: 'readProjectFile', input: { projectId: 'archive-proof', path: 'verified.txt' } }))).resolves.toMatchObject({ content: 'One canonical result\n' });
+  expect((await page.evaluate(async () => window.gotzji.request({ method: 'listJobs', input: {} })) as unknown[]).length).toBe(1);
+  await page.screenshot({ path: path.join(desktopRoot, '..', '..', '.local-artifacts', 'parity-c1-project-restored.png') });
+});
+
 test('gotzji owner approves one ChatGPT delivery request without starting it from Desktop', async ({ gotzji }) => {
   const { page } = gotzji;
   const root = await gotzji.temporaryProject('gotzji-files-panel-e2e-');

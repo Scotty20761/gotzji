@@ -24,7 +24,7 @@ function ownBody(body: () => Promise<void>): () => Promise<void> { return (): Pr
 // Each possible sequential worker epoch can use37s readiness+3s authenticated status; retain20s for setup/effect/assertions.
 function productTestTimeout(workerEpochs: number): number { return workerEpochs * 40_000 + 20_000; }
 const fixtures: Fixture[] = [];
-async function fixture(options: { now?: () => Date; quotaReset?: number; delayedProductMs?: number } = {}): Promise<Fixture> {
+async function fixture(options: { now?: () => Date; quotaReset?: number; delayedProductMs?: number; statusBarrier?: boolean } = {}): Promise<Fixture> {
   const root = await canonicalTemporaryDirectory('gotzji-product-');
   const library = path.join(root, 'library');
   await mkdir(path.join(library, 'references'), { recursive: true });
@@ -38,6 +38,12 @@ async function fixture(options: { now?: () => Date; quotaReset?: number; delayed
   if(options.delayedProductMs){
     testDriver=path.join(root,'delayed-driver.mjs');
     await writeFile(testDriver,`import {readFileSync} from 'node:fs';import {fullTools} from ${JSON.stringify(new URL('./grace-broker.mjs',import.meta.url).href)};const config=JSON.parse(readFileSync(process.argv[2],'utf8'));const endpoint='http://127.0.0.1:'+process.argv[3]+'/broker';console.log(JSON.stringify({type:'system',subtype:'init',tools:fullTools(config),apiKeySource:'none',model:'explicit-delayed-test-driver'}));async function call(name,args){console.log(JSON.stringify({type:'assistant',message:{content:[{type:'tool_use',name:'mcp__gotzji_task__'+name,input:args}]}}));const response=await fetch(endpoint,{method:'POST',headers:{Authorization:'Bearer '+config.token,'Content-Type':'application/json'},body:JSON.stringify({name,arguments:args})});if(!response.ok)throw new Error('denied');return response.json();}for(const document of Object.keys(config.grace.documents))await call('read_policy',{document});await new Promise(resolve=>setTimeout(resolve,${options.delayedProductMs}));await call('execute_operation',{});await call('operation_status',{});console.log(JSON.stringify({type:'result',subtype:'success',is_error:false}));`);
+  }
+  if (options.statusBarrier) {
+    const source = (await readFile(testDriver, 'utf8')).replace("from './grace-broker.mjs'", `from ${JSON.stringify(new URL('./grace-broker.mjs', import.meta.url).href)}`)
+      .replace("import { readFileSync } from 'node:fs';", "import { readFileSync, existsSync, writeFileSync } from 'node:fs';")
+      .replace("  await call('operation_status',{});", `  writeFileSync(${JSON.stringify(path.join(root, 'controller-waiting'))}, 'waiting');\n  while (!existsSync(${JSON.stringify(path.join(root, 'controller-release'))})) await new Promise(resolve => setTimeout(resolve, 10));\n  await call('operation_status',{});`);
+    testDriver = path.join(root, 'status-gated-driver.mjs'); await writeFile(testDriver, source);
   }
   const profile = { executable: process.execPath, libraryRoot: library, testDriver };
   const core = await ExecutionCore.open(path.join(root, 'state'), { product: profile, ...(options.now ? { now: options.now } : {}) });
@@ -89,6 +95,29 @@ afterEach(async (): Promise<void> => {
   await finishOwnedTest(testLifetime, () => undefined, () => fixtures.splice(0), cleanupFixture);
 }, 180_000);
 describe('governed product operations — real native Goal, file and process seams', () => {
+  it('archives completed project work only with retained proof that its actual worker retired', ownBody(async () => {
+    const f = await fixture(); const root = await project(f, 'archive-finished');
+    const binding = await submit(f, { requestId: 'archive-finished', projectId: 'archive-finished', operation: 'file.write', path: 'saved.txt', expectedSha256: null, content: 'Retained result\n' });
+    await f.core.resume(f.credential, binding);
+    await until(f, async () => (await f.core.get(f.credential, binding)).status === 'completed');
+    const result = await f.core.readOperationResult(f.credential, binding);
+    const db = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'), { timeout: 5000 });
+    try {
+      const retired = db.prepare('SELECT * FROM gotzji_worker_history WHERE job_id=?').get(binding.jobId)!;
+      expect(retired.reason).toMatch(/^(stopped|absent)$/u);
+      const worker = db.prepare('SELECT * FROM gotzji_workers WHERE job_id=?').get(binding.jobId) as unknown as WorkerRow;
+      expect(await observeWorker(worker)).toBe('absent');
+      db.prepare('DELETE FROM gotzji_worker_history WHERE epoch=?').run(retired.epoch);
+      expect(() => f.core.setProjectArchived(f.credential, { projectId: 'archive-finished', archived: true })).toThrow('PROJECT_BUSY');
+      db.prepare('INSERT INTO gotzji_worker_history VALUES (?,?,?,?,?)').run(retired.epoch, retired.job_id, retired.worker_json, retired.reason, retired.observed_at);
+      expect(() => f.core.setProjectArchived(f.credential, { projectId: 'archive-finished', archived: true })).not.toThrow();
+      expect(db.prepare('SELECT COUNT(*) AS count FROM gotzji_workers WHERE job_id=?').get(binding.jobId)).toMatchObject({ count: 1 });
+      expect((await f.core.get(f.credential, binding)).status).toBe('completed');
+      expect(await f.core.readOperationResult(f.credential, binding)).toEqual(result);
+      expect(await readFile(path.join(root, 'saved.txt'), 'utf8')).toBe('Retained result\n');
+    } finally { db.close(); }
+  }), productTestTimeout(1));
+
   it('drains a pending product predicate before closing its core and stopping its synthetic worker', ownBody(async () => {
     const f = await fixture(); await project(f, 'pending', 20000, 1200000, true);
     const binding = await submit(f, { requestId: 'pending-teardown', projectId: 'pending', operation: 'command.run', commandId: 'run' });
@@ -396,12 +425,45 @@ describe('governed product operations — real native Goal, file and process sea
     await until(f, async () => (await f.core.get(f.credential, running)).status === 'completed');
   }), productTestTimeout(2));
 
+  it('reproduces a late controller request denied by a supervision uncertainty transition', ownBody(async () => {
+    const f = await fixture({ statusBarrier: true }); const projectRoot = await project(f, 'late-controller', 4000, 10000, true);
+    const running = await submit(f, { requestId: 'late-controller', projectId: 'late-controller', operation: 'command.run', commandId: 'run' });
+    try {
+      await f.core.resume(f.credential, running);
+      await until(f, async () => f.core.logs(f.credential, running).text.includes('progress-late-controller'));
+      await until(f, async () => { try { await access(path.join(f.root, 'controller-waiting')); return true; } catch { return false; } });
+      const db = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'), { timeout: 5000 });
+      const worker = db.prepare('SELECT * FROM gotzji_workers WHERE job_id=?').get(running.jobId) as unknown as WorkerRow;
+      const ready = path.join(worker.directory, 'ready.json'); const proof = await readFile(ready);
+      try {
+        await writeFile(ready, '{}');
+        db.prepare('UPDATE gotzji_workers SET last_renewed=? WHERE job_id=?').run(Date.now() - 120_000, running.jobId);
+        await expect(f.core.tick()).rejects.toMatchObject({ code: 'WORKER_RECONCILIATION_REQUIRED' });
+        expect(db.prepare('SELECT phase FROM gotzji_operations WHERE job_id=?').get(running.jobId)).toMatchObject({ phase: 'uncertain' });
+      } finally { await writeFile(ready, proof); db.close(); }
+      await writeFile(path.join(f.root, 'controller-release'), 'continue');
+      await f.lifecycle.run(async (signal) => waitForFixture(signal, async () => signed<{ state: string }>(worker, 'observation.json')?.state === 'failed' ? true : undefined));
+      expect(signed<{ code: string }>(worker, 'broker-error.json')).toMatchObject({ code: 'LIVE_AUTHORITY_DENIED' });
+      expect(signed<{ reason?: string }>(worker, 'product-run.json')?.reason).not.toBe('COMMAND_TIMED_OUT');
+      expect(signed(worker, 'grace-runtime.json')).toBeUndefined();
+      expect(await f.core.get(f.credential, running)).toMatchObject({ status: 'blocked', settleDecisions: ['effect-present', 'no-effect'] });
+    } finally {
+      await writeFile(path.join(f.root, 'controller-release'), 'continue');
+      await writeFile(path.join(projectRoot, 'release'), 'complete once');
+    }
+  }), productTestTimeout(1));
+
   it('never settles running work that only looks blocked, so the command still reaches its end', ownBody(async () => {
     const f = await fixture(); const projectRoot = await project(f, 'two', 4000, 10000, true);
     const running = await submit(f, { requestId: 'long', projectId: 'two', operation: 'command.run', commandId: 'run' });
     try {
       await f.core.resume(f.credential, running);
       await until(f, async () => f.core.logs(f.credential, running).text.includes('progress-two'));
+      const state = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'), { timeout: 5000 });
+      const controllerWorker = state.prepare('SELECT * FROM gotzji_workers WHERE job_id=?').get(running.jobId) as unknown as WorkerRow; state.close();
+      // Progress proves the command started, not that its controller finished the last broker call.
+      // Inject supervision loss only after that call has its signed success receipt, while the release file keeps the command live.
+      await until(f, async () => !!signed(controllerWorker, 'grace-runtime.json'));
       // An owner-wide provider limit from another job and a transient supervision diagnostic both project this live job as blocked.
       const db = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'), { timeout: 5000 });
       try {

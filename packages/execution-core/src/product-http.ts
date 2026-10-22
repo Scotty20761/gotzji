@@ -28,7 +28,7 @@ export const PRODUCT_MCP_TOOLS = [
   { name: 'gotzji_resume', method: 'resume', readOnly: false, description: 'Inspect and resume a selected admitted job without submitting it again.' },
   { name: 'gotzji_cancel', method: 'cancel', readOnly: false, description: 'Cancel only the explicitly selected owner job and inspect its termination result.' },
 ] as const;
-const ALLOWED_APP_METHODS = new Set(['listDeliveryApprovals', 'deliveryApproval', 'decideDeliveryApproval', 'selectProject', 'selectedProject', 'projectContext', 'saveProjectMemory', 'readProjectGit', 'health', 'registerProject', 'registerRecipe', 'bindProjectRecipe', 'supportReport', 'listProjects', 'catalog', 'readProjectFile', 'listProjectFiles', 'searchProjectFiles', 'prepareOperation', 'submit', 'list', 'inspectQueue', 'reprioritize', 'status', 'logs', 'result', 'cancel', 'settleJob', 'resume', 'connectionStatus', 'configureConnection', 'startConnection', 'stopConnection', 'startBrowserSession', 'browserSession', 'stopBrowserSession', 'authorizeLibraryDelivery', 'enrollLibraryChannel', 'libraryChannelStatus', 'configureLibraryConnection', 'startLibraryConnection', 'stopLibraryConnection', 'testOnlyE2eShutdown']);
+const ALLOWED_APP_METHODS = new Set(['listDeliveryApprovals', 'deliveryApproval', 'decideDeliveryApproval', 'selectProject', 'selectedProject', 'projectContext', 'saveProjectMemory', 'readProjectGit', 'health', 'registerProject', 'registerRecipe', 'bindProjectRecipe', 'supportReport', 'listProjects', 'listManagedProjects', 'setProjectArchived', 'catalog', 'readProjectFile', 'listProjectFiles', 'searchProjectFiles', 'prepareOperation', 'submit', 'list', 'inspectQueue', 'reprioritize', 'status', 'logs', 'result', 'cancel', 'settleJob', 'resume', 'connectionStatus', 'configureConnection', 'startConnection', 'stopConnection', 'startBrowserSession', 'browserSession', 'stopBrowserSession', 'authorizeLibraryDelivery', 'enrollLibraryChannel', 'libraryChannelStatus', 'configureLibraryConnection', 'startLibraryConnection', 'stopLibraryConnection', 'testOnlyE2eShutdown']);
 type Schema = Record<string, unknown>;
 const text = { type: 'string', minLength: 1 };
 const priority = { type: 'integer', minimum: 0, maximum: 3 };
@@ -48,6 +48,8 @@ const fields: Record<string, Schema> = {
 };
 /** One advertised schema is enforced on both app and MCP before core dispatch. */
 export function productControlSchema(method: string): Schema {
+  if (method === 'listManagedProjects') return objectSchema({}, []);
+  if (method === 'setProjectArchived') return objectSchema({ projectId: { ...text, pattern: '^[a-zA-Z0-9_-]{1,64}$' }, archived: { type: 'boolean' } }, ['projectId', 'archived']);
   if (method === 'selectProject') return objectSchema({ projectId: text }, ['projectId']);
   if (method === 'deliveryApproval') return objectSchema({ preparationId: text }, ['preparationId']);
   if (method === 'listDeliveryApprovals') return objectSchema({}, []);

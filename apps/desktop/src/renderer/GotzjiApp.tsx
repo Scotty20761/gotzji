@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useState, type ReactElement } from 'react';
+import { useCallback, useEffect, useId, useRef, useState, type ReactElement } from 'react';
 import type { GotzjiHostStatus, GotzjiMethod } from '@lnwjud/ipc-contracts';
 import './gotzji.css';
 import gracePortrait from './assets/grace.webp';
@@ -19,6 +19,7 @@ import { GotzjiLibraryChannelPanel } from './GotzjiLibraryChannelPanel.js';
 import { GotzjiProjectContext } from './GotzjiProjectContext.js';
 import { GotzjiVersionNotes } from './GotzjiVersionNotes.js';
 import { GotzjiDeliveryApprovals } from './GotzjiDeliveryApprovals.js';
+import { GotzjiProjectManager, type ManagedProject } from './GotzjiProjectManager.js';
 
 type Row = Readonly<Record<string, unknown>>;
 type Page = 'home' | 'projects' | 'workflows' | 'tools' | 'git' | 'worklog' | 'live' | 'queue' | 'settings' | 'doctor';
@@ -30,6 +31,7 @@ export function GotzjiApp({ requestPort }: { readonly requestPort?: (method: Got
   const [page, setPage] = useState<Page>('home');
   const [host, setHost] = useState<GotzjiHostStatus | null>(null);
   const [projects, setProjects] = useState<readonly Row[]>([]);
+  const [managedProjects, setManagedProjects] = useState<readonly ManagedProject[] | null>(null);
   const [jobs, setJobs] = useState<readonly Row[]>([]);
   const [jobsLoaded, setJobsLoaded] = useState(false);
   const [catalog, setCatalog] = useState<readonly Row[]>([]);
@@ -60,20 +62,27 @@ export function GotzjiApp({ requestPort }: { readonly requestPort?: (method: Got
   const [priority, setPriority] = useState('1');
   const [queue, setQueue] = useState<readonly Row[]>([]);
   const [jobPriority, setJobPriority] = useState('1');
+  const refreshGeneration = useRef(0);
 
   const request = useCallback((method: GotzjiMethod, input: Record<string, unknown> = {}): Promise<unknown> => requestPort ? requestPort(method, input) : window.gotzji.request({ method, input }), [requestPort]);
   const refresh = useCallback(async (): Promise<void> => {
+    const generation = ++refreshGeneration.current;
     const status = await window.gotzji.hostStatus();
+    if (generation !== refreshGeneration.current) return;
     setHost(status);
-    if (status.state === 'unavailable') { setJobsLoaded(false); return; }
+    if (status.state === 'unavailable') { setJobsLoaded(false); setManagedProjects(null); return; }
     if (status.state === 'control-only') {
-      setJobs(rows(await request('listJobs'))); setJobsLoaded(true); setProjects([]); setCatalog([]);
+      const jobRows = await request('listJobs');
+      if (generation !== refreshGeneration.current) return;
+      setJobs(rows(jobRows)); setJobsLoaded(true); setProjects([]); setManagedProjects(null); setCatalog([]);
       return;
     }
-    const [projectRows, jobRows, catalogRows, selected] = await Promise.all([
-      request('listProjects'), request('listJobs'), request('listCatalog'), request('selectedProject'),
+    const [projectRows, jobRows, catalogRows, selected, managedRows] = await Promise.all([
+      request('listProjects'), request('listJobs'), request('listCatalog'), request('selectedProject'), request('listManagedProjects'),
     ]);
+    if (generation !== refreshGeneration.current) return;
     setProjects(rows(projectRows));
+    setManagedProjects(managedProjectRows(managedRows));
     setProjectId(record(selected) && typeof selected.projectId === 'string' ? selected.projectId : '');
     setJobs(rows(jobRows)); setJobsLoaded(true);
     setCatalog(rows(catalogRows));
@@ -85,7 +94,7 @@ export function GotzjiApp({ requestPort }: { readonly requestPort?: (method: Got
     const update = (): void => { void refresh().catch((cause: unknown) => { if (!disposed) setError(message(cause)); }); };
     update();
     const timer = window.setInterval(update, 5_000);
-    return (): void => { disposed = true; window.clearInterval(timer); };
+    return (): void => { disposed = true; refreshGeneration.current += 1; window.clearInterval(timer); };
   }, [refresh]);
   useEffect(() => {
     setPreparationId(null); setRequestId(null);
@@ -155,8 +164,8 @@ export function GotzjiApp({ requestPort }: { readonly requestPort?: (method: Got
       {page === 'home' && <><div className="gotzji-welcome"><div><p className="gotzji-greeting">Grace ผู้ช่วยงานบนคอมพิวเตอร์</p><h3>วันนี้มีอะไรให้ช่วยคะ</h3><p>เลือกโครงการ แล้วสั่งงานต่อจาก ChatGPT หรือเปิดดูงานเดิมได้ที่นี่</p><button onClick={() => setPage('projects')}>เปิดโครงการ</button></div><img src={gracePortrait} alt="" /></div><section><h3>เรื่องที่รอคุณดูแล</h3>{!jobsLoaded ? <p>กำลังตรวจงานที่รอคุณดูแล</p> : jobs.filter((job) => ['blocked', 'failed'].includes(String(job.status))).length === 0 ? <p>ไม่พบเรื่องที่รอคุณตอบจากข้อมูลล่าสุด</p> : <JobList jobs={jobs.filter((job) => ['blocked', 'failed'].includes(String(job.status)))} disabled={busy} select={(id) => { setJobId(id); setPage('worklog'); }} />}</section><section><h3>ระบบควบคุม</h3><p>{host?.state === 'ready' ? 'ระบบในเครื่องพร้อมทำงาน' : host?.state === 'control-only' ? 'ดูผลและยกเลิกงานเดิมได้ · ต้องตรวจระบบก่อนเริ่มงานใหม่' : 'กำลังรอระบบ'}</p>
         {host?.errorCode && <p>{host.errorCode}</p>}{host?.action && <p>{host.action}</p>}<p>งานที่เริ่มแล้วมีประวัติแยกกัน เปิดกลับมาดูและควบคุมได้จากประวัติงาน</p></section>
         <section><h3>งานล่าสุด {jobs.length} งาน</h3><JobList jobs={jobs} disabled={busy} select={(id) => { setJobId(id); setPage('worklog'); }} /></section><GotzjiDeliveryApprovals request={request} disabled={busy || host?.state !== 'ready'} /><GotzjiConnectionPanel disabled={host?.state !== 'ready'} /></>}
-      {page === 'projects' && <>{projectId && <GotzjiProjectContext key={projectId} projectId={projectId} request={request} />}<section><h3>โครงการที่ลงทะเบียน</h3>{projects.map((project) => <button disabled={busy} key={String(project.projectId)}
-        onClick={() => void act(async () => { await request('selectProject', { projectId: project.projectId }); setProjectId(String(project.projectId)); setPage('tools'); })}>{String(project.displayName)} · {String(project.rootPath)}</button>)}</section>
+      {page === 'projects' && <>{projectId && <GotzjiProjectContext key={projectId} projectId={projectId} request={request} />}<GotzjiProjectManager projects={managedProjects} selectedProjectId={projectId} disabled={busy || host?.state !== 'ready'} request={request}
+        select={(id) => void act(async () => { await request('selectProject', { projectId: id }); setProjectId(id); setPage('tools'); })} changed={refresh} />
         <section><h3>เพิ่มโครงการ</h3>{(['projectId', 'displayName', 'rootPath'] as const).map((field) => <label key={field}>{field === 'projectId' ? 'รหัสโครงการ' : field === 'displayName' ? 'ชื่อโครงการ' : 'โฟลเดอร์โครงการ'}
           <input disabled={busy} value={registration[field]} onChange={(event) => setRegistration({ ...registration, [field]: event.target.value })} /></label>)}
           {recipes.length > 0 && <fieldset><legend>คำสั่งที่ระบบตรวจไว้แล้ว</legend>{recipes.map((recipe) => <label key={String(recipe.recipeId)}>
@@ -260,6 +269,13 @@ function rows(value: unknown): readonly Row[] {
   const candidate = Array.isArray(value) ? value : record(value) ? (value.items ?? value.projects ?? value.jobs ?? value.operations) : null;
   if (!Array.isArray(candidate) || candidate.some((item: unknown) => !record(item))) throw new Error('LIST_RESPONSE_INVALID');
   return candidate as Row[];
+}
+function managedProjectRows(value: unknown): readonly ManagedProject[] {
+  return rows(value).map((project) => {
+    if (typeof project.projectId !== 'string' || typeof project.displayName !== 'string' || typeof project.rootPath !== 'string'
+      || project.archivedAt !== null && typeof project.archivedAt !== 'string') throw new Error('PROJECT_LIST_INVALID');
+    return { projectId: project.projectId, displayName: project.displayName, rootPath: project.rootPath, archivedAt: project.archivedAt };
+  });
 }
 function message(value: unknown): string { return value instanceof Error ? value.message : 'ไม่สามารถเชื่อมต่อได้'; }
 function display(value: unknown): string { return value === null ? 'กำลังอ่านสถานะ…' : JSON.stringify(value, null, 2); }

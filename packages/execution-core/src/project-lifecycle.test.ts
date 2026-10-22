@@ -3,11 +3,21 @@ import { mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ExecutionCore } from './core.js';
 import { ensureProductControlDocuments } from './product-control-policy.js';
 import { canonicalTemporaryDirectory } from './test-fixtures.js';
 import type { ProductBrowserInput, TrustedProductBrowserOptions, TrustedProductBrowserSessionManifest } from './product-browser.js';
+
+const lifecycleBytes = vi.hoisted(() => ({ changed: false }));
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  return { ...actual, readFileSync: ((file: Parameters<typeof actual.readFileSync>[0], ...options: unknown[]) => {
+    const bytes = (actual.readFileSync as (...parameters: unknown[]) => string | Buffer)(file, ...options);
+    return lifecycleBytes.changed && /[/\\]project-lifecycle\.(?:ts|js)$/u.test(String(file))
+      ? typeof bytes === 'string' ? `${bytes}\n// changed lifecycle contract` : Buffer.concat([bytes, Buffer.from('\n// changed lifecycle contract')]) : bytes;
+  }) as typeof actual.readFileSync };
+});
 
 const roots: string[] = [];
 const digest = (value: string): string => createHash('sha256').update(value).digest('hex');
@@ -33,6 +43,56 @@ async function fixture(now = new Date('2026-10-22T06:00:00.000Z')): Promise<{
 }
 
 describe('app-only project archive and restore', () => {
+  it('refuses lifecycle mutation when the lifecycle contract bytes change after Core opens', async () => {
+    const f = await fixture();
+    try {
+      lifecycleBytes.changed = true;
+      expect(() => f.core.setProjectArchived(f.app, { projectId: 'project', archived: true })).toThrow('CORE_DEPENDENCIES_CHANGED');
+      expect(f.core.listManagedProjects(f.app)[0]!.archivedAt).toBeNull();
+    } finally { lifecycleBytes.changed = false; f.core.close(); }
+  });
+
+  it.each(['selection', 'recipe', 'memory'] as const)('serializes %s writes with a second Core archiving the project', async (operation) => {
+    const f = await fixture();
+    const peer = await ExecutionCore.open(f.state, { product: { mode: 'host-direct', libraryRoot: f.policy } });
+    let capturePeer = true; const peerConnections: DatabaseSync[] = []; let interleave = false; let attempted = false; let archived = false;
+    const prepare = DatabaseSync.prototype.prepare;
+    const spy = vi.spyOn(DatabaseSync.prototype, 'prepare').mockImplementation(function (this: DatabaseSync, sql: string) {
+      if (capturePeer) peerConnections.push(this);
+      const statement = prepare.call(this, sql);
+      if (interleave && sql.includes('SELECT p.registration,l.archived_at,l.generation')) {
+        const get = statement.get.bind(statement);
+        statement.get = (...parameters: Parameters<typeof get>): ReturnType<typeof get> => {
+          const row = get(...parameters);
+          if (!attempted) {
+            attempted = true;
+            try { peer.setProjectArchived(f.app, { projectId: 'project', archived: true }); archived = true; }
+            catch (error) { if (!(error instanceof Error) || !error.message.includes('database is locked')) throw error; }
+          }
+          return row;
+        };
+      }
+      return statement;
+    });
+    try {
+      peer.listManagedProjects(f.app); capturePeer = false; peerConnections.at(-1)!.exec('PRAGMA busy_timeout=0;');
+      f.core.registerReviewedCommand(f.app, { recipeId: 'race-check', executable: process.execPath, args: ['--version'], dependencies: [] });
+      interleave = true;
+      const write = (): unknown => operation === 'selection' ? f.core.selectProject(f.app, 'project') : operation === 'recipe'
+        ? f.core.bindProjectRecipe(f.app, { projectId: 'project', recipeId: 'race-check' })
+        : f.core.saveProjectMemory(f.chat, { projectId: 'project', expectedRevision: 0, memory: { summary: 'saved before archive', decisions: [], openQuestions: [], resultPaths: [] } });
+      expect(write).not.toThrow();
+      expect(attempted).toBe(true);
+      expect(archived).toBe(false);
+      interleave = false;
+      peer.setProjectArchived(f.app, { projectId: 'project', archived: true });
+      peer.setProjectArchived(f.app, { projectId: 'project', archived: false });
+      expect(f.core.selectedProject(f.chat)).toBeNull();
+      if (operation === 'recipe') expect(f.core.projectRecipeIds(f.app, f.core.listProjects(f.app)[0]!)).toContain('race-check');
+      if (operation === 'memory') expect((await f.core.projectContext(f.chat, 'project')).memory.revision).toBe(1);
+    } finally { spy.mockRestore(); peer.close(); f.core.close(); }
+  });
+
   it('persists archive state, clears selection, and retains files, memory, recipe bindings and canonical history', async () => {
     const f = await fixture(); let core = f.core;
     try {

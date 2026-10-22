@@ -8,6 +8,32 @@ import { libraryCatalog } from './product-library.js';
 import { startProductTunnelBridge } from './product-connection.js';
 
 describe('governed product HTTP and MCP boundary', () => {
+  it('keeps archive and restore on authenticated app RPC with strict schemas and no MCP alias', async () => {
+    const calls: { method: string; input: Record<string, unknown>; surface: string }[] = [];
+    const host = await startProductHttp({ token: 'owner', mcpPathSecret: 'tunnel', rpc: async (method, input, surface) => { calls.push({ method, input, surface }); return []; } });
+    const app = async (method: string, input: Record<string, unknown>): Promise<{ ok: boolean }> => (await (await fetch(`http://127.0.0.1:${host.port}/rpc`, {
+      method: 'POST', headers: { Authorization: 'Bearer owner' }, body: JSON.stringify({ method, input }),
+    })).json()) as { ok: boolean };
+    const mcp = async (method: string, params?: Record<string, unknown>): Promise<{ result: { isError?: boolean; tools?: { name: string }[] } }> => (await (await fetch(`http://127.0.0.1:${host.port}/mcp/tunnel`, {
+      method: 'POST', body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, ...(params ? { params } : {}) }),
+    })).json()) as { result: { isError?: boolean; tools?: { name: string }[] } };
+    try {
+      expect((await app('listManagedProjects', {})).ok).toBe(true);
+      for (const archived of [true, false]) expect((await app('setProjectArchived', { projectId: 'project', archived })).ok).toBe(true);
+      for (const input of [{ projectId: 'project' }, { projectId: 'project', archived: 'true' }, { projectId: '../project', archived: true }, { projectId: 'project', archived: true, deleteFiles: true }]) expect((await app('setProjectArchived', input)).ok).toBe(false);
+      expect((await app('listManagedProjects', { projectId: 'project' })).ok).toBe(false);
+      const tools = (await mcp('tools/list')).result.tools!.map((tool) => tool.name);
+      for (const name of ['listManagedProjects', 'setProjectArchived', 'gotzji_listManagedProjects', 'gotzji_setProjectArchived', 'gotzji_archive_project', 'gotzji_restore_project']) {
+        expect(tools).not.toContain(name);
+        expect((await mcp('tools/call', { name, arguments: { projectId: 'project', archived: true } })).result.isError).toBe(true);
+      }
+      expect(calls).toEqual([
+        { method: 'listManagedProjects', input: {}, surface: 'app' },
+        { method: 'setProjectArchived', input: { projectId: 'project', archived: true }, surface: 'app' },
+        { method: 'setProjectArchived', input: { projectId: 'project', archived: false }, surface: 'app' },
+      ]);
+    } finally { await host.close(); }
+  });
   it('keeps the owned MCP tool table aligned with its facade rather than the retained upstream inventory', async () => {
     const readme = await readFile(fileURLToPath(new URL('../../../FULL_README.md', import.meta.url)), 'utf8');
     const section = readme.split('## MCP control catalog')[1]?.split('## Internal upstream compatibility catalog')[0] ?? '';

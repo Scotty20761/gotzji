@@ -13,6 +13,18 @@ afterEach(async () => {
 });
 
 describe('gotzji desktop governed boundary', () => {
+  it('accepts only explicit project archive state and keeps management inputs free of caller authority', () => {
+    expect(parseGotzjiRequest({ method: 'listManagedProjects', input: {} })).toEqual({ method: 'listManagedProjects', input: {} });
+    for (const archived of [true, false]) {
+      const input = { projectId: 'owned-project', archived };
+      expect(parseGotzjiRequest({ method: 'setProjectArchived', input })).toEqual({ method: 'setProjectArchived', input });
+      expect(() => parseGotzjiRequest({ method: 'setProjectArchived', input: { ...input, ownerId: 'other' } })).toThrow('CALLER_AUTHORITY_DENIED');
+    }
+    for (const input of [{ projectId: 'owned-project' }, { projectId: 'owned-project', archived: 'true' }, { archived: true }, { projectId: 'owned-project', archived: true, deleteFiles: true }]) {
+      expect(() => parseGotzjiRequest({ method: 'setProjectArchived', input })).toThrow('INVALID_GOTZJI_REQUEST');
+    }
+    expect(() => parseGotzjiRequest({ method: 'listManagedProjects', input: { projectId: 'owned-project' } })).toThrow('INVALID_GOTZJI_REQUEST');
+  });
   it('lets synchronous resume enclose cold worker startup and still aborts only that control call at sixty seconds', async () => {
     vi.useFakeTimers();
     vi.spyOn(AbortSignal, 'timeout').mockImplementation((milliseconds: number): AbortSignal => {
