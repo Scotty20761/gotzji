@@ -20,6 +20,7 @@ import { GotzjiProjectContext } from './GotzjiProjectContext.js';
 import { GotzjiVersionNotes } from './GotzjiVersionNotes.js';
 import { GotzjiDeliveryApprovals } from './GotzjiDeliveryApprovals.js';
 import { GotzjiProjectManager, type ManagedProject } from './GotzjiProjectManager.js';
+import { GotzjiExcelSheetsResult, excelSheetsResult } from './GotzjiExcelSheetsResult.js';
 
 type Row = Readonly<Record<string, unknown>>;
 type Page = 'home' | 'projects' | 'workflows' | 'tools' | 'git' | 'worklog' | 'live' | 'queue' | 'settings' | 'doctor';
@@ -142,7 +143,7 @@ export function GotzjiApp({ requestPort }: { readonly requestPort?: (method: Got
     if (operation === 'command.run') input.commandId = target;
     else input.path = target;
     if (operation === 'file.write') { input.content = content; input.expectedSha256 = expectedAbsent ? null : expectedSha256; }
-    if (nativeFormFields(operation).length > 0) { Object.assign(input, buildNativeFormInput(operation, nativeValues)); if (expectedSha256) input.expectedSha256 = expectedSha256; }
+    if (nativeFormFields(operation).length > 0 || operation === 'excel.sheets.inspect') { Object.assign(input, buildNativeFormInput(operation, nativeValues)); if (expectedSha256) input.expectedSha256 = expectedSha256; }
     }
     await navigator.clipboard.writeText(`อ่านบริบทโครงการ ${projectId} แล้วตรวจและเตรียมงานตามรายละเอียดนี้ผ่าน gotzji จากนั้นตรวจผลจริงและบันทึกสรุปเมื่อเสร็จ\n\n${JSON.stringify(input, null, 2)}`);
     setPreparationId(stableId);
@@ -152,6 +153,7 @@ export function GotzjiApp({ requestPort }: { readonly requestPort?: (method: Got
   const recipes = catalog.filter((item) => item.state === 'available' && typeof item.recipeId === 'string');
   const selectedProject = projects.find((item) => item.projectId === projectId);
   const browserResult = browserReadResult(result);
+  const sheetsResult = excelSheetsResult(result);
   const boundRecipeIds = Array.isArray(selectedProject?.recipeIds) ? selectedProject.recipeIds as string[] : [];
   const projectCommands = projectCommandOptions(boundRecipeIds, catalog);
 
@@ -195,7 +197,7 @@ export function GotzjiApp({ requestPort }: { readonly requestPort?: (method: Got
         <tr key={`${item.name}:${item.projectId ?? ''}:${item.workflowId ?? ''}:${item.workflowVersion ?? ''}`}><td>{String(item.workflowId ?? item.name)}</td><td>{item.state === 'available' ? 'พร้อมใช้งาน' : 'ยังไม่พร้อม'}</td><td>{String(item.reason ?? item.description ?? '')}</td></tr>)}</tbody></table></section>
         <GotzjiToolReference />
         {selectedProject?.kind === 'library' && <GotzjiLibraryChannelPanel projectId={projectId} disabled={host?.state !== 'ready'} />}
-        <details className="gotzji-advanced"><summary>เครื่องมือขั้นสูง</summary><section><h3>เตรียมคำสั่งของโครงการ</h3><label>โครงการ<select disabled={busy} value={projectId} onChange={(event) => { const id = event.target.value; if (id) void act(async () => { await request('selectProject', { projectId: id }); setProjectId(id); }); }}><option value="">เลือกโครงการ</option>
+        <details className="gotzji-advanced" open={operation === 'excel.range.read' && sheetsResult !== undefined}><summary>เครื่องมือขั้นสูง</summary><section><h3>เตรียมคำสั่งของโครงการ</h3><label>โครงการ<select disabled={busy} value={projectId} onChange={(event) => { const id = event.target.value; if (id) void act(async () => { await request('selectProject', { projectId: id }); setProjectId(id); }); }}><option value="">เลือกโครงการ</option>
           {projects.map((project) => <option key={String(project.projectId)} value={String(project.projectId)}>{String(project.displayName)}</option>)}</select></label>
           <label>เครื่องมือ<select disabled={busy} value={operation} onChange={(event) => setOperation(event.target.value)}>{available.map((item) => <option key={String(item.name)} value={String(item.name)}>{String(item.name)}</option>)}{workflows.map((item) => <option key={`${item.workflowId}:${item.workflowVersion}`} value={`library:${item.workflowId}:${item.workflowVersion}`}>{String(item.workflowId)} · {String(item.description)}</option>)}</select></label>
           {!operation.startsWith('browser.') && !operation.startsWith('library:') && <label>{operation === 'command.run' ? 'คำสั่งที่ตรวจไว้แล้ว' : 'ไฟล์ในโครงการ'}{operation === 'command.run'
@@ -226,7 +228,13 @@ export function GotzjiApp({ requestPort }: { readonly requestPort?: (method: Got
           {record(selectedJob) && Array.isArray(selectedJob.settleDecisions) && <fieldset><legend>ตัดสินงานที่ค้าง</legend><p>งานนี้ทำงานจบหรือหยุดไปแล้ว แต่ยังถือโครงการไว้ เพราะระบบยืนยันผลเองไม่ได้ ตรวจไฟล์หรือผลในโครงการก่อน แล้วเลือกตามที่เห็น ระบบจะบันทึกการตัดสินและปล่อยโครงการให้งานถัดไป โดยไม่แก้ไฟล์ใด ๆ</p>
             <div className="gotzji-actions">{selectedJob.settleDecisions.includes('effect-present') && <button disabled={busy} onClick={() => void act(async () => { setSelectedJob(await request('settleJob', { jobId, decision: 'effect-present' })); await refresh(); })}>ผลเกิดแล้ว · ปล่อยโครงการ</button>}
             {selectedJob.settleDecisions.includes('no-effect') && <button disabled={busy} onClick={() => void act(async () => { setSelectedJob(await request('settleJob', { jobId, decision: 'no-effect' })); await refresh(); })}>ไม่มีผล · ปล่อยโครงการ</button>}</div></fieldset>}
-          {result !== null && (browserResult ? <section aria-label="ผลการอ่านหน้าเว็บ"><h4>อ่านหน้าเว็บสำเร็จ</h4><p>{browserResult.url}</p><pre>{browserResult.text || 'หน้านี้ไม่มีข้อความ'}</pre><details><summary>รายละเอียดการตรวจยืนยัน</summary><pre>{display(result)}</pre></details></section> : <pre>{display(result)}</pre>)}</section>}</>}
+          {result !== null && (sheetsResult ? <><GotzjiExcelSheetsResult value={sheetsResult} disabled={busy || host?.state !== 'ready' || !projects.some((project) => project.projectId === sheetsResult.projectId)}
+            select={(sheet) => void act(async () => {
+              await request('selectProject', { projectId: sheetsResult.projectId }); setProjectId(sheetsResult.projectId);
+              setOperation('excel.range.read'); setTarget(sheetsResult.path); setExpectedSha256(sheetsResult.sourceSha256);
+              setNativeValues((previous) => ({ ...previous, sheet: sheet.name, range: sheet.used_range.split(':')[0]! })); setPage('tools');
+            })} /><details><summary>รายละเอียดการตรวจยืนยัน</summary><pre>{display(result)}</pre></details></>
+            : browserResult ? <section aria-label="ผลการอ่านหน้าเว็บ"><h4>อ่านหน้าเว็บสำเร็จ</h4><p>{browserResult.url}</p><pre>{browserResult.text || 'หน้านี้ไม่มีข้อความ'}</pre><details><summary>รายละเอียดการตรวจยืนยัน</summary><pre>{display(result)}</pre></details></section> : <pre>{display(result)}</pre>)}</section>}</>}
       {page === 'queue' && <section><h3>งานที่กำลังรอ</h3><JobList jobs={queue} disabled={busy} select={(id) => { setJobId(id); setPage('worklog'); }} /></section>}
       {page === 'workflows' && <><section><label htmlFor={workflowProjectSelectId}>โครงการสำหรับเวิร์กโฟลว์</label><select id={workflowProjectSelectId} value={projectId} disabled={busy || host?.state !== 'ready'} onChange={(event) => { const id = event.target.value; if (id) void act(async () => { await request('selectProject', { projectId: id }); setProjectId(id); }); }}><option value="">เลือกโครงการ</option>{projects.map((project) => <option key={String(project.projectId)} value={String(project.projectId)}>{String(project.displayName)}</option>)}</select></section>
         <GotzjiWorkflowPrompts key={`${projectId}:${String(selectedProject?.displayName ?? '')}`} project={selectedProject ? { projectId, displayName: String(selectedProject.displayName) } : null} disabled={busy || host?.state !== 'ready'} />

@@ -39,6 +39,13 @@
         "default": "./dist/gotzji-native-adapter.js"
       }
     },
+    "./gotzji-excel-sheets": {
+      "types": "./src/gotzji-excel-sheets.ts",
+      "import": {
+        "development": "./src/gotzji-excel-sheets.ts",
+        "default": "./dist/gotzji-excel-sheets.js"
+      }
+    },
     "./gotzji-native-contract": {
       "types": "./src/gotzji-native-contract.ts",
       "import": {

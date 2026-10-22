@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { buildNativeFormInput } from '../src/renderer/gotzji-native-form.js';
+import { buildNativeFormInput, nativeFormFields } from '../src/renderer/gotzji-native-form.js';
 describe('typed native input from desktop forms', () => {
+  it('discovers sheets without carrying stale sheet, range or mutation fields from another form', () => {
+    expect(nativeFormFields('excel.sheets.inspect')).toEqual([]);
+    expect(buildNativeFormInput('excel.sheets.inspect', { sheet: 'old', range: 'A1', values: 'mutation', outputPath: 'output.xlsx' })).toEqual({});
+  });
   it('preserves leading-zero IDs and literal formulas while interpreting pasted numbers and booleans', () => {
     expect(buildNativeFormInput('excel.range.write', { sheet: 'Sheet', range: 'A1:C2', values: '001\t12\t=1+2\nID\t2.5\ttrue', outputPath: 'result.xlsx' })).toEqual({ sheet: 'Sheet', range: 'A1:C2', values: [['001', 12, '=1+2'], ['ID', 2.5, true]], outputPath: 'result.xlsx' });
   });

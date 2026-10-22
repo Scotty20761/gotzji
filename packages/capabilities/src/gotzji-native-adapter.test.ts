@@ -37,6 +37,33 @@ function fakeChild(): ChildProcessWithoutNullStreams & { kill: ReturnType<typeof
 }
 
 describe('gotzji native admission and verification', () => {
+  it('verifies bounded Excel sheet metadata and refuses forged receipt shape without changing the workbook', async () => {
+    const f = await fixture();
+    const operation = { operation: 'excel.sheets.inspect', filePath: f.source, expectedSha256: nativeBytesDigest(Buffer.from('original')) };
+    let snapshot: unknown = { sheets: [{ name: 'ข้อมูล', used_range: 'B2:D4', rows: 3, columns: 3 }], total: 1, returned: 1, truncated: false };
+    const runner = vi.fn(async (): Promise<unknown> => ({ operation: operation.operation, provider: 'excel', providerVersion: 'explicit-metadata-fixture', nativePid: 123, sourceSha256: operation.expectedSha256, outputSha256: null, originalPreserved: true, savedAndReopened: false, unrelatedPreserved: true, verified: true, before: snapshot, after: snapshot }));
+    const adapter = new GotzjiNativeAdapter({ scriptPath: f.script, scriptSha256: nativeBytesDigest(Buffer.from('pinned provider')), verifyGrant: async (): Promise<boolean> => true, runner });
+    const plan = await planGotzjiNativeOperation(operation, f.root);
+    expect(plan.resourceKeys).toHaveLength(2);
+    expect(await adapter.execute(f.grant, operation)).toMatchObject({ after: snapshot });
+    for (const field of ['sheet', 'range', 'values', 'outputPath']) await expect(planGotzjiNativeOperation({ ...operation, [field]: 'forged' }, f.root)).rejects.toThrow('NATIVE_INPUT_INVALID');
+    snapshot = { sheets: [], total: 0, returned: 0, truncated: false };
+    expect(await adapter.execute(f.grant, operation)).toMatchObject({ after: snapshot });
+    const sheets = Array.from({ length: 256 }, (_, index) => ({ name: `Sheet${index}`, used_range: 'A1', rows: 1, columns: 1 }));
+    snapshot = { sheets, total: 257, returned: 256, truncated: true };
+    expect(await adapter.execute(f.grant, operation)).toMatchObject({ after: snapshot });
+    for (const invalid of [
+      { sheets, total: 257, returned: 256, truncated: false },
+      { sheets: [...sheets, sheets[0]], total: 257, returned: 257, truncated: false },
+      { sheets: [{ name: 'S', used_range: 'A1:B2', rows: 1, columns: 2 }], total: 1, returned: 1, truncated: false },
+      { sheets: [{ name: 'S', used_range: 'XFE1', rows: 1, columns: 1 }], total: 1, returned: 1, truncated: false },
+      { sheets: [], total: 1, returned: 0, truncated: true },
+    ]) {
+      snapshot = invalid;
+      await expect(adapter.execute(f.grant, operation)).rejects.toThrow('NATIVE_RECEIPT_INVALID');
+    }
+    expect(await readFile(f.source, 'utf8')).toBe('original');
+  });
   it('persists the exact Office application identity before any document open and exposes no ambient kill path', async () => {
     const provider = await readFile(fileURLToPath(new URL('../../../apps/desktop/build/gotzji-native-office.ps1', import.meta.url)), 'utf8');
     const identity = provider.indexOf("Write-ProcessIdentity $script:ownedPid $ownedBirth $ownedExecutable 'office'");

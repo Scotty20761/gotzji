@@ -31,6 +31,18 @@ async function fixture(): Promise<{ project: RegisteredProject; scriptPath: stri
   return { project, scriptPath, scriptSha256: hash('trusted-provider'), config: { ...binding, nativeAuthorization: signPreparedNativeOperation(binding, prepared) } };
 }
 describe('native preparation and private worker binding', () => {
+  it('prepares Excel sheet metadata without cell selectors and rejects scope, version and forged fields', async () => {
+    const f = await fixture(); const options = { scriptPath: f.scriptPath, scriptSha256: f.scriptSha256 };
+    const input = { requestId: 'sheets', projectId: 'project', operation: 'excel.sheets.inspect', path: 'source.xlsx' };
+    const prepared = await prepareProductNativeOperation(f.project, input, options);
+    expect(prepared.native.input).toEqual({ operation: input.operation, filePath: path.join(f.project.rootPath, input.path), expectedSha256: hash('original') });
+    expect(prepared.native.resourceKeys).toContain('native-provider:excel');
+    expect(prepared.native.resourceKeys.filter((key) => key.startsWith('native-document:'))).toHaveLength(1);
+    for (const field of ['sheet', 'range', 'values', 'outputPath', 'scriptPath', 'grant']) await expect(prepareProductNativeOperation(f.project, { ...input, [field]: 'forged' }, options)).rejects.toThrow('NATIVE_INPUT_INVALID');
+    await expect(prepareProductNativeOperation(f.project, { ...input, path: '../outside.xlsx' }, options)).rejects.toThrow('NATIVE_SCOPE_DENIED');
+    await expect(prepareProductNativeOperation(f.project, { ...input, expectedSha256: 'd'.repeat(64) }, options)).rejects.toThrow('NATIVE_FILE_VERSION_CONFLICT');
+    await expect(prepareProductNativeOperation(f.project, { ...input, path: undefined }, options)).rejects.toThrow('NATIVE_INPUT_INVALID');
+  });
   it('retries only transient Windows receipt replacement failures while preserving the target', () => {
     let attempts = 0; let waits = 0;
     const rename = (): void => {

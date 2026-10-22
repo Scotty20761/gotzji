@@ -155,6 +155,7 @@ describe('governed product HTTP and MCP boundary', () => {
     const host = await startProductHttp({ token: 'owner', mcpPathSecret: 'tunnel', rpc: async (method, input) => { calls.push({ method, input }); return { accepted: true }; } });
     const common = { requestId: 'request', projectId: 'project' };
     const cases = [
+      { operation: 'excel.sheets.inspect', path: 'book.xlsx' },
       { operation: 'file.read', path: 'source.txt' }, { operation: 'file.write', path: 'source.txt', content: 'after', expectedSha256: 'a'.repeat(64) },
       { operation: 'command.run', commandId: 'node-check' }, { operation: 'excel.range.read', path: 'book.xlsx', sheet: 'Sheet1', range: 'A1' },
       { operation: 'excel.range.write', path: 'book.xlsx', sheet: 'Sheet1', range: 'A1', values: [['after']], outputPath: 'after.xlsx' },
@@ -172,6 +173,10 @@ describe('governed product HTTP and MCP boundary', () => {
           const denied = await fetch(`http://127.0.0.1:${host.port}/rpc`, { method: 'POST', headers: { Authorization: 'Bearer owner' }, body: JSON.stringify({ method: 'prepareOperation', input: forged }) });
           expect((await denied.json())).toMatchObject({ ok: false, error: { code: 'PRODUCT_SCHEMA_INVALID' } });
         }
+      }
+      for (const field of ['sheet', 'range', 'values', 'outputPath']) {
+        const denied = await fetch(`http://127.0.0.1:${host.port}/mcp/tunnel`, { method: 'POST', body: JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'gotzji_prepare_operation', arguments: { ...common, operation: 'excel.sheets.inspect', path: 'book.xlsx', [field]: 'forged' } } }) });
+        expect((await denied.json()).result.isError).toBe(true);
       }
       expect(calls).toHaveLength(cases.length);
       const list = await (await fetch(`http://127.0.0.1:${host.port}/mcp/tunnel`, { method: 'POST', body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list' }) })).json();

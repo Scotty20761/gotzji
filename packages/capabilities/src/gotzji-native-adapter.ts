@@ -2,7 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { lstat, readFile, realpath } from 'node:fs/promises';
 import path from 'node:path';
-import { GotzjiNativeError, nativeBytesDigest, nativeFileDigest, planGotzjiNativeOperation, type GotzjiNativeGrant, type GotzjiNativeReceipt } from './gotzji-native-contract.js';
+import { GotzjiNativeError, isExcelSheetsSnapshot, nativeBytesDigest, nativeFileDigest, planGotzjiNativeOperation, type GotzjiNativeGrant, type GotzjiNativeReceipt } from './gotzji-native-contract.js';
 
 export interface GotzjiNativeAdapterOptions {
   readonly scriptPath: string;
@@ -66,6 +66,8 @@ export class GotzjiNativeAdapter {
       || value.originalPreserved !== true || value.sourceSha256 !== plan.input.expectedSha256 || typeof value.providerVersion !== 'string'
       || !Number.isInteger(value.nativePid) || Number(value.nativePid) < 1 || typeof value.savedAndReopened !== 'boolean' || typeof value.unrelatedPreserved !== 'boolean') throw new GotzjiNativeError('NATIVE_RECEIPT_INVALID', undefined, 'unknown');
     if (await nativeFileDigest(plan.input.filePath) !== plan.input.expectedSha256) throw new GotzjiNativeError('NATIVE_ORIGINAL_CHANGED', undefined, 'unknown');
+    if (plan.input.operation === 'excel.sheets.inspect' && (value.outputSha256 !== null || value.savedAndReopened !== false || value.unrelatedPreserved !== true
+      || !isExcelSheetsSnapshot(value.before) || !isExcelSheetsSnapshot(value.after) || JSON.stringify(value.before) !== JSON.stringify(value.after))) throw new GotzjiNativeError('NATIVE_RECEIPT_INVALID', undefined, 'unknown');
     if ('outputPath' in plan.input && (value.savedAndReopened !== true || value.unrelatedPreserved !== true || value.outputSha256 !== await nativeFileDigest(plan.input.outputPath))) throw new GotzjiNativeError('NATIVE_PRESERVATION_FAILED', undefined, 'unknown');
     return value as unknown as GotzjiNativeReceipt;
   }

@@ -104,6 +104,22 @@ function Excel-Snapshot($Book, [string]$SheetName, [string]$Address) {
   }
   return [ordered]@{ selected=$selected; unrelated=$unrelated; structure=$structure }
 }
+function Excel-SheetsSnapshot($Book) {
+  $worksheets=$Book.Worksheets
+  try {
+    $total=[int]$worksheets.Count
+    $returned=[Math]::Min($total,256)
+    $items=@()
+    for ($index=1; $index -le $returned; $index++) {
+      $sheet=$null; $used=$null; $usedRows=$null; $usedColumns=$null
+      try {
+        $sheet=$worksheets.Item($index); $used=$sheet.UsedRange; $usedRows=$used.Rows; $usedColumns=$used.Columns
+        $items += [ordered]@{ name=[string]$sheet.Name; used_range=[string]$used.Address($false,$false); rows=[int]$usedRows.Count; columns=[int]$usedColumns.Count }
+      } finally { Release-Com $usedColumns; Release-Com $usedRows; Release-Com $used; Release-Com $sheet }
+    }
+    return [ordered]@{ sheets=@($items); total=$total; returned=$returned; truncated=($total -gt $returned) }
+  } finally { Release-Com $worksheets }
+}
 function Word-Snapshot($Doc, [int]$ParagraphIndex) {
   if ($Doc.Paragraphs.Count -gt 10000) { Fail 'NATIVE_PRESERVATION_SCOPE_TOO_LARGE' }
   if ($ParagraphIndex -lt 1 -or $ParagraphIndex -gt $Doc.Paragraphs.Count) { Fail 'NATIVE_OBJECT_NOT_FOUND' }
@@ -145,7 +161,7 @@ function Cad-Snapshot($Drawing, [string]$Handle) {
 }
 try {
   if ($request.operation -eq 'discover') { $value = Provider-Discovery; [Console]::Write((As-Json ([ordered]@{ ok=$true; value=@($value) }))); exit 0 }
-  $allowed=@('excel.range.read','excel.range.write','word.paragraph.read','word.paragraph.write','powerpoint.shape.read','powerpoint.shape.write','cad.entity.inspect','cad.entity.move')
+  $allowed=@('excel.sheets.inspect','excel.range.read','excel.range.write','word.paragraph.read','word.paragraph.write','powerpoint.shape.read','powerpoint.shape.write','cad.entity.inspect','cad.entity.move')
   if ($allowed -notcontains [string]$request.operation) { Fail 'NATIVE_OPERATION_UNSUPPORTED' }
   Require-ProcessEvidence 'office'
   $source=[IO.Path]::GetFullPath([string]$request.filePath)
@@ -190,7 +206,7 @@ public static class GotzjiNativePid { [DllImport("user32.dll")] public static ex
   $ownedExecutable=[IO.Path]::GetFullPath([string]$ownedProcess.Path)
   Write-ProcessIdentity $script:ownedPid $ownedBirth $ownedExecutable 'office'
   $version=[string]$application.Version
-  if ($provider -eq 'excel') { $application.Visible=$false; $application.DisplayAlerts=$false; $application.AutomationSecurity=3; if ($application.Workbooks.Count -ne 0) { Fail 'NATIVE_SESSION_IN_USE' }; $document=$application.Workbooks.Open($source,0,$true); $before=Excel-Snapshot $document ([string]$request.sheet) ([string]$request.range) }
+  if ($provider -eq 'excel') { $application.Visible=$false; $application.DisplayAlerts=$false; $application.AutomationSecurity=3; if ($application.Workbooks.Count -ne 0) { Fail 'NATIVE_SESSION_IN_USE' }; $document=$application.Workbooks.Open($source,0,$true); if ($request.operation -eq 'excel.sheets.inspect') { if (-not $document.ReadOnly) { Fail 'NATIVE_READ_ONLY_REQUIRED' }; $before=Excel-SheetsSnapshot $document } else { $before=Excel-Snapshot $document ([string]$request.sheet) ([string]$request.range) } }
   elseif ($provider -eq 'word') { $application.Visible=$false; $application.DisplayAlerts=0; $application.AutomationSecurity=3; if ($application.Documents.Count -ne 0) { Fail 'NATIVE_SESSION_IN_USE' }; $document=$application.Documents.Open($source,$false,$true); $before=Word-Snapshot $document ([int]$request.paragraph) }
   elseif ($provider -eq 'powerpoint') { $application.AutomationSecurity=3; if ($application.Presentations.Count -ne 0) { Fail 'NATIVE_SESSION_IN_USE' }; $document=$application.Presentations.Open($source,$true,$false,$false); $before=PowerPoint-Snapshot $document ([int]$request.slide) ([string]$request.shape) }
   else { $application.Visible=$false; foreach ($startupDocument in $application.Documents) { if ($startupDocument.ModelSpace.Count -eq 0 -and $startupDocument.PaperSpace.Count -eq 0 -and $startupDocument.Saved) { $startupBlankNames += [string]$startupDocument.Name } }; $document=$application.Documents.Open($source,$true); $before=Cad-Snapshot $document ([string]$request.handle) }

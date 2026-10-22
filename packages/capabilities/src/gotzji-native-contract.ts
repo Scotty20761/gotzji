@@ -5,6 +5,7 @@ import path from 'node:path';
 
 export type GotzjiNativeProvider = 'excel' | 'word' | 'powerpoint' | 'cad';
 export type GotzjiNativeOperation =
+  | { readonly operation: 'excel.sheets.inspect'; readonly filePath: string; readonly expectedSha256: string }
   | { readonly operation: 'excel.range.read'; readonly filePath: string; readonly expectedSha256: string; readonly sheet: string; readonly range: string }
   | { readonly operation: 'excel.range.write'; readonly filePath: string; readonly expectedSha256: string; readonly outputPath: string; readonly sheet: string; readonly range: string; readonly values: readonly (readonly (string | number | boolean | null)[])[] }
   | { readonly operation: 'word.paragraph.read'; readonly filePath: string; readonly expectedSha256: string; readonly paragraph: number }
@@ -51,10 +52,12 @@ export class GotzjiNativeError extends Error {
   }
 }
 export function nativeDigest(input: unknown): string { return createHash('sha256').update(JSON.stringify(input)).digest('hex'); }
+export { EXCEL_SHEETS_LIMIT, isExcelSheetsSnapshot, type ExcelSheetMetadata, type ExcelSheetsSnapshot } from './gotzji-excel-sheets.js';
 export async function planGotzjiNativeOperation(value: unknown, rootPath: string): Promise<GotzjiNativePlan> {
   if (!record(value) || typeof value.operation !== 'string') throw new GotzjiNativeError('NATIVE_INPUT_INVALID', 'operation');
   const operation = value.operation;
   const schemas: Record<string, readonly string[]> = {
+    'excel.sheets.inspect': [],
     'excel.range.read': ['sheet', 'range'], 'excel.range.write': ['sheet', 'range', 'values', 'outputPath'],
     'word.paragraph.read': ['paragraph'], 'word.paragraph.write': ['paragraph', 'text', 'outputPath'],
     'powerpoint.shape.read': ['slide', 'shape'], 'powerpoint.shape.write': ['slide', 'shape', 'text', 'outputPath'],
@@ -79,7 +82,7 @@ export async function planGotzjiNativeOperation(value: unknown, rootPath: string
     if (!within(root, output) || output.toLowerCase() === source.toLowerCase() || path.extname(output).toLowerCase() !== path.extname(source).toLowerCase()) throw new GotzjiNativeError('NATIVE_SCOPE_DENIED', 'outputPath');
     try { await lstat(output); throw new GotzjiNativeError('NATIVE_OUTPUT_EXISTS', 'outputPath'); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
   }
-  if (provider === 'excel') {
+  if (provider === 'excel' && operation !== 'excel.sheets.inspect') {
     requiredText(value, 'sheet', 128);
     if (typeof value.range !== 'string' || !/^\$?[A-Z]{1,3}\$?[1-9]\d{0,6}(?::\$?[A-Z]{1,3}\$?[1-9]\d{0,6})?$/u.test(value.range)) throw new GotzjiNativeError('NATIVE_INPUT_INVALID', 'range');
     if (operation.endsWith('write') && (!Array.isArray(value.values) || value.values.length < 1 || value.values.length > 1000 || value.values.some((row: unknown) => !Array.isArray(row) || row.length < 1 || row.length > 100 || row.some((cell: unknown) => cell !== null && typeof cell !== 'string' && typeof cell !== 'boolean' && !(typeof cell === 'number' && Number.isFinite(cell)))))) throw new GotzjiNativeError('NATIVE_INPUT_INVALID', 'values');

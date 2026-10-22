@@ -34,6 +34,7 @@ const text = { type: 'string', minLength: 1 };
 const priority = { type: 'integer', minimum: 0, maximum: 3 };
 const objectSchema = (properties: Record<string, Schema>, required: readonly string[]): Schema => ({ type: 'object', properties, required, additionalProperties: false });
 const operationFields: Record<string, readonly string[]> = {
+  'excel.sheets.inspect': ['path'],
   'file.read': ['path'], 'file.write': ['path', 'expectedSha256', 'content'], 'command.run': ['commandId'],
   'excel.range.read': ['path', 'sheet', 'range'], 'excel.range.write': ['path', 'sheet', 'range', 'values', 'outputPath'],
   'word.paragraph.read': ['path', 'paragraph'], 'word.paragraph.write': ['path', 'paragraph', 'text', 'outputPath'],

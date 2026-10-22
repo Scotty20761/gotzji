@@ -1,5 +1,6 @@
 export interface NativeFormField { readonly name: string; readonly label: string; readonly type: 'text' | 'number' | 'textarea' }
 const fields: Record<string, readonly NativeFormField[]> = {
+  'excel.sheets.inspect': [],
   'excel.range.read': [{ name: 'sheet', label: 'ชื่อแผ่นงาน', type: 'text' }, { name: 'range', label: 'ช่วงเซลล์ เช่น A1:B3', type: 'text' }],
   'excel.range.write': [{ name: 'sheet', label: 'ชื่อแผ่นงาน', type: 'text' }, { name: 'range', label: 'ช่วงเซลล์ เช่น A1:B3', type: 'text' }, { name: 'values', label: 'ค่าใหม่: บรรทัดละแถว คั่นคอลัมน์ด้วย Tab', type: 'textarea' }, { name: 'outputPath', label: 'ไฟล์ผลลัพธ์ใหม่ในโครงการ', type: 'text' }],
   'word.paragraph.read': [{ name: 'paragraph', label: 'ลำดับย่อหน้า', type: 'number' }],
@@ -12,7 +13,7 @@ const fields: Record<string, readonly NativeFormField[]> = {
 export function nativeFormFields(operation: string): readonly NativeFormField[] { return fields[operation] ?? []; }
 export function buildNativeFormInput(operation: string, values: Readonly<Record<string, string>>): Record<string, unknown> {
   const selected = nativeFormFields(operation);
-  if (selected.length === 0) throw new Error('เลือกเครื่องมือที่รองรับก่อน');
+  if (selected.length === 0 && operation !== 'excel.sheets.inspect') throw new Error('เลือกเครื่องมือที่รองรับก่อน');
   const input: Record<string, unknown> = {};
   for (const field of selected) {
     const value = values[field.name] ?? '';

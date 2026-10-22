@@ -40,11 +40,11 @@ async function fixture(cancelOutcome?: 'none' | 'unknown', direct = false): Prom
   for (const file of ['CLAUDE.md','AGENTS.md','KNOWLEDGE_INDEX.md','references/agent-knowledge-workflow.md']) await writeFile(path.join(libraryRoot, file), 'Explicit no-model core fixture policy\n');
   const scriptPath = path.join(root, 'fixture-provider.ps1'); await writeFile(scriptPath, 'test-only provider; never execute as PowerShell');
   const runner = path.join(root, 'test-native-runner.mjs');
-  await writeFile(runner, `import {readFileSync,writeFileSync} from 'node:fs';import {createHash} from 'node:crypto';const hash=x=>createHash('sha256').update(x).digest('hex');export async function testRunner(_script,input){await new Promise(resolve=>setTimeout(resolve,400));if(input.range==='Z1')throw Object.assign(new Error('NATIVE_TERMINATION_UNVERIFIED'),{code:'NATIVE_TERMINATION_UNVERIFIED',outcome:'unknown'});let outputSha256=null;if(input.outputPath){writeFileSync(input.outputPath,'preserved-fixture-output');outputSha256=hash(readFileSync(input.outputPath));}return{operation:input.operation,provider:input.operation.split('.')[0],providerVersion:'explicit-no-model-fixture',nativePid:process.pid,sourceSha256:hash(readFileSync(input.filePath)),outputSha256,originalPreserved:true,savedAndReopened:!!input.outputPath,unrelatedPreserved:true,verified:true,before:{fixture:'original'},after:{fixture:'changed'}};}`);
+  await writeFile(runner, `import {readFileSync,writeFileSync} from 'node:fs';import {createHash} from 'node:crypto';const hash=x=>createHash('sha256').update(x).digest('hex');export async function testRunner(_script,input){await new Promise(resolve=>setTimeout(resolve,400));if(input.range==='Z1')throw Object.assign(new Error('NATIVE_TERMINATION_UNVERIFIED'),{code:'NATIVE_TERMINATION_UNVERIFIED',outcome:'unknown'});let outputSha256=null;if(input.outputPath){writeFileSync(input.outputPath,'preserved-fixture-output');outputSha256=hash(readFileSync(input.outputPath));}return{operation:input.operation,provider:input.operation.split('.')[0],providerVersion:'explicit-no-model-fixture',nativePid:process.pid,sourceSha256:hash(readFileSync(input.filePath)),outputSha256,originalPreserved:true,savedAndReopened:!!input.outputPath,unrelatedPreserved:true,verified:true,before:input.operation==='excel.sheets.inspect'?{sheets:[{name:'ข้อมูล',used_range:'B2:D4',rows:3,columns:3}],total:1,returned:1,truncated:false}:{fixture:'original'},after:input.operation==='excel.sheets.inspect'?{sheets:[{name:'ข้อมูล',used_range:'B2:D4',rows:3,columns:3}],total:1,returned:1,truncated:false}:{fixture:'changed'}};}`);
   if (cancelOutcome) {
     await writeFile(runner, `import {readFileSync,writeFileSync} from 'node:fs';import {createHash} from 'node:crypto';const hash=x=>createHash('sha256').update(x).digest('hex');export async function testRunner(_script,input,signal){if(input.range==='C1'){writeFileSync(${JSON.stringify(path.join(root, 'native-started'))},'started');await new Promise(resolve=>{if(signal.aborted)resolve();else signal.addEventListener('abort',resolve,{once:true});});throw Object.assign(new Error('NATIVE_CANCELLED'),{code:'NATIVE_CANCELLED',outcome:${JSON.stringify(cancelOutcome)}});}return{operation:input.operation,provider:'excel',providerVersion:'explicit-no-model-fixture',nativePid:process.pid,sourceSha256:hash(readFileSync(input.filePath)),outputSha256:null,originalPreserved:true,savedAndReopened:false,unrelatedPreserved:true,verified:true,before:{},after:{}};}`);
   }
-  const core = await ExecutionCore.open(path.join(root, 'state'), { product: direct ? { mode: 'host-direct', libraryRoot, testOnlyProviders: true } : { executable: process.execPath, libraryRoot, testDriver: fileURLToPath(new URL('./grace-test-driver.mjs', import.meta.url)) }, nativeOptions: { scriptPath, scriptSha256: hash(await readFile(scriptPath)), testRunnerModule: runner, operations: ['excel.range.read','excel.range.write'] } });
+  const core = await ExecutionCore.open(path.join(root, 'state'), { product: direct ? { mode: 'host-direct', libraryRoot, testOnlyProviders: true } : { executable: process.execPath, libraryRoot, testDriver: fileURLToPath(new URL('./grace-test-driver.mjs', import.meta.url)) }, nativeOptions: { scriptPath, scriptSha256: hash(await readFile(scriptPath)), testRunnerModule: runner, operations: ['excel.sheets.inspect','excel.range.read','excel.range.write'] } });
   const credential = core.enrollAdapter('native-fixture', 'owner');
   for (const projectId of ['one','two']) { const project = path.join(root, projectId); await mkdir(project); await writeFile(path.join(project, 'source.xlsx'), 'original fixture bytes'); await writeFile(path.join(project, 'AGENTS.md'), 'Actual selected project native rule\n'); core.registerProject(credential, { projectId, displayName: projectId, rootPath: project }); }
   const f = { root, core, credential }; fixtures.push(f); return f;
@@ -263,6 +263,26 @@ describe('native operations through Grace and the shared Goal (explicit no-model
       await until(f, async () => (await f.core.get(f.credential, next)).status === 'completed');
     }, 20000);
   }
+  it('discovers Excel sheets through the durable native job and retrieves the same metadata after reopen and replay', async () => {
+    const f = await fixture(undefined, true);
+    const input: ProductNativeInput = { requestId: 'native-sheets', projectId: 'one', operation: 'excel.sheets.inspect', path: 'source.xlsx' };
+    const prepared = await f.core.prepareOperation(f.credential, input);
+    const admitted = await f.core.submit(f.credential, prepared.preparationId); const binding = f.core.select(f.credential, admitted.jobId);
+    await f.core.resume(f.credential, binding);
+    await until(f, async () => (await f.core.get(f.credential, binding)).status === 'completed');
+    const result = await f.core.readOperationResult(f.credential, binding);
+    expect(result).toMatchObject({ operation: input.operation, projectId: 'one', output: { path: input.path, nativeReceipt: { savedAndReopened: false, outputSha256: null, originalPreserved: true, after: { sheets: [{ name: 'ข้อมูล', used_range: 'B2:D4', rows: 3, columns: 3 }], total: 1, returned: 1, truncated: false } } } });
+    f.core.close();
+    const scriptPath = path.join(f.root, 'fixture-provider.ps1');
+    f.core = await ExecutionCore.open(path.join(f.root, 'state'), { product: { mode: 'host-direct', libraryRoot: path.join(f.root, 'library'), testOnlyProviders: true }, nativeOptions: { scriptPath, scriptSha256: hash(await readFile(scriptPath)), testRunnerModule: path.join(f.root, 'test-native-runner.mjs'), operations: ['excel.sheets.inspect', 'excel.range.read', 'excel.range.write'] } });
+    expect(await f.core.readOperationResult(f.credential, binding)).toEqual(result);
+    expect((await f.core.submit(f.credential, prepared.preparationId)).jobId).toBe(admitted.jobId);
+    expect((await f.core.list(f.credential)).map((row) => row.jobId)).toEqual([admitted.jobId]);
+    expect(await readFile(path.join(f.root, 'one', 'source.xlsx'), 'utf8')).toBe('original fixture bytes');
+    const db = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'));
+    try { expect(db.prepare('SELECT COUNT(*) AS count FROM goals').get()?.count).toBe(1); expect(db.prepare('SELECT COUNT(*) AS count FROM gotzji_resource_claims').get()?.count).toBe(0); }
+    finally { db.close(); }
+  }, 20000);
   it.each([false, true])('seals a typed native operation, verifies original/output and replay (direct=%s)', async (direct) => {
     const f = await fixture(undefined, direct);
     const input: ProductNativeInput = { requestId: 'native-write', projectId: 'one', operation: 'excel.range.write', path: 'source.xlsx', outputPath: 'output.xlsx', sheet: 'Sheet1', range: 'A1', values: [['new']] };

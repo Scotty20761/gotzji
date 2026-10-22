@@ -5,7 +5,7 @@ import { nativeDigest, nativeFileDigest, planGotzjiNativeOperation, type GotzjiN
 import { discoverPolicies } from './product-projects.js';
 import { CoreError, type FileFingerprint, type RegisteredProject } from './types.js';
 
-export const PRODUCT_NATIVE_OPERATIONS = ['excel.range.read', 'excel.range.write', 'word.paragraph.read', 'word.paragraph.write', 'powerpoint.shape.read', 'powerpoint.shape.write', 'cad.entity.inspect', 'cad.entity.move', 'cad.layers.inspect'] as const;
+export const PRODUCT_NATIVE_OPERATIONS = ['excel.sheets.inspect', 'excel.range.read', 'excel.range.write', 'word.paragraph.read', 'word.paragraph.write', 'powerpoint.shape.read', 'powerpoint.shape.write', 'cad.entity.inspect', 'cad.entity.move', 'cad.layers.inspect'] as const;
 export type ProductNativeOperationName = typeof PRODUCT_NATIVE_OPERATIONS[number];
 type PublicNativeVariant<T extends GotzjiNativeOperation> = T extends GotzjiNativeOperation
   ? Omit<T, 'filePath' | 'expectedSha256' | 'outputPath'> & {
@@ -39,6 +39,7 @@ export interface PreparedProductNativeOperation {
   };
 }
 const nativeFields: Record<ProductNativeOperationName, readonly string[]> = {
+  'excel.sheets.inspect': [],
   'excel.range.read': ['sheet', 'range'], 'excel.range.write': ['sheet', 'range', 'values', 'outputPath'],
   'word.paragraph.read': ['paragraph'], 'word.paragraph.write': ['paragraph', 'text', 'outputPath'],
   'powerpoint.shape.read': ['slide', 'shape'], 'powerpoint.shape.write': ['slide', 'shape', 'text', 'outputPath'],
