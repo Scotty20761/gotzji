@@ -80,7 +80,7 @@ The legacy Desktop fixture and retained upstream packages still carry the comple
 
 For that compatibility fixture only:
 
-7. Confirm the connection discovers **267 tools by default** (or **279** when Codex delegation plus Agent Swarm is explicitly enabled), then run a read-only smoke test before writes.
+7. Confirm the connection discovers **282 tools by default** (or **294** when Codex delegation plus Agent Swarm is explicitly enabled), then run a read-only smoke test before writes.
 
 <!-- BEGIN GENERATED README TOOL REGISTRY -->
 ## Complete MCP tool catalog (294 total definitions; 282 advertised by default; 294 with Codex delegation plus Agent Swarm enabled)

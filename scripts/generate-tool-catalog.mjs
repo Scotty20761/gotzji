@@ -131,36 +131,26 @@ const countSurfaces = [
 for (const [pattern, replacement] of countSurfaces) {
   expectedCapabilities = replaceRequired(expectedCapabilities, pattern, replacement, 'Thai capability totals');
 }
-let expectedReleaseChecklist = replaceRequired(
-  currentReleaseChecklist,
-  /(\*\*)\d+( total definitions \/ )\d+( advertised by default \/ all )\d+( with Codex delegation plus Agent Swarm enabled\*\*)/,
+// These are retained upstream registry counts, not the owned gotzji facade.
+// Require the owned documents' explicit block so a missing surface still fails.
+function updateUpstreamCounts(document, evidenceLink, surface) {
+  const block = [
+    '<!-- BEGIN GENERATED UPSTREAM TOOL COUNTS -->',
+    `Internal upstream compatibility inventory: **${tools.length} total definitions / ${defaultAdvertisedCount} advertised by default / all ${codexEnabledAdvertisedCount} with Codex delegation plus Agent Swarm enabled** in the retained legacy fixture.`,
+    `These counts describe source/fixture exposure only. They do not count callable gotzji tools, prove provider execution or satisfy any release acceptance gate. See [the integration evidence](${evidenceLink}).`,
+    '<!-- END GENERATED UPSTREAM TOOL COUNTS -->',
+  ];
+  return replaceRequired(document,
+    /<!-- BEGIN GENERATED UPSTREAM TOOL COUNTS -->[\s\S]*?<!-- END GENERATED UPSTREAM TOOL COUNTS -->/,
+    () => block.join(document.includes('\r\n') ? '\r\n' : '\n'), surface);
+}
+const expectedReleaseChecklist = updateUpstreamCounts(currentReleaseChecklist, '../docs/parity/README.md', 'Release checklist upstream reference counts');
+const expectedConciseReadme = updateUpstreamCounts(currentConciseReadme, 'docs/parity/README.md', 'README upstream reference counts');
+
+expected = replaceRequired(expected,
+  /(The current runtime contains )\d+( definitions, advertises )\d+( through `tools\/list` by default, and advertises all )\d+( when Codex delegation plus Agent Swarm is enabled\.)/,
   (_m, a, b, c, d) => a + tools.length + b + defaultAdvertisedCount + c + codexEnabledAdvertisedCount + d,
-  'Release checklist headline counts',
-);
-expectedReleaseChecklist = replaceRequired(
-  expectedReleaseChecklist,
-  /(Tool catalog synchronization passes with )\d+( total definitions, )\d+( advertised by default, and all )\d+( advertised)/,
-  (_m, a, b, c) => a + tools.length + b + defaultAdvertisedCount + c + codexEnabledAdvertisedCount + ' advertised',
-  'Release checklist runtime counts',
-);
-let expectedConciseReadme = replaceRequired(
-  currentConciseReadme,
-  /\d+( total tool definitions for local files,[^\r\n]*?; )\d+( are advertised by default and all )\d+( when Codex delegation plus Agent Swarm is enabled\.)/,
-  (_m, a, b, c) => tools.length + a + defaultAdvertisedCount + b + codexEnabledAdvertisedCount + c,
-  'README tool-count introduction',
-);
-expectedConciseReadme = replaceRequired(
-  expectedConciseReadme,
-  /(MCP-)\d+(%20tools-6f42c1)/,
-  (_m, a, b) => a + tools.length + b,
-  'README MCP tool-count badge',
-);
-expectedConciseReadme = replaceRequired(
-  expectedConciseReadme,
-  /(lnwjud exposes \*\*)\d+( tool definitions\*\* through one local runtime and MCP gateway\. The default advertised set is )\d+(; all )\d+( are available when Codex delegation plus Agent Swarm is enabled\.)/,
-  (_m, a, b, c, d) => a + tools.length + b + defaultAdvertisedCount + c + codexEnabledAdvertisedCount + d,
-  'README capability summary',
-);
+  'Internal contract introductory counts');
 
 const normalizeLineEndings = (value) => value.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
 

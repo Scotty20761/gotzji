@@ -20,4 +20,6 @@ it.each(['th', 'en'] as const)('shows the actual gotzji version in the inherited
   expect(markup).toContain(`v${APP_VERSION}`);
   expect(markup).not.toContain('whats-new-empty');
   expect(markup).toContain(gotzjiReleaseNotes(APP_VERSION)![locale][0]);
+  expect(markup).toContain(locale === 'th' ? 'รุ่นระหว่างพัฒนา ยังไม่เผยแพร่' : 'Development build, not yet published');
+  expect(markup).not.toContain(locale === 'th' ? 'Development build, not yet published' : 'รุ่นระหว่างพัฒนา ยังไม่เผยแพร่');
 });

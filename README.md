@@ -49,3 +49,8 @@ Do not publish local databases, credentials, tunnel/browser profiles, raw model/
 - [Historical upstream README](docs/upstream/README-v5.7.3.md) documents the original project. Its downloads, support and feature claims belong to upstream.
 
 The current [MCP control catalog](FULL_README.md#mcp-control-catalog) and [release process](docs/development/RELEASE_PROCESS.md) document the owned app path.
+
+<!-- BEGIN GENERATED UPSTREAM TOOL COUNTS -->
+Internal upstream compatibility inventory: **294 total definitions / 282 advertised by default / all 294 with Codex delegation plus Agent Swarm enabled** in the retained legacy fixture.
+These counts describe source/fixture exposure only. They do not count callable gotzji tools, prove provider execution or satisfy any release acceptance gate. See [the integration evidence](docs/parity/README.md).
+<!-- END GENERATED UPSTREAM TOOL COUNTS -->

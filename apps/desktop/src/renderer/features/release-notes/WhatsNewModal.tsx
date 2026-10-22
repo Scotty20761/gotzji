@@ -77,7 +77,7 @@ export function WhatsNewModal({ locale, version, onClose }: WhatsNewModalProps):
           {ownedNotes ? (
             <section className="whats-new-version" aria-label={`v${version}`}>
               <h3 className="whats-new-version-title">v{version}</h3>
-              {ownedNotes.status === 'development' && <p>{locale === 'th' ? 'รุ่นระหว่างพัฒนา ยังไม่เผยแพร่' : 'Development build, not yet published'}</p>}
+              {ownedNotes.status === 'development' && <p>{t('whatsNew.developmentStatus')}</p>}
               <ul>{ownedNotes[locale].map((entry) => <li key={entry} className="whats-new-item"><p>{entry}</p></li>)}</ul>
             </section>
           ) : notes.length === 0 ? (

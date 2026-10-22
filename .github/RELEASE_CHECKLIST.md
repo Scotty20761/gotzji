@@ -28,3 +28,8 @@ Every record must identify exact source/build/catalog, scope, scenario, observed
 | G20 | Owner publication and independent download/hash/install/plugin verification |
 
 The 18 required pre-publication gates G01-G14 and G16-G19 must pass before declaring the candidate qualified for publication. Keep all 19 declaration rows, with G15 NOT_REQUIRED and decisionId `owner-plus-acceptance-not-required-2026-10-17`, reviewer `owner`, observedAt `2026-10-17T00:46:08+07:00`, accountPlan `Plus` and one `owner-decision` receipt SHA-256 `a8c53c7c66714259d8bd02cd53f0dbdbffa1eb948769a3bd0d788f6fa5d86895`. This records scope, not Plus/Pro feature equivalence or a Plus test. G20 is the observed post-publication gate. G13 remains mandatory: model-dependent Library workflows are currently unsupported and cannot become PASS until the ChatGPT-driven contract is implemented and observed end to end. Missing external evidence never becomes PASS. Current source tests, provider fixtures and waiting-account facts are tracked separately; this checklist itself is not acceptance evidence.
+
+<!-- BEGIN GENERATED UPSTREAM TOOL COUNTS -->
+Internal upstream compatibility inventory: **294 total definitions / 282 advertised by default / all 294 with Codex delegation plus Agent Swarm enabled** in the retained legacy fixture.
+These counts describe source/fixture exposure only. They do not count callable gotzji tools, prove provider execution or satisfy any release acceptance gate. See [the integration evidence](../docs/parity/README.md).
+<!-- END GENERATED UPSTREAM TOOL COUNTS -->
