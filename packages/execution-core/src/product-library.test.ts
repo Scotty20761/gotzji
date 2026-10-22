@@ -5,7 +5,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { backup, DatabaseSync } from 'node:sqlite';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { afterEach, describe, expect, it } from 'vitest';
 import { ExecutionCore } from './core.js';
 import { hash, type WorkerRow } from './store.js';
@@ -72,7 +72,13 @@ async function cleanupSyntheticWorker(worker:WorkerRow):Promise<void>{
   const ready=signed<{pid:number;port:number}>(worker,'ready.json');if(!ready)throw new Error('Fixture cleanup ready record missing');
   const capability=issueSyntheticCleanupCapability(config,worker.directory,fileURLToPath(new URL('./fixture-worker.mjs',import.meta.url)));
   const response=await fetch(`http://127.0.0.1:${ready.port}/synthetic-test-cleanup?nonce=${capability}`,{method:'POST',headers:{Authorization:`Bearer ${worker.token}`},signal:AbortSignal.timeout(10000)});
-  if(!response.ok)throw new Error('Fixture cleanup refused: '+worker.directory);
+  if(!response.ok){
+    const body=await response.json().catch(()=>undefined) as {error?:{code?:unknown;stage?:unknown;reason?:unknown}}|undefined;
+    const code=typeof body?.error?.code==='string'&&/^[A-Z][A-Z0-9_]{1,79}$/u.test(body.error.code)?body.error.code:'UNKNOWN';
+    const stage=['authorization','owned-children','identity-probes','descendant-proof'].includes(String(body?.error?.stage))?String(body!.error!.stage):'unknown';
+    const reason=['context','runtime','temp-parent','fixture-path','driver','library-root','operation','capability','record','mac','binding-expiry','consume'].includes(String(body?.error?.reason))?String(body!.error!.reason):'unknown';
+    throw new Error(`Fixture cleanup refused: ${worker.directory} (HTTP ${response.status}; ${code}; ${stage}; ${reason})`);
+  }
   const result=await response.json() as {nonce:string;pid:number;epoch:string};
   if(result.nonce!==capability||result.pid!==ready.pid||result.epoch!==worker.epoch)throw new Error('Fixture cleanup response changed');
   for(let attempt=0;attempt<100;attempt++){if(alive(ready.pid)===false)return;await new Promise((resolve)=>setTimeout(resolve,20));}
@@ -176,10 +182,32 @@ describe('P7 Library runtime',()=>{
     await expect(f.core.resume(f.credential,binding)).rejects.toThrow();const after=(await readdir(path.join(f.library,'knowledge-base/atoms'))).filter((name)=>name.startsWith('ATOM-'));expect(after).toEqual(before);
     const worker=queryDatabase(f,(db)=>db.prepare('SELECT * FROM gotzji_workers WHERE job_id=?').get(binding.jobId) as unknown as WorkerRow);
     const ready=signed<{pid:number;port:number}>(worker,'ready.json')!;const denied=await fetch(`http://127.0.0.1:${ready.port}/synthetic-test-cleanup?nonce=${'0'.repeat(64)}`,{method:'POST',headers:{Authorization:'Bearer wrong'},signal:AbortSignal.timeout(3000)});expect(denied.status).toBe(403);
-    const forged=await fetch(`http://127.0.0.1:${ready.port}/synthetic-test-cleanup?nonce=${'1'.repeat(64)}`,{method:'POST',headers:{Authorization:`Bearer ${worker.token}`},signal:AbortSignal.timeout(3000)});expect(forged.status).toBe(403);expect(alive(ready.pid)).toBe(true);
+    const forged=await fetch(`http://127.0.0.1:${ready.port}/synthetic-test-cleanup?nonce=${'1'.repeat(64)}`,{method:'POST',headers:{Authorization:`Bearer ${worker.token}`},signal:AbortSignal.timeout(3000)});expect(forged.status).toBe(403);expect(await forged.json()).toEqual({error:{code:'TEST_CLEANUP_DENIED',stage:'authorization',reason:'record'}});expect(alive(ready.pid)).toBe(true);
     const writerBefore=queryDatabase(f,(db)=>db.prepare('SELECT * FROM gotzji_writers WHERE job_id=?').get(binding.jobId));const jobBefore=queryDatabase(f,(db)=>db.prepare('SELECT status,lease_generation,lease_token_hash,lease_owner_session_id FROM goals').all());const claimsBefore=queryDatabase(f,(db)=>db.prepare('SELECT * FROM gotzji_resource_claims WHERE job_id=?').all(binding.jobId));const uncertainBefore=queryDatabase(f,(db)=>db.prepare("SELECT * FROM gotzji_recipe_operations WHERE job_id=? AND phase='uncertain'").all(binding.jobId));
     await cleanupSyntheticWorker(worker);expect(alive(ready.pid)).toBe(false);expect(await present(path.join(worker.directory,'stopped.json'))).toBe(false);
     expect(queryDatabase(f,(db)=>db.prepare('SELECT * FROM gotzji_writers WHERE job_id=?').get(binding.jobId))).toEqual(writerBefore);expect(queryDatabase(f,(db)=>db.prepare('SELECT status,lease_generation,lease_token_hash,lease_owner_session_id FROM goals').all())).toEqual(jobBefore);expect(queryDatabase(f,(db)=>db.prepare('SELECT * FROM gotzji_resource_claims WHERE job_id=?').all(binding.jobId))).toEqual(claimsBefore);expect(queryDatabase(f,(db)=>db.prepare("SELECT * FROM gotzji_recipe_operations WHERE job_id=? AND phase='uncertain'").all(binding.jobId))).toEqual(uncertainBefore);
+  },60000);
+
+  it('reports the cleanup refusal stage while preserving a separately owned live descendant',async()=>{
+    const f=await fixture(true,'atom-after-write');const binding=await submit(f,memoInput('cleanup-refusal-stage'));await f.core.resume(f.credential,binding);
+    await until(f,()=>queryDatabase(f,db=>!!db.prepare("SELECT 1 FROM gotzji_recipe_operations WHERE job_id=? AND operation_id='library-step:atoms' AND phase='uncertain'").get(binding.jobId)));
+    const worker=queryDatabase(f,db=>db.prepare('SELECT * FROM gotzji_workers WHERE job_id=?').get(binding.jobId) as unknown as WorkerRow);
+    const ready=signed<{pid:number;port:number}>(worker,'ready.json')!;
+    const child=spawn(process.execPath,['-e',"process.on('message',()=>process.exit(0));process.on('disconnect',()=>process.exit(0));process.send('ready');setInterval(()=>{},1000)"],{windowsHide:true,stdio:['ignore','ignore','ignore','ipc']});
+    const closed=new Promise<void>(resolve=>child.once('close',()=>resolve()));
+    try{
+      await new Promise<void>((resolve,reject)=>{child.once('error',reject);child.once('message',()=>resolve());});
+      const registration=await fetch(`http://127.0.0.1:${ready.port}/register-broker`,{method:'POST',headers:{Authorization:`Bearer ${worker.token}`},body:JSON.stringify({pid:child.pid}),signal:AbortSignal.timeout(3000)});
+      expect(registration.ok).toBe(true);await registration.text();
+      await until(f,()=>!!signed<{identities:Record<number,unknown>}>(worker,'observation.json')?.identities[child.pid!]);
+      await expect(cleanupSyntheticWorker(worker)).rejects.toThrow(/HTTP 409; TEST_CHILD_STOP_UNVERIFIED; descendant-proof/u);
+      expect(alive(child.pid!)).toBe(true);expect(alive(ready.pid)).toBe(true);expect(await present(path.join(worker.directory,'stopped.json'))).toBe(false);
+    }finally{
+      if(child.connected)child.send('close');else if(child.exitCode===null&&child.signalCode===null)child.kill();
+      await closed;if(child.pid)expect(alive(child.pid)).toBe(false);
+    }
+    await cleanupSyntheticWorker(worker);expect(alive(ready.pid)).toBe(false);
+    expect(queryDatabase(f,db=>db.prepare('SELECT 1 FROM gotzji_writers WHERE job_id=?').get(binding.jobId))).toBeDefined();
   },60000);
 
   it('rejects an unexpected navigation mutation after the signed index receipt',async()=>{

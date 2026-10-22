@@ -15,7 +15,7 @@ import { processIdentities } from './process-identity.mjs';
 import { productNativeManager } from './product-native-manager.mjs';
 import { productLibraryManager } from './product-library-manager.mjs';
 import { productBrowserManager } from './product-browser-manager.mjs';
-import { replaceFileSync } from './product-security.mjs';
+import { providerFailureCode, replaceFileSync } from './product-security.mjs';
 import { syntheticCleanupAuthorizer } from './test-worker-cleanup.mjs';
 
 const configPath = process.argv[2];
@@ -39,7 +39,8 @@ if (mode !== 'worker') {
 } else {
   const config = JSON.parse(readFileSync(configPath, 'utf8'));
   const directory = path.dirname(configPath);
-  const authorizeSyntheticCleanup = syntheticCleanupAuthorizer(config, directory, fileURLToPath(import.meta.url));
+  let cleanupDenial;
+  const authorizeSyntheticCleanup = syntheticCleanupAuthorizer(config, directory, fileURLToPath(import.meta.url), (reason) => { cleanupDenial = reason; });
   const descendants = [];
   let stopAttempt;
   const identities = {};
@@ -109,8 +110,9 @@ if (mode !== 'worker') {
     const url = new URL(req.url, 'http://127.0.0.1');
     if (req.method === 'POST' && url.pathname === '/synthetic-test-cleanup') {
       const nonce = url.searchParams.get('nonce');
-      if (!authorizeSyntheticCleanup(nonce)) { res.writeHead(403).end(); return; }
+      if (!authorizeSyntheticCleanup(nonce)) { res.writeHead(403, { 'Content-Type': 'application/json' }).end(JSON.stringify({ error: { code: 'TEST_CLEANUP_DENIED', stage: 'authorization', reason: cleanupDenial } })); return; }
       stopping = true;
+      let stage = 'owned-children';
       try {
         const exits = [];
         for (const owned of ownedChildren.values()) {
@@ -122,7 +124,9 @@ if (mode !== 'worker') {
           }));
         }
         await Promise.all(exits);
+        stage = 'identity-probes';
         await Promise.allSettled([...pendingIdentityProbes]);
+        stage = 'descendant-proof';
         const remaining = descendants.filter((pid) => {
           try { process.kill(pid, 0); return true; }
           catch (error) { return error.code !== 'ESRCH'; }
@@ -135,7 +139,7 @@ if (mode !== 'worker') {
         res.setHeader('Content-Type', 'application/json');
         res.end(JSON.stringify({ nonce, epoch: config.epoch, pid: process.pid }));
         server.close(() => process.exit(0));
-      } catch { res.writeHead(409).end(); }
+      } catch (error) { res.writeHead(409, { 'Content-Type': 'application/json' }).end(JSON.stringify({ error: { code: providerFailureCode(error, 'TEST_CLEANUP_FAILED'), stage } })); }
       return;
     }
     if (req.method === 'POST' && ['/broker', '/register-broker'].includes(url.pathname) && config.grace && config.grace.mode !== 'host-direct') {
