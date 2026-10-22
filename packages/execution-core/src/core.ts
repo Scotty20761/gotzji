@@ -17,7 +17,8 @@ import { processIdentities, sameProcessIdentity, type ProcessIdentity } from './
 import { assertGraceProfile, graceProfile, productGraceProfile, profileDependencies, testProviderProfile, type GraceProfile, type GraceRegistration, type ProductRegistration } from './grace-profile.js';
 import { PRODUCT_CATALOG, claimsOverlap, folderClaim, registeredProject, productOperation, reviewedRecipe } from './product-projects.js';
 import { readProjectMemory, writeProjectMemory, type ProjectMemory, type ProjectMemorySnapshot } from './project-context.js';
-import { CoreError, type JobView, type SettleDecision, type Preparation, type RequestInput, type TaskBinding, type CodeRunReceipt, type RegisteredProject, type ProjectRegistration, type ProductOperationInput, type BasicProductOperationInput, type ProductOperation, type PreparedProductOperation, type CatalogEntry, type ReviewedCommandRegistration, type PrepareOptions, type SupportReport } from './types.js';
+import { activeProjectLifecycle, assertProjectLifecycleCurrent, listManagedProjectRows, projectLifecycle, type ProjectLifecycleSnapshot } from './project-lifecycle.js';
+import { CoreError, type JobView, type SettleDecision, type Preparation, type RequestInput, type TaskBinding, type CodeRunReceipt, type RegisteredProject, type ManagedProject, type ProjectRegistration, type ProductOperationInput, type BasicProductOperationInput, type ProductOperation, type PreparedProductOperation, type CatalogEntry, type ReviewedCommandRegistration, type PrepareOptions, type SupportReport } from './types.js';
 import { PRODUCT_NATIVE_OPERATIONS, prepareProductNativeOperation, type ProductNativeInput, type TrustedProductNativeOptions, type ProductNativeOperationName, type PreparedProductNativeOperation } from './product-native.js';
 import { libraryRoute, libraryCatalog, assertHostDirectLibraryWorkflow, prepareLibraryOperation, verifiedLibraryNavigationEvolution, type ProductLibraryInput, type TrustedLibraryOptions } from './product-library.js';
 import type { LibraryRouteKind, LibraryDeliveryScope } from './library-workflow-contract.js';
@@ -198,12 +199,22 @@ export class ExecutionCore {
     if (input?.operation === 'grace.product-operation') throw new CoreError('PRODUCT_PREPARATION_REQUIRED');
     return this.createPreparation(credential, input);
   }
-  private createPreparation(credential: string, input: RequestInput): Preparation {
+  private createPreparation(credential: string, input: RequestInput, lifecycle?: ProjectLifecycleSnapshot): Preparation {
     const adapter = this.authorize(credential, true);
     const normalized = this.validateInput(input);
     const digest = hash(JSON.stringify({ input: normalized, policy: this.#policy }));
     const id = randomUUID();
-    this.#store.database.connection.prepare('INSERT INTO gotzji_preparations VALUES (?,?,?,?,?,?)').run(id, adapter.id, adapter.owner, digest, JSON.stringify(normalized), this.#policy);
+    const database = this.#store.database.connection;
+    if (!lifecycle) database.prepare('INSERT INTO gotzji_preparations VALUES (?,?,?,?,?,?)').run(id, adapter.id, adapter.owner, digest, JSON.stringify(normalized), this.#policy);
+    else {
+      database.exec('BEGIN IMMEDIATE;');
+      try {
+        assertProjectLifecycleCurrent(database, adapter.owner, lifecycle);
+        database.prepare('INSERT INTO gotzji_preparations VALUES (?,?,?,?,?,?)').run(id, adapter.id, adapter.owner, digest, JSON.stringify(normalized), this.#policy);
+        database.prepare('INSERT INTO gotzji_preparation_projects VALUES (?,?,?,?)').run(id, adapter.owner, lifecycle.project.projectId, lifecycle.generation);
+        database.exec('COMMIT;');
+      } catch (error) { database.exec('ROLLBACK;'); throw error; }
+    }
     return { preparationId: id, digest };
   }
   public prepareSourceSnapshot(credential: string, requestId: string): Preparation {
@@ -223,7 +234,7 @@ export class ExecutionCore {
     if (this.#grace?.recipe !== 'product') throw new CoreError('PRODUCT_PROFILE_REQUIRED');
     let project = registeredProject(adapter.owner, registration);
     for (const recipeId of project.recipeIds) if (!this.#store.database.connection.prepare('SELECT 1 FROM gotzji_reviewed_recipes WHERE owner=? AND recipe_id=?').get(adapter.owner, recipeId)) throw new CoreError('RECIPE_NOT_REGISTERED', 'Choose a recipe from the server catalog', 'recipeIds');
-    const related = this.listProjects(credential).filter((entry) => {
+    const related = this.listManagedProjects(credential).filter((entry) => {
       const relative = path.relative(entry.rootPath, project.rootPath);
       const reverse = path.relative(project.rootPath, entry.rootPath);
       return (!relative || (!relative.startsWith('..') && !path.isAbsolute(relative))) || (!reverse || (!reverse.startsWith('..') && !path.isAbsolute(reverse)));
@@ -233,6 +244,7 @@ export class ExecutionCore {
     const previous = this.#store.database.connection.prepare('SELECT registration FROM gotzji_projects WHERE owner=? AND project_id=?').get(adapter.owner, project.projectId);
     if (previous && String(previous.registration) !== JSON.stringify(project)) throw new CoreError('PROJECT_REGISTRATION_CONFLICT', 'Use a new project ID for a changed trusted registration', 'projectId');
     this.#store.database.connection.prepare('INSERT OR IGNORE INTO gotzji_projects VALUES (?,?,?)').run(adapter.owner, project.projectId, JSON.stringify(project));
+    this.#store.database.connection.prepare('INSERT OR IGNORE INTO gotzji_project_lifecycle VALUES (?,?,NULL,0)').run(adapter.owner, project.projectId);
     return project;
   }
   /** Packaged host bootstrap only. App updates append immutable revisions; project approval never moves. */
@@ -265,9 +277,7 @@ export class ExecutionCore {
   public bindProjectRecipe(credential: string, binding: { readonly projectId: string; readonly recipeId: string }): RegisteredProject {
     const adapter = this.authorize(credential, true);
     if (this.#grace?.recipe !== 'product') throw new CoreError('PRODUCT_PROFILE_REQUIRED');
-    const row = this.#store.database.connection.prepare('SELECT registration FROM gotzji_projects WHERE owner=? AND project_id=?').get(adapter.owner, binding.projectId);
-    if (!row) throw new CoreError('PROJECT_NOT_REGISTERED', 'Choose a registered project', 'projectId');
-    const project = JSON.parse(String(row.registration)) as RegisteredProject;
+    const project = this.readProject(credential, binding.projectId);
     if (project.kind === 'library') throw new CoreError('RECIPE_BINDING_UNSUPPORTED', 'Library projects run their own workflows', 'projectId');
     if (!this.#store.database.connection.prepare('SELECT 1 FROM gotzji_reviewed_recipes WHERE owner=? AND recipe_id=?').get(adapter.owner, binding.recipeId)) throw new CoreError('RECIPE_NOT_REGISTERED', 'Choose a recipe from the server catalog', 'recipeId');
     this.#store.database.connection.prepare('INSERT OR IGNORE INTO gotzji_project_recipes VALUES (?,?,?,?)').run(adapter.owner, project.projectId, binding.recipeId, this.#now().toISOString());
@@ -276,7 +286,8 @@ export class ExecutionCore {
   /** Recipes a project may run: its registration's own plus every owner binding, in that order. */
   public projectRecipeIds(credential: string, project: RegisteredProject): readonly string[] {
     const adapter = this.authorize(credential);
-    return [...new Set([...project.recipeIds, ...this.boundRecipeIds(adapter.owner, project.projectId)])];
+    const current = this.readProject(credential, project.projectId);
+    return [...new Set([...current.recipeIds, ...this.boundRecipeIds(adapter.owner, current.projectId)])];
   }
   /** What the owner approved, for the app only: the catalog the model reads never carries local paths. */
   public recipeReview(credential: string, recipeId: string): { readonly recipeId: string; readonly executable: string; readonly executableSha256: string; readonly args: readonly string[]; readonly timeoutMs: number; readonly writeScope: 'project' | 'workspace'; readonly delivery: boolean; readonly dependencies: readonly { readonly path: string; readonly pinned: 'at-approval' | 'each-run'; readonly sha256?: string }[] } {
@@ -296,8 +307,12 @@ export class ExecutionCore {
     return this.#store.database.connection.prepare('SELECT recipe_id FROM gotzji_project_recipes WHERE owner=? AND project_id=? ORDER BY bound_at,recipe_id').all(owner, projectId).map((entry) => String(entry.recipe_id));
   }
   public listProjects(credential: string): readonly RegisteredProject[] {
+    return this.listManagedProjects(credential).filter((entry) => entry.archivedAt === null).map(({ archivedAt, ...project }) => { void archivedAt; return project; });
+  }
+  /** App-only project manager view. Immutable registrations stay present after archive. */
+  public listManagedProjects(credential: string): readonly ManagedProject[] {
     const adapter = this.authorize(credential);
-    return this.#store.database.connection.prepare('SELECT registration FROM gotzji_projects WHERE owner=? ORDER BY project_id').all(adapter.owner).map((row) => JSON.parse(String(row.registration)) as RegisteredProject);
+    return listManagedProjectRows(this.#store.database.connection, adapter.owner);
   }
   public selectedProject(credential: string): RegisteredProject | null {
     const adapter = this.authorize(credential);
@@ -307,10 +322,73 @@ export class ExecutionCore {
   /** Selects existing enrollment only; never enrolls a caller-supplied path or starts work. */
   public selectProject(credential: string, projectId: string): RegisteredProject {
     const adapter = this.authorize(credential, true);
-    const project = this.listProjects(credential).find((entry) => entry.projectId === projectId);
-    if (!project) throw new CoreError('PROJECT_NOT_REGISTERED');
+    const project = this.readProject(credential, projectId);
     this.#store.database.connection.prepare('INSERT INTO gotzji_project_selection VALUES (?,?) ON CONFLICT(owner) DO UPDATE SET project_id=excluded.project_id').run(adapter.owner, projectId);
     return project;
+  }
+  /** App-only archive/restore. It changes discoverability, never registration, history, memory, routes or files. */
+  public setProjectArchived(credential: string, input: { readonly projectId: string; readonly archived: boolean }): ManagedProject {
+    const adapter = this.authorize(credential, true);
+    if (this.#grace?.recipe !== 'product') throw new CoreError('PRODUCT_PROFILE_REQUIRED');
+    if (!input || Object.keys(input).sort().join(',') !== 'archived,projectId' || typeof input.archived !== 'boolean' || typeof input.projectId !== 'string' || !/^[a-zA-Z0-9_-]{1,64}$/.test(input.projectId)) throw new CoreError('PRODUCT_SCHEMA_INVALID');
+    const database = this.#store.database.connection;
+    database.exec('BEGIN IMMEDIATE;');
+    try {
+      const current = projectLifecycle(database, adapter.owner, input.projectId);
+      if (!current) throw new CoreError('PROJECT_NOT_REGISTERED');
+      if ((current.archivedAt !== null) === input.archived) { database.exec('COMMIT;'); return { ...current.project, archivedAt: current.archivedAt }; }
+      if (input.archived) this.assertProjectIdleForArchive(adapter.owner, input.projectId);
+      const archivedAt = input.archived ? this.#now().toISOString() : null;
+      database.prepare(`
+        INSERT INTO gotzji_project_lifecycle(owner,project_id,archived_at,generation) VALUES (?,?,?,1)
+        ON CONFLICT(owner,project_id) DO UPDATE SET archived_at=excluded.archived_at,generation=gotzji_project_lifecycle.generation+1
+      `).run(adapter.owner, input.projectId, archivedAt);
+      if (input.archived) database.prepare('DELETE FROM gotzji_project_selection WHERE owner=? AND project_id=?').run(adapter.owner, input.projectId);
+      database.exec('COMMIT;');
+      return { ...current.project, archivedAt };
+    } catch (error) { try { database.exec('ROLLBACK;'); } catch { /* transaction already closed */ } throw error; }
+  }
+  private assertProjectIdleForArchive(owner: string, projectId: string): void {
+    const database = this.#store.database.connection;
+    const rows = database.prepare(`
+      SELECT c.*,g.id AS actual_goal_id,g.status AS goal_status,g.goal_key AS actual_goal_key,
+        p.project_id AS indexed_project_id,o.phase AS operation_phase
+      FROM gotzji_claims c
+      LEFT JOIN goals g ON g.id=c.goal_id
+      LEFT JOIN gotzji_product_jobs p ON p.job_id=c.id
+      LEFT JOIN gotzji_operations o ON o.job_id=c.id
+      WHERE c.owner=?
+    `).all(owner);
+    for (const row of rows) {
+      const claim = row as unknown as ClaimRow & { actual_goal_id?: string; goal_status?: string; actual_goal_key?: string; indexed_project_id?: string; operation_phase?: string };
+      let request: RequestInput;
+      try { request = this.#store.input(claim); }
+      catch { throw new CoreError('PROJECT_BUSY', 'An admitted claim has unknown retained state', 'projectId'); }
+      if (request.operation !== 'grace.product-operation') continue;
+      let prepared: PreparedProductOperation;
+      try { prepared = JSON.parse(request.text) as PreparedProductOperation; }
+      catch { throw new CoreError('PROJECT_BUSY', 'An admitted project claim has unknown retained state', 'projectId'); }
+      if (!prepared?.project?.projectId || prepared.project.owner !== owner || (claim.indexed_project_id && claim.indexed_project_id !== prepared.project.projectId)) throw new CoreError('PROJECT_BUSY', 'An admitted project claim has unknown retained state', 'projectId');
+      if (prepared.project.projectId !== projectId) continue;
+      const held = !!database.prepare('SELECT 1 FROM gotzji_writers WHERE job_id=? UNION ALL SELECT 1 FROM gotzji_resource_claims WHERE job_id=? UNION ALL SELECT 1 FROM gotzji_workers WHERE job_id=? LIMIT 1').get(claim.id, claim.id, claim.id);
+      if (claim.goal_id === null || !claim.actual_goal_id || claim.actual_goal_key !== claim.goal_key || claim.goal_status === 'active' || held || ['started', 'uncertain'].includes(claim.operation_phase ?? '')) throw new CoreError('PROJECT_BUSY', 'Wait for, cancel or settle this project’s admitted work before archiving it', 'projectId');
+    }
+    const ambiguous = database.prepare(`
+      SELECT 1 FROM gotzji_product_jobs p
+      LEFT JOIN gotzji_claims c ON c.id=p.job_id
+      WHERE p.project_id=? AND (c.id IS NULL OR (c.owner=? AND (
+        EXISTS(SELECT 1 FROM gotzji_writers w WHERE w.job_id=p.job_id)
+        OR EXISTS(SELECT 1 FROM gotzji_resource_claims r WHERE r.job_id=p.job_id)
+        OR EXISTS(SELECT 1 FROM gotzji_workers w WHERE w.job_id=p.job_id)
+      ))) LIMIT 1
+    `).get(projectId, owner);
+    if (ambiguous) throw new CoreError('PROJECT_BUSY', 'The project still has retained execution authority', 'projectId');
+    const orphaned = database.prepare(`
+      SELECT 1 FROM (
+        SELECT job_id FROM gotzji_writers UNION ALL SELECT job_id FROM gotzji_resource_claims UNION ALL SELECT job_id FROM gotzji_workers
+      ) h LEFT JOIN gotzji_claims c ON c.id=h.job_id WHERE c.id IS NULL LIMIT 1
+    `).get();
+    if (orphaned) throw new CoreError('PROJECT_BUSY', 'Retained execution authority has unknown project ownership', 'projectId');
   }
   public async projectContext(credential: string, projectId?: string): Promise<{
     readonly project: RegisteredProject; readonly memory: ProjectMemorySnapshot;
@@ -318,8 +396,10 @@ export class ExecutionCore {
     readonly jobs: readonly JobView[]; readonly historyTruncated: boolean;
   }> {
     const adapter = this.authorize(credential);
-    const project = projectId === undefined ? this.selectedProject(credential) : this.listProjects(credential).find((entry) => entry.projectId === projectId);
-    if (!project) throw new CoreError(projectId === undefined ? 'PROJECT_SELECTION_REQUIRED' : 'PROJECT_NOT_REGISTERED');
+    const selected = projectId === undefined ? this.selectedProject(credential) : undefined;
+    if (projectId === undefined && !selected) throw new CoreError('PROJECT_SELECTION_REQUIRED');
+    const lifecycle = activeProjectLifecycle(this.#store.database.connection, adapter.owner, projectId ?? selected!.projectId);
+    const project = lifecycle.project;
     const instructions: { path: string; content: string; sha256: string }[] = [];
     for (const filename of ['AGENTS.md', 'CLAUDE.md']) {
       try { instructions.push({ path: filename, ...await this.readProjectFile(credential, { projectId: project.projectId, path: filename }) }); }
@@ -327,11 +407,12 @@ export class ExecutionCore {
     }
     const all = this.#store.database.connection.prepare('SELECT c.id FROM gotzji_claims c JOIN gotzji_product_jobs p ON p.job_id=c.id WHERE c.owner=? AND p.project_id=? ORDER BY c.rowid DESC LIMIT 26').all(adapter.owner, project.projectId);
     const jobs = await Promise.all(all.slice(0, 25).map((row) => this.view(this.#store.claim(String(row.id)))));
+    assertProjectLifecycleCurrent(this.#store.database.connection, adapter.owner, lifecycle);
     return { project: { ...project, recipeIds: this.projectRecipeIds(credential, project) }, memory: readProjectMemory(this.#store.database.connection, adapter.owner, project.projectId), instructions, jobs, historyTruncated: all.length > 25 };
   }
   public saveProjectMemory(credential: string, input: { readonly projectId: string; readonly expectedRevision: number; readonly memory: ProjectMemory }): ProjectMemorySnapshot {
     const adapter = this.authorize(credential, true);
-    if (!this.listProjects(credential).some((entry) => entry.projectId === input.projectId)) throw new CoreError('PROJECT_NOT_REGISTERED');
+    this.readProject(credential, input.projectId);
     return writeProjectMemory(this.#store.database.connection, adapter.owner, input.projectId, input, this.#now().toISOString());
   }
   /** App-only enrollment of one host-owned browser session; never expose private session facts through MCP. */
@@ -386,45 +467,47 @@ export class ExecutionCore {
   }
   public async readProjectFile(credential: string, input: ProjectReadInput): Promise<ProjectFileResult> {
     if (!input || Object.keys(input).sort().join(',') !== 'path,projectId') throw new CoreError('PRODUCT_SCHEMA_INVALID', 'Select a project and a relative file path');
-    const project = this.readProject(credential, input.projectId);
-    const result = await readProjectFile(project, input.path, this.privateRuntimeRoots());
-    this.assertReadProjectCurrent(credential, project);
+    const lifecycle = this.readProjectLifecycle(credential, input.projectId);
+    const result = await readProjectFile(lifecycle.project, input.path, this.privateRuntimeRoots());
+    this.assertReadProjectCurrent(credential, lifecycle);
     return result;
   }
   public async listProjectFiles(credential: string, input: ProjectListInput): Promise<ProjectListResult> {
     if (!input || !Object.hasOwn(input, 'projectId') || Object.keys(input).some((key) => !['projectId', 'path'].includes(key))) throw new CoreError('PRODUCT_SCHEMA_INVALID', 'Select a project and an optional directory');
-    const project = this.readProject(credential, input.projectId);
-    const result = await listProjectFiles(project, input.path ?? '.', this.privateRuntimeRoots());
-    this.assertReadProjectCurrent(credential, project);
+    const lifecycle = this.readProjectLifecycle(credential, input.projectId);
+    const result = await listProjectFiles(lifecycle.project, input.path ?? '.', this.privateRuntimeRoots());
+    this.assertReadProjectCurrent(credential, lifecycle);
     return result;
   }
   public async searchProjectFiles(credential: string, input: ProjectSearchInput): Promise<ProjectSearchResult> {
     if (!input || !Object.hasOwn(input, 'projectId') || !Object.hasOwn(input, 'query') || Object.keys(input).some((key) => !['projectId', 'path', 'query'].includes(key))) throw new CoreError('PRODUCT_SCHEMA_INVALID', 'Select a project, a literal query and an optional directory');
-    const project = this.readProject(credential, input.projectId);
-    const result = await searchProjectFiles(project, input.path ?? '.', input.query, this.privateRuntimeRoots());
-    this.assertReadProjectCurrent(credential, project);
+    const lifecycle = this.readProjectLifecycle(credential, input.projectId);
+    const result = await searchProjectFiles(lifecycle.project, input.path ?? '.', input.query, this.privateRuntimeRoots());
+    this.assertReadProjectCurrent(credential, lifecycle);
     return result;
   }
   public async readProjectGit(credential: string, input: ProjectGitInput): Promise<ProjectGitResult> {
     if (!input || !['status', 'diff', 'log'].includes(input.view) || !Object.hasOwn(input, 'projectId') || Object.keys(input).some((key) => !(input.view === 'diff' ? ['projectId', 'view', 'path', 'staged'] : ['projectId', 'view']).includes(key)) || input.view === 'diff' && (typeof input.path !== 'string' || input.staged !== undefined && typeof input.staged !== 'boolean')) throw new CoreError('PRODUCT_SCHEMA_INVALID');
-    const project = this.readProject(credential, input.projectId);
+    const lifecycle = this.readProjectLifecycle(credential, input.projectId);
     let result: ProjectGitResult;
-    try { result = await readProjectGit(project, input, this.privateRuntimeRoots(), this.#root); }
+    try { result = await readProjectGit(lifecycle.project, input, this.privateRuntimeRoots(), this.#root); }
     catch (error) { if (error instanceof CoreError) throw error; throw new CoreError('GIT_READ_FAILED', 'The selected Git repository could not be read', 'projectId'); }
-    this.assertReadProjectCurrent(credential, project);
+    this.assertReadProjectCurrent(credential, lifecycle);
     return result;
   }
-  private assertReadProjectCurrent(credential: string, project: RegisteredProject): void {
-    if (JSON.stringify(this.readProject(credential, project.projectId)) !== JSON.stringify(project)) throw new CoreError('PROJECT_REGISTRATION_CHANGED');
+  private assertReadProjectCurrent(credential: string, lifecycle: ProjectLifecycleSnapshot): void {
+    const adapter = this.authorize(credential);
+    assertProjectLifecycleCurrent(this.#store.database.connection, adapter.owner, lifecycle);
   }
   private readProject(credential: string, projectId: string): RegisteredProject {
+    return this.readProjectLifecycle(credential, projectId).project;
+  }
+  private readProjectLifecycle(credential: string, projectId: string): ProjectLifecycleSnapshot {
     const adapter = this.authorize(credential);
     if (typeof projectId !== 'string' || !/^[a-zA-Z0-9_-]{1,64}$/.test(projectId)) throw new CoreError('PRODUCT_SCHEMA_INVALID', 'Select a registered project identifier', 'projectId');
     if (this.#controlOnly) throw new CoreError('CONTROL_ONLY');
     if (this.#grace?.recipe !== 'product') throw new CoreError('PRODUCT_PROFILE_REQUIRED');
-    const row = this.#store.database.connection.prepare('SELECT registration FROM gotzji_projects WHERE owner=? AND project_id=?').get(adapter.owner, projectId);
-    if (!row) throw new CoreError('PROJECT_NOT_REGISTERED', 'Select a project enrolled by this owner', 'projectId');
-    return JSON.parse(String(row.registration)) as RegisteredProject;
+    return activeProjectLifecycle(this.#store.database.connection, adapter.owner, projectId);
   }
   public catalog(credential: string): readonly CatalogEntry[] {
     const adapter = this.authorize(credential);
@@ -462,8 +545,8 @@ export class ExecutionCore {
   public prepareOperation(credential: string, input: ProductOperationInput, options: PrepareOptions = {}): Preparation | Promise<Preparation> {
     const adapter = this.authorize(credential, true);
     if (this.#grace?.recipe !== 'product') throw new CoreError('PRODUCT_PROFILE_REQUIRED');
-    const row = this.#store.database.connection.prepare('SELECT registration FROM gotzji_projects WHERE owner=? AND project_id=?').get(adapter.owner, input?.projectId ?? '');
-    if (!row) throw new CoreError('PROJECT_NOT_REGISTERED', 'Enroll this project in the app before submitting work', 'projectId');
+    const lifecycle = projectLifecycle(this.#store.database.connection, adapter.owner, input?.projectId ?? '');
+    if (!lifecycle) throw new CoreError('PROJECT_NOT_REGISTERED', 'Enroll this project in the app before submitting work', 'projectId');
     for (const jobId of input.dependsOn ?? []) {
       const claim = this.#store.claim(jobId);
       if (claim.owner !== adapter.owner || claim.id === hash(`${adapter.owner}\0${input.requestId}`) || claim.goal_id === null) throw new CoreError('DEPENDENCY_AUTHORITY_DENIED', 'Select an existing owned job other than this request', 'dependsOn');
@@ -483,7 +566,7 @@ export class ExecutionCore {
         const known = saved.operation === 'grace.product-operation' ? JSON.parse(saved.text) as PreparedProductOperation : undefined;
         const canonical = (value: unknown): string => JSON.stringify(value, (_key, item: unknown) => item && typeof item === 'object' && !Array.isArray(item) ? Object.fromEntries(Object.entries(item as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b))) : item);
         const normalize = (value: ProductOperationInput): unknown => known?.kind === 'native' ? { ...value, path: path.relative(known.project.rootPath, path.resolve(known.project.rootPath, (value as ProductNativeInput).path)), expectedSha256: (value as ProductNativeInput).expectedSha256 ?? known.beforeSha256, ...('outputPath' in value && value.outputPath ? { outputPath: path.relative(known.project.rootPath, path.resolve(known.project.rootPath, value.outputPath)) } : {}) } : value;
-        if (!known || canonical(normalize(known.input)) !== canonical(normalize(input)) || canonical(known.project) !== canonical(JSON.parse(String(row.registration)))) throw new CoreError('REQUEST_DIGEST_CONFLICT');
+        if (!known || canonical(normalize(known.input)) !== canonical(normalize(input)) || canonical(known.project) !== canonical(lifecycle.project)) throw new CoreError('REQUEST_DIGEST_CONFLICT');
         const preparation = this.#store.database.connection.prepare('SELECT id,digest FROM gotzji_preparations WHERE owner=? AND adapter=? AND digest=? ORDER BY rowid LIMIT 1').get(adapter.owner, adapter.id, existing.digest);
         if (preparation) return { preparationId: String(preparation.id), digest: String(preparation.digest) };
         const id = randomUUID();
@@ -492,30 +575,31 @@ export class ExecutionCore {
       };
       return PRODUCT_NATIVE_OPERATIONS.includes(input.operation as ProductNativeOperationName) || PRODUCT_BROWSER_OPERATIONS.includes(input.operation as ProductBrowserOperationName) ? Promise.resolve().then(replay) : replay();
     }
+    if (lifecycle.archivedAt !== null) throw new CoreError('PROJECT_ARCHIVED', 'Restore this project in the gotzji app before preparing work', 'projectId');
     if (input.operation === 'library.workflow') {
       if (this.#grace.mode === 'host-direct') assertHostDirectLibraryWorkflow(input.workflowId, input.workflowVersion);
       if (!this.#library) throw new CoreError('LIBRARY_EXECUTOR_NOT_REGISTERED');
-      const project = JSON.parse(String(row.registration)) as RegisteredProject;
+      const project = lifecycle.project;
       const enrolled = this.#store.database.connection.prepare('SELECT route FROM gotzji_library_routes WHERE adapter=? AND project_id=?').get(adapter.id, project.projectId);
       if (!enrolled) throw new CoreError('LIBRARY_ROUTE_AUTHORITY_DENIED');
       const route = libraryRoute(adapter.owner, adapter.id, this.authority().authorityId, project, String(enrolled.route) as LibraryRouteKind);
       const prepared = prepareLibraryOperation(project, input, route, this.#library);
-      return this.createPreparation(credential, { requestId: input.requestId, operation: 'grace.product-operation', text: JSON.stringify(prepared) });
+      return this.createPreparation(credential, { requestId: input.requestId, operation: 'grace.product-operation', text: JSON.stringify(prepared) }, lifecycle);
     }
     if (PRODUCT_BROWSER_OPERATIONS.includes(input.operation as ProductBrowserOperationName)) {
       if (!this.#browser || !(this.#browser.operations ?? PRODUCT_BROWSER_OPERATIONS).includes(input.operation as ProductBrowserOperationName)) throw new CoreError('BROWSER_PROVIDER_NOT_QUALIFIED');
       const enrollment=this.#browser;
-      return prepareProductBrowserOperation(JSON.parse(String(row.registration)) as RegisteredProject,input,enrollment).then((operation)=>{
+      return prepareProductBrowserOperation(lifecycle.project,input,enrollment).then((operation)=>{
         if(this.#browser!==enrollment||this.#browser.session.sessionId!==operation.browser.session.sessionId||this.#browser.manifestSha256!==operation.browser.manifestSha256)throw new CoreError('BROWSER_SESSION_CHANGED');
-        return this.createPreparation(credential,{requestId:input.requestId,operation:'grace.product-operation',text:JSON.stringify(operation)});
+        return this.createPreparation(credential,{requestId:input.requestId,operation:'grace.product-operation',text:JSON.stringify(operation)},lifecycle);
       });
     }
     if (PRODUCT_NATIVE_OPERATIONS.includes(input.operation as ProductNativeOperationName)) {
       if (!this.#native || !this.nativeAvailable(input.operation as ProductNativeOperationName)) throw new CoreError('NATIVE_PROVIDER_NOT_QUALIFIED', 'Use an installed qualified provider with the pinned script', 'operation');
-      return prepareProductNativeOperation(JSON.parse(String(row.registration)) as RegisteredProject, input, this.#native).then((operation) => this.createPreparation(credential, { requestId: input.requestId, operation: 'grace.product-operation', text: JSON.stringify(operation) }));
+      return prepareProductNativeOperation(lifecycle.project, input, this.#native).then((operation) => this.createPreparation(credential, { requestId: input.requestId, operation: 'grace.product-operation', text: JSON.stringify(operation) }, lifecycle));
     }
-    const operation = productOperation(JSON.parse(String(row.registration)) as RegisteredProject, basic, reviewed,{privateRuntimeRoots:this.privateRuntimeRoots(),boundRecipeIds:this.boundRecipeIds(adapter.owner,basic.projectId)});
-    const preparation = this.createPreparation(credential, { requestId: input.requestId, operation: 'grace.product-operation', text: JSON.stringify(operation) });
+    const operation = productOperation(lifecycle.project, basic, reviewed,{privateRuntimeRoots:this.privateRuntimeRoots(),boundRecipeIds:this.boundRecipeIds(adapter.owner,basic.projectId)});
+    const preparation = this.createPreparation(credential, { requestId: input.requestId, operation: 'grace.product-operation', text: JSON.stringify(operation) }, lifecycle);
     if (reviewed?.delivery) this.#store.database.connection.prepare('INSERT INTO gotzji_delivery_approvals VALUES (?,?,?,?,?,?,?)').run(preparation.preparationId, adapter.owner, adapter.id, preparation.digest, options.ownerRun === true ? 'approved' : 'pending', this.#now().getTime(), this.#now().getTime() + 30 * 60_000);
     return preparation;
   }
@@ -651,7 +735,9 @@ export class ExecutionCore {
     const database = this.#store.database.connection;
     database.exec('BEGIN IMMEDIATE;');
     try {
-      if (input.operation === 'grace.product-operation' && !database.prepare('SELECT 1 FROM gotzji_claims WHERE id=?').get(id)) {
+      const admitted = !!database.prepare('SELECT 1 FROM gotzji_claims WHERE id=?').get(id);
+      if (input.operation === 'grace.product-operation' && !admitted) this.assertPreparationProjectCurrent(preparationId, adapter.owner, input);
+      if (input.operation === 'grace.product-operation' && !admitted) {
         const operation = JSON.parse(input.text) as ProductOperation;
         if (operation.input.operation === 'command.run') {
           const recipe = database.prepare('SELECT recipe FROM gotzji_reviewed_recipes WHERE owner=? AND recipe_id=?').get(adapter.owner, operation.input.commandId ?? '');
@@ -662,7 +748,7 @@ export class ExecutionCore {
           }
         }
       }
-      if (input.operation === 'grace.product-operation' && !database.prepare('SELECT 1 FROM gotzji_claims WHERE id=?').get(id)) {
+      if (input.operation === 'grace.product-operation' && !admitted) {
         const waiting = database.prepare("SELECT COUNT(*) AS count FROM gotzji_claims c LEFT JOIN goals g ON c.goal_id=g.id WHERE c.owner=? AND json_extract(c.input,'$.operation')='grace.product-operation' AND (g.status='active' OR c.goal_id IS NULL) AND NOT EXISTS(SELECT 1 FROM gotzji_workers w WHERE w.job_id=c.id)").get(adapter.owner);
         if (Number(waiting?.count) >= 32) throw new CoreError('QUEUE_CAPACITY_REACHED', 'Wait for a queued job to start or cancel a selected job');
       }
@@ -683,6 +769,18 @@ export class ExecutionCore {
       }
     });
     return this.view(claim);
+  }
+  private assertPreparationProjectCurrent(preparationId: string, owner: string, input: RequestInput): void {
+    let operation: PreparedProductOperation;
+    try { operation = JSON.parse(input.text) as PreparedProductOperation; }
+    catch { throw new CoreError('PREPARATION_DENIED'); }
+    const projectId = operation?.project?.projectId;
+    if (typeof projectId !== 'string') throw new CoreError('PREPARATION_DENIED');
+    const binding = this.#store.database.connection.prepare('SELECT owner,project_id,generation FROM gotzji_preparation_projects WHERE preparation_id=?').get(preparationId);
+    if (binding && (binding.owner !== owner || binding.project_id !== projectId)) throw new CoreError('PREPARATION_DENIED');
+    const current = projectLifecycle(this.#store.database.connection, owner, projectId);
+    const expectedGeneration = binding ? Number(binding.generation) : 0;
+    if (!current || current.archivedAt !== null || current.generation !== expectedGeneration) throw new CoreError('PROJECT_LIFECYCLE_CHANGED', 'Prepare this operation again after restoring the project', 'projectId');
   }
   /** Explicit task selection plus verified enrollment, returning adapter-private authority. */
   public select(credential: string, jobId: string): TaskBinding {

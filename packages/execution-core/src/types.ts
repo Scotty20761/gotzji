@@ -113,6 +113,9 @@ export interface RegisteredProject extends ProjectRegistration {
   readonly resourceKey: string;
   readonly recipeIds: readonly string[];
 }
+export interface ManagedProject extends RegisteredProject {
+  readonly archivedAt: string | null;
+}
 export interface ProductOperation {
   readonly kind?: 'basic';
   readonly input: BasicProductOperationInput;
