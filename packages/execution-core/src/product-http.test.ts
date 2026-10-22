@@ -206,11 +206,20 @@ describe('governed product HTTP and MCP boundary', () => {
     } finally { await host.close(); }
   });
 
-  it('lets only the owner app surface start a delivery command (incident I5)', async () => {
-    // The core refuses delivery recipes unless the caller says the owner started the run; only the app surface may say so.
+  it('rejects caller-supplied owner-run authority before either transport dispatches', async () => {
+    let calls = 0;
+    const host = await startProductHttp({ token: 'owner', mcpPathSecret: 'tunnel', rpc: async () => { calls++; return {}; } });
+    const input = { requestId: 'forged-owner', projectId: 'project', operation: 'command.run', commandId: 'delivery', ownerRun: true };
+    try {
+      const app = await (await fetch(`http://127.0.0.1:${host.port}/rpc`, { method: 'POST', headers: { Authorization: 'Bearer owner' }, body: JSON.stringify({ method: 'prepareOperation', input }) })).json();
+      expect(app.ok).toBe(false);
+      const mcp = await (await fetch(`http://127.0.0.1:${host.port}/mcp/tunnel`, { method: 'POST', body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'gotzji_prepare_operation', arguments: input } }) })).json();
+      expect(mcp.result.isError).toBe(true); expect(calls).toBe(0);
+    } finally { await host.close(); }
+  });
+
+  it('keeps the owner support report available during control-only recovery', async () => {
     const source = await readFile(fileURLToPath(new URL('./product-server.mjs', import.meta.url)), 'utf8');
-    expect(source.match(/core\.prepareOperation\(/gu)).toHaveLength(1);
-    expect(source).toContain("core.prepareOperation(credential, input, { ownerRun: surface === 'app' })");
     // The support report (incident I8) is the owner's alone too.
     expect(source.match(/core\.supportReport\(/gu)).toHaveLength(1);
     expect(source).toContain("case 'supportReport': if (surface !== 'app') throw new CoreError('SUPPORT_REPORT_DENIED'); return core.supportReport(credential, hostMetrics());");

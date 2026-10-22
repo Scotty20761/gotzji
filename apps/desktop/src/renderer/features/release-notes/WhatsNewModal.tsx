@@ -2,6 +2,8 @@ import { ActionButton } from '../ui/UiPrimitives.js';
 import { useEffect, useRef, type ReactElement } from 'react';
 import { createPortal } from 'react-dom';
 import type { UiLocale } from '@lnwjud/ipc-contracts';
+import { APP_NAME, APP_VERSION } from '@lnwjud/ipc-contracts';
+import { gotzjiReleaseNotes } from '../../gotzji-release-notes.js';
 import { createTranslator } from '../../i18n/index.js';
 import { releaseNotesForSeries } from './release-notes.js';
 
@@ -60,6 +62,7 @@ export function WhatsNewModal({ locale, version, onClose }: WhatsNewModalProps):
   }, [onClose]);
 
   const notes = releaseNotesForSeries(version);
+  const ownedNotes = APP_NAME === 'gotzji' && version === APP_VERSION ? gotzjiReleaseNotes(version) : null;
   const modal = (
     <div className="tool-modal-backdrop whats-new-backdrop" role="presentation" onMouseDown={(event): void => { if (event.currentTarget === event.target) onClose(); }}>
       <section ref={dialogRef} className="tool-modal whats-new-modal" role="dialog" aria-modal="true" aria-labelledby="whats-new-title">
@@ -71,7 +74,13 @@ export function WhatsNewModal({ locale, version, onClose }: WhatsNewModalProps):
           <ActionButton className="tool-modal-close" type="button" onClick={onClose} aria-label={t('whatsNew.close')}>×</ActionButton>
         </header>
         <div className="tool-modal-scroll whats-new-scroll">
-          {notes.length === 0 ? (
+          {ownedNotes ? (
+            <section className="whats-new-version" aria-label={`v${version}`}>
+              <h3 className="whats-new-version-title">v{version}</h3>
+              {ownedNotes.status === 'development' && <p>{locale === 'th' ? 'รุ่นระหว่างพัฒนา ยังไม่เผยแพร่' : 'Development build, not yet published'}</p>}
+              <ul>{ownedNotes[locale].map((entry) => <li key={entry} className="whats-new-item"><p>{entry}</p></li>)}</ul>
+            </section>
+          ) : notes.length === 0 ? (
             <section className="whats-new-empty" role="status">
               <h3>{t('whatsNew.emptyTitle')}</h3>
               <p>{t('whatsNew.emptyBody', { version })}</p>

@@ -2,6 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { APP_VERSION } from '@lnwjud/shared';
 import productPackage from '../package.json' with { type: 'json' };
 import { gotzjiReleaseNotes } from '../src/renderer/gotzji-release-notes.js';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { createElement } from 'react';
+import { WhatsNewModal } from '../src/renderer/features/release-notes/WhatsNewModal.js';
 describe('owned gotzji version notes', () => {
   it('has non-empty Thai and English notes for the exact active product version', () => {
     expect(productPackage.version).toBe(APP_VERSION);
@@ -11,4 +14,10 @@ describe('owned gotzji version notes', () => {
   it('keeps the upstream-numbered baseline unpublished and prepares meaningful owned v1 notes', () => {
     expect(gotzjiReleaseNotes('5.7.3')).toMatchObject({ status: 'development' }); expect(gotzjiReleaseNotes('1.0.0')!.th.join(' ')).toContain('ChatGPT'); expect(gotzjiReleaseNotes('1.0.0')!.en.join(' ')).toContain('durable host');
   });
+});
+it.each(['th', 'en'] as const)('shows the actual gotzji version in the inherited modal in %s', (locale) => {
+  const markup = renderToStaticMarkup(createElement(WhatsNewModal, { locale, version: APP_VERSION, onClose: () => undefined }));
+  expect(markup).toContain(`v${APP_VERSION}`);
+  expect(markup).not.toContain('whats-new-empty');
+  expect(markup).toContain(gotzjiReleaseNotes(APP_VERSION)![locale][0]);
 });

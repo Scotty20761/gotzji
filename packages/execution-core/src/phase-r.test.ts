@@ -1,9 +1,11 @@
 import { access, rm, mkdir, writeFile, readFile, realpath, readdir } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { existsSync } from 'node:fs';
 import { ExecutionCore } from './core.js';
-import { alive, signed, verifyStoppedWorker, WORKER_FILE } from './managed-worker.js';
+import { alive, signed, verifyStoppedWorker, stopWorker, observeWorker, WORKER_FILE } from './managed-worker.js';
+import { createOwnedTestLifetime, finishOwnedTest, type OwnedTestLifetime } from '../test-support/owned-test-lifetime.js';
 import type { WorkerRow } from './store.js';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
@@ -20,14 +22,36 @@ import { canonicalTemporaryDirectory } from './test-fixtures.js';
 // Hosted Windows runners stall for seconds at a time (process spawn, first PowerShell, Defender scans); CI gets three times each budget.
 const BUDGET = process.env.CI ? 3 : 1;
 const fixtures: { root: string; core: ExecutionCore }[] = [];
+let testLifetime: OwnedTestLifetime;
+beforeEach(() => { testLifetime = createOwnedTestLifetime(); });
+function ownBody(body: () => Promise<void>): () => Promise<void> { return (): Promise<void> => testLifetime.run(body); }
 afterEach(async () => {
-  vi.restoreAllMocks();syncBuiltinESMExports();
-  for (const {root,core} of fixtures.splice(0)) {
-    core.close();
-    if (!path.resolve(root).startsWith(path.join(await realpath(os.tmpdir()),'gotzji-phase-r-'))) throw new Error('Unexpected fixture root');
-    await rm(root,{recursive:true,force:true});
-  }
-});
+  await finishOwnedTest(testLifetime, () => { vi.restoreAllMocks(); syncBuiltinESMExports(); }, () => fixtures.splice(0), async ({ root, core }) => {
+    try {
+      const filename = path.join(root, existsSync(path.join(root, 'core', 'core.sqlite')) ? 'core/core.sqlite' : 'core.sqlite');
+      if (existsSync(filename)) {
+        const database = new DatabaseSync(filename, { readOnly: true, timeout: 5000 });
+        let workers: WorkerRow[];
+        try {
+          workers = database.prepare('SELECT * FROM gotzji_workers').all() as unknown as WorkerRow[];
+          for (const row of database.prepare('SELECT worker_json,reason FROM gotzji_worker_history').all()) {
+            const worker = JSON.parse(String(row.worker_json)) as WorkerRow;
+            if (row.reason === 'not_launched') {
+              // The sole launcher persists config before spawn. A reserved entry without any launch files never dispatched.
+              if (worker.launch_state !== 'reserved' || ['config.json', 'ready.json', 'observation.json'].some(name => existsSync(path.join(worker.directory, name)))) throw new Error('Unlaunched fixture evidence changed');
+            } else workers.push(worker);
+          }
+        }
+        finally { database.close(); }
+        for (const worker of new Map(workers.map(worker => [worker.epoch, worker])).values()) {
+          if (!await stopWorker(worker) || await observeWorker(worker) !== 'absent') throw new Error(`Owned worker absence unproved; retained ${root}`);
+        }
+      }
+    } finally { core.close(); }
+    if (path.dirname(root) !== await realpath(os.tmpdir()) || !path.basename(root).startsWith('gotzji-phase-r-') || await realpath(root) !== root) throw new Error('Unexpected fixture root');
+    await rm(root, { recursive: true, force: true });
+  });
+}, 180000);
 async function codeFixture(validationMs=25,now?:()=>Date):Promise<{root:string;core:ExecutionCore;credential:string;registration:GraceRegistration}>{
  const root=await canonicalTemporaryDirectory('gotzji-phase-r-');
  const libraryRoot=path.join(root,'library');
@@ -87,7 +111,7 @@ it('a changed authorization record cannot launch the requested local effect',asy
  await expect(f.core.resume(f.credential,binding)).rejects.toThrow('DELIVERY_AUTHORITY_DENIED');
  const after=new DatabaseSync(path.join(f.root,'core','core.sqlite'), { timeout: 5000 });try{expect(after.prepare('SELECT COUNT(*) n FROM gotzji_workers').get()?.n).toBe(0);}finally{after.close();}
 });
-it('cancellation stops the owned validation command and preserves the cancelled job',async()=>{
+it('cancellation stops the owned validation command and preserves the cancelled job',ownBody(async()=>{
  const started=performance.now();const phase=(name:string):void=>{console.info(JSON.stringify({fixture:'phase-r-cancel',phase:name,elapsedMs:Math.round(performance.now()-started)}));};
  const f=await codeFixture(3000);phase('fixture-ready');const p=f.core.prepareCodeChange(f.credential,'cancel-code');const job=await f.core.submit(f.credential,p.preparationId);const binding=f.core.select(f.credential,job.jobId);
  await f.core.resume(f.credential,binding);phase('resumed');
@@ -97,7 +121,8 @@ it('cancellation stops the owned validation command and preserves the cancelled 
  const stopped=JSON.parse(JSON.parse(await readFile(path.join(directory,'stopped.json'),'utf8')).body) as {descendants:number[]};
  expect(stopped.descendants.every((pid)=>alive(pid)===false)).toBe(true);
  expect((await f.core.get(f.credential,binding)).status).toBe('cancelled');phase('absence-verified');
-},10000*BUDGET);
+// Enclose cold worker readiness (37s), authenticated controls and the existing patient stop proof (16s), plus teardown reserve.
+}),90000);
 
 it('rejects native gate evidence when the observed run is rebound to another goal',async()=>{
  const f=await codeFixture();const p=f.core.prepareCodeChange(f.credential,'goal-bound-code');const job=await f.core.submit(f.credential,p.preparationId);const binding=f.core.select(f.credential,job.jobId);

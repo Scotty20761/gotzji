@@ -78,7 +78,11 @@ test('control center auto-starts MCP and supports project + doctor journey', asy
       : `v${installedVersion.split('.')[0]}.`;
     expect(versionTitles[0]).toBe(`v${installedVersion}`);
     expect(versionTitles.every((title) => title.startsWith(seriesPrefix))).toBe(true);
-    await expect.poll(() => whatsNew.locator('.whats-new-scroll').evaluate((container) => container.scrollHeight > container.clientHeight)).toBe(true);
+    // The first gotzji release has shorter notes than upstream's multi-patch series.
+    // Verify that the final entry is reachable whether or not scrolling is needed.
+    const finalReleaseEntry = whatsNew.locator('.whats-new-item').last();
+    await finalReleaseEntry.scrollIntoViewIfNeeded();
+    await expect(finalReleaseEntry).toBeVisible();
     await whatsNew.press('Escape');
     await expect(whatsNew).toHaveCount(0);
     const homeSelect = page.locator('.primary-project-control .ui-combobox-trigger');

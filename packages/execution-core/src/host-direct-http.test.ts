@@ -37,7 +37,8 @@ describe('ChatGPT production controller through real HTTP and durable worker', (
       }
       expect(endpoint).not.toBe(''); expect(((await rpc('health')).value as { controller: string }).controller).toBe('chatgpt-plugin');
       expect(await rpc('registerRecipe', { recipeId: 'synthetic-check', executable: process.execPath, args: ['--check', '${projectRoot}/source.js'], dependencies: ['${projectRoot}/source.js'], timeoutMs: 10000 })).toMatchObject({ ok: true });
-      expect(await rpc('registerProject', { projectId: 'project', displayName: 'Synthetic', rootPath: project, recipeIds: ['synthetic-check'] })).toMatchObject({ ok: true });
+      expect(await rpc('registerRecipe', { recipeId: 'synthetic-delivery', executable: process.execPath, args: ['--check', '${projectRoot}/source.js'], dependencies: ['${projectRoot}/source.js'], timeoutMs: 10000, delivery: true })).toMatchObject({ ok: true });
+      expect(await rpc('registerProject', { projectId: 'project', displayName: 'Synthetic', rootPath: project, recipeIds: ['synthetic-check', 'synthetic-delivery'] })).toMatchObject({ ok: true });
       const execute = async (input: object): Promise<Record<string, unknown>> => {
         const preparation = await tool('gotzji_prepare_operation', input);
         const job = await tool('gotzji_submit', { preparationId: preparation.preparationId });
@@ -57,20 +58,19 @@ describe('ChatGPT production controller through real HTTP and durable worker', (
       await execute({ requestId: 'fresh-direct-command', projectId: 'project', operation: 'command.run', commandId: 'synthetic-check' });
       expect(await tool('gotzji_read_file', { projectId: 'project', path: 'proof.txt' })).toMatchObject({ content: write.content, sha256: hash(write.content) });
       const appPreparation = await rpc('prepareOperation', { requestId: 'fresh-app-direct-read', projectId: 'project', operation: 'file.read', path: 'proof.txt' });
-      expect(appPreparation.ok).toBe(true);
-      const appJob = await rpc('submit', { preparationId: (appPreparation.value as { preparationId: string }).preparationId });
-      expect(appJob.ok).toBe(true);
-      const appJobId = (appJob.value as { jobId: string }).jobId;
-      for (let n = 0; n < 100; n++) {
-        if (((await rpc('status', { jobId: appJobId })).value as { status: string }).status === 'completed') break;
-        await new Promise((resolve) => setTimeout(resolve, 100));
-      }
-      expect(((await rpc('status', { jobId: appJobId })).value as { status: string }).status).toBe('completed');
+      expect(appPreparation).toMatchObject({ ok: false, error: { code: 'CHATGPT_START_REQUIRED' } });
+      expect(await rpc('submit', { preparationId: (written.preparation as { preparationId: string }).preparationId })).toMatchObject({ ok: false, error: { code: 'CHATGPT_START_REQUIRED' } });
+      await expect(tool('gotzji_prepare_operation', { requestId: 'delivery-not-granted', projectId: 'project', operation: 'command.run', commandId: 'synthetic-delivery' })).rejects.toThrow('DELIVERY_OWNER_ONLY');
+      expect(await rpc('status', { jobId: (written.job as { jobId: string }).jobId })).toMatchObject({ ok: true, value: { status: 'completed' } });
+      expect(await tool('gotzji_select_project', { projectId: 'project' })).toMatchObject({ projectId: 'project' });
+      expect(await rpc('selectedProject')).toMatchObject({ ok: true, value: { projectId: 'project' } });
+      expect(await tool('gotzji_save_project_memory', { projectId: 'project', expectedRevision: 0, memory: { summary: 'Verified local protocol fixture', decisions: ['ChatGPT starts work'], openQuestions: [], resultPaths: ['proof.txt'] } })).toMatchObject({ revision: 1 });
+      expect(await tool('gotzji_project_context', {})).toMatchObject({ project: { projectId: 'project' }, memory: { revision: 1, summary: 'Verified local protocol fixture' } });
       const database = new DatabaseSync(path.join(directory, 'core.sqlite'), { readOnly: true });
       try { workers = [...database.prepare('SELECT * FROM gotzji_workers').all() as unknown as WorkerRow[], ...database.prepare('SELECT worker_json FROM gotzji_worker_history').all().map(row => JSON.parse(String(row.worker_json)) as WorkerRow)]; }
       finally { database.close(); }
       workers = [...new Map(workers.map(worker => [worker.epoch, worker])).values()];
-      expect(workers).toHaveLength(4);
+      expect(workers).toHaveLength(3);
       for (const worker of workers) {
         expect(existsSync(path.join(worker.directory, 'claude-events.jsonl'))).toBe(false);
         expect(existsSync(path.join(worker.directory, 'grace-runtime.json'))).toBe(false);
