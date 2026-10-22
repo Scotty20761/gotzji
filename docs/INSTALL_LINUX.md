@@ -31,6 +31,18 @@ A future qualified package includes Electron, target-native ripgrep, the
 official OpenAI `tunnel-client`, and the bounded native-host protocol helper. A
 system Node.js installation is not required for that packaged Desktop app.
 
+## AppImage update recovery
+
+AppImage users can use the built-in update path when launched through a real
+AppImage (`APPIMAGE` must identify a regular file). Before requesting native
+replacement, lnwjud makes a hard-linked backup beside the running AppImage
+(`.lnwjud-backup-<id>`). If the native updater deletes the old file but fails
+to move the downloaded replacement, lnwjud attempts to restore that backup.
+If the filesystem cannot create the backup, installation is refused instead
+of risking loss of the old executable. Successfully completed upgrades may
+leave an old hard-link backup for manual removal after the new build has been
+verified. Package-manager-controlled DEB installs do **not** self-update.
+
 ## Desktop session and permissions
 
 Doctor displays the detected session without treating it as permission:

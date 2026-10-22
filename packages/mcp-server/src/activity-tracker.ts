@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import type { VerifiedMutationReceipt } from './task-mutation-receipt.js';
 import {
   activityTargetReference,
   redactActivityTargetDetail,
@@ -10,6 +11,9 @@ import {
 export interface ActivitySinkEvent {
   readonly callId: string;
   readonly toolName: string;
+  readonly mutationReceipt?: VerifiedMutationReceipt;
+  /** Bound only after a host-side Goal lease validation. Never copied from tool input. */
+  readonly goalId?: string;
   readonly phase: 'started' | 'completed';
   readonly resultCode: string;
   readonly durationMs: number;
@@ -78,6 +82,7 @@ export interface InFlightToolCall {
   readonly callId: string;
   readonly toolName: string;
   readonly startedAt: string;
+  readonly goalId?: string;
   readonly workspaceId?: string;
   readonly sessionId?: string;
   readonly targetSummary?: string;
@@ -104,6 +109,12 @@ export class ActivityTracker {
 
   public listInFlight(): readonly InFlightToolCall[] {
     return [...this.inflight.values()];
+  }
+
+  /** Call attribution happens after permission and lease validation, never in begin(). */
+  public bindVerifiedGoal(callId: string, goalId: string): void {
+    const entry = this.inflight.get(callId);
+    if (entry !== undefined) this.inflight.set(callId, { ...entry, goalId });
   }
 
   public revision(): number {
@@ -175,6 +186,7 @@ export class ActivityTracker {
     traceContext?: TraceContext,
     authorizationMode?: ActivitySinkEvent['authorizationMode'],
   ): Promise<string> {
+    input = projectImportAuditInput(toolName, input);
     const callId = randomUUID();
     const timestamp = new Date().toISOString();
     const workspaceId = readWorkspaceId(input);
@@ -239,6 +251,7 @@ export class ActivityTracker {
     durationMs: number,
     resultMessage?: string,
     resultDetail?: ActivityTargetDetail,
+    mutationReceipt?: VerifiedMutationReceipt,
   ): Promise<void> {
     const existing = this.inflight.get(callId);
     this.inflight.delete(callId);
@@ -257,6 +270,8 @@ export class ActivityTracker {
     await this.safeRecord({
       callId,
       toolName: existing?.toolName ?? 'unknown',
+      ...(existing?.goalId === undefined ? {} : { goalId: existing.goalId }),
+      ...(existing?.goalId === undefined || resultCode !== 'SUCCESS' || mutationReceipt === undefined ? {} : { mutationReceipt }),
       phase: 'completed',
       resultCode,
       durationMs,
@@ -296,6 +311,39 @@ export class ActivityTracker {
       try { listener(event); } catch { /* Watcher subscribers must never fail tool execution. */ }
     }
   }
+}
+
+function projectImportAuditInput(toolName: string, input: unknown): unknown {
+  if (toolName === 'git_clone_safe') {
+    if (!isRecord(input)) return { operation: 'start', input: { kind: Array.isArray(input) ? 'array' : typeof input } };
+    try {
+      const descriptors = Object.getOwnPropertyDescriptors(input);
+      const expected = ['workspaceId', 'requestId', 'url', 'destination', 'commit'];
+      const allowed = new Set(expected);
+      const fields = Object.fromEntries(expected.map((name) => {
+        const descriptor = descriptors[name];
+        if (descriptor === undefined) return [name, 'missing'];
+        if (!('value' in descriptor)) return [name, 'accessor'];
+        const value: unknown = descriptor.value;
+        return [name, value === null ? 'null' : Array.isArray(value) ? 'array' : typeof value];
+      }));
+      const unexpectedFields = Reflect.ownKeys(descriptors).filter((key) => typeof key !== 'string' || !allowed.has(key)).length;
+      return { operation: 'start', input: { kind: 'object', fields, unexpectedFields } };
+    } catch {
+      return { operation: 'start', input: { kind: 'uninspectable' } };
+    }
+  }
+  if (toolName !== 'tool_batch') return input;
+  const project = (value: unknown, depth: number): unknown => {
+    if (depth > 16) return '[omitted]';
+    if (Array.isArray(value)) return value.map((entry) => project(entry, depth + 1));
+    if (!isRecord(value)) return value;
+    if (value.tool === 'git_clone_safe') {
+      return { tool: 'git_clone_safe', arguments: projectImportAuditInput('git_clone_safe', value.arguments) };
+    }
+    return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, project(entry, depth + 1)]));
+  };
+  return project(input, 0);
 }
 
 export interface DescribedToolTarget {
@@ -597,7 +645,7 @@ function readStringArray(value: unknown): readonly string[] | undefined {
 }
 
 function goalActivitySummary(toolName: string, input: Readonly<Record<string, unknown>>): string | undefined {
-  if (!['run_goal', 'get_goal', 'checkpoint_goal', 'finish_goal', 'list_goals'].includes(toolName)) return undefined;
+  if (!['run_goal', 'get_goal', 'checkpoint_goal', 'checkpoint_goal_engineering', 'finish_goal', 'list_goals'].includes(toolName)) return undefined;
   const goalId = firstString(input, ['goalId']);
   if (goalId !== undefined) return `goal=${goalId}`;
   const goalKey = firstString(input, ['goalKey']);
@@ -632,7 +680,7 @@ function summarizeForLog(value: string): string {
 }
 
 function redactSensitiveLogText(value: string): string {
-  return value
+  return new Redactor().redactText(value)
     .replace(/(\bauthorization\s*:\s*bearer\s+)[^\s]+/gi, '$1[redacted]')
     .replace(/\b(token|secret|password|api[_-]?key|private[_-]?key)\s*[:=]\s*[^\s]+/gi, '$1=[redacted]');
 }

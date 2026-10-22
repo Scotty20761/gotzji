@@ -11,10 +11,11 @@ type Props = {
   readonly request: (method: GotzjiMethod, input: Record<string, unknown>) => Promise<unknown>;
   readonly onJob: (jobId: string) => void;
   readonly onSettings: () => void;
+  readonly chatgptOnly?: boolean;
 };
 function record(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === 'object' && !Array.isArray(value); }
 
-export function GotzjiProjectCommands({ projectId, projectName, commands, disabled, visible, request, onJob, onSettings }: Props): ReactElement {
+export function GotzjiProjectCommands({ projectId, projectName, commands, disabled, visible, request, onJob, onSettings, chatgptOnly = false }: Props): ReactElement {
   const [selectedId, setSelectedId] = useState('');
   const [priority, setPriority] = useState('1');
   const [preparationId, setPreparationId] = useState<string | null>(null);
@@ -36,6 +37,16 @@ export function GotzjiProjectCommands({ projectId, projectName, commands, disabl
     catch (cause) { if (mounted.current) setError(cause instanceof Error ? cause.message : 'COMMAND_REQUEST_FAILED'); }
     finally { inFlight.current = false; if (mounted.current) setBusy(false); }
   };
+  if (chatgptOnly) return <section hidden={!visible} aria-label="คำสั่งที่ผูกกับโครงการ"><h3>คำสั่งสำหรับ ChatGPT</h3><p>โครงการ: {projectName}</p>
+    <p>เลือกคำสั่งที่ผูกไว้ แล้วคัดลอกไปสั่งใน ChatGPT งานที่เริ่มแล้วจะปรากฏในประวัติของโครงการนี้</p>
+    {commands.map((command) => <p key={command.recipeId}><button disabled={locked} onClick={() => void act(async () => {
+      await navigator.clipboard.writeText(`อ่านบริบทโครงการ ${projectId} แล้วช่วยรันคำสั่ง ${command.recipeId} ในโครงการนี้ ตรวจผลและบันทึกสรุปเมื่อเสร็จ`);
+      setSelectedId(command.recipeId);
+    })}>คัดลอกคำสั่ง {command.title}</button></p>)}
+    {commands.length === 0 && <button onClick={onSettings}>ตั้งค่าคำสั่งของโครงการ</button>}
+    {selectedId && <p role="status">คัดลอกแล้ว วางข้อความใน ChatGPT เพื่อเริ่มงาน</p>}
+    {error && <p role="alert">คัดลอกไม่สำเร็จ กรุณาลองอีกครั้ง</p>}
+  </section>;
   return <section hidden={!visible} aria-label="คำสั่งที่ผูกกับโครงการ"><h3>รันคำสั่งของโครงการ</h3><p>โครงการ: {projectName}</p>
     <p>เลือกคำสั่งที่เจ้าของตรวจและผูกไว้แล้ว ระบบใช้โปรแกรม อาร์กิวเมนต์และขอบเขตเดิมจากการตั้งค่าโครงการ</p>
     {commands.length === 0 ? <p>ยังไม่มีคำสั่งที่พร้อมใช้และผูกกับโครงการนี้</p> : <>

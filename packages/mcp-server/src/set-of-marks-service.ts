@@ -142,6 +142,7 @@ export class SetOfMarksService {
     this.pruneExpired();
 
     const observed = await this.executeCapability('accessibility', {
+      workspaceId: parsed.value.workspaceId,
       action: 'observe',
       parameters: {
         ...parsed.value.uiParameters,
@@ -161,6 +162,7 @@ export class SetOfMarksService {
 
     const marks = applyImageOrigin(observedMarks, sourceImage.value.origin_x, sourceImage.value.origin_y, sourceImage.value.scale_x, sourceImage.value.scale_y, sourceImage.value.width, sourceImage.value.height);
     const annotationInput = {
+      workspaceId: parsed.value.workspaceId,
       action: 'annotate',
       image_base64: sourceImage.value.data_base64,
       marks: marks.map((mark) => ({ mark_id: mark.markId, label: mark.label, bounds: mark.annotationBounds })),
@@ -212,11 +214,11 @@ export class SetOfMarksService {
     if (parsed.value.dryRun === true) return ok({ dry_run: true, observationId: observation.observationId, markId: mark.markId, action: parsed.value.action });
 
     const targetParameters = { ...observation.uiParameters, ...mark.target };
-    const current = await this.executeCapability('accessibility', { action: 'find_element', parameters: targetParameters }, signal, authorization);
+    const current = await this.executeCapability('accessibility', { workspaceId: parsed.value.workspaceId, action: 'find_element', parameters: targetParameters }, signal, authorization);
     if (!current.ok) return current;
     if (signal?.aborted) return cancelledResult('Marked UI action');
     const actionParameters = parsed.value.value === undefined ? targetParameters : { ...targetParameters, value: parsed.value.value };
-    return this.executeCapability('accessibility', { action: parsed.value.action, parameters: actionParameters, userConfirmed: parsed.value.userConfirmed }, signal, authorization);
+    return this.executeCapability('accessibility', { workspaceId: parsed.value.workspaceId, action: parsed.value.action, parameters: actionParameters, userConfirmed: parsed.value.userConfirmed }, signal, authorization);
   }
 
   public async resolvePoint(input: unknown, signal?: AbortSignal, authorization?: InvocationAuthorization): Promise<Result<{ readonly x: number; readonly y: number }>> {
@@ -236,7 +238,7 @@ export class SetOfMarksService {
     if (mark === undefined) return err(appError('INVALID_INPUT', 'The visual mark is unknown or stale'));
 
     const targetParameters = { ...observation.uiParameters, ...mark.target };
-    const current = await this.executeCapability('accessibility', { action: 'find_element', parameters: targetParameters }, signal, authorization);
+    const current = await this.executeCapability('accessibility', { workspaceId: parsed.value.workspaceId, action: 'find_element', parameters: targetParameters }, signal, authorization);
     if (!current.ok) return current;
     if (signal?.aborted) return cancelledResult('Marked UI target resolution');
     const bounds = extractElementBounds(current.value);
@@ -289,7 +291,7 @@ function parseCaptureInput(value: unknown, defaultTtlSeconds: number, maxTtlSeco
   const uiParameters: Record<string, unknown> = {};
   if (isRecord(value.app)) Object.assign(uiParameters, value.app);
   if (typeof value.window_index === 'number') uiParameters.window_index = value.window_index;
-  const visionInput: Record<string, unknown> = { action: `capture_${capture}` };
+  const visionInput: Record<string, unknown> = { workspaceId, action: `capture_${capture}` };
   if (isRecord(value.region)) visionInput.region = value.region;
   if (isRecord(value.app)) visionInput.app = value.app;
   if (typeof value.window_index === 'number') visionInput.window_index = value.window_index;

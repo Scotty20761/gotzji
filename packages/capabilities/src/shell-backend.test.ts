@@ -11,13 +11,6 @@ import { fileURLToPath } from 'node:url';
 
 const temporaryRoots: string[] = [];
 
-async function waitForDurableTaskCompletion(taskStateDirectory: string, taskId: string): Promise<void> {
-  await vi.waitFor(async () => {
-    const metadata = JSON.parse(await readFile(path.join(taskStateDirectory, taskId, 'task.json'), 'utf8')) as { state?: unknown };
-    expect(metadata.state).toBe('completed');
-  }, { interval: 25, timeout: 4_000 });
-}
-
 afterEach(async () => {
   await Promise.all(temporaryRoots.splice(0).map((root) => rm(root, {
     recursive: true,
@@ -38,6 +31,8 @@ describe('ShellCapabilityBackend', () => {
       execution: 'foreground', userConfirmed: true, ...owner });
     expect(memoryRun).toMatchObject({ ok: true, value: { task_id: expect.any(String) } });
     if (!memoryRun.ok) return;
+    await expect(memory.isOwnedGoalTask('client-1','workspace-1',String(memoryRun.value.task_id))).resolves.toBe(true);
+    await expect(memory.isOwnedGoalTask('other','workspace-1',String(memoryRun.value.task_id))).resolves.toBe(false);
     await expect(memory.statusForGoalLiveness('workspace-1', String(memoryRun.value.task_id)))
       .resolves.toMatchObject({ ok: true, value: { command_fingerprint: expected } });
   });
@@ -54,11 +49,12 @@ describe('ShellCapabilityBackend', () => {
     expect(durableRun).toMatchObject({ ok: true, value: { task_id: expect.any(String) } });
     if (!durableRun.ok) return;
     const taskId = String(durableRun.value.task_id);
-    await waitForDurableTaskCompletion(taskStateDirectory, taskId);
+    const waited = await durable.execute({ operation: 'wait', task_id: taskId, timeout_seconds: 15, ...owner });
+    expect(waited).toMatchObject({ ok: true, value: { state: 'completed', exit_code: 0 } });
     const reopened = new ShellCapabilityBackend({ allowedRoots: [root], taskStateDirectory });
     await expect(reopened.statusForGoalLiveness('workspace-1', taskId))
-      .resolves.toMatchObject({ ok: true, value: { command_fingerprint: expected } });
-  });
+      .resolves.toMatchObject({ ok: true, value: { state: 'completed', command_fingerprint: expected } });
+  }, 20_000);
 
   it('rejects a public run request that tries to select a reserved task ID', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'lnwjud-shell-public-id-'));

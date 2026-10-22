@@ -1,4 +1,16 @@
-# lnwjud5.8.6 reference capture
+# lnwjud source integration and historical installed evidence
+
+## Current source baseline — 2026-10-22
+
+Upstream v5.8.7 is pinned to `1a0453ed0ef1de4cdf9ce1ba9edee8da0de8426b` and integrated into the existing gotzji dev tree. The original MIT and dependency notices remain. gotzji product identity, separate storage, manual updates, host-direct ChatGPT controller and one job/effect authority remain in force.
+
+`generate-gotzji-upstream-reference.mjs` independently reconciles all 294 definitions in two byte-pinned upstream documents. Its generated renderer reference is source evidence only. Historical 5.8.6 runtime/adapter/package evidence below is retained at its original version; it is not relabelled as 5.8.7 installed evidence. Run the new generator with `--check` to verify its projection without writing. The historical generator and 286-name capture remain for reproducibility.
+
+Owner decisions Q2/Q3/Q5/Q6 add persistent shared project selection, optimistic-revision project conversation notes, current instruction reads and bounded canonical project history. ChatGPT starts new jobs. Desktop prepares copyable file/command/browser prompts and monitors/controls admitted work; host preparation/submission from Desktop is refused. Source/HTTP and owned Electron tests cover these paths separately from actual ChatGPT account acceptance.
+
+Full tool execution parity, complete original action/state/settings/recovery behavior, licensed native provider qualification, installed adoption, actual ChatGPT Pro acceptance, companion and official release remain unfinished. Source integration and source-name accounting do not close these gates.
+
+## Historical lnwjud 5.8.6 reference capture
 
 Captured2026-10-19 through the original connected lnwjud, without modifying its installation/settings/jobs or creating product work. `lnwjud-5.8.6-live-tools.json` contains205 unique tool definitions: union of the first100 unfiltered matches and197 matches across all152 categories, equal to the host-reported total205. The separate schema response has170 schemas; these counts describe different interfaces and are not readiness scores. All category queries completed without error or result truncation.
 

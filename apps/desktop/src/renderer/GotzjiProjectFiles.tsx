@@ -6,6 +6,7 @@ interface Props {
   readonly disabled: boolean;
   readonly request: (method: GotzjiMethod, input: Record<string, unknown>) => Promise<unknown>;
   readonly onJob: (jobId: string) => void;
+  readonly chatgptOnly?: boolean;
 }
 interface Entry { readonly path: string; readonly type: 'file' | 'directory' }
 interface Snapshot { readonly path: string; readonly content: string; readonly sha256: string }
@@ -14,7 +15,7 @@ interface SearchHit { readonly path: string; readonly line: number; readonly tex
 function record(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === 'object' && !Array.isArray(value); }
 
 /** Reads and writes use the same project and expected-version authority as the plugin. */
-export function GotzjiProjectFiles({ projectId, disabled, request, onJob }: Props): ReactElement {
+export function GotzjiProjectFiles({ projectId, disabled, request, onJob, chatgptOnly = false }: Props): ReactElement {
   const editorId = useId();
   const [directory, setDirectory] = useState('.');
   const [entries, setEntries] = useState<readonly Entry[]>([]);
@@ -95,8 +96,11 @@ export function GotzjiProjectFiles({ projectId, disabled, request, onJob }: Prop
         <label htmlFor={editorId}>เนื้อหาไฟล์</label><textarea id={editorId} disabled={locked} spellCheck={false} value={content} onChange={(event) => { setContent(event.target.value); setPreparation(null); }} />
         {snapshot && <details><summary>เนื้อหาเดิมก่อนแก้ไข</summary><pre>{snapshot.content}</pre></details>}
         {createNew && <p>สร้างได้เมื่อชื่อไฟล์นี้ยังไม่มีอยู่ในโครงการ</p>}
-        <div className="gotzji-actions"><button disabled={locked || !path || !changed} onClick={() => void act(prepare)}>ตรวจการแก้ไข</button>
+        {chatgptOnly ? <div className="gotzji-actions"><button disabled={locked || !path || !changed} onClick={() => void act(async () => {
+          await navigator.clipboard.writeText(`อ่านบริบทโครงการ ${projectId} แล้วตรวจและ${createNew ? 'สร้างไฟล์ใหม่' : 'แก้ไขไฟล์'} ${path} ตามเนื้อหาด้านล่าง ตรวจรุ่นไฟล์จริงก่อนเขียน และตรวจผลงานหลังบันทึก\n\n${content}`);
+        })}>คัดลอกงานแก้ไฟล์สำหรับ ChatGPT</button><p>การแก้ในช่องนี้เป็นร่าง ส่งผ่าน ChatGPT เพื่อเริ่มบันทึกไฟล์จริง</p></div> : <div className="gotzji-actions"><button disabled={locked || !path || !changed} onClick={() => void act(prepare)}>ตรวจการแก้ไข</button>
           <button className="gotzji-primary" disabled={locked || !preparation} onClick={() => void act(submit)}>บันทึกไฟล์</button></div>
+        }
         {preparation && <p role="status">ตรวจแล้ว พร้อมเริ่มงานบันทึกไฟล์ที่เลือก</p>}
       </>}
     </div></div>

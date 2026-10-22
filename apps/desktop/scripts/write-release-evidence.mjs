@@ -144,15 +144,14 @@ function inspectWindowsAuthenticode(artifacts) {
     '})',
     '$results | ConvertTo-Json -Compress -Depth 4',
   ].join('\n');
+  const windowsRoot = process.env.SystemRoot ?? process.env.WINDIR ?? 'C:\\Windows';
+  const windowsPowerShellModulePath = path.join(windowsRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'Modules');
   const raw = execFileSync('powershell', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', command], {
     encoding: 'utf8',
     windowsHide: true,
     env: {
       ...process.env,
-      // Windows PowerShell 5 can load incompatible PowerShell 7 type data
-      // when a parent process contributes both module trees. Use its own
-      // built-in modules for deterministic Authenticode inspection.
-      PSModulePath: path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'Modules'),
+      PSModulePath: windowsPowerShellModulePath,
       LNWJUD_AUTHENTICODE_TARGETS: JSON.stringify(targets),
     },
   }).trim();

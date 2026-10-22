@@ -362,7 +362,7 @@ export class ScheduledContinuationService {
       const connectorMention = request.connectorMention === undefined
         ? undefined
         : safeText(request.connectorMention, MAX_ID, 'connectorMention');
-      if (connectorMention !== undefined && !/^@[\p{L}\p{N}][\p{L}\p{N}\p{M}._-]*$/u.test(connectorMention)) {
+      if (connectorMention !== undefined && !/^(?:@[\p{L}\p{N}][\p{L}\p{N}\p{M}._-]*|\[\$[\p{L}\p{N}][\p{L}\p{N}\p{M}._-]*\]\(app:\/\/asdk_app_[0-9a-f]{32}\))$/u.test(connectorMention)) {
         throw new Error('connectorMention is invalid');
       }
       const now = this.now();

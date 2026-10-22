@@ -260,12 +260,12 @@ describe('upgrade runtime', () => {
     } });
   });
 
-  it('keeps context reads unrestricted while asking for dangerous actions', async () => {
+  it('keeps action classes advisory without inventing host permission decisions', async () => {
     const runtime = new UpgradeRuntimeService({}, actor);
     const read = await runtime.execute('permission_check', { action: 'filesystem.read' });
     const remove = await runtime.execute('permission_check', { action: 'filesystem.delete' });
-    expect(read).toMatchObject({ ok: true, value: { decision: 'allow', contextAccess: 'unrestricted' } });
-    expect(remove).toMatchObject({ ok: true, value: { decision: 'ask', contextAccess: 'unrestricted' } });
+    expect(read).toMatchObject({ ok: true, value: { decision: 'unknown', advisory: true, sideEffectsStarted: false } });
+    expect(remove).toMatchObject({ ok: true, value: { decision: 'unknown', advisory: true, sideEffectsStarted: false } });
   });
 
   it('keeps hooks create-only and makes plugin mutations persistent when runtime state is configured', async () => {
@@ -502,9 +502,13 @@ describe('upgrade runtime', () => {
     })).resolves.toMatchObject({ ok: false, error: { code: 'INVALID_INPUT' } });
   });
 
-  it('validates Ponytail workspace overrides before project profile persistence', async () => {
+  it('validates persisted project profiles with the same rules as new profiles', async () => {
+    let persisted = '{"ponytail":{"mode":"inherit"}}';
     const runtime = new UpgradeRuntimeService({
       file: {
+        async readFile() {
+          return ok({ path: '.lnwjud/project-profile.json', content: persisted, startLine: 1, endLine: 1, encoding: 'utf8', byteLength: Buffer.byteLength(persisted) });
+        },
         async writeFile(): Promise<ReturnType<typeof ok>> { return ok({ path: '.lnwjud/project-profile.json' }); },
       } as McpApplicationServices['file'],
     }, actor);
@@ -520,6 +524,14 @@ describe('upgrade runtime', () => {
     await expect(runtime.execute('project_profile_set', {
       workspaceId: 'workspace-1', profile: { ponytail: 'full' },
     })).resolves.toMatchObject({ ok: false, error: { code: 'INVALID_INPUT' } });
+    await expect(runtime.execute('project_profile_get', { workspaceId: 'workspace-1' }))
+      .resolves.toMatchObject({ ok: false, error: { code: 'INVALID_INPUT' } });
+    persisted = '{"language":"typescript","custom":{"kept":true},"ponytail":{"mode":"full"}}';
+    await expect(runtime.execute('project_profile_get', { workspaceId: 'workspace-1' }))
+      .resolves.toMatchObject({ ok: true, value: { profile: { language: 'typescript', custom: { kept: true }, ponytail: { mode: 'full' } } } });
+    persisted = '{"language":"typescript"}';
+    await expect(runtime.execute('project_profile_get', { workspaceId: 'workspace-1' }))
+      .resolves.toMatchObject({ ok: true, value: { profile: { language: 'typescript' } } });
   });
 
   it('uses trusted Full Bypass for inner always-confirm upgrade mutations', async () => {
@@ -529,9 +541,9 @@ describe('upgrade runtime', () => {
     await expect(runtime.execute('hook_remove', { name: 'audit' }, undefined, fullBypassAuthorization))
       .resolves.toMatchObject({ ok: true, value: { removed: true } });
     await expect(runtime.execute('permission_check', { action: 'filesystem.delete' }, undefined, fullBypassAuthorization))
-      .resolves.toMatchObject({ ok: true, value: { decision: 'allow', standardDecision: 'ask', authorizationMode: 'full_bypass' } });
+      .resolves.toMatchObject({ ok: true, value: { decision: 'unknown', advisory: true, sideEffectsStarted: false } });
     await expect(runtime.execute('permission_profile', {}, undefined, fullBypassAuthorization))
-      .resolves.toMatchObject({ ok: true, value: { dangerousActions: 'application-approval-bypassed', hardBlocksRemain: false, operatingSystemAndRemotePolicyRemain: true } });
+      .resolves.toMatchObject({ ok: false, error: { code: 'INTERNAL_ERROR', message: 'Host permission profile is unavailable' } });
   });
 
   it('routes PowerPoint and Outlook upgrade tools into the Office capability', async () => {
@@ -624,7 +636,7 @@ describe('upgrade runtime', () => {
   });
 
 describe('self-healing (Wave 8)', () => {
-  it('plans safe reversible fixes from live evidence', async () => {
+  it('plans a safe rebuild while retaining old running tasks for explicit review', async () => {
     const staleStart = new Date(Date.now() - 48 * 60 * 60 * 1_000).toISOString();
     const runtime = new UpgradeRuntimeService({
       workspaceIndex: {
@@ -648,12 +660,12 @@ describe('self-healing (Wave 8)', () => {
 
     const plan = await runtime.execute('self_heal_plan', { workspaceId: 'ws-1' });
     expect(plan).toMatchObject({ ok: true, value: {
-      tool: 'self_heal_plan', applied: false, planId: expect.any(String), mutationRequired: true, automaticDestructiveRetry: false,
-      evidence: { index: { indexed: false }, durableTasks: { staleOlderThan24h: 1 } },
+      tool: 'self_heal_plan', applied: false, planId: expect.any(String), mutationRequired: false, automaticDestructiveRetry: false,
+      evidence: { index: { indexed: false }, durableTasks: { total: 3, running: 2 } },
       safeReversibleFixes: [
         expect.objectContaining({ id: 'reindex-workspace', kind: 'reindex_workspace', requiresConfirmation: false }),
-        expect.objectContaining({ id: 'cancel-stale-task-stale-1', kind: 'cancel_stale_task', requiresConfirmation: true }),
       ],
+      manualIssues: [expect.objectContaining({ taskId: 'stale-1' }), expect.objectContaining({ taskId: 'fresh-1' })],
     } });
 
     await expect(runtime.execute('self_heal_apply', { workspaceId: 'ws-1' })).resolves.toMatchObject({ ok: true, value: { dryRun: true, applied: [] } });
@@ -661,17 +673,17 @@ describe('self-healing (Wave 8)', () => {
     await expect(runtime.execute('self_heal_apply', { workspaceId: 'ws-1', dryRun: false, userConfirmed: true })).resolves.toMatchObject({ ok: false, error: { code: 'PERMISSION_REQUIRED' } });
     if (!plan.ok) throw new Error('plan should be available');
     const planId = String((plan.value as { planId: string }).planId);
-    const applied = await runtime.execute('self_heal_apply', { workspaceId: 'ws-1', planId, dryRun: false, userConfirmed: true, fixIds: ['cancel-stale-task-stale-1'] });
+    const applied = await runtime.execute('self_heal_apply', { workspaceId: 'ws-1', planId, dryRun: false, userConfirmed: true, fixIds: ['reindex-workspace'] });
     expect(applied).toMatchObject({ ok: true, value: {
       dryRun: false, automaticDestructiveRetry: false,
-      applied: [expect.objectContaining({ id: 'cancel-stale-task-stale-1', ok: true })],
+      applied: [expect.objectContaining({ id: 'reindex-workspace', ok: true })],
     } });
   });
 
-  it('reports an empty plan when everything is healthy', async () => {
+  it('reports an empty plan with partial observations when providers are absent', async () => {
     const runtime = new UpgradeRuntimeService({}, actor);
     const plan = await runtime.execute('self_heal_plan', {});
-    expect(plan).toMatchObject({ ok: true, value: { safeReversibleFixes: [], mutationRequired: false } });
+    expect(plan).toMatchObject({ ok: true, value: { safeReversibleFixes: [], mutationRequired: false, observationState: 'partial' } });
   });
 });
 });

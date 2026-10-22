@@ -9,6 +9,9 @@ export const PRODUCT_MCP_TOOLS = [
   { name: 'gotzji_git', method: 'readProjectGit', readOnly: true, description: 'Read status, recent history or one selected-file diff in an enrolled ordinary project repository. Uses controlled read configuration without repository programs, Git mutations, fetch, push or remote commands. Refuses UNC roots and linked/shared metadata.' },
   { name: 'gotzji_health', method: 'health', readOnly: true, description: 'Inspect the gotzji host control availability. This does not start a model turn.' },
   { name: 'gotzji_projects', method: 'listProjects', readOnly: true, description: 'List projects already enrolled by the owner in the gotzji app.' },
+  { name: 'gotzji_select_project', method: 'selectProject', readOnly: false, description: 'Select an existing enrolled project for continuation. Show its name to the owner. Selection starts no work and grants no access.' },
+  { name: 'gotzji_project_context', method: 'projectContext', readOnly: true, description: 'Start a new chat by reading the selected project, current instruction files, saved conversation summary and latest canonical jobs. Optional projectId reads another enrolled project without switching. Ask the owner if the project is ambiguous. Read full files/results as needed; notes are not execution evidence.' },
+  { name: 'gotzji_save_project_memory', method: 'saveProjectMemory', readOnly: false, description: 'Save a bounded project conversation summary, decisions, open questions and result references using the revision just read. Does not modify project instructions, execute jobs or certify result paths.' },
   { name: 'gotzji_tools', method: 'catalog', readOnly: true, description: 'List typed operations and provider readiness.' },
   { name: 'gotzji_read_file', method: 'readProjectFile', readOnly: true, description: 'Read one enrolled project UTF-8 file and its SHA-256 directly, without a Claude session or job. Prefer this over a legacy file.read job.' },
   { name: 'gotzji_list_files', method: 'listProjectFiles', readOnly: true, description: 'List a selected enrolled project directory directly. Reports incomplete results; never follows redirected paths.' },
@@ -24,7 +27,7 @@ export const PRODUCT_MCP_TOOLS = [
   { name: 'gotzji_resume', method: 'resume', readOnly: false, description: 'Inspect and resume a selected admitted job without submitting it again.' },
   { name: 'gotzji_cancel', method: 'cancel', readOnly: false, description: 'Cancel only the explicitly selected owner job and inspect its termination result.' },
 ] as const;
-const ALLOWED_APP_METHODS = new Set(['readProjectGit', 'health', 'registerProject', 'registerRecipe', 'bindProjectRecipe', 'supportReport', 'listProjects', 'catalog', 'readProjectFile', 'listProjectFiles', 'searchProjectFiles', 'prepareOperation', 'submit', 'list', 'inspectQueue', 'reprioritize', 'status', 'logs', 'result', 'cancel', 'settleJob', 'resume', 'connectionStatus', 'configureConnection', 'startConnection', 'stopConnection', 'startBrowserSession', 'browserSession', 'stopBrowserSession', 'authorizeLibraryDelivery', 'enrollLibraryChannel', 'libraryChannelStatus', 'configureLibraryConnection', 'startLibraryConnection', 'stopLibraryConnection', 'testOnlyE2eShutdown']);
+const ALLOWED_APP_METHODS = new Set(['selectProject', 'selectedProject', 'projectContext', 'saveProjectMemory', 'readProjectGit', 'health', 'registerProject', 'registerRecipe', 'bindProjectRecipe', 'supportReport', 'listProjects', 'catalog', 'readProjectFile', 'listProjectFiles', 'searchProjectFiles', 'prepareOperation', 'submit', 'list', 'inspectQueue', 'reprioritize', 'status', 'logs', 'result', 'cancel', 'settleJob', 'resume', 'connectionStatus', 'configureConnection', 'startConnection', 'stopConnection', 'startBrowserSession', 'browserSession', 'stopBrowserSession', 'authorizeLibraryDelivery', 'enrollLibraryChannel', 'libraryChannelStatus', 'configureLibraryConnection', 'startLibraryConnection', 'stopLibraryConnection', 'testOnlyE2eShutdown']);
 type Schema = Record<string, unknown>;
 const text = { type: 'string', minLength: 1 };
 const priority = { type: 'integer', minimum: 0, maximum: 3 };
@@ -44,6 +47,13 @@ const fields: Record<string, Schema> = {
 };
 /** One advertised schema is enforced on both app and MCP before core dispatch. */
 export function productControlSchema(method: string): Schema {
+  if (method === 'selectProject') return objectSchema({ projectId: text }, ['projectId']);
+  if (method === 'selectedProject') return objectSchema({}, []);
+  if (method === 'projectContext') return objectSchema({ projectId: text }, []);
+  if (method === 'saveProjectMemory') {
+    const notes = { type: 'array', maxItems: 100, items: { ...text, maxLength: 2000 } };
+    return objectSchema({ projectId: text, expectedRevision: { type: 'integer', minimum: 0 }, memory: objectSchema({ summary: { type: 'string', maxLength: 16000 }, decisions: notes, openQuestions: notes, resultPaths: notes }, ['summary', 'decisions', 'openQuestions', 'resultPaths']) }, ['projectId', 'expectedRevision', 'memory']);
+  }
   if (method === 'readProjectGit') {
     const projectId = { ...text, pattern: '^[a-zA-Z0-9_-]{1,64}$' };
     return { oneOf: [objectSchema({ projectId, view: { type: 'string', enum: ['status', 'log'] } }, ['projectId', 'view']), objectSchema({ projectId, view: { type: 'string', const: 'diff' }, path: { ...text, maxLength: 4096 }, staged: { type: 'boolean' } }, ['projectId', 'view', 'path'])] };
@@ -133,7 +143,7 @@ export async function startProductHttp(options: { token: string; mcpPathSecret: 
       requestId = id ?? null;
       if (parsed.jsonrpc !== '2.0' || typeof method !== 'string' || id !== undefined && id !== null && typeof id !== 'string' && typeof id !== 'number') throw new CoreError('MCP_REQUEST_INVALID');
       if (id === undefined && method.startsWith('notifications/')) { response.writeHead(202); response.end(); return; }
-      if (method === 'initialize') { reply(200, { jsonrpc: '2.0', id, result: { protocolVersion: '2025-03-26', capabilities: { tools: {} }, serverInfo: { name: options.serverName ?? 'gotzji', version: options.version ?? 'development' }, instructions: 'Use enrolled projects. Project file read/list/search tools return directly from the host without Claude or a job. Typed work executes on the host through its governed broker; legacy file.read jobs remain supported. Select explicit job IDs for status/log/result polling, which never submits another job.' } }); return; }
+      if (method === 'initialize') { reply(200, { jsonrpc: '2.0', id, result: { protocolVersion: '2025-03-26', capabilities: { tools: {} }, serverInfo: { name: options.serverName ?? 'gotzji', version: options.version ?? 'development' }, instructions: 'Read gotzji_project_context first to continue the selected project and show its name. Ask when ambiguous; selection never authorizes a job. Persist conversation notes with gotzji_save_project_memory, keeping them separate from current instructions and canonical job evidence. Use enrolled projects. Project file read/list/search tools return directly from the host without Claude or a job. Typed work executes on the host through its governed broker; legacy file.read jobs remain supported. Select explicit job IDs for status/log/result polling, which never submits another job.' } }); return; }
       if (method === 'ping') { reply(200, { jsonrpc: '2.0', id, result: {} }); return; }
       if (method === 'tools/list') { reply(200, { jsonrpc: '2.0', id, result: { tools: PRODUCT_MCP_TOOLS.map((tool) => ({ name: tool.name, description: tool.description, inputSchema: options.inputSchema?.(tool.method) ?? productControlSchema(tool.method), annotations: { readOnlyHint: tool.readOnly, destructiveHint: tool.method === 'cancel', idempotentHint: true, openWorldHint: false } })) } }); return; }
       if (method !== 'tools/call' || !record(params) || !record(params.arguments)) throw new CoreError('MCP_METHOD_DENIED');

@@ -1,7 +1,8 @@
 param(
   [string]$BridgePath = (Join-Path $PSScriptRoot '..\packages\capabilities\src\windows-capability-bridge.ps1'),
   [string]$OutputRoot = (Join-Path $PSScriptRoot '..\.local-artifacts\office-provider-acceptance'),
-  [ValidateRange(5,300)][int]$ActionTimeoutSeconds = 60
+  [ValidateRange(5,300)][int]$ActionTimeoutSeconds = 60,
+  [switch]$IncludeOutlookFixtures
 )
 
 $ErrorActionPreference = 'Stop'
@@ -50,8 +51,8 @@ function Invoke-Office {
       try { [void]$process.WaitForExit(5000) } catch { }
       throw ("{0}/{1} timed out after {2}s; the owned acceptance PowerShell child was terminated" -f $App, $Action, $ActionTimeoutSeconds)
     }
-    $rawLines = if (Test-Path $outputPath -PathType Leaf) { @(Get-Content $outputPath -ErrorAction SilentlyContinue) } else { @() }
-    $stderrLines = if (Test-Path $errorPath -PathType Leaf) { @(Get-Content $errorPath -ErrorAction SilentlyContinue) } else { @() }
+    $rawLines = if (Test-Path $outputPath -PathType Leaf) { @(Get-Content $outputPath -Encoding UTF8 -ErrorAction SilentlyContinue) } else { @() }
+    $stderrLines = if (Test-Path $errorPath -PathType Leaf) { @(Get-Content $errorPath -Encoding UTF8 -ErrorAction SilentlyContinue) } else { @() }
     $raw = (($rawLines -join [Environment]::NewLine)).Trim()
     $stderr = (($stderrLines -join [Environment]::NewLine)).Trim()
     if ($process.ExitCode -ne 0 -and $raw.Length -eq 0) {
@@ -145,6 +146,19 @@ try {
   Assert-True (@($wordComments.comments).Count -ge 1) 'Word comment was not persisted'
   $wordRevisions = Invoke-Office 'word' 'get_revisions' @{ file_path = $wordPath }
   Assert-True (@($wordRevisions.revisions).Count -ge 1) 'Word tracked revision was not persisted'
+  Invoke-Office 'word' 'set_track_changes' @{ file_path = $wordPath; parameters = @{ enabled = $false } } | Out-Null
+  Invoke-Office 'word' 'set_character_format' @{ file_path = $wordPath; range = @{ start = 0; end = 6 }; parameters = @{ bold = $true; size = 16 } } | Out-Null
+  $runs = Invoke-Office 'word' 'get_runs' @{ file_path = $wordPath; range = @{ start = 0; end = 6 } }
+  Assert-True (@($runs.runs).Count -ge 1 -and [int]$runs.runs[0].font.bold -eq -1) 'Word character formatting was not read back as a formatting run'
+  Invoke-Office 'word' 'add_bookmark' @{ file_path = $wordPath; range = @{ start = 0; end = 6 }; parameters = @{ name = 'AcceptanceBookmark' } } | Out-Null
+  Invoke-Office 'word' 'add_footnote' @{ file_path = $wordPath; range = @{ start = 6; end = 6 }; text = 'Thai note' } | Out-Null
+  $notes = Invoke-Office 'word' 'get_footnotes' @{ file_path = $wordPath }
+  Assert-True (@($notes.notes).Count -eq 1) 'Word footnote did not survive reopen'
+  Invoke-Office 'word' 'replace_image' @{ file_path = $wordPath; index = 1; image_path = $imagePath } | Out-Null
+  Invoke-Office 'word' 'set_page_setup' @{ file_path = $wordPath; parameters = @{ section = 1; top_margin = 60 } } | Out-Null
+  $pageSetup = Invoke-Office 'word' 'page_setup' @{ file_path = $wordPath }
+  Assert-True ([Math]::Abs([double]$pageSetup.page_setup.top_margin - 60) -lt 0.1) 'Word page setup did not survive reopen'
+  Add-Evidence $evidence 'word' 'runs-character-format-bookmark-footnote-image-page-setup-reopen'
   Invoke-Office 'word' 'export_pdf' @{ file_path = $wordPath; target_path = $wordPdf } | Out-Null
   Assert-True (Test-Path $wordPdf -PathType Leaf) 'Word PDF export was not created'
   Add-Evidence $evidence 'word' 'create-edit-table-image-header-comment-track-export-reopen'
@@ -174,6 +188,18 @@ try {
   Assert-True (@($pivots.pivots | Where-Object { $_.name -eq 'AcceptancePivot' }).Count -eq 1) 'Excel pivot was not persisted'
   $formulaErrors = Invoke-Office 'excel' 'formula_errors' @{ file_path = $excelPath }
   Assert-True (@($formulaErrors.errors).Count -eq 0) 'Excel workbook contains formula errors'
+  Invoke-Office 'excel' 'create_named_range' @{ file_path = $excelPath; sheet = 'Data'; range = 'A1:B4'; name = 'AcceptanceRange' } | Out-Null
+  $named = Invoke-Office 'excel' 'read_named_ranges' @{ file_path = $excelPath }
+  Assert-True (@($named.names | Where-Object { $_.name -eq 'AcceptanceRange' }).Count -eq 1) 'Excel named range did not survive reopen'
+  Invoke-Office 'excel' 'set_border' @{ file_path = $excelPath; sheet = 'Data'; range = 'A1:B4'; parameters = @{ line_style = 1; weight = 2; color = 255 } } | Out-Null
+  Invoke-Office 'excel' 'set_conditional_formatting' @{ file_path = $excelPath; sheet = 'Data'; range = 'B2:B4'; parameters = @{ type = 1; operator = 5; formula1 = '15'; color = 255 } } | Out-Null
+  $conditions = Invoke-Office 'excel' 'read_conditional_formatting' @{ file_path = $excelPath; sheet = 'Data'; range = 'B2:B4' }
+  Assert-True (@($conditions.conditions).Count -eq 1) 'Excel conditional formatting did not survive reopen'
+  Invoke-Office 'excel' 'add_sheet' @{ file_path = $excelPath; name = 'CopyTarget' } | Out-Null
+  Invoke-Office 'excel' 'copy_sheet' @{ file_path = $excelPath; sheet = 'Data'; new_name = 'CopiedData'; parameters = @{ target_sheet = 'CopyTarget' } } | Out-Null
+  $copy = Invoke-Office 'excel' 'read_values' @{ file_path = $excelPath; sheet = 'CopiedData'; range = 'A1:B4' }
+  Assert-True ($null -ne $copy.values) 'Excel copied sheet values were not preserved'
+  Add-Evidence $evidence 'excel' 'named-range-border-conditional-format-copy-sheet-reopen'
   Invoke-Office 'excel' 'export_pdf' @{ file_path = $excelPath; target_path = $excelPdf } | Out-Null
   Assert-True (Test-Path $excelPdf -PathType Leaf) 'Excel PDF export was not created'
   Add-Evidence $evidence 'excel' 'create-formula-table-chart-pivot-filter-freeze-validation-export-reopen'
@@ -193,6 +219,16 @@ try {
   Assert-True (@($pptTables.items).Count -ge 1) 'PowerPoint table was not persisted'
   $pptCharts = Invoke-Office 'powerpoint' 'get_charts' @{ file_path = $pptPath }
   Assert-True (@($pptCharts.items).Count -ge 1) 'PowerPoint chart was not persisted'
+  $newShape = Invoke-Office 'powerpoint' 'add_shape' @{ file_path = $pptPath; slide = $slideIndex; text = 'Extension shape'; parameters = @{ type = 1; left = 20; top = 20; width = 100; height = 50 } }
+  Invoke-Office 'powerpoint' 'edit_shape' @{ file_path = $pptPath; slide = $slideIndex; shape = [string]$newShape.id; parameters = @{ fill_color = 255; left = 30 } } | Out-Null
+  Invoke-Office 'powerpoint' 'set_background' @{ file_path = $pptPath; slide = $slideIndex; parameters = @{ color = 16777215 } } | Out-Null
+  Invoke-Office 'powerpoint' 'set_transition' @{ file_path = $pptPath; slide = $slideIndex; parameters = @{ effect = 0; duration = 1; advance_on_click = $true } } | Out-Null
+  $transition = Invoke-Office 'powerpoint' 'get_transitions' @{ file_path = $pptPath; slide = $slideIndex }
+  Assert-True ([bool]$transition.transition.advance_on_click) 'PowerPoint transition did not survive reopen'
+  $slideImage = Join-Path $runRoot 'slide-export.png'
+  $exported = Invoke-Office 'powerpoint' 'export_images' @{ file_path = $pptPath; slide = $slideIndex; target_path = $slideImage }
+  Assert-True ([long]$exported.output.bytes -gt 0) 'PowerPoint slide image was not verified'
+  Add-Evidence $evidence 'powerpoint' 'shape-background-transition-slide-image-reopen'
   Invoke-Office 'powerpoint' 'export_pdf' @{ file_path = $pptPath; target_path = $pptPdf } | Out-Null
   Assert-True (Test-Path $pptPdf -PathType Leaf) 'PowerPoint PDF export was not created'
   Add-Evidence $evidence 'powerpoint' 'create-slide-text-image-table-chart-notes-export-reopen'
@@ -202,8 +238,8 @@ try {
   # mailbox reads/draft mutation when the provider cannot prove a healthy COM session.
   $outlookAcceptance = 'passed'
   $outlookReady = $false
-  Write-Host '[office-acceptance] outlook:status'
-  try {
+  if ($IncludeOutlookFixtures) { try {
+    Write-Host '[office-acceptance] outlook:status'
     $outlookStatus = Invoke-Office 'outlook' 'status'
     if ($outlookStatus.ready -eq $true) {
       $outlookReady = $true
@@ -218,10 +254,10 @@ try {
     if ($outlookFailure.Length -gt 500) { $outlookFailure = $outlookFailure.Substring(0, 500) }
     Add-Evidence $evidence 'outlook' 'status' 'not_ready' @{ reason = $outlookFailure }
     Write-Warning ("[office-acceptance] Outlook degraded: {0}" -f $outlookFailure)
-  }
+  } }
 
   # Outlook: bounded read and safe local draft lifecycle only after the readiness probe succeeds. Never send.
-  if ($outlookReady) {
+  if ($IncludeOutlookFixtures -and $outlookReady) {
     Write-Host '[office-acceptance] outlook:list_folders'
     $folders = Invoke-Office 'outlook' 'list_folders' @{}
     Assert-True ($null -ne $folders.folders) 'Outlook folder listing failed'
@@ -240,8 +276,10 @@ try {
     Invoke-Office 'outlook' 'delete' @{ draft_id = $draftId } | Out-Null
     $draftId = $null
     Add-Evidence $evidence 'outlook' 'folders-messages-draft-create-update-delete-no-send'
-  } else {
+  } elseif ($IncludeOutlookFixtures) {
     Add-Evidence $evidence 'outlook' 'folders-messages-draft-create-update-delete-no-send' 'skipped_not_ready' @{ reason = 'Skipped because the bounded Outlook COM status probe did not prove readiness.' }
+  } else {
+    Add-Evidence $evidence 'outlook' 'folders-messages-draft-create-update-delete-no-send' 'skipped_not_requested' @{ reason = 'Live Outlook account fixtures require explicit IncludeOutlookFixtures opt-in.' }
   }
 
   Start-Sleep -Milliseconds 1200

@@ -7,6 +7,15 @@ import { fileURLToPath } from 'node:url';
 
 const repository = fileURLToPath(new URL('../../', import.meta.url));
 const roots: string[] = [];
+it('pins the complete 5.8.7 source inventory independently from historical installed evidence', async () => {
+  const root = await realpath(await mkdtemp(path.join(await realpath(os.tmpdir()), 'gotzji-reference-'))); roots.push(root);
+  const files = ['scripts/generate-gotzji-upstream-reference.mjs', 'docs/upstream/FULL_README-v5.8.7.md', 'docs/upstream/TOOL_CONTRACT-v5.8.7.md', 'apps/desktop/src/renderer/gotzji-upstream-baseline.json'];
+  for (const file of files) { const target = path.join(root, file); await mkdir(path.dirname(target), { recursive: true }); await cp(path.join(repository, file), target); }
+  const generator = path.join(root, files[0]!);
+  expect(execFileSync(process.execPath, [generator, '--check'], { encoding: 'utf8', timeout: 5000 })).toContain('294 source definitions');
+  await writeFile(path.join(root, files[1]!), 'Changed source');
+  expect(() => execFileSync(process.execPath, [generator], { encoding: 'utf8', timeout: 5000, stdio: 'pipe' })).toThrow();
+});
 afterEach(async () => {
   const parent = await realpath(os.tmpdir());
   for (const root of roots.splice(0)) {

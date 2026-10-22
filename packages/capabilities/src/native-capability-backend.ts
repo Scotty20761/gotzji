@@ -50,30 +50,32 @@ export class NativeCapabilityBackend implements CapabilityBackend {
       return err(appError('INVALID_INPUT', `${this.capability} action is not supported`));
     }
     if (operation === 'status') {
-      const health = await bridge.execute('health', {}, signal, authorization);
-      if (!health.ok) return health;
-      const host = isRecord(health.value) ? health.value : {};
-      const capabilityStatuses = isRecord(host.capabilities) ? host.capabilities : undefined;
-      const capabilityStatus = capabilityStatuses === undefined ? undefined : capabilityStatuses[this.capability];
-      if (isRecord(capabilityStatus)) {
+      const status = await bridge.execute(this.capability, input, signal, authorization);
+      if (!status.ok) return status;
+      const value = isRecord(status.value) ? status.value : {};
+      const parameters = isRecord(input.parameters) ? input.parameters : {};
+      const handle = input.handle ?? parameters.handle;
+      const sessionId = input.session_id ?? parameters.session_id;
+      const resourceStatus = handle !== undefined || sessionId !== undefined;
+      const stateVerified = value.state === undefined || (typeof value.state === 'string'
+        && ['starting', 'running', 'recording', 'playing', 'stopping', 'completed', 'cancelled', 'failed', 'stopped', 'termination_unverified'].includes(value.state));
+      if (resourceStatus && (!stateVerified || (handle !== undefined && value.handle !== handle) || (sessionId !== undefined && value.session_id !== sessionId)
+        || (typeof value.closed !== 'boolean' && typeof value.running !== 'boolean' && !(handle === undefined && typeof value.ready === 'boolean')
+          && typeof value.state !== 'string'))) {
+        return err(appError('INTERNAL_ERROR', 'Native resource status could not be verified', true));
+      }
+      if (resourceStatus || typeof value.ready === 'boolean') {
         return ok({
-          ...capabilityStatus,
+          ...value,
           backend: `${this.options.platform}-native-host`,
-          hostAvailable: host.available !== false,
-          hostReady: host.ready !== false,
           local: true,
         });
       }
-      // A healthy transport is not evidence that a provider is implemented or
-      // that the desktop permission/session is ready. Keep the capability
-      // visible but fail closed until the native host reports its own status.
       return ok({
-        available: host.available !== false,
+        available: value.available !== false,
         ready: false,
         local: true,
         backend: `${this.options.platform}-native-host`,
-        hostAvailable: host.available !== false,
-        hostReady: host.ready !== false,
         reason: 'provider_not_implemented',
         readinessReason: 'provider_not_implemented',
       });

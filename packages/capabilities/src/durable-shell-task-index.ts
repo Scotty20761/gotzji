@@ -1,15 +1,21 @@
 import { randomUUID, createHash } from 'node:crypto';
 import { appendFile, mkdir, open, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { readWindowsContainmentReceipt } from '@lnwjud/process';
 import { appError, err, ok, type Result } from '@lnwjud/domain';
 
 export type ActiveTaskInspection = 'active' | 'terminal' | 'missing' | 'unknown';
 
+export type DurableMutationKind = 'opaque' | 'repository_import' | 'opaque_uncontained' | 'opaque_contained_process';
+
 export interface DurableTaskReservation {
+  readonly mutationKind?: DurableMutationKind;
   readonly taskId: string;
   readonly requestDigest: string;
   readonly ownerClientId: string;
   readonly ownerWorkspaceId?: string;
+  /** Trusted native proof path; never accepted from MCP caller input. */
+  readonly nativeReceiptPath?: string;
   readonly launchRecord?: DurableTaskLaunchRecord;
 }
 
@@ -71,7 +77,9 @@ export class DurableShellTaskIndex {
   }
 
   public async reserve(input: DurableTaskReservation): Promise<Result<DurableTaskReservationResult>> {
-    if (!isSafeTaskId(input.taskId)
+    if ((input.mutationKind !== undefined && input.mutationKind !== 'opaque' && input.mutationKind !== 'repository_import' && input.mutationKind !== 'opaque_uncontained' && input.mutationKind !== 'opaque_contained_process')
+      || (input.mutationKind === 'opaque_contained_process' && (typeof input.nativeReceiptPath !== 'string' || !path.isAbsolute(input.nativeReceiptPath)))
+      || !isSafeTaskId(input.taskId)
       || !/^[a-f0-9]{64}$/i.test(input.requestDigest)
       || (input.launchRecord !== undefined && (!isLaunchRecord(input.launchRecord) || input.launchRecord.taskId !== input.taskId))) {
       return err(appError('INVALID_INPUT', 'Durable task reservation identity is invalid'));
@@ -85,12 +93,26 @@ export class DurableShellTaskIndex {
         let activeTasks = 0;
         for (const marker of markers) {
           if (marker.record?.taskId === input.taskId) {
-            if (marker.record.requestDigest !== input.requestDigest) {
+            if (marker.record.requestDigest !== input.requestDigest || marker.record.mutationKind !== (input.mutationKind ?? 'opaque')
+              || marker.record.ownerClientId !== input.ownerClientId
+              || marker.record.ownerWorkspaceId !== input.ownerWorkspaceId) {
               return err(appError('CONFLICT', 'Durable task ID is already reserved for another request', true));
             }
             return ok({ activeTasks: activeTasks + 1, created: false, markerPath: marker.path });
           }
           if (marker.record === undefined) {
+            return err(appError('CONFLICT', 'A managed writer reservation is unreadable; resolve its state before launching another writer', true));
+          }
+          if (marker.record.mutationKind === 'opaque_contained_process') {
+            const native = marker.record.nativeReceiptPath === undefined
+              ? undefined : await readWindowsContainmentReceipt(marker.record.nativeReceiptPath);
+            if (native !== undefined) {
+              await rm(marker.path, { force: true }).catch(() => undefined);
+              continue;
+            }
+            if (input.mutationKind === 'repository_import') {
+              return err(appError('CONFLICT', 'Unverified native process descendants block repository import', true));
+            }
             activeTasks += 1;
             continue;
           }
@@ -99,6 +121,9 @@ export class DurableShellTaskIndex {
             || (inspection === 'missing' && this.isAbandonedReservation(marker.record))) {
             await rm(marker.path, { force: true }).catch(() => undefined);
             continue;
+          }
+          if (input.mutationKind === 'repository_import' || marker.record.mutationKind === 'repository_import') {
+            return err(appError('CONFLICT', 'Repository import requires exclusive managed writer admission; a live or unresolved task holds it', true));
           }
           activeTasks += 1;
         }
@@ -114,6 +139,8 @@ export class DurableShellTaskIndex {
           version: 1,
           taskId: input.taskId,
           requestDigest: input.requestDigest,
+          mutationKind: input.mutationKind ?? 'opaque',
+          ...(input.nativeReceiptPath === undefined ? {} : { nativeReceiptPath: input.nativeReceiptPath }),
           ownerClientId: input.ownerClientId,
           ...(input.ownerWorkspaceId === undefined ? {} : { ownerWorkspaceId: input.ownerWorkspaceId }),
           reservedAt: this.now().toISOString(),
@@ -312,7 +339,8 @@ export class DurableShellTaskIndex {
   }
 
   private isAbandonedReservation(marker: MarkerRecord): boolean {
-    if (marker.legacy === true
+    if (marker.mutationKind === 'opaque_uncontained' || marker.mutationKind === 'opaque_contained_process' || marker.mutationKind === 'repository_import'
+      || marker.legacy === true
       || marker.launcherPid === undefined
       || marker.launcherStartedAt === undefined
       || marker.reservedAt === undefined) return false;
@@ -379,6 +407,10 @@ interface MarkerRecord {
   readonly version: 1;
   readonly taskId: string;
   readonly requestDigest: string | null;
+  readonly mutationKind: DurableMutationKind;
+  readonly ownerClientId?: string;
+  readonly ownerWorkspaceId?: string;
+  readonly nativeReceiptPath?: string;
   readonly reservedAt?: string;
   readonly launcherPid?: number;
   readonly launcherStartedAt?: string;
@@ -419,11 +451,16 @@ async function isReady(filename: string): Promise<boolean> {
 async function readMarker(filename: string): Promise<MarkerRecord | undefined> {
   const value = await readJson(filename);
   if (!isRecord(value) || value.version !== 1 || typeof value.taskId !== 'string') return undefined;
+  if (value.mutationKind !== undefined && value.mutationKind !== 'opaque' && value.mutationKind !== 'repository_import' && value.mutationKind !== 'opaque_uncontained' && value.mutationKind !== 'opaque_contained_process') return undefined;
   if (value.requestDigest !== null && (typeof value.requestDigest !== 'string' || !/^[a-f0-9]{64}$/i.test(value.requestDigest))) return undefined;
   return {
     version: 1,
     taskId: value.taskId,
     requestDigest: value.requestDigest,
+    mutationKind: value.mutationKind === 'repository_import' ? 'repository_import' : value.mutationKind === 'opaque_uncontained' ? 'opaque_uncontained' : value.mutationKind === 'opaque_contained_process' ? 'opaque_contained_process' : 'opaque',
+    ...(typeof value.ownerClientId === 'string' ? { ownerClientId: value.ownerClientId } : {}),
+    ...(typeof value.ownerWorkspaceId === 'string' ? { ownerWorkspaceId: value.ownerWorkspaceId } : {}),
+    ...(typeof value.nativeReceiptPath === 'string' && path.isAbsolute(value.nativeReceiptPath) ? { nativeReceiptPath: value.nativeReceiptPath } : {}),
     ...(typeof value.reservedAt === 'string' ? { reservedAt: value.reservedAt } : {}),
     ...(Number.isInteger(value.launcherPid) ? { launcherPid: Number(value.launcherPid) } : {}),
     ...(typeof value.launcherStartedAt === 'string' ? { launcherStartedAt: value.launcherStartedAt } : {}),

@@ -6,14 +6,15 @@ export function workspaceIndexTools(context: McpToolContext): McpToolDefinition[
     defineTool({
       name: 'workspace_index',
       description: 'Build or refresh the persistent workspace index using automatic context filters unless ignored paths are explicitly included.',
-      permission: 'READ',
-      annotations: { readOnlyHint: true, destructiveHint: false },
+      permission: 'WRITE',
+      annotations: { readOnlyHint: false, destructiveHint: false },
       inputSchema: workspaceIndexSchema,
-      handler: async (input) => context.services.workspaceIndex === undefined
+      handler: async (input, signal) => context.services.workspaceIndex === undefined
         ? missingService()
         : context.services.workspaceIndex.indexWorkspace(input.workspaceId, {
           discovery: input.includeIgnored ? 'explicit' : 'automatic',
           rebuild: input.rebuild,
+          signal,
         }),
     }),
     defineTool({
@@ -29,21 +30,22 @@ export function workspaceIndexTools(context: McpToolContext): McpToolDefinition[
     defineTool({
       name: 'workspace_index_watch',
       description: 'Watch all workspace paths and incrementally re-index only changed paths with configurable debounce/concurrency.',
-      permission: 'READ',
-      annotations: { readOnlyHint: true, destructiveHint: false },
+      permission: 'WRITE',
+      annotations: { readOnlyHint: false, destructiveHint: false },
       inputSchema: workspaceIndexWatchSchema,
-      handler: async (input) => context.services.workspaceIndex === undefined
+      handler: async (input, signal) => context.services.workspaceIndex === undefined
         ? missingService()
         : context.services.workspaceIndex.startWatch(input.workspaceId, {
           ...(input.debounceMs === undefined ? {} : { debounceMs: input.debounceMs }),
           ...(input.concurrency === undefined ? {} : { concurrency: input.concurrency }),
+          signal,
         }),
     }),
     defineTool({
       name: 'workspace_index_stop',
       description: 'Stop a workspace watcher after draining all queued path updates.',
-      permission: 'READ',
-      annotations: { readOnlyHint: true, destructiveHint: false },
+      permission: 'WRITE',
+      annotations: { readOnlyHint: false, destructiveHint: false },
       inputSchema: workspaceIndexStopSchema,
       handler: async (input) => context.services.workspaceIndex === undefined
         ? missingService()

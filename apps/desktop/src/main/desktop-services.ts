@@ -5,6 +5,8 @@ import { existsSync, lstatSync, readFileSync, realpathSync, statSync } from 'nod
 import { open, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
+import { sampleOwnedProcessMetrics } from './resource-process-metrics.js';
+import { hasInspectableGoalResults } from './doctor-goal-evidence.js';
 import runtimeDependencies from './runtime-dependencies.json' with { type: 'json' };
 import {
   AgentSwarmService,
@@ -15,7 +17,13 @@ import {
   FileService,
   EngineeringPreparationService,
   GitService,
+  RepositoryImportService,
   GoalContinuationService,
+  WorkflowTemplateService,
+  WorkflowStartService,
+  CallHistoryService,
+  TaskResultService,
+  ResourceSnapshotService,
   GoalRequestCancellationService,
   GoalTaskCancellationService,
   GoalMutationFenceService,
@@ -32,6 +40,7 @@ import {
   type FileActor,
   type DoctorProbeResult,
 } from '@lnwjud/application';
+import { SharedManagedWriterAdmission, SqliteWorkspaceWriterLease, SecureRepositoryImportRuntime } from '@lnwjud/capabilities';
 import { AuditService, decodeActivityTargetReference, type ActivityAuditEvent, type ActivityTargetDetail, type AuditEventRepository, type AuditEventSummaryProjection } from '@lnwjud/audit';
 import { CodexDiscovery, formatCodexDiscoveryError } from '@lnwjud/codex';
 import type { GoalRecord, Result } from '@lnwjud/domain';
@@ -44,6 +53,9 @@ import {
 } from '@lnwjud/extensions';
 import {
   ActivityTracker,
+  ContextEconomyRuntime,
+  DapSessionService,
+  OfficeDataWorkflowService,
   LNWJUD_MCP_IDENTITY_PATH,
   RuntimeEngineeringEvidenceVerifier,
   createEngineeringArtifactVerifier,
@@ -138,6 +150,19 @@ import {
   type DoctorCheck,
   type DoctorReport,
   type ToolCatalogSnapshot,
+  type WorkflowPrepareRequest,
+  type WorkflowTemplate,
+  type WorkflowDraft,
+  type CallHistoryRequest,
+  type CallHistoryPage,
+  type DoctorGoalOption,
+  type TaskResultSummary,
+  type RestoreTaskCheckpointRequest,
+  type RestoreTaskCheckpointResult,
+  type CancelOwnedGoalTaskRequest,
+  type CancelOwnedGoalTaskResult,
+  type ResourceSnapshotRequest,
+  type ResourceSnapshot,
   type GetToolCatalogRequest,
   type GetGitDiffRequest,
   type GetGitDiffResponse,
@@ -190,6 +215,7 @@ import {
 import type { DesktopIpcServices } from './main.js';
 import { buildCapabilitySummary, createLocalCapabilityRuntime } from './capability-runtime.js';
 import { AsyncTtlCache } from './async-ttl-cache.js';
+import { inspectGitWorkingFile } from './git-file-inspection.js';
 import { ActivitySessionCatalog } from './activity-session-catalog.js';
 import type { ElectronNativeCapabilityApi } from './electron-native-capability-backend.js';
 import { RequirementRegistry, type RequirementDefinition, type RequirementProbeResult } from './tool-catalog/requirement-registry.js';
@@ -254,6 +280,7 @@ export interface DesktopRuntime {
   autoStartWatcher(): Promise<string | null>;
   autoStartTunnel(): Promise<TunnelStatus | null>;
   autoStartRemoteMcp(): Promise<RemoteMcpStatus>;
+  prepareFactoryReset(): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -474,7 +501,8 @@ export function createDesktopRuntime(dataPath: string, options: DesktopRuntimeOp
     console.error(`Automatic database backup failed: ${error instanceof Error ? error.message : 'unknown error'}`);
   });
   const workspaceService = new WorkspaceService(workspaceRepository);
-  const gitService = new GitService(workspaceRepository);
+  const writerAdmission = new SharedManagedWriterAdmission(path.join(dataPath, 'background-tasks'));
+  const gitService = new GitService(workspaceRepository, undefined, undefined, { writerAdmission, nativeContainmentRoot: path.join(dataPath, 'native-managed-git') });
   const codexDiscovery = new CodexDiscovery();
   const executableResolver = new PathExecutableResolver();
   const storedProfile = settingsRepository.get(permissionSettingKey);
@@ -496,7 +524,10 @@ export function createDesktopRuntime(dataPath: string, options: DesktopRuntimeOp
     globalSettingsProvider: (): EngineeringHarnessSettings => parseEngineeringHarnessSettings(settingsRepository.get(USER_SETTING_KEYS.engineeringHarnessSettings)).settings,
     workspaceOverrideProvider: (workspaceId): EngineeringHarnessWorkspaceOverride | undefined => parseEngineeringHarnessWorkspaceOverrides(settingsRepository.get(USER_SETTING_KEYS.engineeringHarnessWorkspaceOverrides))[workspaceId],
   });
+  const workspaceWriterLease = new SqliteWorkspaceWriterLease(path.join(dataPath, 'workspace-writer-leases.sqlite'), Date.now, writerAdmission);
   const processService = new ProcessService(workspaceRepository, {
+    writerAdmission,
+    nativeContainmentRoot: path.join(dataPath, 'native-managed-processes'),
     projectService,
     profileProvider: activePermissionProfile,
     defaultTimeoutMsProvider: (): number => readSettings().processTimeoutMs,
@@ -510,6 +541,7 @@ export function createDesktopRuntime(dataPath: string, options: DesktopRuntimeOp
   const recoveryTrashRoot = path.join(dataPath, 'recovery-trash');
   const pathGuard = new WorkspacePathGuard(new SecretPolicy(), { unrestricted, trustedWorkspaceAccess: true });
   const fileService = new FileService(workspaceRepository, pathGuard, undefined, {
+    writerAdmission,
     checkpointService,
     profileProvider: activePermissionProfile,
     unrestricted,
@@ -710,6 +742,7 @@ export function createDesktopRuntime(dataPath: string, options: DesktopRuntimeOp
     callTimeoutMs: readSettings().mcpCallTimeoutMs,
     idleTimeoutMs: readSettings().mcpIdleTimeoutMs,
   });
+  const debugSessions = new DapSessionService();
   const mcpServices: McpApplicationServices = {
     platform: process.platform,
     runtimeStatePath: path.join(dataPath, 'upgrade-runtime.json'),
@@ -724,8 +757,10 @@ export function createDesktopRuntime(dataPath: string, options: DesktopRuntimeOp
       };
     },
     capabilities: capabilityRuntime.service,
+    debugSessions,
     extensions: extensionsService,
     workspaceInfo: workspaceInfoService,
+    workspaceWriterLease,
     workspaceQuery: workspaceQueryService,
     projectSnapshot: projectSnapshotService,
     project: projectService,
@@ -733,12 +768,19 @@ export function createDesktopRuntime(dataPath: string, options: DesktopRuntimeOp
     file: fileService,
     checkpoint: checkpointService,
     goals: goalService,
+    callHistory: new CallHistoryService(workspaceRepository, auditRepository),
+    taskResults: new TaskResultService(goalService, auditRepository, workspaceRepository, goalRepository),
+    resourceSnapshot: new ResourceSnapshotService(workspaceRepository, goalService),
+    officeDataWorkflow: new OfficeDataWorkflowService(async (id) => (await workspaceRepository.get(id))?.realRootPath ?? null),
+    workflowTemplates: new WorkflowTemplateService(workspaceRepository),
+    workflowStart: new WorkflowStartService(new WorkflowTemplateService(workspaceRepository), goalService),
     goalRequestCancellation: requestCancellation,
     scheduledContinuations: scheduledContinuationService,
     goalMutationFence,
     search: searchService,
     workspaceIndex,
     git: gitService,
+    repositoryImport: new RepositoryImportService(workspaceRepository, new SecureRepositoryImportRuntime(dataPath)),
     process: processService,
     codex: codexService,
     agentSwarm: agentSwarmService,
@@ -778,6 +820,8 @@ export function createDesktopRuntime(dataPath: string, options: DesktopRuntimeOp
           ...(loggedEvent.workspaceId === undefined ? {} : { workspaceId: loggedEvent.workspaceId }),
           ...(loggedEvent.sessionId === undefined ? {} : { sessionId: loggedEvent.sessionId }),
           toolName: event.toolName,
+          ...(event.goalId === undefined ? {} : { goalId: event.goalId }),
+          ...(event.goalId === undefined || event.mutationReceipt === undefined ? {} : { mutationReceipt: event.mutationReceipt }),
           callId: event.callId,
           phase: event.phase,
           ...(event.targetSummary === undefined ? {} : { targetSummary: event.targetSummary }),
@@ -797,8 +841,12 @@ export function createDesktopRuntime(dataPath: string, options: DesktopRuntimeOp
   );
   const mcpPort = readMcpPort(process.env.LNWJUD_MCP_PORT ?? settingsRepository.get(USER_SETTING_KEYS.mcpHttpPort) ?? undefined);
   const mcpAllowedHostnames = parseMcpAllowedHostnames(process.env.LNWJUD_MCP_ALLOWED_HOSTNAMES ?? settingsRepository.get(USER_SETTING_KEYS.mcpAllowedHostnames) ?? undefined);
+  // One transport-owned ledger is shared across Modern HTTP requests and the
+  // Desktop read-only diagnostics view. It is not a per-Goal counter.
+  const desktopContextEconomy = new ContextEconomyRuntime();
   const mcpLifecycle = new DesktopMcpLifecycle({
     createServerOptions: (): McpHttpServerOptions => ({
+      contextEconomy: desktopContextEconomy,
       port: mcpPort,
       allowedHostnames: mcpAllowedHostnames,
       services: mcpServices,
@@ -1598,8 +1646,13 @@ export function createDesktopRuntime(dataPath: string, options: DesktopRuntimeOp
         workspaceRoot: workspace.realRootPath,
       });
       const backup = await backupService.create('manual');
-      await workspaceIndex.forgetWorkspace(workspace.id);
       await workspaceRepository.delete(workspace.id);
+      try {
+        await workspaceIndex.forgetWorkspace(workspace.id);
+      } catch (error: unknown) {
+        await repairSelectedWorkspace(workspace.id);
+        throw new Error('The workspace registration was removed, but its index cleanup failed. Reload the workspace list before retrying cleanup.', { cause: error });
+      }
       await repairSelectedWorkspace(workspace.id);
       return { deleted: true, workspaceId: workspace.id, rootPath: workspace.realRootPath, backupId: backup.id };
     },
@@ -1923,6 +1976,158 @@ export function createDesktopRuntime(dataPath: string, options: DesktopRuntimeOp
       return { ...installed, restartRequired: runtimeRestartRequired(previous, next) };
     },
     runDoctor: async (): Promise<DoctorReport> => buildFullDoctorReport(readLocale(settingsRepository)),
+    listWorkflowTemplates: async (request: { workspaceId: string }): Promise<readonly WorkflowTemplate[]> =>
+      unwrap(await new WorkflowTemplateService(workspaceRepository).list(actor, request.workspaceId), 'Workflow catalogue unavailable'),
+    prepareWorkflow: async (request: WorkflowPrepareRequest): Promise<WorkflowDraft> =>
+      unwrap(await new WorkflowTemplateService(workspaceRepository).prepare(actor, request), 'Workflow preparation failed'),
+    getCallHistory: async (request: CallHistoryRequest): Promise<CallHistoryPage> =>
+      unwrap(await new CallHistoryService(workspaceRepository, auditRepository).history(actor, request), 'Call history unavailable'),
+    getDoctorGoals: async (request: { readonly workspaceId: string; readonly view?: 'calls' | 'results' }): Promise<readonly DoctorGoalOption[]> => {
+      const selected = await resolveSelectedWorkspace(workspaceService, settingsRepository);
+      if (selected === null || selected.id !== request.workspaceId) throw new Error('Doctor Goal filter requires the selected workspace');
+      const goals = await goalRepository.listWorkspaceGoalFilters(request.workspaceId);
+      if (request.view !== undefined && request.view !== 'calls' && request.view !== 'results') throw new Error('Invalid Doctor Goal view');
+      const calls = request.view === 'calls'
+        ? await auditRepository.listWorkspaceGoalIdsWithEvidence(request.workspaceId, 'calls') : null;
+      const receipts = request.view === 'results'
+        ? await auditRepository.listWorkspaceGoalIdsWithEvidence(request.workspaceId, 'receipts') : null;
+      const selectedGoals: typeof goals[number][] = [];
+      for (const goal of goals) {
+        if (calls !== null && !calls.has(goal.id)) continue;
+        if (receipts !== null && !receipts.has(goal.id)) {
+          const record = await goalRepository.getById(goal.id);
+          if (!record || !hasInspectableGoalResults(record)) continue;
+        }
+        selectedGoals.push(goal);
+      }
+      return selectedGoals.map((goal) => ({ goalId: goal.id, goalKey: goal.goalKey, objective: goal.objective, status: goal.status, updatedAt: goal.updatedAt }));
+    },
+    getTaskResult: async (request: { workspaceId: string; goalId: string }): Promise<TaskResultSummary> =>
+      unwrap(await new TaskResultService(goalService, auditRepository, workspaceRepository, goalRepository).get(actor, request.workspaceId, request.goalId), 'Goal result unavailable'),
+    restoreTaskCheckpoint: async (request: RestoreTaskCheckpointRequest): Promise<RestoreTaskCheckpointResult> => {
+      if (request.userConfirmed !== true) throw new Error('Checkpoint restore requires explicit confirmation');
+      const selected = await resolveSelectedWorkspace(workspaceService, settingsRepository);
+      if (selected === null || selected.id !== request.workspaceId) throw new Error('Restore target must be the selected workspace');
+      const goal = await goalRepository.getById(request.goalId);
+      if (goal === null || goal.workspaceId !== selected.id || goal.revision !== request.goalRevision) {
+        throw new Error('Goal ownership or revision is stale');
+      }
+      const checkpoint = await checkpointRepository.get(request.checkpointId);
+      if (checkpoint === null || checkpoint.workspaceId !== selected.id
+          || checkpoint.files.length === 0 || checkpoint.files.length > 20) {
+        throw new Error('Checkpoint is missing or outside the selected workspace');
+      }
+      const receipts = await auditRepository.listGoalMutationReceipts(selected.id, request.goalId, 200);
+      const related = receipts.filter((item) => item.checkpointId === request.checkpointId);
+      const expectedPaths = Object.keys(request.expectedCurrentHashes);
+      if (checkpoint.files.length !== expectedPaths.length
+          || !checkpoint.files.every((item) => related.some((receipt) => receipt.path === item.path)
+            && /^[a-f0-9]{64}$/i.test(request.expectedCurrentHashes[item.path] ?? ''))) {
+        throw new Error('Checkpoint has no verified Goal relationship or full current-hash coverage');
+      }
+      await requireNativeAdministrativeApproval({
+        toolName: 'restore_task_checkpoint',
+        mutationKind: 'replace',
+        reason: 'Restore the exact Goal-related file checkpoint after user confirmation and hash comparison',
+        summary: `Restore ${checkpoint.files.length} files in selected workspace ${selected.id} from checkpoint ${request.checkpointId}. A rollback checkpoint will be recorded.`,
+        workspaceId: selected.id,
+        workspaceRoot: selected.realRootPath,
+      });
+      const current = await goalRepository.getById(request.goalId);
+      if (current === null || current.workspaceId !== selected.id || current.revision !== request.goalRevision) {
+        throw new Error('Goal revision changed during confirmation; refresh and review again');
+      }
+      const restored = unwrap(await checkpointService.restore(actor, selected.id, request.checkpointId,
+        { expectedCurrentHashes: request.expectedCurrentHashes, userConfirmed: true }), 'Goal checkpoint restore was denied');
+      return { restored: true, paths: restored.restoredPaths, rollbackCheckpointId: restored.rollbackCheckpointId ?? null };
+    },
+    cancelOwnedGoalTask: async (request: CancelOwnedGoalTaskRequest): Promise<CancelOwnedGoalTaskResult> => {
+      if (request.userConfirmed !== true) throw new Error('Cancellation requires explicit confirmation');
+      const selected = await resolveSelectedWorkspace(workspaceService, settingsRepository);
+      if (selected === null || selected.id !== request.workspaceId) throw new Error('Task cancellation must match selected workspace');
+      const goal = await goalRepository.getById(request.goalId);
+      if (goal === null || goal.workspaceId !== selected.id) throw new Error('Goal does not belong to selected workspace');
+      const task = (goal.trackedTasks ?? []).find((row) => row.taskId === request.taskId && row.provider === request.provider);
+      if (!task || !task.cancelWithGoal || task.role !== 'blocking_job') {
+        throw new Error('Task is not an eligible Goal-owned blocking job');
+      }
+      await requireNativeAdministrativeApproval({
+        toolName: 'cancel_owned_goal_task',
+        mutationKind: 'execute',
+        reason: 'Stop one exact tracked blocking job; shared or unknown tasks must remain running',
+        summary: `Cancel task ${request.taskId} through its bound ${request.provider} provider in workspace ${selected.id}.`,
+        workspaceId: selected.id,
+        workspaceRoot: selected.realRootPath,
+      });
+      const fresh = await goalRepository.getById(request.goalId);
+      if (fresh === null || fresh.workspaceId !== selected.id || !(fresh.trackedTasks ?? []).some(
+        (row) => row.taskId === task.taskId && row.provider === task.provider && row.cancelWithGoal && row.role === 'blocking_job',
+      )) throw new Error('Task ownership changed during confirmation');
+      const [outcome] = await taskCancellation.cancelForGoal(fresh.ownerClientId, selected.id, [task]);
+      if (!outcome) throw new Error('Task cancellation produced no provider observation');
+      return {
+        taskId: outcome.taskId, status: outcome.status,
+        ...(outcome.error === undefined ? {} : { error: outcome.error }),
+      };
+    },
+    getResourceSnapshot: async (request: ResourceSnapshotRequest): Promise<ResourceSnapshot> => {
+      const resourceSnapshot = unwrap(await new ResourceSnapshotService(workspaceRepository, goalService, {
+        contextScope: 'transport',
+        getContextStats: async (): Promise<Partial<ResourceSnapshot['context']>> => {
+          const counters = desktopContextEconomy.snapshot();
+          return {
+            rawContextBytes: counters.rawContextBytes,
+            contextSentBytes: counters.contextSentBytes,
+            previouslySeenBytesAvoided: counters.previouslySeenBytesAvoided,
+            ledgerHits: counters.ledgerHits,
+          };
+        },
+        getOwnedTask: async (workspaceId, goalId, taskId, provider): Promise<{ ownerVerified: boolean; observedAt: string; workingSetBytes?: number; cpuPercent?: number } | null> => {
+          const goal = await goalRepository.getById(goalId);
+          if (!goal || goal.workspaceId !== workspaceId) return null;
+          if (!goal.trackedTasks?.some(task => task.taskId === taskId && task.provider === provider)) return null;
+          const client = goal.ownerClientId;
+          let ownerVerified = false;
+          let status;
+          if (provider === 'process') {
+            ownerVerified = processService.isOwnedGoalTask(client, workspaceId, taskId);
+            status = processService.statusForGoalLiveness(workspaceId, taskId);
+          } else if (provider === 'codex') {
+            ownerVerified = codexService.isOwnedGoalTask(client, workspaceId, taskId);
+            status = codexService.statusForGoalLiveness(workspaceId, taskId);
+          } else if (provider === 'shell') {
+            ownerVerified = await capabilityRuntime.shell.isOwnedGoalTask(client, workspaceId, taskId);
+            status = await capabilityRuntime.shell.statusForGoalLiveness(workspaceId, taskId);
+          } else return null;
+          const detail = status.ok && status.value !== null && typeof status.value === 'object'
+            ? status.value as Record<string, unknown> : null;
+          const state = detail?.state;
+          const runningOwned = ownerVerified && (state === 'running' || state === 'starting');
+          const pid = provider === 'shell' ? detail?.child_pid : detail?.pid;
+          const launchedAt = provider === 'shell' ? (detail?.child_started_at ?? detail?.started_at) : detail?.startedAt;
+          const metrics = runningOwned && typeof pid === 'number' && typeof launchedAt === 'string'
+            ? await sampleOwnedProcessMetrics(pid, launchedAt) : null;
+          return {
+            ownerVerified: runningOwned,
+            observedAt: new Date().toISOString(),
+            ...(metrics === null ? {} : { workingSetBytes: metrics.workingSetBytes,
+              ...(metrics.cpuPercent === null ? {} : { cpuPercent: metrics.cpuPercent }) }),
+          };
+        },
+      }, undefined, goalRepository).get(actor, request), 'Resource snapshot unavailable');
+      // This host-wide baseline remains measurable even when no Goal has an
+      // active, individually attributable OS process. Never label it as Goal usage.
+      const cpu = process.cpuUsage();
+      const upSeconds = process.uptime();
+      const logicalCpus = os.availableParallelism();
+      const avg = upSeconds >= 1 && logicalCpus > 0
+        ? Number(((cpu.user + cpu.system) / 1_000_000 / upSeconds / logicalCpus * 100).toFixed(1))
+        : null;
+      return { ...resourceSnapshot, desktopMain: {
+        rssBytes: process.memoryUsage().rss,
+        cpuAveragePercent: avg,
+      } };
+    },
     getToolCatalog: async (request: GetToolCatalogRequest): Promise<ToolCatalogSnapshot> => toolCatalogService.getSnapshot(request.locale),
     recheckToolCatalog: recheckCatalogAndDoctor,
     setToolAvailability: async (request: SetToolAvailabilityRequest): Promise<SetToolAvailabilityResult> => mutateToolAvailability(request, request.enabled),
@@ -2020,9 +2225,10 @@ export function createDesktopRuntime(dataPath: string, options: DesktopRuntimeOp
       const stats = numstat.get(relativePath);
       const imagePreview = await readGitImagePreview(workspace.realRootPath, relativePath, request.staged === true, patch, resolved.realPath);
 
+      const inspection = await inspectGitWorkingFile(resolved.realPath, relativePath);
       let newContent: string | undefined;
       if (imagePreview.oldImage === undefined && imagePreview.newImage === undefined && imagePreview.error === undefined
-        && !patch && resolved.exists && resolved.realPath !== undefined) {
+        && !patch && inspection.kind === 'text' && resolved.exists && resolved.realPath !== undefined) {
         const bounded = await readBoundedGitTextFile(resolved.realPath);
         if (bounded !== null) {
           newContent = bounded;
@@ -2035,6 +2241,7 @@ export function createDesktopRuntime(dataPath: string, options: DesktopRuntimeOp
         path: relativePath,
         patch,
         truncated,
+        preview: {kind:inspection.kind,sizeBytes:inspection.sizeBytes,extension:inspection.extension,mimeType:inspection.mimeType},
         ...(newContent !== undefined ? { newContent } : {}),
         ...(imagePreview.oldImage === undefined ? {} : { oldImage: imagePreview.oldImage }),
         ...(imagePreview.newImage === undefined ? {} : { newImage: imagePreview.newImage }),
@@ -2057,6 +2264,7 @@ export function createDesktopRuntime(dataPath: string, options: DesktopRuntimeOp
     }
     logHub.stop();
     await mcpLifecycle.close();
+    debugSessions.close();
     await extensionsService.close().catch(() => undefined);
     await workspaceIndex.close().catch(() => undefined);
     await startupBackup;
@@ -2070,6 +2278,7 @@ export function createDesktopRuntime(dataPath: string, options: DesktopRuntimeOp
     activityTracker,
     logHub,
     toolAvailabilityService,
+    prepareFactoryReset: (): Promise<void> => tunnelController.prepareFactoryReset(),
     getLocale: (): UiLocale => readLocale(settingsRepository),
     getUserSettings: (): UserSettings => readSettings(),
     getDestructivePolicy: (): DestructiveAutoApprovalPolicy => destructivePolicyProvider(),
@@ -2518,8 +2727,9 @@ async function readBoundedGitTextFile(filePath: string): Promise<string | null> 
     const metadata = statSync(filePath);
     if (!metadata.isFile() || metadata.size > MAX_GIT_DIFF_FALLBACK_BYTES) return null;
     const contents = await readFile(filePath);
-    if (contents.includes(0)) return null;
-    return contents.toString('utf8');
+    const { inspectGitFileBytes } = await import('./git-file-inspection.js');
+    const inspection = inspectGitFileBytes(contents,filePath);
+    return inspection.kind === 'text' ? inspection.text ?? null : null;
   } catch {
     return null;
   }

@@ -1,4 +1,7 @@
 import { realpath, stat } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import path from 'node:path';
+import type { ManagedWriterAdmissionPort } from './writer-admission.js';
 import {
   appError,
   err,
@@ -27,7 +30,7 @@ export interface ProcessStartRequest {
 }
 
 export interface ProcessManagerPort {
-  start(spec: ManagedProcessStart, signal?: AbortSignal, onCreated?: (process: ManagedProcess) => void): Promise<Result<ManagedProcess>>;
+  start(spec: ManagedProcessStart, signal?: AbortSignal, onCreated?: (process: ManagedProcess) => void, onVerifiedNativeTermination?: () => void): Promise<Result<ManagedProcess>>;
   list?(): readonly ManagedProcess[];
   status(processId: string): Result<ManagedProcess>;
   logs(processId: string, query: LogQuery): Result<ProcessLogResult>;
@@ -39,6 +42,8 @@ export interface ProjectCommandSource {
 }
 
 export interface ProcessServiceDependencies {
+  readonly writerAdmission?: ManagedWriterAdmissionPort;
+  readonly nativeContainmentRoot?: string;
   readonly processManager?: ProcessManagerPort;
   readonly projectService?: ProjectCommandSource;
   readonly guard?: WorkspacePathGuard;
@@ -63,6 +68,8 @@ type CommandSource = 'client' | 'project';
 
 export class ProcessService {
   private readonly processManager: ProcessManagerPort;
+  private readonly writerAdmission: ManagedWriterAdmissionPort | undefined;
+  private readonly nativeContainmentRoot: string | undefined;
   private readonly projectService: ProjectCommandSource;
   private readonly guard: WorkspacePathGuard;
   private readonly permissionEngine: PermissionEngine;
@@ -77,7 +84,9 @@ export class ProcessService {
     private readonly workspaces: WorkspaceRepository,
     dependencies: ProcessServiceDependencies = {},
   ) {
-    this.processManager = dependencies.processManager ?? new ProcessManager();
+    this.nativeContainmentRoot = dependencies.nativeContainmentRoot;
+    this.writerAdmission = dependencies.writerAdmission;
+    this.processManager = dependencies.processManager ?? new ProcessManager(undefined, undefined, undefined, undefined, dependencies.nativeContainmentRoot);
     this.projectService = dependencies.projectService ?? new ProjectService(
       workspaces,
       new ProjectDetector(),
@@ -123,6 +132,12 @@ export class ProcessService {
     const ownership = this.authorizeHandle(actor, workspaceId, processId);
     if (!ownership.ok) return ownership;
     return this.processManager.status(processId);
+  }
+
+  /** Trusted read-only exact owner probe. Does not grant rights by PID or display name. */
+  public isOwnedGoalTask(ownerClientId: string, workspaceId: string, taskId: string): boolean {
+    const owner = this.owners.get(taskId);
+    return owner !== undefined && owner.actorId === ownerClientId && owner.workspaceId === workspaceId;
   }
 
   /** Trusted read-only host probe used only by durable-goal orphan detection. */
@@ -237,14 +252,25 @@ export class ProcessService {
 
     if (isAborted(signal)) return cancelledStart();
     const timeoutMs = request.timeoutMs ?? this.defaultTimeoutMsProvider?.();
+    const containmentId = this.writerAdmission === undefined ? undefined : randomUUID();
+    const nativeReceiptPath = containmentId !== undefined && this.nativeContainmentRoot !== undefined && process.platform === 'win32'
+      ? path.join(this.nativeContainmentRoot, containmentId, 'containment.receipt.json') : undefined;
+    const reservation = this.writerAdmission === undefined ? undefined : await this.writerAdmission.enter({
+      actorClientId: actor.clientId,
+      workspaceId,
+      kind: nativeReceiptPath === undefined ? 'uncontained_process' : 'contained_process',
+      ...(nativeReceiptPath === undefined ? {} : { nativeReceiptPath }),
+    });
+    if (reservation !== undefined && !reservation.ok) return reservation;
     const started = await this.processManager.start({
       executable: request.executable,
       args: [...request.args],
       cwd: cwd.value,
+      ...(containmentId === undefined ? {} : { containmentId }),
       ...(timeoutMs === undefined ? {} : { timeoutMs }),
     }, signal, (process) => {
       this.owners.set(process.processId, { actorId: actor.clientId, sessionId: actorSessionId(actor), workspaceId });
-    });
+    }, () => { if (reservation?.ok) void reservation.value.releaseAfterVerifiedTermination(); });
     if (started.ok && isAborted(signal)) {
       // A process can be spawned just before goal cancellation aborts the
       // request. Stop that provisional child before returning so it cannot

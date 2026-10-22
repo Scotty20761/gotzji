@@ -2,8 +2,10 @@ import { realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { appError, err, isApplicationAuthorized, isFullBypassAuthorization, ok, type InvocationAuthorization, type Result } from '@lnwjud/domain';
 import type { CapabilityBackend } from './local-capability-service.js';
-import { NodeBrowserCdpProtocol } from './browser-cdp-protocol.js';
+import { BrowserCdpUnavailableError, NodeBrowserCdpProtocol } from './browser-cdp-protocol.js';
 import { readCapabilityActiveWorkspaceRoot } from './task-ownership.js';
+import { BrowserDebugStreamService } from './browser-debug-stream.js';
+import { isProtectedBrowserUrl } from './browser-debug-observation.js';
 
 export interface BrowserCdpTab {
   readonly id: string;
@@ -23,6 +25,12 @@ export interface BrowserCdpProtocol {
   newTab(url: string, signal?: AbortSignal): Promise<BrowserCdpTab>;
   closeTab(tabId: string, signal?: AbortSignal): Promise<unknown>;
   request(tabId: string, method: string, params: Record<string, unknown>, signal?: AbortSignal): Promise<unknown>;
+  openEventChannel?(tabId: string, onEvent: (method: string, params: unknown) => void, onDisconnected: (closureConfirmed: boolean) => void, signal?: AbortSignal): Promise<BrowserCdpEventChannel>;
+}
+
+export interface BrowserCdpEventChannel {
+  request(method: string, params: Record<string, unknown>, signal?: AbortSignal): Promise<unknown>;
+  close(): Promise<void>;
 }
 
 export interface BrowserCdpBackendOptions {
@@ -54,10 +62,22 @@ export class BrowserCdpBackend implements CapabilityBackend {
   private readonly protocol: BrowserCdpProtocol;
   private readonly launcher: ((url: string | undefined, signal?: AbortSignal) => Promise<Result<unknown>>) | undefined;
   private startInFlight: Promise<Result<unknown>> | null = null;
+  private readonly debugStreams: BrowserDebugStreamService;
 
   public constructor(options: BrowserCdpBackendOptions = {}) {
     this.protocol = options.protocol ?? new NodeBrowserCdpProtocol();
     this.launcher = options.launcher;
+    this.debugStreams = new BrowserDebugStreamService(this.protocol, async (tabId, input, signal) => {
+      let tabs: readonly BrowserCdpTab[];
+      try { tabs = await this.protocol.listTabs(signal); } catch (error) {
+        if (error instanceof BrowserCdpUnavailableError) return err(appError('PROCESS_NOT_FOUND', 'The managed local browser CDP endpoint is unavailable', true));
+        throw error;
+      }
+      const tab = tabs.find((candidate) => candidate.id === tabId);
+      if (tab === undefined) return err(appError('FILE_NOT_FOUND', 'The selected browser observation tab was not found', true));
+      if (isProtectedAgentTab(tab) && !(isRecord(input) && input.allow_protected_tab_action === true && input.userConfirmed === true)) return err(appError('PERMISSION_DENIED', 'Protected ChatGPT tab observations require an explicit override and confirmation'));
+      return ok(undefined);
+    });
   }
 
   public async ensureStarted(url?: string, signal?: AbortSignal): Promise<Result<unknown>> {
@@ -77,6 +97,9 @@ export class BrowserCdpBackend implements CapabilityBackend {
   }
 
   public async execute(input: unknown, signal?: AbortSignal, authorization?: InvocationAuthorization): Promise<Result<unknown>> {
+    if (isRecord(input) && input.action === 'debug_stream') {
+      try { return await this.debugStreams.execute(input, signal); } catch { return cancellationResult(signal) ?? err(appError('INTERNAL_ERROR', 'Browser observation operation failed', true)); }
+    }
     const aborted = cancellationResult(signal);
     if (aborted !== null) return aborted;
     const parsed = parseBrowserRequest(input);
@@ -92,6 +115,8 @@ export class BrowserCdpBackend implements CapabilityBackend {
       return cancellationResult(signal) ?? err(appError('INTERNAL_ERROR', 'Browser CDP operation failed', true));
     }
   }
+
+  public close(): Promise<void> { return this.debugStreams.close(); }
 
   private async executeSteps(request: BrowserRequest, signal?: AbortSignal, authorization?: InvocationAuthorization): Promise<Result<unknown>> {
     const values: unknown[] = [];
@@ -447,15 +472,7 @@ function authorizeProtectedTabAction(request: BrowserRequest, action: BrowserAct
 }
 
 function isProtectedAgentTab(tab: BrowserCdpTab): boolean {
-  try {
-    const hostname = new URL(tab.url).hostname.toLowerCase().replace(/\.$/, '');
-    return hostname === 'chatgpt.com'
-      || hostname.endsWith('.chatgpt.com')
-      || hostname === 'chat.openai.com'
-      || hostname.endsWith('.chat.openai.com');
-  } catch {
-    return false;
-  }
+  return isProtectedBrowserUrl(tab.url);
 }
 
 function isReadOnlyBrowserAction(action: BrowserAction): boolean {

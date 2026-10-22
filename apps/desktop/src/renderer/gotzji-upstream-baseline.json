@@ -1,0 +1,2658 @@
+{
+  "version": "5.8.7",
+  "referenceUpdatedOn": "2026-10-22",
+  "sourceRevision": "1a0453ed0ef1de4cdf9ce1ba9edee8da0de8426b",
+  "sourceDocuments": {
+    "fullReadmeSha256": "04b4c83aaa100d2f361afe043e3ed810e0ec9aa3812c3496169aacc122679822",
+    "contractSha256": "53310f507e00d069846b6f6752fcd4191d75b642ea3823b3c93c106d5989f4fd"
+  },
+  "evidence": "source-only",
+  "tools": [
+    {
+      "id": "workspace_list",
+      "description": "List registered project workspaces available to lnwjud. Legacy explicitly registered drive roots may also appear as kind=machine_root.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "workspace_path_preflight",
+      "description": "Read-only exact absolute-path preflight before workspace registration. Requires explicit authorization; probes only the nominated path and ancestors without directory listing, registration, indexing, shell, writes or lease. Windows effective ACL/reparse proof is reported UNVERIFIABLE where the runtime cannot prove it. Registration always revalidates independently.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "workspace_writer_lease_acquire",
+      "description": "Acquire a durable exclusive writer lease for one registered workspace. Explicit recoverAbandoned with user confirmation may fence an idle previous session of the same client after 60 seconds; unrelated clients and active/unknown writers remain blocked.",
+      "tags": [
+        "WRITE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "workspace_writer_lease_status",
+      "description": "Inspect a registered workspace writer lease without exposing its credential.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "workspace_writer_lease_renew",
+      "description": "Renew only the exact matching workspace writer lease for this caller session.",
+      "tags": [
+        "WRITE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "workspace_writer_lease_release",
+      "description": "Release an owned workspace writer lease only when no fenced invocation is active.",
+      "tags": [
+        "WRITE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "workspace_register",
+      "description": "Register an existing project directory by absolute path. parentWorkspaceId is optional and retained only for legacy machine-root-relative registration. Idempotent for the same path.",
+      "tags": [
+        "WRITE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "workspace_info",
+      "description": "Return the configured workspace summary.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "workspace_tree",
+      "description": "List a bounded workspace tree. Absolute path does not require workspaceId.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "project_snapshot",
+      "description": "Return a bounded project snapshot without source contents.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "engineering_prepare_task",
+      "description": "Read-only Engineering Harness preparation. Assess the registered workspace, applicable project instructions, effective Engineering policy, and policy digest without creating a goal, starting a process, scheduling work, or writing repository files.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "engineering_start_task",
+      "description": "Start or resume a substantive Engineering Harness task by reusing the existing durable Goal authority. This operation does not create or authorize a scheduled continuation.",
+      "tags": [
+        "WRITE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "engineering_get_status",
+      "description": "Read the current Engineering Harness task projection, effective policy, required gates, blockers, and truthful delivery boundary without changing goal state.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "read_file",
+      "description": "Read a workspace file as UTF-8 text or as an image/binary payload. Absolute host paths do not require workspaceId. For large files or an unknown location, prefer search_text first and then read_file_page for the relevant range instead of reading the whole file.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "read_files",
+      "description": "Read up to twenty bounded workspace files in parallel. Absolute paths do not require workspaceId. For large files, locate text with search_text and page with read_file_page instead of loading entire files.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "search_files",
+      "description": "Search workspace filenames with automatic context-economy filters; set includeIgnored for an explicit full path search. Absolute path does not require workspaceId.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "search_text",
+      "description": "Preferred tool to locate relevant code/lines before reading files. Query matching is literal/fixed-string by default so characters such as (), {}, ?, +, and * are searched as text; set regex=true only for intentional ripgrep regex syntax. Glob filtering remains separate from the query. Uses direct ripgrep arguments with automatic binary/generated filters; path may be a directory or a specific file, and set includeIgnored for an explicit full path search. Absolute path does not require workspaceId. Follow with read_file_page for large files.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "git_status",
+      "description": "Inspect parsed read-only Git status. For writes (init, add, commit, remote, push, rm, clean, reset) use the git tool.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "git_diff",
+      "description": "Return a bounded read-only Git diff. For writes use the git tool.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "git_log",
+      "description": "Return bounded structured Git history. For writes use the git tool.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "git_clone_safe",
+      "description": "Start an explicitly authorized workspace-scoped HTTPS Git import pinned to one exact full commit. Requires a clean URL, new relative directory, UUID requestId, and host approval. No arbitrary Git arguments, inherited credentials, overwrite or Full Bypass are required. Native Windows publication fails closed on unknown state.",
+      "tags": [
+        "EXECUTE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "git_clone_status",
+      "description": "Inspect an owned repository import by exact workspace and durable task identity; returns only verified status and no credentials.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "git_clone_cancel",
+      "description": "Cancel only an owned durable repository import, keeping native unknown/child liveness fail-closed.",
+      "tags": [
+        "EXECUTE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "git",
+      "description": "Run a Git subcommand with a separate args array. With Full Bypass OFF, Full Access runs ordinary read and non-destructive Git mutations without confirmation while destructive/data-loss forms, scope overrides, aliases, unsafe pathspecs, unknown commands, and destructive remote/history rewrites remain guarded or denied. Trusted Full Bypass skips lnwjud approval, command-policy, and Active Project scope checks, including explicitly absolute outside paths, without bypassing Git or OS errors. Do not wrap Git in PowerShell/cmd.",
+      "tags": [
+        "EXECUTE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "write_file",
+      "description": "Create or replace a UTF-8 text file and missing parents. Balanced/Safe refuse existing targets unless overwriteExisting is explicit; Full may replace an existing target without a confirmation prompt only when strict create-only was not requested; mode=create_new or overwriteExisting=false atomically refuses all existing destinations, regardless of profile. Prefer edit_file for narrow repairs. Use this instead of shell scripts that call fs.writeFile, writeFileSync, Set-Content, or equivalent when the task is simply to create or replace guarded text. Do not use write_file to persist lnwjud continuation/recovery as USER_INSTRUCTIONS, user-instruction, or generic handoff-history files; use checkpoint_goal/session_handoff for that state.",
+      "tags": [
+        "WRITE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "apply_patch",
+      "description": "Apply reviewed whole-file replacement content to at most twenty files. Existing targets are checkpointed first; Full profile does not prompt for non-destructive replacement. Prefer edit_file for narrow repairs. Use this instead of shell-generated whole-file rewrites when several reviewed text files must change.",
+      "tags": [
+        "WRITE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "edit_file",
+      "description": "First choice for narrow source, config, and text repairs. Replaces exact text only when the expected occurrence count matches, checkpoints the original, and refuses conflicts instead of rewriting an unverified whole file. Exact-match conflicts are recoverable and include structured conflict kind, mismatch hints, candidate context when available, and a re-read/retry suggestion; never fuzzy-edit automatically. Use edit_file instead of shell, node -e, python -c, PowerShell Set-Content, or inline filesystem scripts when a guarded text edit can express the change. When skill_load for Ponytail used a goalId, include the matching goalLease on edit_file; otherwise load the skill with workspaceId only for unbound edits. Full Access performs ordinary edits without a confirmation prompt; destructive deletion remains separately guarded.",
+      "tags": [
+        "WRITE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "move_file",
+      "description": "Move a file or directory, creating missing destination parents. With Full Bypass OFF, Full Access performs ordinary in-project moves without a confirmation prompt while conflicting or destructive forms remain policy-gated. Trusted Full Bypass skips lnwjud approval/scope checks for explicit absolute outside paths; OS/filesystem errors still apply.",
+      "tags": [
+        "WRITE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "copy_file",
+      "description": "Copy a file or directory within one workspace, creating missing destination parents.",
+      "tags": [
+        "WRITE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "delete_file",
+      "description": "Delete one file or empty directory. With Full Bypass OFF, eligible in-project targets move to Recovery Trash and exact safe targets can use scoped auto-approval; critical paths, roots, non-empty directories, ambiguous paths, and mismatched workspaces remain guarded. Trusted Full Bypass skips lnwjud approval/scope checks and permits an exact absolute outside target, which is deleted without Recovery Trash; root and non-empty-directory input guards still apply.",
+      "tags": [
+        "DANGEROUS",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "list_recovery_items",
+      "description": "List trusted Recovery Trash entries for one workspace, including deleted items, binary pre-replacement backups, original paths, timestamps, payload availability, and the local Recovery Trash root.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "restore_deleted_file",
+      "description": "Restore one Recovery Trash item to its original path. Deleted-item restores refuse existing targets. A pre-replacement restore first backs up the current live version for undo, then restores the older binary or text payload. Full runs recoverable restores without an extra prompt; stricter profiles may require confirmation. The operation remains scoped to the recorded workspace.",
+      "tags": [
+        "WRITE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "list_checkpoints",
+      "description": "List encrypted pre-mutation checkpoints for one workspace without returning saved file content.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "restore_checkpoint",
+      "description": "Restore a reviewed pre-mutation checkpoint. Standard mode requires explicit confirmation; trusted Full Bypass skips the lnwjud confirmation gate. A new rollback checkpoint is created before replacing current content when the target is inside a recoverable workspace.",
+      "tags": [
+        "WRITE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "process_start",
+      "description": "Immediate-return managed process launcher for real executables and long-lived processes. With Full Bypass OFF, inline text-file rewrites must use edit_file/apply_patch/write_file and risky commands, scope changes, or permission-profile ASK decisions require confirmation. Trusted Full Bypass skips lnwjud command/profile/scope approval, including an explicitly absolute cwd outside the Active Project; input validation, executable availability, OS rights, and exact process ownership still apply. Starts one executable with separate arguments and returns processId as soon as the child is spawned; it never waits for command completion. Follow with process_status/process_logs/process_stop. For restart-safe durable work, use shell, whose MCP run mode is forced to background.",
+      "tags": [
+        "EXECUTE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "process_list",
+      "description": "List managed process handles owned by this client in a workspace, including launches whose response was cancelled.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "process_status",
+      "description": "Read one status snapshot for an owned process handle. Do not tight-poll this tool; use project_* for normal project verification, or shell background + durable task_id for work expected to exceed ~5 minutes.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "process_logs",
+      "description": "Read bounded logs for an owned process handle. Prefer one bounded log read after meaningful progress rather than repeated status polling.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "process_stop",
+      "description": "Stop an owned managed process tree after explicit chat confirmation in standard mode. Trusted Full Bypass skips the lnwjud confirmation gate; exact process ownership still applies.",
+      "tags": [
+        "EXECUTE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "project_dev",
+      "description": "Immediate-return launcher for the detected project dev command. In standard mode the gateway previews the exact executable/argv for host approval and re-resolves it immediately before spawn; any change requires fresh approval. Trusted Full Bypass skips the lnwjud approval boundary. Project-owned script bodies remain opaque and are not covered by Recovery Trash.",
+      "tags": [
+        "EXECUTE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "project_test",
+      "description": "Immediate-return launcher for the detected project test command. In standard mode the gateway previews the exact executable/argv for host approval and re-resolves it immediately before spawn; any change requires fresh approval. Trusted Full Bypass skips the lnwjud approval boundary. Project-owned script bodies remain opaque and are not covered by Recovery Trash.",
+      "tags": [
+        "EXECUTE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "project_lint",
+      "description": "Immediate-return launcher for the detected project lint command. In standard mode the gateway previews the exact executable/argv for host approval and re-resolves it immediately before spawn; any change requires fresh approval. Trusted Full Bypass skips the lnwjud approval boundary. Project-owned script bodies remain opaque and are not covered by Recovery Trash.",
+      "tags": [
+        "EXECUTE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "project_typecheck",
+      "description": "Immediate-return launcher for the detected project typecheck command. In standard mode the gateway previews the exact executable/argv for host approval and re-resolves it immediately before spawn; any change requires fresh approval. Trusted Full Bypass skips the lnwjud approval boundary. Project-owned script bodies remain opaque and are not covered by Recovery Trash.",
+      "tags": [
+        "EXECUTE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "project_build",
+      "description": "Immediate-return launcher for the detected project build command. In standard mode the gateway previews the exact executable/argv for host approval and re-resolves it immediately before spawn; any change requires fresh approval. Trusted Full Bypass skips the lnwjud approval boundary. Project-owned script bodies remain opaque and are not covered by Recovery Trash.",
+      "tags": [
+        "EXECUTE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "codex_status",
+      "description": "Report local Codex installation and capabilities without credential inspection.",
+      "tags": [
+        "READ",
+        "Codex opt-in"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "codex_run",
+      "description": "Delegate an instruction to the local Codex CLI in the Active Project. Starting Codex requires explicit chat confirmation and host approval in standard mode; trusted Full Bypass skips those lnwjud application checks without forging userConfirmed.",
+      "tags": [
+        "EXECUTE",
+        "Codex opt-in"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "codex_task_list",
+      "description": "List local Codex task handles owned by this client, including launches whose response was cancelled.",
+      "tags": [
+        "READ",
+        "Codex opt-in"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "codex_task_status",
+      "description": "Read status for an owned Codex task.",
+      "tags": [
+        "READ",
+        "Codex opt-in"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "codex_task_logs",
+      "description": "Read bounded logs for an owned Codex task.",
+      "tags": [
+        "READ",
+        "Codex opt-in"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "codex_stop",
+      "description": "Stop an owned Codex task process after explicit chat confirmation in standard mode. Trusted Full Bypass skips the lnwjud confirmation gate; task ownership still applies.",
+      "tags": [
+        "EXECUTE",
+        "Codex opt-in"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "agent_swarm_run",
+      "description": "Run or inspect a bounded 1-4 task Codex-backed agent swarm in enforced read-only mode. The tool is available only when Codex tools are explicitly enabled. start/cancel require trusted host approval; status/result/list are owner-scoped reads. Prompts are never persisted in plaintext and unverifiable post-restart tasks report termination_unverified.",
+      "tags": [
+        "EXECUTE",
+        "Codex opt-in"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "shell",
+      "description": "Non-blocking command runner for real command execution, builds/tests, package managers, and system operations. Never use shell as a source/config/text editor. For any direct text-file change, call edit_file first; use apply_patch for reviewed whole-file or multi-file replacements and write_file for file creation/replacement. Inline Node/Python/PowerShell/sed commands that rewrite text files are rejected before native approval so the client can route to the guarded file tools instead. MCP run calls are ALWAYS forced to execution=background, even if a client requests foreground or auto, so the call returns a task_id immediately instead of waiting for command completion. Follow with status/logs/result; wait uses the user-configurable MCP poll window (5-60 seconds, default 5). When the user requires babysitting until completion, keep using bounded waits and do not report completion until the terminal result is inspected. Otherwise, if the host turn must yield while a durable task is still running, checkpoint it as trackedTasks {taskId, provider: shell, role: blocking_job, cancelWithGoal: true} and use the active scheduled-continuation handoff instead of abandoning the goal. Shared services must be marked supporting_service with cancelWithGoal false. With Full Bypass OFF, Full Access runs ordinary policy-allowed commands without confirmation while destructive, broad, recursive, critical, outside-project, or unparseable forms retain normal approval/command policy. Trusted Full Bypass skips lnwjud approval, command-policy, Active Project, and allowed-root checks; an active rolling scheduled goal still requires the current goalLease ownership proof. Full Bypass may still use an explicitly absolute cwd outside the project; input validation, executable availability, Windows ACL/UAC, and child-process failures still apply. dry_run and task observation are non-mutating.",
+      "tags": [
+        "EXECUTE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "dom_cdp",
+      "description": "Default for web-page DOM work inside managed Chrome. Call list_tabs first, select the exact returned tab_id by URL/title, and pass that tab_id to every query, click, type, navigate, evaluate, wait, screenshot, activate_tab, set_files, close, or steps call. Use activate_tab before crossing into native accessibility/input_event when foreground state matters. Use set_files for a browser file input instead of native dialog choreography; uploaded files remain subject to Active Project path policy. If no safe matching tab exists, call new_tab and use its returned ID. Target order and the OS-active tab are never ownership signals. Never navigate through the browser address bar with computer_use/accessibility/input_event. Protected ChatGPT tab mutations additionally require allow_protected_tab_action=true plus explicit user confirmation.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "computer_use",
+      "description": "Codex-style native computer use for testing desktop apps when the host provider and session permissions are available. Take annotated screenshots, inspect semantic controls, and operate by semantic target, numbered visual mark, or explicit coordinates. Routes through Accessibility first and uses guarded pointer/keyboard input only when needed. Supports click, typing, keys, hotkeys, scroll, drag, pointer movement, and window activation. For web navigation, do not focus/type into a browser address bar; use dom_cdp list_tabs/new_tab plus an explicit tab_id.",
+      "tags": [
+        "EXECUTE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "accessibility",
+      "description": "Semantic host-native UI tool. Inspect UI trees and named controls, then click, focus, read or set values, select controls and menus, or manage a native element when the platform provider and permission are available. Mutating calls may include postcondition {parameters, expected_value} to report whether a follow-up read_value observed the requested state. Prefer shell for direct system work and dom_cdp for web pages.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "input_event",
+      "description": "Low-level keyboard and pointer fallback. Use only when DOM/CDP and host Accessibility cannot operate the target and the active desktop session grants input permission. Supports text, keys, mouse movement, clicks, drag, scroll, held buttons, release_all, and batched sequences. A mutating call may include postcondition {parameters, expected_value} to report whether a follow-up Accessibility read_value observed the target state. For web navigation, do not focus/type into a browser address bar; use dom_cdp list_tabs/new_tab plus an explicit tab_id.",
+      "tags": [
+        "EXECUTE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "vision",
+      "description": "Visual and OCR fallback for content unavailable through DOM or host Accessibility. Capture a display, window, or region, or run local Vision OCR when the host capture permission/dependency is ready. It never clicks or types.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "vision_annotated_capture",
+      "description": "Capture a local host screen/region/window and return a short-lived Set-of-Marks observation with numbered bounds, a content hash, and an annotated PNG when the host capture provider is ready. This tool only observes; use ui_target_action for a separately gated action.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "ui_target_action",
+      "description": "Act on one mark from a current vision_annotated_capture observation. The observation ID, optional hash, TTL, workspace owner, and current Accessibility element are checked before the action is sent.",
+      "tags": [
+        "EXECUTE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "window",
+      "description": "Direct host-native window management. List, inspect, activate, move, resize, minimize, maximize, restore, or close windows when the active session provider proves the operation is supported.",
+      "tags": [
+        "EXECUTE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "health",
+      "description": "Diagnostics only. Check all lnwjud backends or one public tool after a failure, when asked for status, or while diagnosing permissions. Do not use as a preflight before normal work.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "system_info",
+      "description": "Read-only system information: OS, CPU, memory, disks, battery, uptime, and top processes by memory. Use for environment checks and diagnostics.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "notification",
+      "description": "Show a host-native desktop notification when a notification session is available. Use to tell the user when a long task finishes.",
+      "tags": [
+        "EXECUTE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "file_dialog",
+      "description": "Open a host-native file open/save dialog and return the chosen path(s). The dialog does not read or write files itself; use the guarded file tools afterwards.",
+      "tags": [
+        "EXECUTE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "clipboard",
+      "description": "Read or write the host clipboard (text or PNG image as base64). Use get_text/get_image to read and set_text to write.",
+      "tags": [
+        "EXECUTE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "web_fetch",
+      "description": "Fetch an http/https URL (GET/POST/PUT/DELETE/HEAD) with bounded size and timeout. In standard mode every POST, PUT, or DELETE requires explicit chat confirmation and host approval; trusted Full Bypass skips lnwjud approval. dry_run remains safe. Returns status, headers, and text or base64 body.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "audio",
+      "description": "Record microphone audio or play a scoped local file through the native media provider. Native macOS/Linux starts return an owned handle; use status to observe it and stop to finalize or cancel it. An initial running receipt does not prove an artifact exists. Terminal artifacts include verification evidence. Duration is bounded to 600 seconds and max_bytes to 64 MiB. Windows delivery behavior is reported by its provider. Recording requires application authorization and a scoped output; existing outputs use Recovery Trash when available. Cancellation of a macOS/Linux native request closes that owner process and its resources while preserving other owners.",
+      "tags": [
+        "EXECUTE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "screen_record",
+      "description": "Start a bounded native screen recording and retain its returned owned handle. Use status to observe the handle and stop to finalize or cancel it. macOS/Linux artifacts are published only after terminal content verification, with a duration limit of 600 seconds and max_bytes of 64 MiB. Linux Wayland capture requires a granted session_id and reports denial or revocation. Application authorization, Active Project paths and replacement recovery apply to capture output. Cancellation of a macOS/Linux native request closes that owner process and its resources while preserving other owners.",
+      "tags": [
+        "EXECUTE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "office",
+      "description": "Automate a supported spreadsheet/document provider when installed. In standard mode every write, replace, merge, or save_as action requires an Active Project workspaceId, explicit chat confirmation, and host approval. Trusted Full Bypass skips lnwjud approval/scope checks without forging userConfirmed. Existing in-workspace targets use Recovery Trash before replacement when available. Unsupported app/action pairs are dependency-gated rather than approximated.",
+      "tags": [
+        "WRITE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "scheduler",
+      "description": "Manage host-native scheduled tasks. list is read-only; in standard mode create, run, and delete require explicit chat confirmation and host approval. Trusted Full Bypass skips lnwjud approval without forging userConfirmed. The provider uses the current OS scheduler and never silently falls back to another scheduler.",
+      "tags": [
+        "EXECUTE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "wsl_exec",
+      "description": "Non-blocking WSL2 developer runner for one Linux executable plus argv; shell command strings are not accepted. cwd accepts either an absolute Windows workspace path or an absolute WSL path such as /mnt/e/project returned by wsl_fs. Do not use wsl_exec as a source/config/text editor. For any direct text-file change, call edit_file first; use apply_patch for reviewed whole-file or multi-file replacements and write_file for file creation/replacement. Inline Node/Python/PowerShell-style rewrites and sed in-place edits are rejected before native approval so the client can route to guarded file tools. MCP run calls are ALWAYS forced to execution=background, even if a client requests foreground or auto, and return a task_id immediately. Follow with status/logs/result; wait uses the user-configurable MCP poll window (5-60 seconds, default 5). When the user requires babysitting until completion, keep using bounded waits and do not report completion until the terminal result is inspected. Otherwise, if the host turn must yield while a durable task is still running, checkpoint it as trackedTasks {taskId, provider: shell, role: blocking_job, cancelWithGoal: true} and use the active scheduled-continuation handoff instead of abandoning the goal. With Full Bypass OFF, Full Access runs ordinary WSL commands without confirmation while destructive, broad, recursive, outside-project, or unparseable forms retain normal approval/command policy. Trusted Full Bypass skips lnwjud approval, command-policy, Active Project, and allowed-root checks; an active rolling scheduled goal still requires the current goalLease ownership proof. Full Bypass may still use an explicitly requested external cwd; WSL availability, argv validation, Linux permissions, and process failures still apply.",
+      "tags": [
+        "EXECUTE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "wsl_fs",
+      "description": "Translate paths and inspect metadata between a registered Windows workspace and WSL without exposing raw \\\\wsl$ read/write access.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "skills_list",
+      "description": "List the union of bundled skills and every discovered machine-global or active-workspace skill from Cursor, Claude, Agents, Codex, the Codex plugin cache, GitHub workspace roots, and lnwjud settings. Nested and symlinked skill collections are included. Filter with query or source.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "skills_read",
+      "description": "Read a local skill SKILL.md (or a relative file inside the skill folder). Prefer the source-qualified id returned by skills_list; an unambiguous bare name or $name is also accepted. Pass workspaceId and the active goalId when loading a policy-required skill, then follow it with lnwjud tools and mcp_call.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "ponytail_session",
+      "description": "Temporarily suppress or resume the effective Ponytail coding policy for this MCP session and workspace/goal only. This does not change persisted global, workspace, or durable-goal settings. Use suppressed=true when the user explicitly asks to stop Ponytail or return to normal mode; use false to resume the effective policy.",
+      "tags": [
+        "WRITE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "mcp_list",
+      "description": "List local MCP servers discovered from Cursor, Claude Desktop, and lnwjud settings. This inspection is read-only and does not flatten child tools into the lnwjud catalog.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "mcp_describe",
+      "description": "Connect to one local MCP server (if needed) and return its tool names, descriptions, and input schemas. This operation only inspects the child tool catalog.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "mcp_call",
+      "description": "Call a tool on a discovered local MCP server. Child side effects and filesystem/network scope are controlled by that child server, so standard mode treats every mcp_call as opaque mutation and requires explicit chat plus host exact-action approval. Trusted Full Bypass skips lnwjud application approval; the child server still enforces its own policy.",
+      "tags": [
+        "DANGEROUS",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "workspace_context",
+      "description": "Aggregate ranked workspace context with snippets, symbols, Git/test relevance and continuation. Preserve per-source observations and explicit completeness when a provider fails or search is truncated.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "workspace_context_continue",
+      "description": "Continue a workspace_context result without discarding unreturned candidates.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "workspace_full_scan",
+      "description": "Enumerate workspace files with per-source completeness. With includeIgnored false, use a fresh clean automatic index for prefix scans; stale or unavailable indexes and glob requests fall back to real filename search.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "workspace_full_scan_continue",
+      "description": "Continue a workspace_full_scan result page.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "workspace_snapshot",
+      "description": "Return workspace identity and project snapshot metadata without source contents, retaining successful providers and explicit missing or unknown observations.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "search_all",
+      "description": "Search text and filenames across registered workspaces, retaining each source observation and explicit truncation or partial completeness. Automatic economy filters can be expanded with includeIgnored.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "read_many_files",
+      "description": "Read many workspace files in parallel while preserving one result or error per requested path.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "read_file_page",
+      "description": "Preferred reader for large files after search_text identifies the relevant area. Reads a deterministic line chunk with explicit continuation instead of silently truncating or loading the whole file.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "read_file_page_continue",
+      "description": "Continue read_file_page from the next deterministic line chunk only when more surrounding context is needed; avoid re-reading earlier pages.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "workspace_index",
+      "description": "Build or refresh the persistent workspace index using automatic context filters unless ignored paths are explicitly included.",
+      "tags": [
+        "WRITE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "workspace_index_status",
+      "description": "Return persistent index metadata and lossless watcher queue telemetry.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "workspace_index_watch",
+      "description": "Watch all workspace paths and incrementally re-index only changed paths with configurable debounce/concurrency.",
+      "tags": [
+        "WRITE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "workspace_index_stop",
+      "description": "Stop a workspace watcher after draining all queued path updates.",
+      "tags": [
+        "WRITE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "session_handoff",
+      "description": "Create concise recovery state after a client/page interruption or missing assistant summary without rerunning completed work. Prefer the active Durable Goal; when none exists, recover the latest terminal Durable Goal and its terminal receipt. Also inspect recent durable shell tasks with bounded status/output tails so a terminal result can be summarized immediately instead of relaunched. Then include Git/workspace state and an optional legacy phase tracker fallback. This is task state, not persistent user/agent instructions. It never opens, clicks, types into, or creates a ChatGPT browser conversation; resume must happen through supported host-native turns/chats.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "verify_incremental",
+      "description": "Run the detected project typecheck only when the current git status/diff fingerprint changed. Starting a new verification process requires explicit user confirmation in standard mode; trusted Full Bypass skips that lnwjud gate. Returns cache=hit when unchanged and cache=miss after a new verification. Prefer this during iterative edits; use project_test/project_lint/project_build only when that specific verification is needed. For full suites or packaging expected to exceed ~5 minutes, launch a durable shell background task and record its task_id in the tracker.",
+      "tags": [
+        "EXECUTE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "run_goal",
+      "description": "Immediate-return durable goal create/resume and lease acquisition. Every invocation re-reads workspace AGENTS.md when present and returns it as projectInstructionsPreflight so repository rules are available before subsequent work; the preflight is never cached. Invoke run_goal before the first mutation of any non-trivial multi-step change. For an active rolling goal whose prior worker died, stale-lease recovery still requires trustworthy runtime liveness and rotates the lease generation. Unfinished goals default to scheduledContinuation=auto: the client must load/follow the bundled lnwjud-scheduled-continuation skill and maintain exactly one Native ChatGPT hourly recurring watchdog with cloud execution requested. New v4.53 goals reuse the same native task ID across ordinary hourly wakes; checkpoints and collisions never imply per-wake successor creation or recurrence retiming. Historical v4.52 occurrence=once rows are migrated compatibly and must not overlap a new recurring watchdog. Continue useful work without waiting for the user to type continue/ทำต่อ. The leased worker is work-conserving: a milestone checkpoint is not a turn boundary, a transient tool/task-observation failure is not a handoff signal, and a safely reacquirable lease expiry should be recovered with the same goalKey so useful work continues in the same host turn. A concrete fixable failure discovered during CI, tests, code scanning, packaging, release validation, or another tool is the next unit of work; diagnose, repair, and validate it in the same host turn while safe useful actions remain instead of stopping to report it. A truthful native create failure or Resource not found is scheduler transport degradation only: keep the durable goal active and continue the current leased worker rather than terminalizing the work, and never substitute another scheduler. Stop scheduling only when the goal is terminal or scheduling is explicitly disabled. Native ChatGPT task operations remain host-owned through the Scheduled Task surface exposed to the chat; this tool never claims that a task was created and never substitutes browser/DOM automation, Windows Task Scheduler, cron, or shell timers.",
+      "tags": [
+        "WRITE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "get_goal",
+      "description": "Read the latest durable goal snapshot without changing state or returning a lease token.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "get_goal_plan",
+      "description": "Read the user-facing plan projection, acceptance criteria, intent revision, and bounded-iteration policy from authoritative durable goal state. This is a projection, not a second workflow engine.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "update_goal_plan",
+      "description": "Atomically replace the user-facing durable goal plan through the current lease and revision fence. It only updates plan state; it does not execute plan steps by itself.",
+      "tags": [
+        "WRITE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "update_goal_acceptance",
+      "description": "Update explicit durable acceptance criteria with evidence. finish_goal(status=completed) remains blocked until every criterion is completed.",
+      "tags": [
+        "WRITE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "revise_goal_intent",
+      "description": "Record accepted newer user steering by incrementing userIntentRevision under the current lease. Older pending delivery receipts are retired so stale generated actions cannot outrank newer user instructions.",
+      "tags": [
+        "WRITE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "create_context_capsule",
+      "description": "Create and publish a bounded immutable context capsule from authoritative durable goal state for compact/resume or handoff. Stores decisions/results, not private chain-of-thought, and never opens, clicks, types into, or creates a ChatGPT browser conversation.",
+      "tags": [
+        "WRITE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "get_context_capsule",
+      "description": "Read one immutable durable context capsule by ID.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "list_context_capsules",
+      "description": "List bounded context-capsule lineage for one durable goal.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "context_pressure",
+      "description": "Estimate local durable-context pressure from the goal snapshot and latest capsule. This never claims exact ChatGPT/provider context usage when the host does not expose it.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "record_delivery_receipt",
+      "description": "Record or advance a durable dispatch receipt with explicit ambiguous-delivery states. Blind retries are rejected by lifecycle/state and newer user intent can retire stale deliveries.",
+      "tags": [
+        "WRITE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "list_delivery_receipts",
+      "description": "List bounded durable dispatch receipts for a goal.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "advance_goal_iteration",
+      "description": "Advance one bounded review/improvement iteration under the durable goal lease. It never sends browser messages or creates an autonomous ChatGPT UI loop and cannot exceed maxIterations.",
+      "tags": [
+        "WRITE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "checkpoint_goal",
+      "description": "Atomically checkpoint durable goal progress using the current lease and expected revision. For every meaningful milestone or handoff boundary, include resumeContext with the concrete state a new worker needs to reconstruct work without guessing: changedFiles, exact commands with pass/fail/running status and result, decisions, failedAttempts, pendingValidation, resumePrerequisites, stateFacts, and artifacts. summary is only a headline and must not replace reconstruction-grade resumeContext. Use trackedTasks for goal-relative blocking_job/supporting_service roles and explicit provider routing; activeTaskIds remains a legacy compatibility form. Supporting services do not block continuation liveness and are cancelled only when cancelWithGoal=true. A checkpoint records durable progress only; it is not a turn boundary or permission to yield, and it does not create a new Scheduled Task. After an ordinary checkpoint keep useful work moving on the current lease. A transient task/status/log/result observation failure must be retried or re-resolved in the same turn, and a tracked blocking job that becomes terminal must have its terminal result inspected before handoff. Before yielding an active automatic-continuation goal, ensure exactly one confirmed Native ChatGPT hourly recurring watchdog exists with cloud execution requested unless scheduling was explicitly disabled. Reuse the same nativeTaskId across checkpoints and ordinary hourly wakes; never create a per-wake successor and never retime the recurring cadence merely because a checkpoint changed. Historical v4.52 one-time rows keep their compatibility behavior until they become historical, and one-time plus recurring watchdogs must never overlap for one goal. A real native task ID is required for confirmed coverage, while execution mode may remain unverified when the host does not expose it. At an unavoidable turn boundary, persist full resumeContext before releasing the lease; if scheduling is enabled confirm watchdog coverage first. Never wait for the user to type continue/ทำต่อ.",
+      "tags": [
+        "WRITE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "checkpoint_goal_engineering",
+      "description": "Atomically checkpoint durable goal progress using the current lease and expected revision. For every meaningful milestone or handoff boundary, include resumeContext with the concrete state a new worker needs to reconstruct work without guessing: changedFiles, exact commands with pass/fail/running status and result, decisions, failedAttempts, pendingValidation, resumePrerequisites, stateFacts, and artifacts. summary is only a headline and must not replace reconstruction-grade resumeContext. Use trackedTasks for goal-relative blocking_job/supporting_service roles and explicit provider routing; activeTaskIds remains a legacy compatibility form. Supporting services do not block continuation liveness and are cancelled only when cancelWithGoal=true. A checkpoint records durable progress only; it is not a turn boundary or permission to yield, and it does not create a new Scheduled Task. After an ordinary checkpoint keep useful work moving on the current lease. A transient task/status/log/result observation failure must be retried or re-resolved in the same turn, and a tracked blocking job that becomes terminal must have its terminal result inspected before handoff. Before yielding an active automatic-continuation goal, ensure exactly one confirmed Native ChatGPT hourly recurring watchdog exists with cloud execution requested unless scheduling was explicitly disabled. Reuse the same nativeTaskId across checkpoints and ordinary hourly wakes; never create a per-wake successor and never retime the recurring cadence merely because a checkpoint changed. Historical v4.52 one-time rows keep their compatibility behavior until they become historical, and one-time plus recurring watchdogs must never overlap for one goal. A real native task ID is required for confirmed coverage, while execution mode may remain unverified when the host does not expose it. At an unavoidable turn boundary, persist full resumeContext before releasing the lease; if scheduling is enabled confirm watchdog coverage first. Never wait for the user to type continue/ทำต่อ. Compatibility alias for clients whose connector cached an older checkpoint_goal input schema. Uses the same strict schema, lease and revision checks, and authenticated Goal handler. Tool availability follows checkpoint_goal.",
+      "tags": [
+        "WRITE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "finish_goal",
+      "description": "Finish the local durable goal using lease/revision compare-and-swap. It must be called before any completion report, even when scheduling was disabled or the user requested no watchdog. status=completed is rejected while durable plan work, blockers, or blocking tasks remain. After the terminal CAS, finish_goal aborts in-flight fenced MCP requests and attempts to stop every tracked task whose cancelWithGoal policy is true; inspect requestCancellation, taskCancellations, allRequestsStopped, and allTasksStopped for unresolved work. Preferred v4.54 completion cleans any live Native ChatGPT watchdog first: call cancel_scheduled_continuation while the goal is still active, make the exact task non-runnable using host delete or confirmed disable, record truthful cleanup evidence, then call finish_goal once. Explicit user-attested manual deletion is a separate evidence class and must never be represented as host-native proof. Defensive compatibility remains: if finish_goal returns status=active with completionState=pending_native_cleanup, recover the exact cleanup locator from get_goal/get_scheduled_continuation, perform cleanup only, record evidence, and call finish_goal again without resuming workspace work. A recurring hourly run never consumes the task and outcome=consumed is not cleanup proof. Report completion only after completionState=completed and get_goal is terminal with no pending scheduled-task cleanup.",
+      "tags": [
+        "WRITE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "cancel_goal",
+      "description": "Cancel a durable goal independently of any scheduled watchdog. It records the goal as cancelled, aborts in-flight fenced MCP requests for that goal, and attempts to stop only tracked tasks whose cancelWithGoal policy is true; shared supporting services remain running by default and are reported as taskCancellations status=skipped. An explicitly bound provider that is unavailable or cannot verify termination is reported as failed, so allTasksStopped remains false until the unresolved task is inspected. Inspect requestCancellation, taskCancellations, and allRequestsStopped/allTasksStopped for unresolved work. If scheduledTaskCancellation requests make_native_task_non_runnable, use cancel_scheduled_continuation separately, resolve the actual native ChatGPT cleanup operation exposed by the host, and record exact proof that the pending task is non-runnable.",
+      "tags": [
+        "WRITE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "reconcile_goals",
+      "description": "Preview or apply exact durable-goal reconciliation after runtime liveness checks.",
+      "tags": [
+        "WRITE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "list_goals",
+      "description": "List a bounded set of durable goals owned by the current stable MCP client, optionally filtered by workspace/status.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "resource_snapshot",
+      "description": "Show sampled resources scoped to registered workspace/owned Goal. Unknown ownership and context metrics remain unknown; shared tasks are never cancellable.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "call_history",
+      "description": "Read server-observed correlated MCP calls from bounded SQLite audit records. Values without measured transport spans remain null/unknown; supports filters and opaque keyset pagination.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "goal_result",
+      "description": "Read evidence-limited Durable Goal results. Never attributes legacy operations without a server-verified Goal lease.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "workflow_templates",
+      "description": "List six built-in Thai/English workflows for a registered workspace. Read-only; does not create a Goal.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "workflow_prepare",
+      "description": "Validate bounded inputs, workspace paths, provider readiness, and return a deterministic preview. No side effects.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "workflow_start",
+      "description": "Start or attach the selected validated workflow to an existing Durable Goal contract with hashed idempotency key. Never creates any scheduled task; caller must hold returned Goal lease to execute.",
+      "tags": [
+        "WRITE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "prepare_scheduled_continuation",
+      "description": "Checkpoint durable progress and ensure exactly one live current-chat Native ChatGPT hourly recurring watchdog with cloud execution requested. When the current chat exposes a host-provided connector mention (`@name` or `[$name](app://asdk_app_<32 hex digits>)`), preserve that exact identity via connectorMention so the generated Scheduled Task prompt targets the same installed app; never guess the connector ID, and omit it when the host exposes none. Connector mention text does not bypass host approval. At a meaningful continuation handoff include reconstruction-grade resumeContext (changed files, exact commands/results, decisions, failed attempts, pending validation, resume prerequisites, state facts, artifacts); summary alone is not sufficient resume state. New v4.53 watchdogs use occurrence=interval and intervalMinutes=60; when successorDelayMinutes is omitted the first firing is one hour from prepare, while a legacy explicit 2–25 minute value changes only the first firing and never the hourly recurrence cadence. Reuse the same confirmed native task ID across checkpoints and ordinary wakes; never create a per-wake successor or retime the recurring cadence. If an active v4.52 one-time watchdog already exists, reuse that legacy task until it becomes historical before creating the recurring watchdog, so one-time and recurring native tasks never overlap for one goal. prepared means reservation only and is not confirmed host coverage. Record native create failure or uncertainty truthfully and reconcile uncertain host state before any blind create. On an explicit host-surface lookup/dispatch failure such as Resource not found that proves the operation was not dispatched, re-resolve the current Native Scheduled Task host operation once and retry that exact native operation once; never retry ambiguous possible-success and never switch scheduler providers. Host create and cleanup remain Native ChatGPT Scheduled Task operations exposed by the current chat; never use browser/DOM automation, Windows Task Scheduler, cron, shell timers, or an lnwjud-local scheduler as a substitute.",
+      "tags": [
+        "WRITE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "record_scheduled_continuation_receipt",
+      "description": "Record truthful cleanup/run receipts for recurring Native ChatGPT watchdogs and legacy one-time watchdogs. created requires the real native task ID and host-reported absolute dueAt. A recurring interval firing never consumes or replaces the native task, so outcome=consumed and reschedule_* remain legacy one-time compatibility only. For outcome=cancelled prefer matching native host evidence that the exact task is non-runnable: delete may report deleted/not_found and hosts without delete may report an exact disable receipt. If the host management surface is unavailable and the user explicitly deleted the exact task in ChatGPT Scheduled Tasks, userCancellationReceipt may record that separately as user-attested manual deletion only with userConfirmed=true; never label user testimony as host-native proof. The stored native task ID is immutable for the lifetime of the watchdog.",
+      "tags": [
+        "WRITE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "claim_scheduled_continuation",
+      "description": "Scheduled-wake entrypoint and the first lnwjud action before any workspace mutation. Native watchdogs should pass the expected goalId and workspaceId from their wake metadata so the host-visible WRITE scope is explicit and lnwjud can reject mismatched identity before liveness or lease mutation; legacy callers that only have continuationId remain compatible. For occurrence=interval, the same native hourly task remains scheduled across firings: a live/uncertain worker returns worker_busy_noop without lease theft or host-task mutation, a true concurrent/stale duplicate whose observation predates an already-recorded lease acquisition returns already_claimed, an existing interval runKey alone never suppresses a fresh current-liveness check, a safely available lease returns recurring_acquired, and a still-valid stale lease with trustworthy no-worker/no-blocking-work evidence is recovered in the same hourly tick after the bounded 60-second stale-heartbeat grace rather than waiting for expiry or a second hourly firing. Only recurring_acquired may include a read-only automationResume hint; busy/no-op claims never inspect or mutate automation state. After recurring_acquired, discovering a fixable CI, test, code-scanning, packaging, release, or tool failure is not permission to yield: continue diagnosis, repair, and relevant validation in the same host turn while safe useful actions remain, rather than ending the hourly wake with a status-only report. Ordinary recurring wakes never create a successor, never consume the native task, and never retime its cadence. terminal_noop performs no work; if terminal cleanup is pending, make the exact recurring native task non-runnable rather than resuming goal work. Historical occurrence=once rows retain the v4.52 acquired/successor_required/reschedule compatibility paths. Never count prepared as confirmed and never mutate the workspace without the acquired goal lease.",
+      "tags": [
+        "WRITE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "get_scheduled_continuation",
+      "description": "Read one scheduled-continuation snapshot by continuation ID or the latest record for a goal. In v4.53, occurrence=interval identifies the single hourly recurring watchdog; its dueAt is the first scheduled firing, not a mutation handoff deadline, and its native task ID remains stable across ordinary wakes. Historical occurrence=once rows preserve legacy one-time compatibility state.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "expedite_scheduled_continuation",
+      "description": "Legacy one-time compatibility only. For a still-pending occurrence=once watchdog and an enumerated handoff-risk signal, adaptively move that exact native task closer using the existing v4.52 rules. occurrence=interval recurring watchdogs must not use expedite_scheduled_continuation because ordinary recurring cadence is fixed at one hour and the host contract exposes no truthful immediate-run operation. Never create a replacement task through this operation.",
+      "tags": [
+        "WRITE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "cancel_scheduled_continuation",
+      "description": "Cancel the scheduled watchdog independently of its durable goal. For v4.53 occurrence=interval, make the exact recurring Native ChatGPT task non-runnable with the strongest host operation actually exposed: prefer true delete, otherwise a host-confirmed disable. One recurring firing never consumes the task, so a past first due time is not cleanup proof. Historical occurrence=once rows retain their legacy cancellation/reconciliation behavior. Never treat a model assertion or unverified host state as cleanup proof. This does not cancel the durable goal or stop its running tasks.",
+      "tags": [
+        "WRITE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "symbol_search",
+      "description": "Search indexed symbols across the workspace.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "find_definition",
+      "description": "Find deterministic symbol definitions.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "find_references",
+      "description": "Find textual and indexed references to a symbol.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "find_implementations",
+      "description": "Find interface and class implementations.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "call_hierarchy",
+      "description": "Return a deterministic call hierarchy approximation.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "import_graph",
+      "description": "Return indexed imports and exports for a module.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "dependency_graph",
+      "description": "Return package and module dependency metadata.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "module_graph",
+      "description": "Return the workspace module graph.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "type_search",
+      "description": "Search indexed TypeScript, JavaScript, and Python types.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "trace_symbol",
+      "description": "Combine definition, references, imports, tests, and recent context.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "context_ranking",
+      "description": "Explain ranking signals without removing lower-ranked context.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "debug_context",
+      "description": "Gather deterministic debugging context and continuation metadata.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "review_context",
+      "description": "Gather code-review context.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "change_context",
+      "description": "Gather changed files, symbols, dependencies, and tests.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "symbol_context",
+      "description": "Gather context around a symbol.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "test_context",
+      "description": "Gather relevant test context.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "dependency_context",
+      "description": "Gather dependency-related context.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "git_context",
+      "description": "Gather Git status, diff, and history context.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "frontend_context",
+      "description": "Gather frontend project context.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "backend_context",
+      "description": "Gather backend project context.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "route_intent",
+      "description": "Classify a prompt with a deterministic, overridable route.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "recipe_list",
+      "description": "List built-in and user recipe names.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "recipe_describe",
+      "description": "Describe a recipe plan and permissions.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "recipe_run",
+      "description": "Preview or run a deterministic recipe plan.",
+      "tags": [
+        "EXECUTE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "dry_run",
+      "description": "Return a no-side-effect execution preview.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "review_changes",
+      "description": "Review current Git changes and affected context.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "changed_symbols",
+      "description": "Find symbols in changed files.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "affected_modules",
+      "description": "Find modules affected by current changes.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "git_history_context",
+      "description": "Return relevant recent Git history.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "git_blame_context",
+      "description": "Return line ownership context for a file.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "discover_tests",
+      "description": "Discover project tests without imposing an execution limit.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "run_affected_tests",
+      "description": "Plan or run tests affected by changed files.",
+      "tags": [
+        "EXECUTE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "test_failures",
+      "description": "Summarize recorded test failures.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "coverage_context",
+      "description": "Return coverage context when project tooling provides it.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "test_history",
+      "description": "Return recent test execution history.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "cache_stats",
+      "description": "Return shared cache hit/miss telemetry.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "cache_clear",
+      "description": "Clear safe local runtime caches.",
+      "tags": [
+        "WRITE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "cache_invalidate",
+      "description": "Invalidate cache entries for a path or workspace.",
+      "tags": [
+        "WRITE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "hook_list",
+      "description": "List registered lifecycle hooks.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "hook_register",
+      "description": "Register a deterministic lifecycle hook descriptor.",
+      "tags": [
+        "WRITE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "hook_remove",
+      "description": "Remove a lifecycle hook descriptor.",
+      "tags": [
+        "WRITE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "skill_match",
+      "description": "Match relevant local skills without loading all skill text.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "skill_load",
+      "description": "Load a selected local skill by identifier.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "plugin_install",
+      "description": "Register a validated plugin descriptor in the locked shared runtime registry. This manages declared plugin state; it does not execute untrusted plugin code.",
+      "tags": [
+        "WRITE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "plugin_list",
+      "description": "List plugin descriptors from the locked shared runtime registry.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "plugin_enable",
+      "description": "Enable an installed plugin descriptor in persistent shared runtime state.",
+      "tags": [
+        "WRITE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "plugin_disable",
+      "description": "Disable an installed plugin descriptor in persistent shared runtime state.",
+      "tags": [
+        "WRITE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "plugin_remove",
+      "description": "Remove an installed plugin descriptor from persistent shared runtime state.",
+      "tags": [
+        "DANGEROUS",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "session_context",
+      "description": "Return persisted development-session context.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "session_checkpoint",
+      "description": "Persist a development-session checkpoint.",
+      "tags": [
+        "WRITE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "session_resume",
+      "description": "Resume a persisted session context.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "session_history",
+      "description": "Return session checkpoints and decisions.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "response_mode",
+      "description": "Select compact, normal, verbose, or stream formatting.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "inspect_web_app",
+      "description": "Combine DOM, console, network, URL, and screenshot metadata. Requires an exact dom_cdp tab_id from list_tabs or new_tab; never uses the active/first tab.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "debug_ui",
+      "description": "Gather deterministic UI debugging context. Requires an exact dom_cdp tab_id from list_tabs or new_tab; never uses the active/first tab.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "capture_ui_state",
+      "description": "Capture a structured UI state. Requires an exact dom_cdp tab_id from list_tabs or new_tab; never uses the active/first tab.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "form_context",
+      "description": "Inspect form controls and values metadata. Requires an exact dom_cdp tab_id from list_tabs or new_tab; never uses the active/first tab.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "network_context",
+      "description": "Summarize browser network context when a retained CDP network event stream is available.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "console_context",
+      "description": "Summarize browser console context when a retained CDP Runtime/Log event stream is available.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "browser_debug_context",
+      "description": "Combine browser diagnostics for one request. Requires an exact dom_cdp tab_id from list_tabs or new_tab; never uses the active/first tab.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "windows_environment",
+      "description": "Inspect Windows environment metadata.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "service_context",
+      "description": "Inspect host service-manager metadata.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "process_context",
+      "description": "Inspect host process-tree context.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "port_context",
+      "description": "Inspect local listening-port context.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "registry_context",
+      "description": "Inspect Windows registry context through the Windows capability boundary.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "event_log_context",
+      "description": "Inspect host-native event and log context.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "installed_runtime_context",
+      "description": "Inspect installed runtimes and package managers.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "path_context",
+      "description": "Resolve executable and PATH context.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "startup_context",
+      "description": "Inspect host startup configuration context.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "mcp_discover",
+      "description": "Discover external MCP servers without flattening native tools.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "mcp_health",
+      "description": "Return external MCP connection health.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "mcp_resources",
+      "description": "List resources exposed by connected MCP servers when the child server supports resources/list.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "task_create",
+      "description": "Create a durable background task through the local shell task runtime. When the task belongs to a durable goal, pass goalId (or the current goalLease envelope) so terminal goals reject stale task creation before launch. Pass executable plus arguments; command is only an executable alias, never a shell command line. Pass cwd, timeout_seconds, and workspaceId as needed.",
+      "tags": [
+        "EXECUTE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "task_status",
+      "description": "Read durable managed task state with bounded recent output by taskId; use task_result for the full captured result.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "task_cancel",
+      "description": "Cancel a durable managed task by taskId using the same verified process-tree termination path as shell tasks.",
+      "tags": [
+        "EXECUTE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "task_result",
+      "description": "Read the current durable managed task result and captured output by taskId.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "task_list",
+      "description": "List durable managed tasks owned by the current client/session/workspace.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "delegate",
+      "description": "Delegate one bounded read-only task through the owned agent-swarm provider when configured.",
+      "tags": [
+        "EXECUTE",
+        "Codex opt-in"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "delegate_status",
+      "description": "Read delegated agent state from the owned agent-swarm provider.",
+      "tags": [
+        "READ",
+        "Codex opt-in"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "delegate_cancel",
+      "description": "Cancel an owned delegated agent task.",
+      "tags": [
+        "EXECUTE",
+        "Codex opt-in"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "delegate_result",
+      "description": "Read an owned delegated agent result.",
+      "tags": [
+        "READ",
+        "Codex opt-in"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "parallel_delegate",
+      "description": "Run up to four isolated read-only agent tasks through the owned swarm provider with explicit dependency/collision metadata.",
+      "tags": [
+        "EXECUTE",
+        "Codex opt-in"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "permission_check",
+      "description": "Evaluate an action class without limiting allowed context reads.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "permission_profile",
+      "description": "Return the active Permission v2 profile.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "live_logs_query",
+      "description": "Query bounded structured MCP activity events with tool, workspace, phase, result, call/trace correlation filters.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "live_logs_status",
+      "description": "Return the built-in MCP activity-log pipeline health and bounded source status.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "telemetry_dashboard",
+      "description": "Return measured MCP activity, latency, error, cache, and context-economy telemetry from the local runtime.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "context_economy_stats",
+      "description": "Return context discovery, deduplication, ledger, and token-efficiency telemetry.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "execution_plan",
+      "description": "Return the cheapest deterministic execution plan and reason.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "repo_map",
+      "description": "Return a traversable repository structural map.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "context_expand",
+      "description": "Return optional import, caller, type, test, and change references.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "recovery_status",
+      "description": "Return reconnect, retry, continuation, cache, and worker recovery state.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "tool_schema_list",
+      "description": "List versioned tool schema metadata.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "tool_schema_register",
+      "description": "Register a validated backward-compatible versioned tool schema descriptor in the local runtime registry.",
+      "tags": [
+        "WRITE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "capabilities",
+      "description": "Discover capability categories without requiring every full schema.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "tool_search",
+      "description": "Search tools, tags, phases, and descriptions deterministically.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "tool_dynamic_filter",
+      "description": "Return a bounded ranked tool set using deterministic scoring with optional local rerank fallback.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "tool_describe",
+      "description": "Describe one tool contract on demand.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "tool_categories",
+      "description": "List tool categories and counts.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "tool_function_find",
+      "description": "Find the best local tool/function candidates for a prompt.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "tool_aliases",
+      "description": "List stable shorthand aliases and their primitive tool targets.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "mcp_hub",
+      "description": "Describe the additive MCP hub boundary without flattening child tools or retaining credentials.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "dev_context",
+      "description": "Run the unified deterministic development-context facade.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "recipe_catalog",
+      "description": "Return inspectable developer automation recipes.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "capture_screenshot",
+      "description": "Capture screenshot metadata for visual validation. Requires an exact dom_cdp tab_id from list_tabs or new_tab; never uses the active/first tab.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "compare_screenshot",
+      "description": "Compare screenshot metadata or supplied artifacts.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "dom_snapshot",
+      "description": "Return a structured DOM snapshot. Requires an exact dom_cdp tab_id from list_tabs or new_tab; never uses the active/first tab.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "layout_metadata",
+      "description": "Return layout metadata for visual validation. Requires an exact dom_cdp tab_id from list_tabs or new_tab; never uses the active/first tab.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "visual_context",
+      "description": "Combine screenshot, DOM, layout, console, and network references. Requires an exact dom_cdp tab_id from list_tabs or new_tab; never uses the active/first tab.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "inspect_workbook",
+      "description": "Inspect workbook sheets, used ranges, and a bounded sample through Excel COM.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "compare_workbook_layout",
+      "description": "Compare two workbook sheet/layout samples through the local Excel/Office provider.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "render_excel_preview",
+      "description": "Render a bounded structured Excel preview from sheet names and sampled cell values through the local Excel/Office provider.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "inspect_pdf",
+      "description": "Inspect PDF page structure and text through the local PDF provider.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "compare_pdf_pages",
+      "description": "Compare two PDFs by bounded page/text metadata through the local PDF provider.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "project_profile_get",
+      "description": "Read the validated workspace project-intelligence profile.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "project_profile_set",
+      "description": "Persist validated workspace project-intelligence conventions through the guarded file boundary.",
+      "tags": [
+        "WRITE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "handoff_context",
+      "description": "Recover the durable Goal, checkpoint, capsule and owned task receipts first, then observe optional workspace context with explicit provider states. Missing Git or search preserves available recovery state.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "benchmark_run",
+      "description": "Preview or start the detected managed benchmark project command and retain bounded run evidence.",
+      "tags": [
+        "EXECUTE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "regression_report",
+      "description": "Return retained local benchmark run evidence and regression comparisons for the current runtime session.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "sandbox_exec",
+      "description": "Run an artifact-based Windows Sandbox job with networking disabled and read-only mapped input.",
+      "tags": [
+        "EXECUTE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "event_watch",
+      "description": "Watch an allowlisted user-mode ETW or Windows Event Log diagnostic stream.",
+      "tags": [
+        "EXECUTE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "crash_trace",
+      "description": "Return bounded crash and service-diagnostic context from allowlisted user-mode sources.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "lsp_diagnostics",
+      "description": "Read diagnostics from an owned language-server child process.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "lsp_rename",
+      "description": "Create a cross-file LSP rename edit plan before any workspace write.",
+      "tags": [
+        "WRITE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "debug_attach",
+      "description": "Attach to an already running numeric-loopback TCP DAP adapter with bounded initialization and attach-only configuration. The host retains sockets under the actual client, MCP session and registered workspace. dryRun validates without connecting. No debugger process is launched.",
+      "tags": [
+        "EXECUTE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "debug_step",
+      "description": "Read bounded owned-session status/events by cursor, disconnect the adapter without terminating the debuggee, or issue a validated DAP command. Adapter replies and output retain their exact values. Event overflow and connection gaps are explicit. Control/evaluation uses current host permission, Engineering and Goal lease admission. dryRun sends no frame.",
+      "tags": [
+        "EXECUTE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "git_worktree_spawn",
+      "description": "Create a confined, ledger-owned Git worktree for isolated agent work with collision metadata.",
+      "tags": [
+        "WRITE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "git_worktree_remove",
+      "description": "Remove a ledger-owned Git worktree after dry-run and standard-mode confirmation; trusted Full Bypass skips lnwjud approval.",
+      "tags": [
+        "DANGEROUS",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "db_inspect",
+      "description": "Inspect a local database schema through a configured, read-only connection.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "db_query",
+      "description": "Run a bounded read-only local SQLite SELECT, PRAGMA, or WITH...SELECT query.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "office_ppt",
+      "description": "Read PowerPoint content or save a copy through the existing Office policy boundary.",
+      "tags": [
+        "WRITE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "office_status",
+      "description": "Report truthful Office provider, app, action, dependency, and policy readiness without exposing credentials.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "office_word",
+      "description": "Read, create, edit, inspect, merge, convert, and validate Word documents through a verified Office provider.",
+      "tags": [
+        "WRITE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "office_excel",
+      "description": "Automate structured Excel workbook reads, edits, formulas, sheets, formatting, exports, and validation through a verified provider.",
+      "tags": [
+        "WRITE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "office_powerpoint",
+      "description": "Author, inspect, edit, export, and validate PowerPoint presentations through a verified provider.",
+      "tags": [
+        "WRITE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "office_outlook",
+      "description": "Read Outlook mail, create and update drafts, and perform guarded mailbox mutations through a verified provider.",
+      "tags": [
+        "WRITE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "office_calendar",
+      "description": "Read and manage Outlook/Microsoft 365 calendar events through a verified provider with guarded invite/cancel actions.",
+      "tags": [
+        "WRITE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "office_contacts",
+      "description": "Read and manage Outlook/Microsoft 365 contacts through a verified provider.",
+      "tags": [
+        "WRITE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "office_tasks",
+      "description": "Read and manage Outlook/Microsoft 365 tasks only when the configured provider exposes a compatible task API.",
+      "tags": [
+        "WRITE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "office_onenote",
+      "description": "Read and manage OneNote through Microsoft Graph when OAuth and required scopes are configured.",
+      "tags": [
+        "WRITE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "office_onedrive",
+      "description": "Manage OneDrive files through Microsoft Graph while respecting Active Project boundaries for local transfers.",
+      "tags": [
+        "WRITE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "office_sharepoint",
+      "description": "Read and manage bounded SharePoint sites, lists, drives, and files through Microsoft Graph.",
+      "tags": [
+        "WRITE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "office_teams",
+      "description": "Read and send guarded Microsoft Teams messages only through supported Microsoft Graph permissions.",
+      "tags": [
+        "WRITE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "office_access",
+      "description": "Automate Microsoft Access only when a verified local Access provider is installed.",
+      "tags": [
+        "WRITE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "office_visio",
+      "description": "Automate Microsoft Visio only when a verified local Visio provider is installed.",
+      "tags": [
+        "WRITE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "office_project",
+      "description": "Automate Microsoft Project only when a verified local Project provider is installed.",
+      "tags": [
+        "WRITE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "office_publisher",
+      "description": "Automate legacy Microsoft Publisher only when an installed automation provider is verified.",
+      "tags": [
+        "WRITE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "office_convert",
+      "description": "Convert supported Office formats through a verified provider and verify the produced artifact before reporting success.",
+      "tags": [
+        "WRITE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "office_batch",
+      "description": "Run a bounded ordered Office batch with per-step results, dry-run support, and fail-fast semantics; operations are not atomic across apps.",
+      "tags": [
+        "WRITE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "pdf_extract_tables",
+      "description": "Extract bounded PDF text and tables through a local document provider.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "docx_merge",
+      "description": "Create a deterministic DOCX merge plan and write only after approval.",
+      "tags": [
+        "WRITE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "self_heal_plan",
+      "description": "Propose safe, deterministic, reversible recovery steps without applying mutations.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "self_heal_apply",
+      "description": "Apply a current reversible recovery plan without automatic destructive retries; standard mode requires confirmation and trusted Full Bypass skips lnwjud approval.",
+      "tags": [
+        "DANGEROUS",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "skills_import",
+      "description": "Import a validated local SKILL.md into the selected workspace skill catalog through guarded file read/write operations.",
+      "tags": [
+        "WRITE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "ecc_status",
+      "description": "Report the pinned ECC provider, provenance, activation policy, and bundled security-scanner readiness.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "ecc_catalog",
+      "description": "Search the pinned ECC artifact catalog without eagerly loading artifact bodies.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "ecc_load",
+      "description": "Load one selected bounded ECC text artifact by stable catalog ID.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "ecc_configure",
+      "description": "Persist selective ECC activation settings without granting imported artifacts extra runtime authority.",
+      "tags": [
+        "WRITE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "ecc_security_scan",
+      "description": "Run the pinned bundled AgentShield scanner against ECC resources or a registered workspace with bounded JSON output.",
+      "tags": [
+        "EXECUTE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "ecc_memory_save",
+      "description": "Create one unreviewed ecc.memory.v1 document without overwriting existing memory.",
+      "tags": [
+        "WRITE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "ecc_memory_search",
+      "description": "Search active ECC Memory Vault entries with bounded local lexical retrieval.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "ecc_memory_read",
+      "description": "Read one ECC Memory Vault entry by stable memory id after completeness checks.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "ecc_memory_doctor",
+      "description": "Validate ECC Memory Vault documents, symlinks, duplicates, and schema health without rewriting them.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "tool_batch",
+      "description": "Execute multiple MCP tools with dependency-aware and timeout handling. A successful batch dispatch does not guarantee its child calls succeeded: inspect summary.succeeded/failed and results[].status. An all-failed batch returns MCP isError=true with every child receipt preserved. Child permission and host-approval checks match direct invocation.",
+      "tags": [
+        "EXECUTE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "automation_create",
+      "description": "Create one owner- and workspace-scoped durable shell automation run beneath an existing leased Goal. The plan must be a bounded acyclic milestone graph with evidence-producing verification for every milestone.",
+      "tags": [
+        "WRITE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "automation_status",
+      "description": "Read one durable automation run owned by the current actor in the requested workspace.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "automation_events",
+      "description": "Read a bounded page of durable automation events owned by the current actor in the requested workspace.",
+      "tags": [
+        "READ",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "automation_run",
+      "description": "Advance one leased durable automation run to its next deterministic dispatch, observation, or verification boundary. Repeat with the returned current revision; this operation never creates a scheduler.",
+      "tags": [
+        "EXECUTE",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "automation_control",
+      "description": "Pause, resume, or cancel one leased durable automation run. Cancellation also applies the run cancellation policy to its root Goal.",
+      "tags": [
+        "DANGEROUS",
+        "default"
+      ],
+      "surface": "source-only"
+    },
+    {
+      "id": "automation_finalize",
+      "description": "Finalize a fully verified durable automation run and confirm its root Goal reached terminal completion. This fails closed while native scheduled-task cleanup is pending.",
+      "tags": [
+        "WRITE",
+        "default"
+      ],
+      "surface": "source-only"
+    }
+  ]
+}

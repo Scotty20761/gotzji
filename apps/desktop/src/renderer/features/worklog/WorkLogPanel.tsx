@@ -1,10 +1,12 @@
-import { useEffect, useMemo, useReducer, useRef, useState, type ComponentProps, type ReactElement, type UIEvent } from 'react';
+import { ActionButton, FormInput } from '../ui/UiPrimitives.js';
+import { useDeferredValue, useEffect, useMemo, useReducer, useRef, useState, type ComponentProps, type ReactElement, type UIEvent } from 'react';
 import { canonicalWorkspaceScopeId, workspaceScopeMatches, type ActivityTargetDetail, type InFlightWorkItem, type LogLevel, type LogSessionSummary, type UiLocale, type WorkLogEntry, type WorkspaceSummary } from '@lnwjud/ipc-contracts';
 import { formatDisplayTimestampItem } from '@lnwjud/shared/date-time-display';
 import { copyTextToClipboard } from '../../clipboard.js';
 import type { MessageKey } from '../../i18n/messages.js';
 import { formatLogExportDateTime, formatLogUiTime } from '../../log-timestamp.js';
 import { CopyableScopeBadge } from '../CopyableScopeBadge.js';
+import { SearchableSelect } from '../../components/ui/SearchableSelect.js';
 import { ExpandableTargetDetail } from '../logs/ExpandableTargetDetail.js';
 import { activeDetailMatchIds, activeLogFeed, createDetailSearchState, normalizeDetailSearchQuery, reduceDetailSearchState, transitionLogFeedFreeze } from '../logs/detail-search-state.js';
 import { collectSessionFilterOptions, collectWorkspaceFilterOptions, type ScopeFilterSample } from '../../scope-filter-options.js';
@@ -64,9 +66,10 @@ const PROGRESSIVE_PAGE_SIZE = 120;
 
 export function WorkLogPanel(props: WorkLogPanelProps): ReactElement {
   const [search, setSearch] = useState('');
+  const deferredSearch = useDeferredValue(search);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [copyErrorId, setCopyErrorId] = useState<string | null>(null);
-  const [workspaceId, setWorkspaceId] = useState<string | null>(props.defaultWorkspaceId ?? null);
+  const [workspaceId, setWorkspaceId] = useState<string | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [visibleCount, setVisibleCount] = useState(PROGRESSIVE_PAGE_SIZE);
   const [detailSearchState, dispatchDetailSearch] = useReducer(reduceDetailSearchState, undefined, createDetailSearchState);
@@ -102,7 +105,7 @@ export function WorkLogPanel(props: WorkLogPanelProps): ReactElement {
     [feed, props.filter, scope],
   );
   useEffect(() => {
-    const query = normalizeDetailSearchQuery(search);
+    const query = normalizeDetailSearchQuery(deferredSearch);
     const generation = ++detailSearchGeneration.current;
     if (query.length === 0 || props.onSearchTargetDetails === undefined) {
       dispatchDetailSearch({ type: 'reset', generation });
@@ -126,11 +129,11 @@ export function WorkLogPanel(props: WorkLogPanelProps): ReactElement {
       });
     }, 180);
     return (): void => window.clearTimeout(timeout);
-  }, [candidates, props.onSearchTargetDetails, search]);
-  const hiddenMatches = activeDetailMatchIds(detailSearchState, search);
+  }, [candidates, props.onSearchTargetDetails, deferredSearch]);
+  const hiddenMatches = activeDetailMatchIds(detailSearchState, deferredSearch);
   const rows = useMemo(
-    () => newestFirstWorkLogRows(feed.entries, feed.inFlight, props.filter, search, scope, feed.workspaces, hiddenMatches),
-    [feed, props.filter, search, scope, hiddenMatches],
+    () => newestFirstWorkLogRows(feed.entries, feed.inFlight, props.filter, deferredSearch, scope, feed.workspaces, hiddenMatches),
+    [feed, props.filter, deferredSearch, scope, hiddenMatches],
   );
   useEffect(() => setVisibleCount(PROGRESSIVE_PAGE_SIZE), [props.filter, search, workspaceId, sessionId]);
   const visible = props.compact ? rows.slice(0, 40) : rows.slice(0, visibleCount);
@@ -162,58 +165,56 @@ export function WorkLogPanel(props: WorkLogPanelProps): ReactElement {
       <div className="section-heading">
         <h2>{props.title}</h2>
         <div className="worklog-actions">
-          <button
+          <ActionButton
             type="button"
             className={props.filter === 'all' ? 'active' : undefined}
             onClick={() => props.onFilterChange('all')}
           >
             {props.filterAllLabel}
-          </button>
-          <button
+          </ActionButton>
+          <ActionButton
             type="button"
             className={props.filter === 'warn' ? 'active' : undefined}
             onClick={() => props.onFilterChange('warn')}
           >
             {props.filterWarningLabel ?? 'Warnings'}
-          </button>
-          <button
+          </ActionButton>
+          <ActionButton
             type="button"
             className={props.filter === 'error' ? 'active' : undefined}
             onClick={() => props.onFilterChange('error')}
           >
             {props.filterErrorLabel}
-          </button>
-          {props.onExport === undefined ? null : <button type="button" onClick={() => { void props.onExport?.(rows.map(workLogRowIdentity)); }}>{props.exportLabel ?? 'Export'}</button>}
-          <button type="button" disabled={sessionId === null} onClick={() => { if (sessionId !== null) void props.onClear({ workspaceId: null, sessionId }); }}>{props.clearSessionLabel}</button>
-          <button type="button" disabled={workspaceId === null} onClick={() => { if (workspaceId !== null) void props.onClear({ workspaceId, sessionId: null }); }}>{props.clearWorkspaceLabel}</button>
-          <button type="button" onClick={() => { void props.onClear({ workspaceId: null, sessionId: null }); }}>{props.clearAllLabel}</button>
+          </ActionButton>
+          {props.onExport === undefined ? null : <ActionButton type="button" onClick={() => { void props.onExport?.(rows.map(workLogRowIdentity)); }}>{props.exportLabel ?? 'Export'}</ActionButton>}
+          <ActionButton type="button" disabled={sessionId === null} onClick={() => { if (sessionId !== null) void props.onClear({ workspaceId: null, sessionId }); }}>{props.clearSessionLabel}</ActionButton>
+          <ActionButton type="button" disabled={workspaceId === null} onClick={() => { if (workspaceId !== null) void props.onClear({ workspaceId, sessionId: null }); }}>{props.clearWorkspaceLabel}</ActionButton>
+          <ActionButton type="button" onClick={() => { void props.onClear({ workspaceId: null, sessionId: null }); }}>{props.clearAllLabel}</ActionButton>
         </div>
       </div>
       <div className="scope-filter-bar">
         <label>
           <span>{props.workspaceLabel ?? 'Workspace'}</span>
-          <select value={workspaceId ?? ''} onChange={(event) => {
-            const nextWorkspaceId = event.target.value.length === 0 ? null : event.target.value;
-            setWorkspaceId(nextWorkspaceId);
-            if (sessionId !== null) void props.onSessionChange?.({ workspaceId: nextWorkspaceId, sessionId });
-          }}>
-            <option value="">{props.scopeAllLabel ?? 'All'}</option>
-            {workspaceOptions.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
-          </select>
+          <SearchableSelect label={props.workspaceLabel ?? 'Workspace'} value={workspaceId ?? ''}
+            options={[{value:'',label:props.scopeAllLabel ?? 'All'},...workspaceOptions.map(option=>({value:option.id,label:option.label}))]}
+            onChange={(value) => {
+              const nextWorkspaceId = value.length === 0 ? null : value;
+              setWorkspaceId(nextWorkspaceId);
+              if (sessionId !== null) void props.onSessionChange?.({ workspaceId: nextWorkspaceId, sessionId });
+            }} />
         </label>
         <label>
           <span>{props.sessionLabel ?? 'Session'}</span>
-          <select value={sessionId ?? ''} onChange={(event) => {
-            const nextSessionId = event.target.value.length === 0 ? null : event.target.value;
-            setSessionId(nextSessionId);
-            void props.onSessionChange?.({ workspaceId, sessionId: nextSessionId });
-          }}>
-            <option value="">{props.scopeAllLabel ?? 'All'}</option>
-            {sessionOptions.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
-          </select>
+          <SearchableSelect label={props.sessionLabel ?? 'Session'} value={sessionId ?? ''}
+            options={[{value:'',label:props.scopeAllLabel ?? 'All'},...sessionOptions.map(option=>({value:option.id,label:option.label}))]}
+            onChange={(value) => {
+              const nextSessionId = value.length === 0 ? null : value;
+              setSessionId(nextSessionId);
+              void props.onSessionChange?.({ workspaceId, sessionId: nextSessionId });
+            }} />
         </label>
       </div>
-      <input
+      <FormInput
         type="search"
         className="log-filter worklog-search"
         placeholder={props.searchPlaceholder ?? 'Search work log...'}
@@ -225,6 +226,7 @@ export function WorkLogPanel(props: WorkLogPanelProps): ReactElement {
           setSearch(nextSearch);
         }}
       />
+      {search !== deferredSearch ? <p role="status" className="ui-loading-status">{props.locale === 'en' ? 'Filtering logs' : 'กำลังกรองบันทึก'}…</p> : null}
       {detailSearchState.status === 'loading' ? <p className="log-detail-search-status" role="status">{props.detailLoadingLabel ?? 'Searching complete details…'}</p> : null}
       {detailSearchState.status === 'error' ? <p className="log-detail-search-status log-detail-error" role="alert">{props.detailErrorLabel ?? 'Complete details could not be searched.'}</p> : null}
       <div className="worklog-stream" data-testid="work-log" onScroll={loadMoreOnScroll}>
@@ -269,9 +271,9 @@ function CopyButton(props: {
   const copied = props.copiedId === props.row.id;
   const label = copied ? (props.copiedLabel ?? 'Copied') : (props.copyLabel ?? 'Copy full log');
   return (
-    <button type="button" className="row-copy-button" title={label} aria-label={label} onClick={() => { void props.onCopy(props.row); }}>
+    <ActionButton type="button" className="row-copy-button" title={label} aria-label={label} onClick={() => { void props.onCopy(props.row); }}>
       {copied ? '✓' : '⧉'}
-    </button>
+    </ActionButton>
   );
 }
 

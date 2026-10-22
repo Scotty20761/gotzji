@@ -1,7 +1,9 @@
-import { useMemo, useState, type ReactElement } from 'react';
+import { ActionButton, FormInput, FilterBar } from '../ui/UiPrimitives.js';
+import { useDeferredValue, useMemo, useState, type ReactElement } from 'react';
 import type { ResolvedRemediation, ToolCatalogItem, ToolCatalogSnapshot, ToolCategory, ToolDeclaredPermission, ToolOrigin, ToolProfileDecision, ToolReadinessStatus, UiLocale } from '@lnwjud/ipc-contracts';
 import { createTranslator, type Translator } from '../../i18n/index.js';
 import { ToolAvailabilitySwitch } from './ToolAvailabilitySwitch.js';
+import { SearchableSelect } from '../../components/ui/SearchableSelect.js';
 import { ToolDetailModal } from './ToolDetailModal.js';
 import { catalogStatusCounts, filterAndSortTools, toolControlCanEnable, toolControlEnabled, type ToolCatalogFilters } from './tool-catalog-view.js';
 import { toolAvailabilityLabel } from './tool-availability-copy.js';
@@ -27,6 +29,7 @@ export function ToolsPage({ locale, snapshot, loading, hostSyncNotice = null, on
   const t = createTranslator(locale);
   const [origin, setOrigin] = useState<ToolOrigin>('lnwjud');
   const [query, setQuery] = useState('');
+  const deferredQuery = useDeferredValue(query);
   const [readiness, setReadiness] = useState<ToolReadinessStatus | 'all'>('all');
   const [availability, setAvailability] = useState<'all' | 'enabled' | 'disabled'>('all');
   const [category, setCategory] = useState<ToolCategory | 'all'>('all');
@@ -37,8 +40,8 @@ export function ToolsPage({ locale, snapshot, loading, hostSyncNotice = null, on
   const [availabilityError, setAvailabilityError] = useState<string | null>(null);
   const items = snapshot?.items ?? [];
   const selected = selectedKey === null ? null : items.find((item) => toolKey(item) === selectedKey) ?? null;
-  const filters: ToolCatalogFilters = { origin, query, readiness, availability, category, permission, profileDecision };
-  const visible = useMemo(() => filterAndSortTools(items, filters), [items, origin, query, readiness, availability, category, permission, profileDecision]);
+  const filters: ToolCatalogFilters = { origin, query: deferredQuery, readiness, availability, category, permission, profileDecision };
+  const visible = useMemo(() => filterAndSortTools(items, filters), [items, origin, deferredQuery, readiness, availability, category, permission, profileDecision]);
   const originItems = items.filter((item) => item.origin === origin);
   const counts = catalogStatusCounts(originItems);
   const remediationById = new Map((snapshot?.remediations ?? []).map((remediation) => [remediation.id, remediation] as const));
@@ -73,26 +76,27 @@ export function ToolsPage({ locale, snapshot, loading, hostSyncNotice = null, on
 
   return (
     <section className="panel tools-page" aria-labelledby="tools-heading">
-      <div className="section-heading tools-heading"><div><h1 id="tools-heading">{t('nav.tools')}</h1><p className="page-subtitle">{t('tools.subtitle')}</p></div><button type="button" disabled={loading} onClick={() => { void onRefresh(); }}>{loading ? t('tools.checking') : t('tools.recheckAll')}</button></div>
+      <div className="section-heading tools-heading"><div><h1 id="tools-heading">{t('nav.tools')}</h1><p className="page-subtitle">{t('tools.subtitle')}</p></div><ActionButton type="button" disabled={loading} onClick={() => { void onRefresh(); }}>{loading ? t('tools.checking') : t('tools.recheckAll')}</ActionButton></div>
       <div className="tool-origin-tabs" role="tablist" aria-label={t('tools.origin')}>
-        <button type="button" role="tab" aria-selected={origin === 'lnwjud'} className={origin === 'lnwjud' ? 'active' : undefined} onClick={() => setOrigin('lnwjud')}>lnwjud ({items.filter((item) => item.origin === 'lnwjud').length})</button>
-        <button type="button" role="tab" aria-selected={origin === 'external_mcp'} className={origin === 'external_mcp' ? 'active' : undefined} onClick={() => { setOrigin('external_mcp'); setAvailability('all'); }}>External MCP ({items.filter((item) => item.origin === 'external_mcp').length})</button>
+        <ActionButton type="button" role="tab" aria-selected={origin === 'lnwjud'} className={origin === 'lnwjud' ? 'active' : undefined} onClick={() => setOrigin('lnwjud')}>lnwjud ({items.filter((item) => item.origin === 'lnwjud').length})</ActionButton>
+        <ActionButton type="button" role="tab" aria-selected={origin === 'external_mcp'} className={origin === 'external_mcp' ? 'active' : undefined} onClick={() => { setOrigin('external_mcp'); setAvailability('all'); }}>External MCP ({items.filter((item) => item.origin === 'external_mcp').length})</ActionButton>
       </div>
-      <div className="tool-status-strip" aria-label={t('tools.statusCounts')}>{statuses.map((status) => <button type="button" key={status} aria-pressed={readiness === status} className={readiness === status ? 'active' : undefined} onClick={() => setReadiness(readiness === status ? 'all' : status)}><strong>{counts[status]}</strong><span>{coarseReadinessLabel(locale, status)}</span></button>)}</div>
-      <div className="tool-filters">
-        <input value={query} onChange={(event) => setQuery(event.currentTarget.value)} placeholder={t('tools.searchPlaceholder')} aria-label={t('tools.searchAria')} />
-        <select value={availability} disabled={origin !== 'lnwjud'} onChange={(event) => setAvailability(event.currentTarget.value as 'all' | 'enabled' | 'disabled')} aria-label={t('tools.availability')}><option value="all">{t('tools.allAvailability')}</option><option value="enabled">{t('security.enabled')}</option><option value="disabled">{t('security.disabled')}</option></select>
-        <select value={category} onChange={(event) => setCategory(event.currentTarget.value as ToolCategory | 'all')} aria-label={t('tools.category')}><option value="all">{t('tools.allCategories')}</option>{categories.map((value) => <option key={value} value={value}>{value}</option>)}</select>
-        <select value={permission} onChange={(event) => setPermission(event.currentTarget.value as ToolDeclaredPermission | 'all')} aria-label={t('tools.permission')}><option value="all">{t('tools.allPermissions')}</option>{permissions.map((value) => <option key={value} value={value}>{value}</option>)}</select>
-        <select value={profileDecision} onChange={(event) => setProfileDecision(event.currentTarget.value as ToolProfileDecision | 'all')} aria-label={t('tools.profileDecision')}><option value="all">{t('tools.allDecisions')}</option>{decisions.map((value) => <option key={value} value={value}>{value}</option>)}</select>
-        <button type="button" onClick={() => { setQuery(''); setReadiness('all'); setAvailability('all'); setCategory('all'); setPermission('all'); setProfileDecision('all'); }}>{t('tools.clearFilters')}</button>
-      </div>
+      <div className="tool-status-strip" aria-label={t('tools.statusCounts')}>{statuses.map((status) => <ActionButton type="button" key={status} aria-pressed={readiness === status} className={readiness === status ? 'active' : undefined} onClick={() => setReadiness(readiness === status ? 'all' : status)}><strong>{counts[status]}</strong><span>{coarseReadinessLabel(locale, status)}</span></ActionButton>)}</div>
+      <FilterBar className="tool-filters">
+        <FormInput value={query} onChange={(event) => setQuery(event.currentTarget.value)} placeholder={t('tools.searchPlaceholder')} aria-label={t('tools.searchAria')} />
+        <SearchableSelect value={availability} disabled={origin !== 'lnwjud'} label={t('tools.availability')} onChange={(value) => setAvailability(value as typeof availability)} options={[{value:'all',label:t('tools.allAvailability')},{value:'enabled',label:t('security.enabled')},{value:'disabled',label:t('security.disabled')}]} />
+        <SearchableSelect value={category} label={t('tools.category')} onChange={(value) => setCategory(value as typeof category)} options={[{value:'all',label:t('tools.allCategories')},...categories.map(value=>({value,label:value}))]} />
+        <SearchableSelect value={permission} label={t('tools.permission')} onChange={(value) => setPermission(value as typeof permission)} options={[{value:'all',label:t('tools.allPermissions')},...permissions.map(value=>({value,label:value}))]} />
+        <SearchableSelect value={profileDecision} label={t('tools.profileDecision')} onChange={(value) => setProfileDecision(value as typeof profileDecision)} options={[{value:'all',label:t('tools.allDecisions')},...decisions.map(value=>({value,label:value}))]} />
+        <ActionButton type="button" onClick={() => { setQuery(''); setReadiness('all'); setAvailability('all'); setCategory('all'); setPermission('all'); setProfileDecision('all'); }}>{t('tools.clearFilters')}</ActionButton>
+      </FilterBar>
+      {query !== deferredQuery || loading ? <p role="status" className="ui-loading-status">{loading ? t('tools.checking') : locale === 'en' ? 'Filtering tools' : 'กำลังกรองเครื่องมือ'}…</p> : null}
       {availabilityError === null ? null : <p className="tool-action-error" role="alert">{availabilityError}</p>}
       {hostSyncNotice === null ? null : <p className="tool-host-sync-notice" role="status">{hostSyncNotice}</p>}
       {snapshot === null ? <div className="doctor-empty-state"><p>{t('tools.catalogNotLoaded')}</p></div> : visible.length === 0 ? <div className="doctor-empty-state"><p>{t('tools.noMatches')}</p></div> : <div className="tool-card-list">{visible.map((item) => {
         const key = toolKey(item);
         const busy = busyToolKey === key;
-        return <article className={`tool-card tool-${item.readiness}`} key={key}><button type="button" className="tool-card-open" onClick={() => setSelectedKey(key)}><span className="tool-status-dot" aria-hidden="true"/><span className="tool-card-main"><span><strong>{item.title}</strong><code>{item.name}</code></span><small>{item.shortDescription}</small>{item.readiness === 'ready' ? null : <small className="tool-card-remediation-hint">↳ {remediationHint(t, item, remediationById)}</small>}</span><span className="tool-card-meta"><span>{toolReadinessLabel(locale, item)}</span>{item.origin === 'lnwjud' ? <span className={item.effectiveExposed ? 'tool-availability-on' : 'tool-availability-off'}>{toolAvailabilityLabel(locale, item)}</span> : null}<span>{permissionLabel(t, item)}</span><span>{profileDecisionLabel(t, item)}</span></span></button>{item.origin === 'lnwjud' ? <div className="tool-card-availability"><ToolAvailabilitySwitch locale={locale} checked={toolControlEnabled(item)} busy={busy} disabled={onSetAvailability === undefined || (!toolControlEnabled(item) && !toolControlCanEnable(item))} blockedLabel={!toolControlEnabled(item) && !toolControlCanEnable(item) ? t('tools.setupFirst') : undefined} label={item.title} onChange={(enabled) => { void mutateAvailability(item, enabled); }} />{item.userPreference === 'default' ? null : <button type="button" disabled={busy || onResetAvailability === undefined} onClick={() => { void resetAvailability(item); }}>{t('tools.useDefault')}</button>}</div> : <div className="tool-card-availability tool-card-availability-readonly">{t('tools.managedExternal')}</div>}</article>;
+        return <article className={`tool-card tool-${item.readiness}`} key={key}><ActionButton type="button" className="tool-card-open" onClick={() => setSelectedKey(key)}><span className="tool-status-dot" aria-hidden="true"/><span className="tool-card-main"><span><strong>{item.title}</strong><code>{item.name}</code></span><small>{item.shortDescription}</small>{item.readiness === 'ready' ? null : <small className="tool-card-remediation-hint">↳ {remediationHint(t, item, remediationById)}</small>}</span><span className="tool-card-meta"><span>{toolReadinessLabel(locale, item)}</span>{item.origin === 'lnwjud' ? <span className={item.effectiveExposed ? 'tool-availability-on' : 'tool-availability-off'}>{toolAvailabilityLabel(locale, item)}</span> : null}<span>{permissionLabel(t, item)}</span><span>{profileDecisionLabel(t, item)}</span></span></ActionButton>{item.origin === 'lnwjud' ? <div className="tool-card-availability"><ToolAvailabilitySwitch locale={locale} checked={toolControlEnabled(item)} busy={busy} disabled={onSetAvailability === undefined || (!toolControlEnabled(item) && !toolControlCanEnable(item))} blockedLabel={!toolControlEnabled(item) && !toolControlCanEnable(item) ? t('tools.setupFirst') : undefined} label={item.title} onChange={(enabled) => { void mutateAvailability(item, enabled); }} />{item.userPreference === 'default' ? null : <ActionButton type="button" disabled={busy || onResetAvailability === undefined} onClick={() => { void resetAvailability(item); }}>{t('tools.useDefault')}</ActionButton>}</div> : <div className="tool-card-availability tool-card-availability-readonly">{t('tools.managedExternal')}</div>}</article>;
       })}</div>}
       {selected !== null && snapshot !== null ? <ToolDetailModal locale={locale} item={selected} remediations={snapshot.remediations} onClose={() => setSelectedKey(null)} onRemediation={onRemediation} availabilityBusy={busyToolKey === toolKey(selected)} {...(onSetAvailability === undefined ? {} : { onSetAvailability: (enabled: boolean) => mutateAvailability(selected, enabled) })} {...(onResetAvailability === undefined ? {} : { onResetAvailability: () => resetAvailability(selected) })} /> : null}
     </section>

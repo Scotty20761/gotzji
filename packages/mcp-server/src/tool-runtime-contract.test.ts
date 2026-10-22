@@ -172,7 +172,6 @@ describe('tool runtime delivery contract', () => {
     for (const [missingService, requirement] of [
       ['search', 'workspace search service'],
       ['file', 'workspace file service'],
-      ['git', 'configured Git service'],
     ] as const) {
       const calls: string[] = [];
       const services = { ...successServices(calls), [missingService]: undefined } as McpApplicationServices;
@@ -199,12 +198,19 @@ describe('tool runtime delivery contract', () => {
     expect(allMissing).toMatchObject({
       ok: true,
       value: {
-        requirements: ['workspace search service', 'workspace file service', 'configured Git service'],
+        requirements: ['workspace search service', 'workspace file service'],
       },
     });
   });
 
-  it('propagates compound-context service failures instead of embedding them in success', async () => {
+  it.each(COMPOUND_CONTEXT_TOOL_NAMES)('%s preserves useful context without a Git provider', async (name) => {
+    const services = { ...successServices([]), git: undefined } as McpApplicationServices;
+    const result = await executeDefinition(new ToolRegistry(services, actor), name, { workspaceId: 'workspace-1', query: 'smoke' });
+    expect(result).toMatchObject({ ok: true, value: { tool: name, ready: false, status: 'partial', context: { files: expect.any(Array) },
+      context_observation: { status: 'partial' }, git: null, git_observation: { status: 'unavailable' } } });
+  });
+
+  it('keeps compound-context evidence when independent search or Git providers fail', async () => {
     const calls: string[] = [];
     const serviceFailure = { code: 'INTERNAL_ERROR' as const, message: 'runtime contract service failure', recoverable: true };
     const failingSearch = {
@@ -212,15 +218,27 @@ describe('tool runtime delivery contract', () => {
       async searchFiles() { calls.push('search.searchFiles'); return err(serviceFailure); },
     } as unknown as NonNullable<McpApplicationServices['search']>;
     const searchRegistry = new ToolRegistry({ ...successServices(calls), search: failingSearch }, actor, { codexToolsEnabled: true });
-    await expect(executeDefinition(searchRegistry, 'debug_context', { workspaceId: 'workspace-1', query: 'smoke' }))
-      .resolves.toMatchObject({ ok: false, error: serviceFailure });
+    const searchResult = await executeDefinition(searchRegistry, 'debug_context', { workspaceId: 'workspace-1', query: 'smoke' });
+    expect(searchResult).toMatchObject({ ok: true, value: { status: 'partial', ready: false, context: { files: [], completeness: 'partial' },
+      context_observation: { status: 'partial', errors: [{ code: 'INTERNAL_ERROR' }] }, git: { entries: expect.any(Array) }, git_observation: { status: 'ready' } } });
+    expect(JSON.stringify(searchResult)).not.toContain(serviceFailure.message);
 
     const failingGit = {
       async status() { calls.push('git.status'); return err(serviceFailure); },
     } as unknown as NonNullable<McpApplicationServices['git']>;
     const gitRegistry = new ToolRegistry({ ...successServices(calls), git: failingGit }, actor, { codexToolsEnabled: true });
-    await expect(executeDefinition(gitRegistry, 'debug_context', { workspaceId: 'workspace-1', query: 'smoke' }))
-      .resolves.toMatchObject({ ok: false, error: serviceFailure });
+    const gitResult = await executeDefinition(gitRegistry, 'debug_context', { workspaceId: 'workspace-1', query: 'smoke' });
+    expect(gitResult).toMatchObject({ ok: true, value: { status: 'partial', ready: false, context: { files: expect.any(Array) },
+      context_observation: { status: 'partial' }, git: null, git_observation: { status: 'unavailable', errors: [{ code: 'INTERNAL_ERROR' }] } } });
+    expect(JSON.stringify(gitResult)).not.toContain(serviceFailure.message);
+  });
+
+  it.each(['throw', 'malformed'])('keeps compound-context data while marking %s Git observations unknown', async (mode) => {
+    const git = { async status() { if (mode === 'throw') throw new Error('secret=do-not-publish'); return { ok: true, value: { entries: 'malformed-secret' } }; } } as unknown as NonNullable<McpApplicationServices['git']>;
+    const result = await executeDefinition(new ToolRegistry({ ...successServices([]), git }, actor), 'debug_context', { workspaceId: 'workspace-1', query: 'smoke' });
+    expect(result).toMatchObject({ ok: true, value: { status: 'partial', ready: false, git: null, git_observation: { status: 'unknown' }, context: { files: expect.any(Array) } } });
+    expect(JSON.stringify(result)).not.toContain('do-not-publish');
+    expect(JSON.stringify(result)).not.toContain('malformed-secret');
   });
 
   it.each(Object.entries(TOOL_RUNTIME_FIXTURES))('%s produces its declared runtime evidence', async (name, fixture) => {

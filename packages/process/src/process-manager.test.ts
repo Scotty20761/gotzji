@@ -1,6 +1,6 @@
 import { access, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { ok } from '@lnwjud/domain';
 import { PathExecutableResolver, ProcessManager, type ExecutableResolver, type ProcessTreeTerminator } from './index.js';
 
@@ -36,6 +36,45 @@ describe('ProcessManager', () => {
     ]));
   });
 
+  it('delivers immediate stdin EOF to non-interactive Codex-style children without losing output', async () => {
+    const manager = new ProcessManager();
+    const started = await manager.start({
+      executable: process.execPath,
+      args: ['-e', "process.stdin.resume(); process.stdin.on('end', () => process.stdout.write('stdin-eof-marker'))"],
+      cwd: process.cwd(),
+      stdinMode: 'ignore',
+      timeoutMs: 3000,
+    });
+    expect(started.ok).toBe(true);
+    if (!started.ok) return;
+
+    await waitForState(manager, started.value.processId, 'exited');
+    expect(manager.logs(started.value.processId, {})).toMatchObject({
+      ok: true,
+      value: { entries: [expect.objectContaining({ text: 'stdin-eof-marker' })] },
+    });
+  });
+
+  it('exposes a native PID only while the owned child is active for resource sampling', async () => {
+    const manager = new ProcessManager();
+    const started = await manager.start({ executable: process.execPath,
+      args: ['-e', 'setInterval(() => {}, 1000)'], cwd: process.cwd() });
+    expect(started.ok).toBe(true);
+    if (!started.ok) return;
+    try {
+      expect(started.value.pid).toEqual(expect.any(Number));
+      expect(started.value.pid).toBeGreaterThan(0);
+      expect(manager.status(started.value.processId)).toMatchObject({
+        ok: true, value: { pid: started.value.pid },
+      });
+    } finally {
+      await manager.stop(started.value.processId);
+    }
+    const stopped = manager.status(started.value.processId);
+    expect(stopped.ok).toBe(true);
+    if (stopped.ok) expect(stopped.value.pid).toBeUndefined();
+  });
+
   it('times out a running child and stops only an owned process handle', async () => {
     const manager = new ProcessManager();
     const started = await manager.start({
@@ -52,14 +91,17 @@ describe('ProcessManager', () => {
     await expect(manager.stop(started.value.processId)).resolves.toMatchObject({ ok: true });
   });
 
-  it('returns EXECUTABLE_NOT_FOUND without accepting an arbitrary shell command', async () => {
+  it('rejects a missing executable and releases its pre-spawn writer reservation', async () => {
+    const onVerifiedTermination = vi.fn();
     const result = await new ProcessManager().start({
       executable: 'lnwjud-executable-that-does-not-exist',
       args: ['&&', 'whoami'],
       cwd: process.cwd(),
-    });
+    }, undefined, undefined, onVerifiedTermination);
 
     expect(result).toMatchObject({ ok: false, error: { code: 'EXECUTABLE_NOT_FOUND' } });
+    // No process was spawned: a managed writer must not be reserved indefinitely.
+    expect(onVerifiedTermination).toHaveBeenCalledTimes(1);
   });
 
   it('runs a Windows command shim without shell true', async () => {

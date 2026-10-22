@@ -33,8 +33,9 @@ describe('public automation tool surface', () => {
     const begin = vi.fn(async () => ok({ leaseGeneration: 7 }));
     const services = {
       automation: { createRun, status },
+      goals: { async validateGoalLease(): Promise<ReturnType<typeof ok<{ workspaceId: string; leaseGeneration: number }>>> { return ok({ workspaceId: 'workspace-1', leaseGeneration: 7 }); } },
       goalMutationFence: {
-        async inspectWorkspaceFence() { return ok({ goalId: 'goal-1' }); },
+        async inspectWorkspaceFence() { return ok({ goalId: 'goal-1', leaseGeneration: 7 }); },
         begin,
         async heartbeat() { return ok(undefined); },
         async end() { return ok(undefined); },

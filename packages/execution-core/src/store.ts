@@ -139,6 +139,10 @@ export class CoreStore {
       this.database.applyMigration({ id: 'gotzji_008_native_resources', sql: 'CREATE TABLE gotzji_resource_claims (resource_key TEXT PRIMARY KEY,job_id TEXT NOT NULL,epoch TEXT NOT NULL);' });
       this.database.applyMigration({ id: 'gotzji_009_library_routes', sql: `CREATE TABLE gotzji_library_routes (adapter TEXT NOT NULL,project_id TEXT NOT NULL,route TEXT NOT NULL,PRIMARY KEY(adapter,project_id)); CREATE TABLE gotzji_library_delivery (job_id TEXT NOT NULL,scope TEXT NOT NULL,digest TEXT NOT NULL,PRIMARY KEY(job_id,scope));` });
       this.database.applyMigration({ id: 'gotzji_010_project_recipe_bindings', sql: 'CREATE TABLE gotzji_project_recipes (owner TEXT NOT NULL,project_id TEXT NOT NULL,recipe_id TEXT NOT NULL,bound_at TEXT NOT NULL,PRIMARY KEY(owner,project_id,recipe_id));' });
+      this.database.applyMigration({ id: 'gotzji_011_project_context', sql: `
+        CREATE TABLE gotzji_project_selection (owner TEXT PRIMARY KEY,project_id TEXT NOT NULL);
+        CREATE TABLE gotzji_project_memory (owner TEXT NOT NULL,project_id TEXT NOT NULL,revision INTEGER NOT NULL,body TEXT NOT NULL,updated_at TEXT NOT NULL,PRIMARY KEY(owner,project_id));
+      ` });
       this.database.connection.prepare('INSERT INTO gotzji_meta SELECT 1, ?, ? WHERE NOT EXISTS (SELECT 1 FROM gotzji_meta)').run(policy, authority);
       const meta = this.database.connection.prepare('SELECT version,policy,authority_id FROM gotzji_meta').get();
       if (meta?.version !== 1 || meta.policy !== policy || meta.authority_id !== authority) throw new CoreError('CORE_VERSION_OR_POLICY_CHANGED');

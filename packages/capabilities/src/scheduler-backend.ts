@@ -4,7 +4,6 @@ import { appError, err, isApplicationAuthorized, ok, type InvocationAuthorizatio
 import type { CapabilityBackend } from './local-capability-service.js';
 
 const execFileAsync = promisify(execFile);
-const TASK_NAME_PATTERN = /^[\w .-]{1,200}$/;
 
 export interface SchedulerRunResult {
   readonly stdout: string;
@@ -77,31 +76,18 @@ export class SchedulerCapabilityBackend implements CapabilityBackend {
     }
   }
 
-  private async list(signal?: AbortSignal): Promise<readonly Record<string, unknown>[]> {
-    const result = await this.runCommand(['/Query', '/FO', 'LIST'], signal);
-    const lines = result.stdout.split(/\r?\n/);
-    const tasks: Record<string, unknown>[] = [];
-    let current: Record<string, unknown> | null = null;
-    for (const raw of lines) {
-      const separator = raw.indexOf(':');
-      if (separator < 0) {
-        if (current !== null) {
-          tasks.push(current);
-          current = null;
-        }
-        continue;
+  private async list(signal?: AbortSignal): Promise<readonly ScheduledTask[]> {
+    const result = await this.runCommand(['/Query', '/FO', 'CSV', '/NH'], signal);
+    const tasks: ScheduledTask[] = [];
+    for (const line of result.stdout.replace(/^\uFEFF/, '').split(/\r?\n/)) {
+      if (line.trim().length === 0) continue;
+      const fields = parseCsvRow(line);
+      const [name, nextRunTime, status] = fields ?? [];
+      if (fields?.length !== 3 || name === undefined || name.length === 0 || nextRunTime === undefined || status === undefined) {
+        throw new Error('Scheduled task listing was not valid three-column CSV');
       }
-      const key = raw.slice(0, separator).trim();
-      const value = raw.slice(separator + 1).trim();
-      if (key.length === 0 || value.length === 0) continue;
-      if (key === 'TaskName') {
-        if (current !== null) tasks.push(current);
-        current = { name: value };
-      } else if (current !== null) {
-        current[key.toLowerCase().replace(/[^a-z0-9]/g, '_')] = value;
-      }
+      tasks.push({ name, next_run_time: nextRunTime, status });
     }
-    if (current !== null) tasks.push(current);
     return tasks;
   }
 
@@ -158,6 +144,12 @@ interface SchedulerRequest {
   readonly dryRun: boolean;
 }
 
+interface ScheduledTask {
+  readonly name: string;
+  readonly next_run_time: string;
+  readonly status: string;
+}
+
 function parseRequest(value: unknown): Result<SchedulerRequest> {
   if (!isRecord(value)) return err(appError('INVALID_INPUT', 'scheduler input must be an object'));
   const action: unknown = value.action === undefined ? 'list' : value.action;
@@ -165,8 +157,8 @@ function parseRequest(value: unknown): Result<SchedulerRequest> {
     return err(appError('INVALID_INPUT', 'scheduler action is invalid'));
   }
   const taskName: unknown = value.task_name === undefined ? '' : value.task_name;
-  if (action !== 'list' && (typeof taskName !== 'string' || !TASK_NAME_PATTERN.test(taskName.trim()))) {
-    return err(appError('INVALID_INPUT', 'task_name must be 1-200 letters, digits, spaces, dots, dashes, or underscores'));
+  if (action !== 'list' && (typeof taskName !== 'string' || !isTaskPath(taskName))) {
+    return err(appError('INVALID_INPUT', 'task_name must be a Windows task path of 1-238 characters with non-empty folder and task names; names cannot have leading/trailing spaces, reserved filename characters, or . and .. path segments'));
   }
   const command: unknown = value.command === undefined ? '' : value.command;
   if (action === 'create' && (typeof command !== 'string' || command.trim().length === 0 || command.length > 2_048)) {
@@ -188,7 +180,7 @@ function parseRequest(value: unknown): Result<SchedulerRequest> {
   const dryRun = value.dry_run === true;
   return ok({
     action,
-    taskName: typeof taskName === 'string' ? taskName.trim() : '',
+    taskName: typeof taskName === 'string' ? taskName : '',
     command: typeof command === 'string' ? command.trim() : '',
     arguments: action === 'create' && Array.isArray(argumentsValue) ? argumentsValue.filter((entry): entry is string => typeof entry === 'string') : [],
     schedule: typeof schedule === 'string' ? schedule.toUpperCase() : 'DAILY',
@@ -199,8 +191,46 @@ function parseRequest(value: unknown): Result<SchedulerRequest> {
 }
 
 function buildTaskRun(command: string, args: readonly string[]): string {
-  const quoted = [command, ...args].map((entry) => /[\s"]/.test(entry) ? `"${entry.replaceAll('"', '\\"')}"` : entry).join(' ');
-  return quoted.length > 250 ? quoted.slice(0, 250) : quoted;
+  return [command, ...args].map((entry) => {
+    if (entry.length > 0 && !/[\s"]/.test(entry)) return entry;
+    const escaped = entry.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\+)$/g, '$1$1');
+    return `"${escaped}"`;
+  }).join(' ');
+}
+
+function isTaskPath(value: string): boolean {
+  if (value.length === 0 || value.length > 238 || /[/:*?"<>|]/.test(value)) return false;
+  if ([...value].some((character): boolean => character.charCodeAt(0) < 32)) return false;
+  const path = value.startsWith('\\') ? value.slice(1) : value;
+  return path.split('\\').every((part) => part.length > 0 && part !== '.' && part !== '..' && !part.startsWith(' ') && !part.endsWith(' '));
+}
+
+function parseCsvRow(line: string): readonly string[] | null {
+  const fields: string[] = [];
+  let field = '';
+  let state: 'start' | 'unquoted' | 'quoted' | 'closed' = 'start';
+  for (let index = 0; index < line.length; index += 1) {
+    const character = line[index];
+    if (state === 'quoted') {
+      if (character !== '"') field += character;
+      else if (line[index + 1] === '"') {
+        field += '"';
+        index += 1;
+      } else state = 'closed';
+    } else if (character === ',') {
+      fields.push(field);
+      field = '';
+      state = 'start';
+    } else if (state === 'start' && character === '"') state = 'quoted';
+    else if (state === 'closed' || character === '"') return null;
+    else {
+      field += character;
+      state = 'unquoted';
+    }
+  }
+  if (state === 'quoted') return null;
+  fields.push(field);
+  return fields;
 }
 
 function extractDetail(error: unknown): string {

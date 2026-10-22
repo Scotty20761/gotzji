@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 // Capture responses are bounded to 8 MiB before base64 encoding. Keep enough
 // envelope headroom without allowing an unbounded native-host line.
@@ -86,4 +87,15 @@ private func run() {
     }
 }
 
+umask(0o077)
+signal(SIGTERM, SIG_IGN)
+let termination = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .global(qos: .utility))
+termination.setEventHandler {
+    MacAudioProvider.close()
+    MacScreenRecordingProvider.close()
+    exit(0)
+}
+termination.resume()
 run()
+MacAudioProvider.close()
+MacScreenRecordingProvider.close()

@@ -133,6 +133,10 @@ const listener = await startProductHttp({ token: config.daemonSecret, mcpPathSec
       return { accepted: true, nonce: input.nonce };
     }
     case 'registerProject': { if (surface !== 'app') throw new CoreError('PROJECT_REGISTRATION_DENIED'); const project = core.registerProject(credential, input); if (project.kind === 'library') core.enrollLibraryRoute(credential, { projectId: project.projectId, route: 'gotzji-library' }); return project; }
+    case 'selectProject': return core.selectProject(credential, input.projectId);
+    case 'selectedProject': return core.selectedProject(credential);
+    case 'projectContext': return core.projectContext(credential, input.projectId);
+    case 'saveProjectMemory': return core.saveProjectMemory(credential, input);
     case 'listProjects': return core.listProjects(credential).map((project) => ({ ...project, recipeIds: core.projectRecipeIds(credential, project) }));
     case 'readProjectFile': return core.readProjectFile(credential, input);
     case 'readProjectGit': return core.readProjectGit(credential, input);
@@ -142,8 +146,8 @@ const listener = await startProductHttp({ token: config.daemonSecret, mcpPathSec
     case 'bindProjectRecipe': if (surface !== 'app') throw new CoreError('RECIPE_REGISTRATION_DENIED'); return core.bindProjectRecipe(credential, input);
     case 'catalog': { const session = browser?.projection(); return core.catalog(credential).map((entry) => entry.name.startsWith('browser.') && session?.state === 'ready' ? { ...entry, browserSession: session } : entry); }
     // Only the owner's app may start a delivery command (incident I5); every other surface prepares as Grace.
-    case 'prepareOperation': return core.prepareOperation(credential, input, { ownerRun: surface === 'app' });
-    case 'submit': return core.submit(credential, input.preparationId);
+    case 'prepareOperation': if (surface === 'app') throw new CoreError('CHATGPT_START_REQUIRED'); return core.prepareOperation(credential, input);
+    case 'submit': if (surface === 'app') throw new CoreError('CHATGPT_START_REQUIRED'); return core.submit(credential, input.preparationId);
     case 'list': return core.list(credential, surface === 'app' ? input : { limit: 25, ...input });
     case 'inspectQueue': return core.inspectQueue(credential);
     case 'supportReport': if (surface !== 'app') throw new CoreError('SUPPORT_REPORT_DENIED'); return core.supportReport(credential, hostMetrics());

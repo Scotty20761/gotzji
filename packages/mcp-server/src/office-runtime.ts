@@ -4,6 +4,7 @@ import {
   appError,
   err,
   ok,
+  isApplicationAuthorized,
   type InvocationAuthorization,
   type Result,
 } from '@lnwjud/domain';
@@ -12,6 +13,9 @@ import { withReplacementRecoveryDetails } from './replacement-recovery.js';
 import {
   OFFICE_DANGEROUS_ACTIONS,
   OFFICE_READ_ACTIONS,
+  OFFICE_SEMANTIC_TOOL_NAMES,
+  windowsOfficeExtendedActions,
+  validateOfficeNativeAction,
   type OfficeSemanticToolName,
 } from './office-tool-contracts.js';
 import type { McpApplicationServices } from './tools/tool-types.js';
@@ -46,7 +50,7 @@ const OPTIONAL_LOCAL_TOOLS = new Set<OfficeSemanticToolName>([
   'office_publisher',
 ]);
 
-const WINDOWS_LOCAL_ACTIONS: Readonly<Partial<Record<OfficeSemanticToolName, ReadonlySet<string>>>> = {
+const WINDOWS_BASE_ACTIONS: Readonly<Partial<Record<OfficeSemanticToolName, ReadonlySet<string>>>> = {
   office_word: new Set([
     'create', 'inspect_document', 'read_text', 'read_range', 'get_structure', 'get_sections',
     'get_paragraphs', 'get_headings', 'get_tables', 'get_images', 'get_headers_footers', 'get_bookmarks',
@@ -95,6 +99,12 @@ const WINDOWS_LOCAL_ACTIONS: Readonly<Partial<Record<OfficeSemanticToolName, Rea
     'complete_task', 'reopen_task', 'delete_task',
   ]),
 };
+const WINDOWS_LOCAL_ACTIONS: Readonly<Partial<Record<OfficeSemanticToolName, ReadonlySet<string>>>> = Object.fromEntries(
+  OFFICE_SEMANTIC_TOOL_NAMES.flatMap((tool) => {
+    const actions = WINDOWS_BASE_ACTIONS[tool];
+    return actions === undefined ? [] : [[tool, new Set([...actions, ...windowsOfficeExtendedActions(tool)])]];
+  }),
+);
 
 const FILE_MUTATION_ACTIONS = new Set([
   'create', 'save', 'save_as', 'merge', 'save_attachment', 'export_pdf', 'export_text', 'export_csv',
@@ -125,7 +135,7 @@ const FILE_MUTATION_ACTIONS = new Set([
   'set_background', 'set_theme', 'set_master', 'set_slide_size', 'set_transition',
 ]);
 
-const OUTPUT_ACTIONS = new Set(['save_as', 'export_pdf', 'export_text', 'export_csv', 'export_tsv', 'export_images']);
+const OUTPUT_ACTIONS = new Set(['save_as', 'export_pdf', 'export_text', 'export_csv', 'export_tsv', 'export_images', 'export_video', 'mail_merge']);
 
 export class OfficeRuntimeService {
   private readonly platform: NodeJS.Platform;
@@ -144,6 +154,42 @@ export class OfficeRuntimeService {
     authorization?: InvocationAuthorization,
   ): Promise<Result<unknown>> {
     if (tool === 'office_status') return this.status(input, authorization);
+    if (tool === 'office_excel' && ['audit_data','compare_cells','create_report'].includes(String(input.action))) {
+      const provider = this.services.officeDataWorkflow;
+      if (!provider) return err(appError('UNSUPPORTED_PLATFORM','Local CSV/XLSX provider is unavailable'));
+      const workspaceId = readString(input.workspaceId);
+      const filePath = readString(input.file_path);
+      if (!workspaceId || !filePath) return err(appError('INVALID_INPUT','workspaceId and file_path required'));
+      const params = isRecord(input.parameters) ? input.parameters : {};
+      const keyColumns = Array.isArray(params.keyColumns) && params.keyColumns.every((item)=>typeof item === 'string')
+        ? params.keyColumns as string[] : [];
+      if (input.action === 'audit_data') return provider.audit(this.actor, {
+        workspaceId, inputPath:filePath,keyColumns,
+        ...(typeof input.sheet==='string'?{sheet:input.sheet}:{}),
+        ...(typeof params.scanCellLimit==='number'?{scanCellLimit:params.scanCellLimit}:{}),
+        ...(typeof params.maxFindings==='number'?{maxFindings:params.maxFindings}:{}),
+      },signal);
+      if (input.action === 'compare_cells') {
+        const rightPath = readString(input.target_path);
+        if(!rightPath) return err(appError('INVALID_INPUT','compare_cells requires target_path'));
+        return provider.compare(this.actor,{
+          workspaceId,leftPath:filePath,rightPath,
+          ...(typeof input.sheet==='string'?{sheet:input.sheet}:{}),
+          ...(typeof params.maxFindings==='number'?{maxFindings:params.maxFindings}:{}),
+        },signal);
+      }
+      const templatePath=readString(params.templatePath);
+      const mappingPath=readString(params.mappingPath);
+      const outputPath=readString(input.target_path);
+      if(!templatePath||!mappingPath||!outputPath) return err(appError('INVALID_INPUT','create_report requires templatePath, mappingPath and target_path'));
+      if (usesDefaultDryRun(input)) return ok({
+        executed:false,dryRun:true,action:'create_report',provider:'file_xlsx',
+        plan:'Produce a new XLSX from validated CSV/XLSX and a supported XLSX reference template, then verify readback.',
+      });
+      return provider.createReport(this.actor,{workspaceId,inputPath:filePath,templatePath,mappingPath,outputPath,keyColumns,
+        ...(signal===undefined?{}:{signal})});
+    }
+
     if (tool === 'office_batch') return this.batch(input, signal, authorization);
     if (tool === 'office_convert') return this.convert(input, signal, authorization);
     if (GRAPH_TOOLS.has(tool)) return graphUnavailable(tool);
@@ -152,6 +198,11 @@ export class OfficeRuntimeService {
     if (app === undefined) return err(appError('INVALID_INPUT', `Unsupported Office semantic tool: ${tool}`));
     const action = readString(input.action);
     if (action === undefined) return err(appError('INVALID_INPUT', `${tool} requires action`));
+    const invalidAction = validateOfficeNativeAction(tool, input);
+    if (invalidAction !== undefined) return err(appError('INVALID_INPUT', invalidAction));
+    if (['parameters', 'range', 'style', 'table'].some((field) => containsBuriedFileIdentity(input[field]))) {
+      return err(appError('INVALID_INPUT', 'Office file identities must use scoped top-level path fields'));
+    }
 
     if (OPTIONAL_LOCAL_TOOLS.has(tool) && action !== 'status') {
       return optionalProviderUnavailable(tool, app, this.platform);
@@ -196,6 +247,11 @@ export class OfficeRuntimeService {
       });
     }
 
+    if (signal?.aborted === true) return err(appError('PROCESS_TIMEOUT', 'Office operation was cancelled before dispatch', true));
+    if (!readOnly && !isApplicationAuthorized(authorization, input.userConfirmed === true)) {
+      return err(appError('PERMISSION_REQUIRED', `${tool} ${action} requires application authorization`));
+    }
+
     let providerInput: Record<string, unknown> = {
       ...input,
       app,
@@ -208,7 +264,7 @@ export class OfficeRuntimeService {
     };
     let replacementBackup: { readonly recoveryId: string; readonly recoveryPath: string } | undefined;
 
-    if (!readOnly && FILE_MUTATION_ACTIONS.has(action)) {
+    if (!readOnly && (FILE_MUTATION_ACTIONS.has(action) || ['export_video', 'mail_merge', 'mail_merge_preview', 'run_macro'].includes(action))) {
       const prepared = await this.prepareFileMutation(tool, action, providerInput, signal, authorization);
       if (!prepared.ok) return prepared;
       providerInput = prepared.value.input;
@@ -391,6 +447,8 @@ export class OfficeRuntimeService {
     const mergePaths = Array.isArray(input.merge_paths)
       ? input.merge_paths.filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
       : [];
+    const auxiliaryFields = ['image_path', 'theme_path', 'source_path'] as const;
+    const auxiliarySources = auxiliaryFields.flatMap((field) => readString(input[field]) === undefined ? [] : [{ field, path: String(input[field]) }]);
 
     let sourcePaths: readonly string[] = [];
     let mutationTarget: string | undefined;
@@ -414,8 +472,9 @@ export class OfficeRuntimeService {
       return err(appError('INVALID_INPUT', `${tool} ${action} requires ${isOutput || isMerge ? 'target_path' : 'file_path'}`));
     }
 
+    const primarySourceCount = sourcePaths.length;
     const prepared = await fileSafety.prepareExternalFileMutation(this.actor, workspaceId, {
-      sourcePaths,
+      sourcePaths: [...sourcePaths, ...auxiliarySources.map((source) => source.path)],
       targetPath: mutationTarget,
       userConfirmed: input.userConfirmed === true,
     }, signal, authorization);
@@ -427,8 +486,9 @@ export class OfficeRuntimeService {
     else {
       normalized.file_path = prepared.value.sourcePaths[0];
       normalized.target_path = prepared.value.targetPath;
-      if (isMerge) normalized.merge_paths = prepared.value.sourcePaths.slice(1);
+      if (isMerge) normalized.merge_paths = prepared.value.sourcePaths.slice(1, primarySourceCount);
     }
+    auxiliarySources.forEach((source, index) => { normalized[source.field] = prepared.value.sourcePaths[primarySourceCount + index]; });
     return ok({
       input: normalized,
       ...(prepared.value.replacementBackup === undefined ? {} : { replacementBackup: prepared.value.replacementBackup }),
@@ -654,6 +714,13 @@ function windowsSemanticSupportForApp(app: OfficeLocalApp): Array<{ tool: Office
 
 function readString(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function containsBuriedFileIdentity(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(containsBuriedFileIdentity);
+  if (!isRecord(value)) return false;
+  return Object.entries(value).some(([key, child]) => /^(?:file|output|target|source|image|theme|template|mapping)[_]?path(?:s)?$/i.test(key)
+    || key === 'attachments' || key === 'merge_paths' || containsBuriedFileIdentity(child));
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

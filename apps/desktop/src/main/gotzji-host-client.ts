@@ -27,6 +27,15 @@ export function parseGotzjiRequest(value: unknown): GotzjiRequest {
     throw new GotzjiHostError('CALLER_AUTHORITY_DENIED');
   }
   const method = value.method as GotzjiMethod;
+  if (method === 'selectedProject' && Object.keys(input).length > 0) throw new GotzjiHostError('INVALID_GOTZJI_REQUEST');
+  if (method === 'selectProject' || method === 'projectContext') {
+    if (Object.keys(input).some((key) => key !== 'projectId')) throw new GotzjiHostError('INVALID_GOTZJI_REQUEST');
+    if (method === 'selectProject' || input.projectId !== undefined) requiredText(input, 'projectId');
+  }
+  if (method === 'saveProjectMemory') {
+    requiredText(input, 'projectId');
+    if (Object.keys(input).some((key) => !['projectId', 'expectedRevision', 'memory'].includes(key)) || !Number.isSafeInteger(input.expectedRevision) || Number(input.expectedRevision) < 0 || !record(input.memory)) throw new GotzjiHostError('INVALID_GOTZJI_REQUEST');
+  }
     if (method === 'readProjectGit') {
       requiredText(input, 'projectId');
       const allowed = input.view === 'diff' ? ['projectId', 'view', 'path', 'staged'] : ['projectId', 'view'];

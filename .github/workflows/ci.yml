@@ -59,6 +59,37 @@ jobs:
         shell: bash
         run: pnpm typecheck
 
+      - name: Install ripgrep for native search acceptance (Windows)
+        if: matrix.name == 'Windows'
+        shell: powershell
+        run: |
+          if (-not (Get-Command rg -ErrorAction SilentlyContinue)) {
+            $rgDir = Join-Path $env:RUNNER_TEMP 'ripgrep-native-contract'
+            New-Item -ItemType Directory -Force -Path $rgDir | Out-Null
+            $zip = Join-Path $rgDir 'ripgrep.zip'
+            Invoke-WebRequest -Uri 'https://github.com/BurntSushi/ripgrep/releases/download/14.1.1/ripgrep-14.1.1-x86_64-pc-windows-msvc.zip' -OutFile $zip -UseBasicParsing
+            Expand-Archive -Path $zip -DestinationPath $rgDir -Force
+            $rgExe = (Get-ChildItem -Path $rgDir -Filter 'rg.exe' -Recurse | Select-Object -First 1).FullName
+            Copy-Item -LiteralPath $rgExe -Destination (Join-Path $rgDir 'rg.exe') -Force
+            $rgDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+            $env:PATH = "$rgDir;$env:PATH"
+          }
+          rg --version
+
+      - name: Install ripgrep for native search acceptance (macOS/Linux)
+        if: matrix.name != 'Windows'
+        shell: bash
+        run: |
+          if ! command -v rg >/dev/null 2>&1; then
+            if [[ "$RUNNER_OS" == "macOS" ]]; then
+              brew install ripgrep
+            else
+              sudo apt-get update
+              sudo apt-get install -y --no-install-recommends ripgrep
+            fi
+          fi
+          rg --version
+
       - name: Run native platform contract tests
         shell: bash
         run: pnpm exec vitest run tests/integration/platform-composition.test.ts tests/integration/cross-platform-release-scenarios.test.ts tests/release/platform-support-contract.test.ts packages/mcp-server/src/tool-runtime-contract.test.ts
@@ -67,7 +98,7 @@ jobs:
         shell: bash
         # The desktop suite runs in isolated shards below. Keep the remaining
         # workspace packages on pnpm's normal bounded recursive pool.
-        run: pnpm -r --filter '!@lnwjud/desktop' --if-present test
+        run: pnpm -r --workspace-concurrency=2 --filter '!@lnwjud/desktop' --if-present test
 
       - name: Test macOS native host protocol
         timeout-minutes: 10
@@ -240,6 +271,15 @@ jobs:
             libnss3 libasound2t64 libgtk-3-0t64 libgbm1 libxss1 \
             libatk-bridge2.0-0t64 libdrm2 libxkbcommon0
 
+      - name: Install ripgrep for macOS package verification
+        if: matrix.platform == 'darwin'
+        shell: bash
+        run: |
+          if ! command -v rg >/dev/null 2>&1; then
+            brew install ripgrep
+          fi
+          rg --version
+
       - name: Install native ARM64 Debian packager
         if: matrix.platform == 'linux' && matrix.arch == 'arm64'
         shell: bash
@@ -255,8 +295,24 @@ jobs:
           LNWJUD_VERIFY_PLATFORM: ${{ matrix.platform }}
           LNWJUD_VERIFY_ARCH: ${{ matrix.arch }}
           LNWJUD_COSIGN_PATH: cosign
+          MACOS_CSC_LINK: ${{ secrets.MACOS_CSC_LINK }}
+          MACOS_CSC_KEY_PASSWORD: ${{ secrets.MACOS_CSC_KEY_PASSWORD }}
         run: |
           set -euo pipefail
+          # Developer ID signing must be stable across macOS releases. Never
+          # silently fall back to ad-hoc when half a certificate pair is set.
+          if [[ "$LNWJUD_VERIFY_PLATFORM" == darwin ]]; then
+            if [[ -n "$MACOS_CSC_LINK" || -n "$MACOS_CSC_KEY_PASSWORD" ]]; then
+              if [[ -z "$MACOS_CSC_LINK" || -z "$MACOS_CSC_KEY_PASSWORD" ]]; then
+                echo 'macOS signing needs both MACOS_CSC_LINK and MACOS_CSC_KEY_PASSWORD' >&2
+                exit 1
+              fi
+              export CSC_LINK="$MACOS_CSC_LINK"
+              export CSC_KEY_PASSWORD="$MACOS_CSC_KEY_PASSWORD"
+              export LNWJUD_REQUIRE_CODESIGN=1
+              echo 'LNWJUD_REQUIRE_CODESIGN=1' >> "$GITHUB_ENV"
+            fi
+          fi
           # app-builder checks presence, not truthiness: even an empty value
           # selects system FPM, so leave it completely unset on other targets.
           if [[ "$LNWJUD_VERIFY_PLATFORM/$LNWJUD_VERIFY_ARCH" == linux/arm64 ]]; then
@@ -627,6 +683,22 @@ jobs:
 
       - name: Build workspace type declarations
         run: pnpm typecheck
+
+      - name: Install ripgrep for workspace search integration
+        shell: powershell
+        run: |
+          if (-not (Get-Command rg -ErrorAction SilentlyContinue)) {
+            $rgDir = Join-Path $env:RUNNER_TEMP 'ripgrep-workspace-tests'
+            New-Item -ItemType Directory -Force -Path $rgDir | Out-Null
+            $zip = Join-Path $rgDir 'ripgrep.zip'
+            Invoke-WebRequest -Uri 'https://github.com/BurntSushi/ripgrep/releases/download/14.1.1/ripgrep-14.1.1-x86_64-pc-windows-msvc.zip' -OutFile $zip -UseBasicParsing
+            Expand-Archive -Path $zip -DestinationPath $rgDir -Force
+            $rgExe = (Get-ChildItem -Path $rgDir -Filter 'rg.exe' -Recurse | Select-Object -First 1).FullName
+            Copy-Item -LiteralPath $rgExe -Destination (Join-Path $rgDir 'rg.exe') -Force
+            $rgDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+            $env:PATH = "$rgDir;$env:PATH"
+          }
+          rg --version
 
       - name: Run complete Windows workspace release suite
         run: pnpm test:release

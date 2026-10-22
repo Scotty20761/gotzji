@@ -6,9 +6,10 @@ const defaultRequest: Request = (method, input) => window.gotzji.request({ metho
 interface Props {
   readonly projectId: string; readonly projectName?: string; readonly disabled: boolean; readonly visible?: boolean;
   readonly onChanged: () => Promise<void>; readonly onJob: (jobId: string) => void; readonly request?: Request;
+  readonly chatgptOnly?: boolean;
 }
 function record(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === 'object' && !Array.isArray(value); }
-export function GotzjiBrowserPanel({ projectId, projectName = projectId, disabled, visible = true, onChanged, onJob, request = defaultRequest }: Props): ReactElement {
+export function GotzjiBrowserPanel({ projectId, projectName = projectId, disabled, visible = true, onChanged, onJob, request = defaultRequest, chatgptOnly = false }: Props): ReactElement {
   const [startUrl, setStartUrl] = useState(''); const [origins, setOrigins] = useState('');
   const [session, setSession] = useState<Record<string, unknown> | null>(null); const [error, setError] = useState<string | null>(null); const [busy, setBusy] = useState(false);
   const [preparation, setPreparation] = useState<string | null>(null); const [jobId, setJobId] = useState<string | null>(null);
@@ -49,6 +50,10 @@ export function GotzjiBrowserPanel({ projectId, projectName = projectId, disable
     inFlight.current = true; const turn = ++sequence.current; setBusy(true); setError(null);
     const stableId = requestId.current ?? crypto.randomUUID(); requestId.current = stableId;
     try {
+      if (chatgptOnly) {
+        await navigator.clipboard.writeText(`อ่านบริบทโครงการ ${projectId} แล้วตรวจหน้าเบราว์เซอร์ปัจจุบันและอ่านเนื้อหาผ่าน gotzji ตรวจรหัสแท็บและที่อยู่จริงก่อนเริ่ม: ${binding.expectedUrl}`);
+        return;
+      }
       const value = await request('prepareOperation', { requestId: stableId, ...binding, operation: 'browser.read', selector: 'body', priority: 1 });
       if (!record(value) || typeof value.preparationId !== 'string' || !value.preparationId) throw new Error('BROWSER_PREPARATION_INVALID');
       if (mounted.current && sequence.current === turn) setPreparation(value.preparationId);
@@ -73,7 +78,7 @@ export function GotzjiBrowserPanel({ projectId, projectName = projectId, disable
     {error && <p role="alert">{error}</p>}<div className="gotzji-actions"><button disabled={locked || !projectId || !startUrl.trim()} onClick={() => void act('startBrowserSession')}>เปิดเบราว์เซอร์โครงการ</button>
       <button disabled={locked || !projectId} onClick={() => void act('browserSession')}>ตรวจหน้าปัจจุบัน</button><button disabled={locked || !projectId || !view.canStop} onClick={() => void act('stopBrowserSession')}>ปิดเบราว์เซอร์โครงการ</button></div>
     {binding && <div className="gotzji-browser-read"><h4>อ่านหน้าปัจจุบัน</h4><p>อ่านเนื้อหาทั้งหน้าของ {projectName} และเก็บผลไว้ในประวัติงาน</p>
-      {!preparation && !jobId && <button disabled={locked} onClick={() => void prepareRead()}>ตรวจหน้าที่จะอ่าน</button>}
+      {!preparation && !jobId && <button disabled={locked} onClick={() => void prepareRead()}>{chatgptOnly ? 'คัดลอกงานอ่านหน้าเว็บสำหรับ ChatGPT' : 'ตรวจหน้าที่จะอ่าน'}</button>}
       {preparation && <div><h4>ตรวจหน้าเว็บก่อนเริ่ม</h4><p>โครงการ: {projectName}</p><p>หน้าเว็บ: {binding.expectedUrl}</p><p>อ่านเนื้อหาทั้งหน้า โดยไม่กรอกข้อความหรือคลิกปุ่มบนเว็บ</p>
         {!jobId ? <button disabled={locked} onClick={() => void submitRead()}>{error ? 'ยืนยันงานอ่านเดิมอีกครั้ง' : 'เริ่มอ่านหน้านี้'}</button> : <><p role="status">ยืนยันรับงานอ่านนี้แล้ว</p><button disabled={locked} onClick={() => onJob(jobId)}>ดูงานอ่านนี้</button><button disabled={locked} onClick={newRound}>เตรียมอ่านรอบใหม่</button></>}
       </div>}

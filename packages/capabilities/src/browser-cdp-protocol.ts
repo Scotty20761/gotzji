@@ -5,7 +5,8 @@ import path from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { appError, err, ok, type Result } from '@lnwjud/domain';
 import { createProcessTreeTerminator, type ProcessTreeTerminator } from '@lnwjud/process';
-import type { BrowserCdpProtocol, BrowserCdpTab } from './browser-cdp-backend.js';
+import type { BrowserCdpEventChannel, BrowserCdpProtocol, BrowserCdpTab } from './browser-cdp-backend.js';
+import { openBrowserCdpEventChannel } from './browser-cdp-event-channel.js';
 
 interface BrowserCdpProtocolOptions {
   readonly platform?: NodeJS.Platform;
@@ -16,6 +17,10 @@ interface BrowserCdpProtocolOptions {
   readonly terminationRetryMs?: number;
   /** Injectable filesystem probe for deterministic platform/readiness tests. */
   readonly executableExists?: (executable: string) => boolean;
+}
+
+export class BrowserCdpUnavailableError extends Error {
+  public constructor() { super('The managed local browser CDP endpoint is unavailable'); }
 }
 
 export class NodeBrowserCdpProtocol implements BrowserCdpProtocol {
@@ -97,6 +102,13 @@ export class NodeBrowserCdpProtocol implements BrowserCdpProtocol {
     if (!isRecord(response) || 'error' in response || !isRecord(response.result)) throw new Error('Chrome browser close was rejected');
   }
 
+  public async openEventChannel(tabId: string, onEvent: (method: string, params: unknown) => void, onDisconnected: (closureConfirmed: boolean) => void, signal?: AbortSignal): Promise<BrowserCdpEventChannel> {
+    const tabs = await this.listTabs(signal);
+    const tab = tabs.find((candidate) => candidate.id === tabId);
+    if (tab === undefined) throw new Error('Chrome observation tab was not found');
+    return openBrowserCdpEventChannel(validateWebSocketUrl(tab.webSocketDebuggerUrl, this.port), onEvent, onDisconnected, signal);
+  }
+
   public async launch(url: string | undefined, signal?: AbortSignal): Promise<Result<unknown>> {
     if (!isSupportedBrowserPlatform(this.platform)) return err(appError('UNSUPPORTED_PLATFORM', `Browser launch is unsupported on ${this.platform}`, true));
     if (isAborted(signal)) return cancelledBrowserLaunch();
@@ -146,8 +158,9 @@ export class NodeBrowserCdpProtocol implements BrowserCdpProtocol {
   }
 
   private async requestJson(resource: string, signal?: AbortSignal): Promise<unknown> {
-    const response = await fetch(this.endpoint(resource), signal === undefined ? undefined : { signal });
-    if (!response.ok) throw new Error(`Chrome CDP HTTP request failed: ${response.status}`);
+    let response: Response;
+    try { response = await fetch(this.endpoint(resource), signal === undefined ? undefined : { signal }); } catch { throw new BrowserCdpUnavailableError(); }
+    if (!response.ok) throw new BrowserCdpUnavailableError();
     const value: unknown = await response.json();
     return value;
   }
@@ -197,7 +210,7 @@ function toTab(value: unknown): BrowserCdpTab | undefined {
 
 function validateWebSocketUrl(value: string, port: number): string {
   const url = new URL(value);
-  if (url.protocol !== 'ws:' || (url.hostname !== '127.0.0.1' && url.hostname !== 'localhost') || (url.port !== '' && Number(url.port) !== port)) throw new Error('Chrome CDP socket is not local');
+  if (url.protocol !== 'ws:' || (url.hostname !== '127.0.0.1' && url.hostname !== 'localhost') || Number(url.port || 80) !== port || url.username !== '' || url.password !== '') throw new Error('Chrome CDP socket is not local');
   return url.toString();
 }
 

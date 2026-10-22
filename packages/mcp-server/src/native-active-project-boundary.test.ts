@@ -54,7 +54,7 @@ describe('native Active Project boundary', () => {
     expect(calls[0]).toMatchObject({
       tool,
       input: {
-        metadata: { [CAPABILITY_ACTIVE_WORKSPACE_ROOT_METADATA_KEY]: activeScope.rootPath },
+        metadata: expect.objectContaining({ [CAPABILITY_ACTIVE_WORKSPACE_ROOT_METADATA_KEY]: activeScope.rootPath }),
       },
     });
   });
@@ -75,7 +75,7 @@ describe('native Active Project boundary', () => {
     expect(calls).toEqual([expect.objectContaining({
       tool: 'office',
       input: expect.objectContaining({
-        metadata: { [CAPABILITY_ACTIVE_WORKSPACE_ROOT_METADATA_KEY]: activeScope.rootPath },
+        metadata: expect.objectContaining({ [CAPABILITY_ACTIVE_WORKSPACE_ROOT_METADATA_KEY]: activeScope.rootPath }),
       }),
     })]);
   });

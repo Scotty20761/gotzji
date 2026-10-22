@@ -1,10 +1,15 @@
 import { describe, expect, it, vi } from 'vitest';
+import { mkdtemp, readFile, rm, unlink, writeFile, symlink } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import {
   PORTABLE_UPDATE_CHANNEL,
   PORTABLE_UPDATE_FEED_URL,
   AUTOMATIC_UPDATES_ENABLED,
   configureUpdaterForDistribution,
   configureUpdaterForPlatform,
+  createLinuxAppImageRollback,
+  restoreLinuxAppImageIfMissing,
   currentPortableExecutablePath,
   detectWindowsDistribution,
   detectUpdaterDistribution,
@@ -12,6 +17,7 @@ import {
   preparePortableReplacement,
   launchPortableReplacement,
   usesElectronUpdaterInstall,
+  waitsForNativeInstallAcceptance,
 } from '../src/main/portable-update.js';
 
 describe('gotzji manual update policy', () => {
@@ -32,6 +38,10 @@ describe('gotzji manual update policy', () => {
     expect(usesElectronUpdaterInstall('linux-appimage')).toBe(false);
     expect(usesElectronUpdaterInstall('portable')).toBe(false);
     expect(usesElectronUpdaterInstall('unsupported')).toBe(false);
+    expect(waitsForNativeInstallAcceptance('macos')).toBe(true);
+    expect(waitsForNativeInstallAcceptance('linux-appimage')).toBe(true);
+    expect(waitsForNativeInstallAcceptance('installer')).toBe(false);
+    expect(waitsForNativeInstallAcceptance('portable')).toBe(false);
   });
 
   it('distinguishes electron-builder portable launches from installed builds', () => {
@@ -69,6 +79,48 @@ describe('gotzji manual update policy', () => {
       .rejects.toThrow('official-unsigned');
     expect(() => launchPortableReplacement({ scriptPath: 'missing.ps1', sourcePath: 'missing.exe', targetPath: 'missing-current.exe', powershellPath: 'missing-powershell.exe' }))
       .toThrow('official-unsigned');
+  });
+
+  it('retains a working rollback after a Linux AppImage native move deletes the original', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'lnwjud-appimage-'));
+    try {
+      const current = path.join(root, 'lnwjud-5.8.1-x64.AppImage');
+      const downloaded = path.join(root, 'lnwjud-5.8.2-x64.AppImage');
+      await writeFile(current, 'old-working-app');
+      await writeFile(downloaded, 'new-app');
+      const { backupPath } = await createLinuxAppImageRollback(current, downloaded);
+      await unlink(current); // AppImageUpdater.doInstall() unlinks before its mv.
+      expect(await restoreLinuxAppImageIfMissing(current, backupPath)).toBe(true);
+      expect(await readFile(current, 'utf8')).toBe('old-working-app');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects missing Linux AppImage inputs before native installation', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'lnwjud-appimage-'));
+    try {
+      const current = path.join(root, 'lnwjud.AppImage');
+      const downloaded = path.join(root, 'update.AppImage');
+      await writeFile(current, 'old');
+      await expect(createLinuxAppImageRollback(current, downloaded)).rejects.toThrow();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  // File symlinks require Windows privilege; this is a Linux installation contract.
+  it.skipIf(process.platform === 'win32')('rejects symlinked Linux AppImage inputs before native installation', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'lnwjud-appimage-'));
+    try {
+      const current = path.join(root, 'lnwjud.AppImage');
+      const downloaded = path.join(root, 'update.AppImage');
+      await writeFile(current, 'old');
+      await symlink(current, downloaded);
+      await expect(createLinuxAppImageRollback(current, downloaded)).rejects.toThrow('regular files');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it('replaces the outer portable executable path rather than Electron temporary extraction path', () => {

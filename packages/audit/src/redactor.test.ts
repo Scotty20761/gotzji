@@ -2,6 +2,19 @@ import { describe, expect, it } from 'vitest';
 import { codexInstructionSummary, Redactor } from './redactor.js';
 
 describe('Redactor', () => {
+  it.each([
+    ['https://alice:p%40ss@example.test/repo.git', 'https://[REDACTED]@example.test/repo.git'],
+    ['https://opaque-value@example.test/repo.git', 'https://[REDACTED]@example.test/repo.git'],
+    ['failed https://alice:a@b@example.test/repo.git', 'failed https://[REDACTED]@example.test/repo.git'],
+    ['HTTPS://alice:password@example.test/repo.git', 'HTTPS://[REDACTED]@example.test/repo.git'],
+  ])('removes URL userinfo before audit persistence', (input, expected) => {
+    expect(new Redactor().redact({ url: input })).toEqual({ url: expected });
+  });
+
+  it('preserves credential-free URLs and path email addresses', () => {
+    expect(new Redactor().redactText('https://example.test/repo/a@b')).toBe('https://example.test/repo/a@b');
+  });
+
   it('redacts bearer tokens, API key values, and secret-like environment keys recursively', () => {
     const value = {
       headers: { Authorization: 'Bearer super-secret-token' },

@@ -47,6 +47,14 @@ export function createRuntimeSuccessServices(calls: string[]): McpApplicationSer
         message: 'fixture event',
       }])),
     },
+    resourceSnapshot: serviceProxy('resourceSnapshot', calls, () => ({workspaceId:'workspace-1',resources:[],coverage:'unknown'})),
+    callHistory: serviceProxy('callHistory', calls, () => ({items:[],nextCursor:null,coverage:'unknown'})),
+    taskResults: serviceProxy('taskResults', calls, () => ({workspaceId:'workspace-1',goalId:'goal-1',observedChanges:[],artifacts:[],evidenceCoverage:'partial'})),
+    workflowTemplates: serviceProxy('workflowTemplates', calls, (method) => method === 'list' ? [] : {readiness:'ready'}),
+    workflowStart: serviceProxy('workflowStart', calls, () => ({goalId:'goal-1',status:'active'})),
+    workspaceWriterLease: serviceProxy('workspaceWriterLease', calls, (method) => method === 'inspect'
+      ? { workspaceId: 'workspace-1', state: 'unleased', generation: 0, activeCalls: 0 }
+      : { leaseId: '00000000-0000-4000-8000-000000000001', leaseToken: 'smoke-test-only', generation: 1 }),
     workspaceInfo: serviceProxy('workspaceInfo', calls, (method, args) => {
       const requestedWorkspaceId = typeof args[1] === 'string' ? args[1] : 'workspace-1';
       const root = requestedWorkspaceId === 'ecc-workspace' ? runtimeEccWorkspaceRoot : process.cwd();
@@ -113,6 +121,9 @@ export function createRuntimeSuccessServices(calls: string[]): McpApplicationSer
         { relativePath: 'src/second.test.ts', kind: 'file', language: 'typescript', isTest: true, symbols: ['second'], functions: [], classes: [], interfaces: [], imports: [], exports: [] },
       ] } }
       : { executed: true }),
+    repositoryImport: serviceProxy('repositoryImport', calls, (method) => method === 'start'
+      ? { taskId: 'import-smoke', state: 'running' }
+      : { taskId: 'import-smoke', state: method === 'cancel' ? 'cancelled' : 'running' }),
     git: serviceProxy('git', calls, (method) => {
       if (method === 'status') return { entries: [] };
       if (method === 'diff') return { patch: '', truncated: false };

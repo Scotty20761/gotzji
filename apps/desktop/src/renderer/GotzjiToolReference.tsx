@@ -1,5 +1,5 @@
 import { useId, useState, type ReactElement } from 'react';
-import baseline from './gotzji-tool-baseline.json' with { type: 'json' };
+import baseline from './gotzji-upstream-baseline.json' with { type: 'json' };
 
 const mappings: Readonly<Record<string, string>> = {
   workspace_list: 'โครงการที่ลงทะเบียน', workspace_info: 'ข้อมูลโครงการที่เลือก',
@@ -18,14 +18,14 @@ export function GotzjiToolReference(): ReactElement {
   const normalized = query.trim().toLocaleLowerCase();
   const matches = baseline.tools.filter((tool) => `${tool.id} ${tool.description} ${tool.tags.join(' ')}`.toLocaleLowerCase().includes(normalized));
   return <details className="gotzji-reference"><summary>เทียบความสามารถกับ lnwjud</summary>
-    <p>รายการเทียบแอปเดิมรุ่น {baseline.version} จำนวน {baseline.tools.length} ชื่อ จากแคตตาล็อก ช่องทางเชื่อมต่อ และชุดโปรแกรมต้นฉบับ รวบรวมถึง {baseline.referenceUpdatedOn} บางชื่อเป็นทางเรียกงานเดียวกัน การมีทางใช้งานบางส่วนยังไม่ถือว่าทำได้ครบตามต้นทาง ดูสถานะพร้อมใช้งานจริงในรายการเครื่องมือของเครื่องนี้</p>
-    <p>{baseline.advertisedCallableNames} ชื่อมีหลักฐานในช่องทางเชื่อมต่อที่เก็บไว้ อีก {baseline.staticOnlyNames} ชื่อพบในชุดโปรแกรมต้นฉบับและยังต้องเทียบรายละเอียดก่อนเชื่อมใช้งาน</p>
+    <p>รายการเทียบต้นฉบับ GitHub รุ่น {baseline.version} จำนวน {baseline.tools.length} ชื่อ ยึดรุ่นวันที่ {baseline.referenceUpdatedOn} บางชื่อเป็นทางเรียกงานเดียวกัน การมีทางใช้งานบางส่วนยังไม่ถือว่าทำได้ครบตามต้นทาง ดูสถานะพร้อมใช้งานจริงในรายการเครื่องมือของเครื่องนี้</p>
+    <p>รายการนี้ตรวจจากโค้ดและเอกสารต้นฉบับ หลักฐานช่องทางเชื่อมต่อรุ่น 5.8.6 เดิมเก็บแยกไว้ ยังไม่มีผลตรวจการติดตั้งหรือการเรียกผ่าน ChatGPT สำหรับรุ่น 5.8.7</p>
     <p>คำอธิบายต้นทางเป็นของ lnwjud การใช้งาน gotzji ยึดสิทธิ์และสถานะที่แอปนี้แสดง</p>
     <label htmlFor={inputId}>ค้นหาเครื่องมืออ้างอิง</label><input id={inputId} type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="ชื่อเครื่องมือหรือประเภทงาน" />
     <p aria-live="polite">พบ {matches.length} รายการ</p>
     {matches.length === 0 ? <p>ไม่พบเครื่องมือที่ตรงกับคำค้นนี้</p> : <div className="gotzji-reference-table"><table>
       <thead><tr><th>เครื่องมือเดิม</th><th>ความครอบคลุม</th><th>ทางใช้งานใน gotzji</th></tr></thead>
-      <tbody>{matches.map((tool) => <tr key={tool.id}><td><strong>{tool.id}</strong>{tool.surface === 'static-only' && <p><small>รายการจากชุดโปรแกรมต้นฉบับ</small></p>}<p>{tool.description}</p></td>
+      <tbody>{matches.map((tool) => <tr key={tool.id}><td><strong>{tool.id}</strong><p><small>รายการจากชุดโปรแกรมต้นฉบับ</small></p><p>{tool.description}</p></td>
         <td>{mappings[tool.id] ? 'รองรับบางส่วน' : 'ยังต้องเชื่อม'}</td><td>{mappings[tool.id] ?? 'อยู่ในรายการงานที่จะพัฒนาและตรวจผล'}</td></tr>)}</tbody>
     </table></div>}
   </details>;

@@ -3,7 +3,7 @@
 The Desktop title bar has two independent controls:
 
 1. the existing version/update button, which keeps update/check/install behavior;
-2. the adjacent `?` button, which opens bundled release notes for the exact installed version.
+2. the adjacent `?` button, which opens bundled release notes for the current release series, newest installed-or-earlier version first.
 
 Do not merge those responsibilities.
 
@@ -12,13 +12,13 @@ Do not merge those responsibilities.
 - `apps/desktop/src/renderer/features/release-notes/release-notes.ts` — typed local release-note registry.
 - `apps/desktop/src/renderer/features/release-notes/WhatsNewModal.tsx` — accessible modal.
 - `apps/desktop/src/renderer/i18n/messages.ts` — Thai/English titles, descriptions, badges, empty-state and accessibility copy.
-- `apps/desktop/tests/release-notes.test.ts` — exact-version and missing-version behavior.
+- `apps/desktop/tests/release-notes.test.ts` and `apps/desktop/tests/release-notes-series.test.ts` — exact-version registry, series ordering, future-version filtering and modal rendering.
 
 ## Adding a release
 
 Before packaging a new public version:
 
-1. Add exactly one registry entry whose `version` equals the installed semantic version.
+1. Add exactly one registry entry whose `version` equals the installed semantic version. The modal displays all entries for the installed series with descending semantic-version order (5.8.x, then 5.9.x after upgrading; v6+ groups by major as 6.x.x). Never show notes for future or other series.
 2. Keep stable item/category IDs; put user-visible copy in i18n rather than branching on locale in components.
 3. Describe only functionality that actually ships. Provider contracts that remain unavailable must not be described as ready.
 4. Keep the registry local/offline. Opening What's New must not require GitHub or any network request.
@@ -26,7 +26,41 @@ Before packaging a new public version:
 
 `scripts/set-version.mjs` synchronizes version surfaces but intentionally does **not** invent release notes. The release-note entry is a reviewed product artifact.
 
-## Current v5.7.2 release-note coverage
+## Current source v5.8.7 candidate release-note coverage
+
+The offline `5.8.7` registry entry provides localized Thai and English notes for the combined candidate:
+
+- Issue #208: guarded HTTPS Git import pinned to an exact commit, with Windows NTFS publication proof and fail-closed recovery;
+- Issue #209: strict create-only mutations, workspace writer leases, exact-target path preflight and explicit same-client idle-session recovery after a 60-second grace period;
+- Process startup writer-admission fix: rejected pre-spawn launches release their reservation; spawned children still require verified zero-active native termination before release;
+- exact host-supplied MCP connector identity, direct child MCP response passthrough, and explicit host permission-denial diagnostics;
+- truthful Scheduled Task/Goal continuation status without claiming an active timer is a continuous background worker;
+- safe Reset All Settings and local Tunnel alias reconciliation without deleting remote tunnels or foreign profiles.
+
+These are source/installed QA candidate notes, **not** evidence that all security verification, protected merge, exact-main-SHA CI, official packages, or publication has passed. The owner authorized a solo-developer review process; no external review is claimed. The latest public release remains v5.8.6 until the release gates complete.
+
+## Historical v5.8.5 release-note coverage
+
+The `5.8.5` entry provides localized Thai and English notes for:
+
+- Engineering Harness routing that keeps read-only audits and historical deployment or release topics in the local review workflow while retaining explicit delivery actions;
+- safe resume of an existing Engineering Goal after metadata or required-platform contracts change, preserving compatible findings, task tracking and evidence;
+- modern MCP HTTP notifications when host tool availability changes, followed by a fresh `tools/list` response.
+
+The direct local SDK `tools/list` contract includes the optional checkpoint engineering fields. `tool_describe` reports a canonical SHA-256 digest from the active ToolRegistry schema and marks the remote connector schema unavailable. Issue #198 reports a Cloudflare connector schema discrepancy. The connector-side transformation and refresh behavior remain external acceptance and must not be described as fixed until verified in that connector.
+
+## Historical v5.8.0 release-note coverage
+
+The exact `5.8.0` in-app registry provides localized Thai and English entries for:
+
+- Six review-first Workflows with required input validation and explicit AI handoff (without automatic Goal creation or scheduling);
+- Git changed-file browsing, Prompt typography, shared dropdowns and Doctor/Tools/Work Log improvements;
+- CSV/XLSX file auditing and template report support subject to native provider availability;
+- Goal-aware MCP call diagnostics, resources, result coverage and honest unavailable measurements.
+
+For each item, verify the corresponding code and target-native runtime before publication. Registry text alone does not prove the full flow.
+
+## Historical v5.7.2 release-note coverage
 
 The bundled `5.7.2` entry covers the behavior shipped in the current published release:
 

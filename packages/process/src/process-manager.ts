@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process';
+import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { appError, err, ok, type Result } from '@lnwjud/domain';
@@ -6,6 +7,7 @@ import { PathExecutableResolver, type ExecutableResolver } from './executable-re
 import { LogRingBuffer } from './ring-buffer.js';
 import { createProcessTreeTerminator, type ProcessTreeTerminator } from './process-tree.js';
 import { createSpawnInvocationFactory, type SpawnInvocationFactory } from './spawn-invocation.js';
+import { prepareWindowsContainedLaunch, readWindowsContainmentReceipt, type WindowsContainmentReceipt } from './windows-contained-launch.js';
 import type { LogQuery, ManagedProcess, ManagedProcessStart, ManagedProcessState, ProcessLogResult } from './process-types.js';
 
 const DEFAULT_TIMEOUT_MS = 60 * 60 * 1000;
@@ -22,6 +24,10 @@ interface ManagedRecord {
   readonly spec: ManagedProcessStart;
   readonly startedAt: string;
   readonly logs: LogRingBuffer;
+  readonly nativeReceiptPath?: string;
+  readonly nativeCancelPath?: string;
+  readonly onVerifiedNativeTermination?: () => void;
+  nativeTerminationNotified?: boolean;
   state: ManagedProcessState;
   finishedAt?: string;
   exitCode?: number;
@@ -42,34 +48,64 @@ export class ProcessManager {
     private readonly executableResolver: ExecutableResolver = new PathExecutableResolver(),
     private readonly maxActiveProcesses: number = DEFAULT_MAX_ACTIVE_MANAGED_PROCESSES,
     private readonly invocationFactory: SpawnInvocationFactory = createSpawnInvocationFactory(),
+    private readonly nativeContainmentRoot?: string,
   ) {}
 
   public async start(
     spec: ManagedProcessStart,
     signal?: AbortSignal,
     onCreated?: (process: ManagedProcess) => void,
+    onVerifiedNativeTermination?: () => void,
   ): Promise<Result<ManagedProcess>> {
+    // A writer reservation is safe to release only before any child is spawned,
+    // or after a launched child has verified native zero-active termination.
+    const rejectBeforeSpawn = (failure: Result<never>): Result<never> => {
+      onVerifiedNativeTermination?.();
+      return failure;
+    };
     const activeProcesses = this.activeProcessCount();
     if (activeProcesses >= this.maxActiveProcesses) {
-      return err(appError('CONFLICT', `Too many managed processes are already active (${activeProcesses}/${this.maxActiveProcesses}); wait for existing work or stop a process before starting another.`, true));
+      return rejectBeforeSpawn(err(appError('CONFLICT', `Too many managed processes are already active (${activeProcesses}/${this.maxActiveProcesses}); wait for existing work or stop a process before starting another.`, true)));
     }
     const validation = this.validateSpec(spec);
-    if (!validation.ok) return validation;
-    if (isAborted(signal)) return cancelledStart();
+    if (!validation.ok) return rejectBeforeSpawn(validation);
+    if (isAborted(signal)) return rejectBeforeSpawn(cancelledStart());
     const resolvedExecutable = await this.executableResolver.resolve(spec.executable);
-    if (isAborted(signal)) return cancelledStart();
-    if (!resolvedExecutable.ok) return resolvedExecutable;
+    if (isAborted(signal)) return rejectBeforeSpawn(cancelledStart());
+    if (!resolvedExecutable.ok) return rejectBeforeSpawn(resolvedExecutable);
     const invocation = this.invocationFactory.create(resolvedExecutable.value, spec.args);
-    if (!invocation.ok) return invocation;
-    if (isAborted(signal)) return cancelledStart();
-    const processId = randomUUID();
-    const child = spawn(invocation.value.executable, [...invocation.value.args], {
+    if (!invocation.ok) return rejectBeforeSpawn(invocation);
+    if (isAborted(signal)) return rejectBeforeSpawn(cancelledStart());
+    const processId = spec.containmentId ?? randomUUID();
+    if (spec.containmentId !== undefined
+      && !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(spec.containmentId)) {
+      return rejectBeforeSpawn(err(appError('INVALID_INPUT', 'Native containment identifier is invalid')));
+    }
+    let contained: Awaited<ReturnType<typeof prepareWindowsContainedLaunch>> | undefined;
+    if (process.platform === 'win32' && this.nativeContainmentRoot !== undefined) {
+      try {
+        contained = await prepareWindowsContainedLaunch({
+          directory: path.join(this.nativeContainmentRoot, processId),
+          executable: invocation.value.executable,
+          args: invocation.value.args,
+          cwd: spec.cwd,
+          timeoutMs: spec.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+          ...(invocation.value.windowsVerbatimArguments === undefined
+            ? {} : { windowsVerbatimArguments: invocation.value.windowsVerbatimArguments }),
+        });
+      } catch {
+        return rejectBeforeSpawn(err(appError('INTERNAL_ERROR', 'Native process containment could not be prepared')));
+      }
+      if (isAborted(signal)) return rejectBeforeSpawn(cancelledStart());
+    }
+    const child = spawn(contained?.executable ?? invocation.value.executable, [...(contained?.args ?? invocation.value.args)], {
       cwd: spec.cwd,
       env: createSafeEnvironment(process.env),
       shell: false,
+      ...(spec.stdinMode === 'ignore' ? { stdio: ['ignore', 'pipe', 'pipe'] as const } : {}),
       detached: process.platform !== 'win32',
       windowsHide: true,
-      ...(invocation.value.windowsVerbatimArguments === undefined ? {} : { windowsVerbatimArguments: invocation.value.windowsVerbatimArguments }),
+      ...(contained !== undefined || invocation.value.windowsVerbatimArguments === undefined ? {} : { windowsVerbatimArguments: invocation.value.windowsVerbatimArguments }),
     });
     const record: ManagedRecord = {
       processId,
@@ -77,6 +113,8 @@ export class ProcessManager {
       spec,
       startedAt: new Date().toISOString(),
       logs: new LogRingBuffer(),
+      ...(contained === undefined ? {} : { nativeReceiptPath: contained.receiptPath, nativeCancelPath: contained.cancelPath }),
+      ...(onVerifiedNativeTermination === undefined ? {} : { onVerifiedNativeTermination }),
       state: 'starting',
     };
     this.records.set(processId, record);
@@ -84,7 +122,10 @@ export class ProcessManager {
     child.stdout?.on('data', (chunk: Buffer) => record.logs.append('stdout', chunk.toString('utf8')));
     child.stderr?.on('data', (chunk: Buffer) => record.logs.append('stderr', chunk.toString('utf8')));
     child.once('error', (error: Error & { code?: string }) => this.handleError(record, error));
-    child.once('close', (exitCode: number | null) => this.handleClose(record, exitCode));
+    child.once('close', (exitCode: number | null) => {
+      if (record.nativeReceiptPath === undefined) this.handleClose(record, exitCode);
+      else void this.handleNativeClose(record);
+    });
 
     return new Promise((resolve) => {
       let settled = false;
@@ -192,13 +233,40 @@ export class ProcessManager {
   }
 
   private handleError(record: ManagedRecord, error: Error & { code?: string }): void {
-    if (record.stopRequested === undefined && !isTerminal(record.state)) this.finish(record, 'failed');
+    if (record.nativeReceiptPath !== undefined) {
+      this.markTerminationUnverified(record, 'Native Job Object launch error requires containment proof');
+    } else if (record.stopRequested === undefined && !isTerminal(record.state)) this.finish(record, 'failed');
     if (error.code !== 'ENOENT') record.exitCode = -1;
   }
 
   private handleClose(record: ManagedRecord, exitCode: number | null): void {
     if (record.stopRequested === undefined && !isTerminal(record.state)) this.finish(record, 'exited');
     if (record.exitCode === undefined && exitCode !== null) record.exitCode = exitCode;
+  }
+
+  private async handleNativeClose(record: ManagedRecord): Promise<void> {
+    if (record.nativeReceiptPath === undefined) return;
+    const receipt = await readWindowsContainmentReceipt(record.nativeReceiptPath);
+    if (receipt === undefined) {
+      this.markTerminationUnverified(record, 'Native process Job Object completion is unverified');
+      return;
+    }
+    this.acceptNativeReceipt(record, receipt);
+  }
+
+  private acceptNativeReceipt(record: ManagedRecord, receipt: WindowsContainmentReceipt): void {
+    if (!isTerminal(record.state)) {
+      const state = record.stopRequested === 'timed_out' || receipt.outcome === 'timed_out'
+        ? 'timed_out'
+        : record.stopRequested === 'stopped' || receipt.outcome === 'cancelled'
+          ? 'stopped' : receipt.exitCode === 0 ? 'exited' : 'failed';
+      this.finish(record, state);
+    }
+    record.exitCode = receipt.exitCode;
+    if (!record.nativeTerminationNotified) {
+      record.nativeTerminationNotified = true;
+      record.onVerifiedNativeTermination?.();
+    }
   }
 
   private async timeout(record: ManagedRecord): Promise<void> {
@@ -221,6 +289,27 @@ export class ProcessManager {
   private async performTermination(record: ManagedRecord, targetState: 'stopped' | 'timed_out'): Promise<boolean> {
     record.terminationTarget = targetState;
     record.stopRequested = targetState;
+    if (record.nativeCancelPath !== undefined && record.nativeReceiptPath !== undefined) {
+      try {
+        await writeFile(record.nativeCancelPath, 'cancel', { flag: 'wx', mode: 0o600 });
+      } catch (error: unknown) {
+        if (error === null || typeof error !== 'object' || !('code' in error) || error.code !== 'EEXIST') {
+          this.markTerminationUnverified(record, 'Native Job Object cancellation could not be submitted');
+          return false;
+        }
+      }
+      const deadline = Date.now() + 12000;
+      while (Date.now() < deadline) {
+        const receipt = await readWindowsContainmentReceipt(record.nativeReceiptPath);
+        if (receipt !== undefined) {
+          this.acceptNativeReceipt(record, receipt);
+          return true;
+        }
+        await delay(100);
+      }
+      this.markTerminationUnverified(record, 'Native Job Object termination receipt is unavailable');
+      return false;
+    }
     if (record.timer !== undefined) clearTimeout(record.timer);
     const pid = record.child.pid;
     if (pid === undefined) {
@@ -291,6 +380,7 @@ export class ProcessManager {
   private snapshot(record: ManagedRecord): ManagedProcess {
     return {
       processId: record.processId,
+      ...(record.child.pid !== undefined && (record.state === 'starting' || record.state === 'running') ? { pid: record.child.pid } : {}),
       executable: record.spec.executable,
       args: [...record.spec.args],
       cwd: record.spec.cwd,

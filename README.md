@@ -17,6 +17,10 @@ The Git history retains the upstream v5.7.3 baseline. The current source is the 
 
 ## Development
 
+The current integration baseline is upstream **lnwjud v5.8.7** (`1a0453ed0ef1de4cdf9ce1ba9edee8da0de8426b`). gotzji keeps version 1.0.0 and its own identity. All 294 upstream source definitions are inventoried separately from working gotzji tools. See [current integration evidence](docs/parity/README.md).
+
+ChatGPT starts new work; Desktop configures and selects projects, prepares prompts, follows results and manages existing work. Project selection and versioned conversation summaries persist in the existing owner ledger so a new ChatGPT conversation can retrieve current instructions and continue the same project.
+
 Use Node.js 24 and Corepack pnpm 10.15.0. Work on `dev`; `main` is reserved for verified merges.
 
 Windows x64 is the current distribution target. Portable source checks for macOS and Linux are tracked in the [platform support contract](docs/architecture/PLATFORM_SUPPORT.md); they do not claim native package release availability.

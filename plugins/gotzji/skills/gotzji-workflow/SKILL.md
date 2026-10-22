@@ -9,8 +9,8 @@ Use the registered `gotzji_*` MCP tools as the control surface for gotzji work. 
 
 ## Select the exact authority
 
-1. Call `gotzji_health`. Before new work, inspect `gotzji_projects` and `gotzji_tools` unless their current responses are already established in this conversation and no reconnect, restart, catalog change, or scope change has occurred.
-2. Use only a project returned by `gotzji_projects`. If the required project or provider is absent, ask the user to enroll or configure it in the local gotzji app.
+1. Call `gotzji_health`, then `gotzji_project_context` on a new chat or reconnect. Show the selected project's name. Its current instruction files, saved conversation notes and canonical recent jobs have separate provenance; saved notes never override instructions or prove a result.
+2. Use the selected project for continuation. When the user's request names another enrolled project, select it with `gotzji_select_project`, then read its context. If selection is missing or ambiguous, inspect `gotzji_projects` and ask which project to use. If the required project or provider is absent, ask the user to enroll or configure it in the local gotzji app. Inspect `gotzji_tools` before new work unless its current response is already established and the catalog or scope has not changed.
 3. Use only an operation currently returned by `gotzji_tools`. If a model-dependent Investment Library workflow is absent, report it as unsupported pending an explicit ChatGPT orchestration contract; do not infer support from a recipe, historical job, or compatibility identifier.
 4. Give each new user request a stable `requestId`. Reuse that `requestId` for retries and preserve the returned `preparationId` and `jobId` in the conversation. When the user refers to existing work without an exact ID, call `gotzji_jobs` and have them select the intended job. A job mentioned by the user must be selected by its exact `jobId`; never infer the newest job.
 
@@ -36,10 +36,12 @@ Before preparing an effect, read the selected project's current instructions thr
 - Call `gotzji_result` only for the selected job after `gotzji_status` reports terminal completion. Report the verified result and its actual delivery boundary separately from job progress.
 - Call `gotzji_resume` with the same `jobId` to inspect or rejoin admitted work. Do not prepare or submit a replacement for live or recoverable work.
 - Call `gotzji_cancel` only when the user asks to cancel that exact `jobId`, then report the returned termination evidence.
+- At a meaningful checkpoint or before ending the work, save a concise project summary, decisions, open questions and result references with `gotzji_save_project_memory`. Use the revision from the latest context. On `PROJECT_MEMORY_CONFLICT`, reread and reconcile the newer notes before saving. Reference actual job IDs and files; retrieve full history/results when the bounded context is incomplete. This records conversation context without changing job status or delivery evidence.
 
 ## Boundaries
 
 - Keep project enrollment, connection setup, tunnel credentials and recipe registration in the local gotzji app.
+- Start new work through ChatGPT. Desktop prepares copyable prompts and observes existing jobs; its controls may select projects, configure the host, cancel/rejoin existing jobs or settle uncertain effects. A copied prompt has not started a job.
 - Route effects through the typed gotzji catalog and existing durable authority. Preserve owner, project, scope, policy, version, delivery and recovery checks; never bypass them with general filesystem, shell, raw MCP, another job engine or a stock connector.
 - Keep reasoning and decisions in the current ChatGPT conversation. When additional reasoning is required, perform it here and call the next supported typed host operation; if no explicit continuation contract exists, report the workflow as unsupported rather than skipping an analysis, audit, persistence or delivery obligation.
 - State evidence at its observed level: packaged source, connected app, accepted request, active progress, verified result, and delivered artifact are distinct facts.

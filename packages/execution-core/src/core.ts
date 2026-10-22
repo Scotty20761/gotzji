@@ -16,6 +16,7 @@ import { signed } from './managed-worker.js';
 import { processIdentities, sameProcessIdentity, type ProcessIdentity } from './process-identity.mjs';
 import { assertGraceProfile, graceProfile, productGraceProfile, profileDependencies, testProviderProfile, type GraceProfile, type GraceRegistration, type ProductRegistration } from './grace-profile.js';
 import { PRODUCT_CATALOG, claimsOverlap, folderClaim, registeredProject, productOperation, reviewedRecipe } from './product-projects.js';
+import { readProjectMemory, writeProjectMemory, type ProjectMemory, type ProjectMemorySnapshot } from './project-context.js';
 import { CoreError, type JobView, type SettleDecision, type Preparation, type RequestInput, type TaskBinding, type CodeRunReceipt, type RegisteredProject, type ProjectRegistration, type ProductOperationInput, type BasicProductOperationInput, type ProductOperation, type PreparedProductOperation, type CatalogEntry, type ReviewedCommandRegistration, type PrepareOptions, type SupportReport } from './types.js';
 import { PRODUCT_NATIVE_OPERATIONS, prepareProductNativeOperation, type ProductNativeInput, type TrustedProductNativeOptions, type ProductNativeOperationName, type PreparedProductNativeOperation } from './product-native.js';
 import { libraryRoute, libraryCatalog, assertHostDirectLibraryWorkflow, prepareLibraryOperation, verifiedLibraryNavigationEvolution, type ProductLibraryInput, type TrustedLibraryOptions } from './product-library.js';
@@ -297,6 +298,41 @@ export class ExecutionCore {
   public listProjects(credential: string): readonly RegisteredProject[] {
     const adapter = this.authorize(credential);
     return this.#store.database.connection.prepare('SELECT registration FROM gotzji_projects WHERE owner=? ORDER BY project_id').all(adapter.owner).map((row) => JSON.parse(String(row.registration)) as RegisteredProject);
+  }
+  public selectedProject(credential: string): RegisteredProject | null {
+    const adapter = this.authorize(credential);
+    const row = this.#store.database.connection.prepare('SELECT project_id FROM gotzji_project_selection WHERE owner=?').get(adapter.owner);
+    return row ? this.listProjects(credential).find((entry) => entry.projectId === row.project_id) ?? null : null;
+  }
+  /** Selects existing enrollment only; never enrolls a caller-supplied path or starts work. */
+  public selectProject(credential: string, projectId: string): RegisteredProject {
+    const adapter = this.authorize(credential, true);
+    const project = this.listProjects(credential).find((entry) => entry.projectId === projectId);
+    if (!project) throw new CoreError('PROJECT_NOT_REGISTERED');
+    this.#store.database.connection.prepare('INSERT INTO gotzji_project_selection VALUES (?,?) ON CONFLICT(owner) DO UPDATE SET project_id=excluded.project_id').run(adapter.owner, projectId);
+    return project;
+  }
+  public async projectContext(credential: string, projectId?: string): Promise<{
+    readonly project: RegisteredProject; readonly memory: ProjectMemorySnapshot;
+    readonly instructions: readonly { readonly path: string; readonly content: string; readonly sha256: string }[];
+    readonly jobs: readonly JobView[]; readonly historyTruncated: boolean;
+  }> {
+    const adapter = this.authorize(credential);
+    const project = projectId === undefined ? this.selectedProject(credential) : this.listProjects(credential).find((entry) => entry.projectId === projectId);
+    if (!project) throw new CoreError(projectId === undefined ? 'PROJECT_SELECTION_REQUIRED' : 'PROJECT_NOT_REGISTERED');
+    const instructions: { path: string; content: string; sha256: string }[] = [];
+    for (const filename of ['AGENTS.md', 'CLAUDE.md']) {
+      try { instructions.push({ path: filename, ...await this.readProjectFile(credential, { projectId: project.projectId, path: filename }) }); }
+      catch (error) { if (!(error instanceof CoreError) || error.code !== 'FILE_NOT_FOUND') throw error; }
+    }
+    const all = this.#store.database.connection.prepare('SELECT c.id FROM gotzji_claims c JOIN gotzji_product_jobs p ON p.job_id=c.id WHERE c.owner=? AND p.project_id=? ORDER BY c.rowid DESC LIMIT 26').all(adapter.owner, project.projectId);
+    const jobs = await Promise.all(all.slice(0, 25).map((row) => this.view(this.#store.claim(String(row.id)))));
+    return { project: { ...project, recipeIds: this.projectRecipeIds(credential, project) }, memory: readProjectMemory(this.#store.database.connection, adapter.owner, project.projectId), instructions, jobs, historyTruncated: all.length > 25 };
+  }
+  public saveProjectMemory(credential: string, input: { readonly projectId: string; readonly expectedRevision: number; readonly memory: ProjectMemory }): ProjectMemorySnapshot {
+    const adapter = this.authorize(credential, true);
+    if (!this.listProjects(credential).some((entry) => entry.projectId === input.projectId)) throw new CoreError('PROJECT_NOT_REGISTERED');
+    return writeProjectMemory(this.#store.database.connection, adapter.owner, input.projectId, input, this.#now().toISOString());
   }
   /** App-only enrollment of one host-owned browser session; never expose private session facts through MCP. */
   public async enrollBrowserSession(credential: string, options: CoreBrowserOptions): Promise<void> {

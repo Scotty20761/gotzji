@@ -1,8 +1,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { BrowserWindow } from 'electron';
+import { BrowserWindow, screen } from 'electron';
 import { comparableHostPath } from '@lnwjud/workspace';
+import { mutationApprovalWindowSize } from './mutation-approval-layout.js';
 import { windowChromeOptions } from './window-chrome.js';
 
 const mainDirectory = path.dirname(fileURLToPath(import.meta.url));
@@ -113,4 +114,50 @@ export function createLogViewerWindow(): BrowserWindow {
   });
   void viewerWindow.loadFile(rendererEntryPath, { hash: 'log-viewer' });
   return viewerWindow;
+}
+
+/** A bounded, app-rendered host window for high-risk approval details. */
+export function createMutationApprovalWindow(parent: BrowserWindow | null, title: string): BrowserWindow {
+  const rendererEntryPath = getRendererEntryPath();
+  const iconPath = getWindowIconPath();
+  const activeParent = parent !== null && !parent.isDestroyed() ? parent : null;
+  const display = activeParent === null
+    ? screen.getPrimaryDisplay()
+    : screen.getDisplayMatching(activeParent.getBounds());
+  const { width, height } = mutationApprovalWindowSize(display.workAreaSize);
+  const approvalWindow = new BrowserWindow({
+    ...(activeParent === null ? {} : { parent: activeParent, modal: true }),
+    width,
+    height,
+    minWidth: Math.min(420, width),
+    minHeight: Math.min(360, height),
+    resizable: true,
+    maximizable: false,
+    fullscreenable: false,
+    show: false,
+    title,
+    autoHideMenuBar: true,
+    ...(iconPath !== undefined ? { icon: iconPath } : {}),
+    webPreferences: {
+      preload: getPreloadPath(),
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: true,
+      webSecurity: true,
+    },
+  });
+
+  approvalWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  approvalWindow.webContents.on('will-navigate', (event, navigationUrl) => {
+    if (!isAllowedRendererUrl(navigationUrl, rendererEntryPath)) event.preventDefault();
+  });
+  approvalWindow.webContents.on('will-attach-webview', (event) => {
+    event.preventDefault();
+  });
+  approvalWindow.once('ready-to-show', () => {
+    if (approvalWindow.isDestroyed()) return;
+    approvalWindow.show();
+    approvalWindow.focus();
+  });
+  return approvalWindow;
 }

@@ -39,6 +39,15 @@ export class PonytailActivationLedger {
     return fresh;
   }
 
+  /** Diagnostic only: never grant a workspace mutation based on a goal-scoped load. */
+  public hasGoalScopedPrimaryLoad(clientId: string, workspaceId: string): boolean {
+    const prefix = `${clientId}\u0000${workspaceId}\u0000`;
+    for (const [key, activation] of this.states) {
+      if (key.startsWith(prefix) && key.length > prefix.length && activation.primarySkillLoaded) return true;
+    }
+    return false;
+  }
+
   public markPrimaryLoaded(
     context: PonytailActivationContext,
     policy: ResolvedPonytailPolicy,

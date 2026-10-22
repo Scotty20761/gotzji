@@ -1,5 +1,5 @@
 import { defineTool, missingService, type McpToolContext, type McpToolDefinition } from './tool-types.js';
-import { gitDiffSchema, gitLogSchema, gitRunSchema, gitStatusSchema } from './schemas.js';
+import { gitCloneSafeSchema, gitCloneHandleSchema, gitDiffSchema, gitLogSchema, gitRunSchema, gitStatusSchema } from './schemas.js';
 
 export function gitTools(context: McpToolContext): McpToolDefinition[] {
   return [
@@ -39,6 +39,42 @@ export function gitTools(context: McpToolContext): McpToolDefinition[] {
           ...(input.maxCommits === undefined ? {} : { maxCommits: input.maxCommits }),
           ...(input.maxBytes === undefined ? {} : { maxBytes: input.maxBytes }),
         }, signal),
+    }),
+    defineTool({
+      name: 'git_clone_safe',
+      description: 'Start an explicitly authorized workspace-scoped HTTPS Git import pinned to one exact full commit. Requires a clean URL, new relative directory, UUID requestId, and host approval. No arbitrary Git arguments, inherited credentials, overwrite or Full Bypass are required. Native Windows publication fails closed on unknown state.',
+      permission: 'EXECUTE',
+      annotations: { readOnlyHint: false, destructiveHint: true },
+      inputSchema: gitCloneSafeSchema,
+      handler: async (input, signal, authorization) => context.services.repositoryImport === undefined
+        ? missingService()
+        : context.services.repositoryImport.start(context.actor, {
+          workspaceId: input.workspaceId,
+          requestId: input.requestId,
+          url: input.url,
+          destination: input.destination,
+          commit: input.commit,
+        }, signal, authorization),
+    }),
+    defineTool({
+      name: 'git_clone_status',
+      description: 'Inspect an owned repository import by exact workspace and durable task identity; returns only verified status and no credentials.',
+      permission: 'READ',
+      annotations: { readOnlyHint: true, destructiveHint: false },
+      inputSchema: gitCloneHandleSchema,
+      handler: async (input) => context.services.repositoryImport === undefined
+        ? missingService()
+        : context.services.repositoryImport.status(context.actor, input.workspaceId, input.taskId),
+    }),
+    defineTool({
+      name: 'git_clone_cancel',
+      description: 'Cancel only an owned durable repository import, keeping native unknown/child liveness fail-closed.',
+      permission: 'EXECUTE',
+      annotations: { readOnlyHint: false, destructiveHint: false },
+      inputSchema: gitCloneHandleSchema,
+      handler: async (input) => context.services.repositoryImport === undefined
+        ? missingService()
+        : context.services.repositoryImport.cancel(context.actor, input.workspaceId, input.taskId),
     }),
     defineTool({
       name: 'git',

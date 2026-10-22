@@ -21,5 +21,8 @@
     "typecheck": "tsc --noEmit",
     "build": "tsc --outDir dist"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "devDependencies": {
+    "@modelcontextprotocol/client": "2.0.0"
+  }
 }

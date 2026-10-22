@@ -8,3 +8,4 @@ export * from './posix-process-identity.js';
 export * from './executable-resolver.js';
 export * from './windows-spawn.js';
 export * from './spawn-invocation.js';
+export * from './windows-contained-launch.js';
