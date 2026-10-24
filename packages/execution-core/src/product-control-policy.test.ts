@@ -42,17 +42,28 @@ describe('generated control-policy upgrades', () => {
     expect(readFileSync(path.join(workspace, 'AGENTS.md'), 'utf8')).toBe('Owner-edited policy\n');
   });
   it('requires the sealed authority and waits for an admitted job before rewriting policy', async () => {
+    const started = performance.now(); const trace = (stage: string): void => { if (process.env.GOTZJI_LIBRARY_DIAGNOSTIC === '1') console.log('[control-policy-stage]', JSON.stringify({ stage, elapsedMs: Math.round(performance.now() - started) })); };
+    trace('fixture.begin');
     const root = canonicalTemporaryDirectorySync('gotzji-policy-pending-'); roots.push(root);
     const directory = path.join(root, 'state'); const workspace = path.join(directory, 'workspace');
     ensureProductControlDocuments(workspace); writeFileSync(path.join(workspace, 'CLAUDE.md'), LEGACY_RULES);
+    trace('core.open.begin');
     const core = await ExecutionCore.open(directory, { product: { executable: process.execPath, libraryRoot: workspace } });
+    trace('core.open.end');
     const credential = core.enrollAdapter('desktop', 'owner');
     const project = path.join(root, 'project'); mkdirSync(project);
     core.registerProject(credential, { projectId: 'project', displayName: 'Synthetic', rootPath: project });
-    await core.submit(credential, core.prepareOperation(credential, { requestId: 'pending', projectId: 'project', operation: 'file.write', path: 'pending.txt', expectedSha256: null, content: 'not yet written' }).preparationId);
+    trace('prepare.begin');
+    const prepared = core.prepareOperation(credential, { requestId: 'pending', projectId: 'project', operation: 'file.write', path: 'pending.txt', expectedSha256: null, content: 'not yet written' });
+    trace('prepare.end'); trace('submit.begin');
+    await core.submit(credential, prepared.preparationId);
+    trace('submit.end');
     const authority = core.authority(); core.close();
+    trace('authority-and-close.end');
     expect(() => ensureProductControlDocuments(workspace, { stateDirectory: directory })).toThrow('UPGRADE_AUTHORITY_DENIED');
+    trace('authority-refusal.end');
     expect(() => ensureProductControlDocuments(workspace, { stateDirectory: directory, authority })).toThrow('UPGRADE_RECONCILIATION_REQUIRED');
+    trace('busy-refusal.end');
     expect(readFileSync(path.join(workspace, 'CLAUDE.md'), 'utf8')).toBe(LEGACY_RULES);
   });
   it('updates exact generated text for a quiescent anchored predecessor', async () => {
