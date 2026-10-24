@@ -8,6 +8,7 @@ import { pathToFileURL } from 'node:url';
 import { LibraryWorkflowAdapter } from './library-workflow-adapter.js';
 import { digestLibraryValue } from './library-workflow-contract.js';
 import { childEnvironment, replaceFileSync } from './product-security.mjs';
+import { verifyFingerprint } from './fingerprints.mjs';
 import { canonicalSpokePolicy } from './product-library-spoke-policy.mjs';
 import { assertProductAuthority } from './product-broker.mjs';
 import {
@@ -56,18 +57,21 @@ export function assertPreparedLibraryDependencies(config, knownPrepared) {
   }}finally{db.close();}
   if(navigationAfter)assertNavigationSnapshot(prepared,navigationAfter);
   const evolved=new Map(effects.map((entry)=>[path.resolve(prepared.project.rootPath,entry.relativePath),entry.afterSha256]));
-  const verify=(entry)=>{const expected=evolved.has(path.resolve(entry.path))?evolved.get(path.resolve(entry.path)):entry.hash;
+  const verify=(entry,program=false)=>{const expected=evolved.has(path.resolve(entry.path))?evolved.get(path.resolve(entry.path)):entry.hash;
     if(expected===null){if(existsSync(entry.path))throw typed('PROJECT_POLICY_CHANGED','none');return;}
-    if(!existsSync(entry.path)||realpathSync(entry.path)!==entry.path||lstatSync(entry.path).isSymbolicLink()||digest(readFileSync(entry.path))!==expected)throw typed('PROJECT_POLICY_CHANGED','none');};
+    if(!existsSync(entry.path)||realpathSync(entry.path)!==entry.path||lstatSync(entry.path).isSymbolicLink())throw typed('PROJECT_POLICY_CHANGED','none');
+    if(program){try{verifyFingerprint(entry.path,expected);}catch{throw typed('PROJECT_POLICY_CHANGED','none');}}
+    else if(digest(readFileSync(entry.path))!==expected)throw typed('PROJECT_POLICY_CHANGED','none');};
   for(const entry of Object.values(prepared.projectPolicies??{}))verify(entry);
   for(const entry of prepared.library.selectedSources) {
     if (appliedSource && entry.path === appliedSource.path) {
       if (!existsSync(entry.path) || realpathSync(entry.path) !== entry.path || lstatSync(entry.path).isSymbolicLink() || digest(readFileSync(entry.path)) !== appliedSource.hash) throw typed('LIBRARY_EFFECT_RECONCILIATION_REQUIRED','unknown');
     } else verify(entry);
   }
-  verify(prepared.library.python);
+  verify(prepared.library.python,true);
   if(config.grace){
-    for(const entry of [...(config.grace.mode==='host-direct'?[]:[{path:config.grace.executable,hash:config.grace.executableHash}]),{path:config.grace.sourceFile,hash:config.grace.sourceHash},...Object.values(config.grace.documents??{}),...(config.grace.testDriver?[{path:config.grace.testDriver,hash:config.grace.testDriverHash}]:[])])verify(entry);
+    if(config.grace.mode!=='host-direct')verify({path:config.grace.executable,hash:config.grace.executableHash},true);
+    for(const entry of [{path:config.grace.sourceFile,hash:config.grace.sourceHash},...Object.values(config.grace.documents??{}),...(config.grace.testDriver?[{path:config.grace.testDriver,hash:config.grace.testDriverHash}]:[])])verify(entry);
   }
   const expectedPolicies=Object.entries(prepared.projectPolicies??{}).filter(([name])=>name.startsWith('project_policy_')).map(([,entry])=>entry.path).sort();const actual=[];
   for(const directory of prepared.policyDirectories??[])for(const name of ['AGENTS.md','CLAUDE.md']){const filename=path.join(directory,name);if(existsSync(filename))actual.push(filename);}

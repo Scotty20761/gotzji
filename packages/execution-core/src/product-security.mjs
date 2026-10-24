@@ -4,6 +4,7 @@ import { StringDecoder } from 'node:string_decoder';
 import { createHash } from 'node:crypto';
 import { existsSync, lstatSync, readFileSync, realpathSync, renameSync } from 'node:fs';
 import path from 'node:path';
+import { verifyFingerprint } from './fingerprints.mjs';
 const hash = (value) => createHash('sha256').update(value).digest('hex');
 const replaceWaitCell = new Int32Array(new SharedArrayBuffer(4));
 /** Preserve the old receipt while Windows releases a transient file handle. */
@@ -67,7 +68,14 @@ export function assertProductDependencies(config) {
   if (operation.command) for (const entry of [{ path: operation.command.executable, hash: operation.command.executableHash }, ...operation.command.dependencies]) {
     if (!existsSync(entry.path) || realpathSync(entry.path) !== entry.path || lstatSync(entry.path).isSymbolicLink() || hash(readFileSync(entry.path)) !== entry.hash) throw new Error('COMMAND_DEPENDENCIES_CHANGED');
   }
-  if (operation.kind === 'library') for (const entry of [...operation.library.selectedSources, operation.library.python]) {
-    if (!existsSync(entry.path) || realpathSync(entry.path) !== entry.path || lstatSync(entry.path).isSymbolicLink() || hash(readFileSync(entry.path)) !== entry.hash) throw new Error('LIBRARY_SOURCE_CHANGED');
+  if (operation.kind === 'library') {
+    for (const entry of operation.library.selectedSources) {
+      if (!existsSync(entry.path) || realpathSync(entry.path) !== entry.path || lstatSync(entry.path).isSymbolicLink() || hash(readFileSync(entry.path)) !== entry.hash) throw new Error('LIBRARY_SOURCE_CHANGED');
+    }
+    const entry = operation.library.python;
+    try {
+      if (!existsSync(entry.path) || realpathSync(entry.path) !== entry.path || lstatSync(entry.path).isSymbolicLink()) throw new Error('LIBRARY_SOURCE_CHANGED');
+      verifyFingerprint(entry.path, entry.hash);
+    } catch { throw new Error('LIBRARY_SOURCE_CHANGED'); }
   }
 }
