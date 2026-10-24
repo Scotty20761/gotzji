@@ -3,13 +3,14 @@ import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypt
 import { execFile, type ChildProcess } from 'node:child_process';
 import { promisify } from 'node:util';
 import { deflateSync } from 'node:zlib';
+import { createRequire } from 'node:module';
 import { DatabaseSync } from 'node:sqlite';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { build } from 'esbuild';
 import { _electron, expect, test as base, type ElectronApplication, type Page } from '@playwright/test';
-import { UNPACKAGED_E2E_PROCESS_BIRTH } from '../../../packages/execution-core/src/process-identity.mjs';
+import { processIdentities, sameProcessIdentity, UNPACKAGED_E2E_PROCESS_BIRTH } from '../../../packages/execution-core/src/process-identity.mjs';
 import { alive, observeWorker, stopWorker } from '../../../packages/execution-core/src/managed-worker.js';
 import type { WorkerRow } from '../../../packages/execution-core/src/store.js';
 import { parseGitReadDiagnostic, type GitReadDiagnostic } from '../../../packages/execution-core/src/git-read-diagnostics.js';
@@ -875,6 +876,161 @@ test('gotzji whole-app browser prompts survive navigation without creating model
   expect(await page.evaluate(async () => window.gotzji.request({ method: 'listJobs', input: {} }))).toEqual([]);
 });
 
+test.describe('actual Windows Excel qualification', () => {
+  test.skip(process.platform !== 'win32' || process.env.GOTZJI_NATIVE_EXCEL_QUALIFICATION !== '1', 'Explicit owned Excel qualification; synthetic and renderer checks are separate evidence');
+  test('gotzji Excel worksheet discovery preserves the workbook, prepares a first cell and reads absolute/reversed ranges', async ({ gotzji }, testInfo) => {
+    test.setTimeout(120000);
+    const { page, dataRoot } = gotzji;
+    const projectId = 'native-excel'; const sheetName = 'ข้อมูล ไทย'; const filename = 'ต้นฉบับ.xlsx';
+    const powershell = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+    const { stdout } = await promisify(execFile)(powershell, ['-NoProfile', '-NonInteractive', '-Command', `
+      $ErrorActionPreference='Stop'
+      $app=Get-ItemProperty -LiteralPath 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\excel.exe' -ErrorAction SilentlyContinue
+      [ordered]@{registered=(Test-Path -LiteralPath 'Registry::HKEY_CLASSES_ROOT\\Excel.Application');executable=[string]$app.'(default)';existing=@(Get-CimInstance Win32_Process -Filter "Name='EXCEL.EXE'" | ForEach-Object {$_.ProcessId})} | ConvertTo-Json -Compress
+    `], { windowsHide: true, timeout: 15000 });
+    const prerequisites = JSON.parse(stdout) as { registered: boolean; executable: string; existing: number[] };
+    expect(prerequisites.registered, 'Excel COM registration is required; this preflight creates no COM object').toBe(true);
+    expect(path.basename(prerequisites.executable).toLowerCase()).toBe('excel.exe');
+    expect(prerequisites.existing, 'Preserve every existing Excel session; do not run this qualification until the owner closes it').toEqual([]);
+    const config = await readProductConfiguration(path.join(dataRoot, 'runtime'), testOnlyProductSecretProtector());
+    expect(config.native, 'The fresh default host must pin the actual shipped Office provider').toBeDefined();
+    expect(config.native!.scriptPath).toBe(path.join(desktopRoot, 'build', 'gotzji-native-office.ps1'));
+    expect(config.native!.scriptSha256).toBe(createHash('sha256').update(await readFile(config.native!.scriptPath)).digest('hex'));
+    const ExcelJS: typeof import('../../../packages/mcp-server/node_modules/exceljs/index.js') = createRequire(path.join(desktopRoot, '..', '..', 'packages', 'mcp-server', 'package.json'))('exceljs');
+    const root = await gotzji.temporaryProject('gotzji-files-panel-e2e-');
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet(sheetName); const summary = workbook.addWorksheet('Summary');
+    sheet.getCell('A1').value = 'ข้อมูลคงเดิม'; sheet.getCell('A2').value = 2; sheet.getCell('B2').value = 3;
+    sheet.getCell('C2').value = { formula: 'SUM(A2:B2)', result: 5 }; sheet.getCell('D4').value = 'รักษาต้นฉบับ';
+    summary.getCell('A1').value = 'Original summary';
+    const imageBytes = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGMw7jjzHwAFAAKHH+5aBwAAAABJRU5ErkJggg==', 'base64');
+    sheet.addImage(workbook.addImage({ buffer: imageBytes, extension: 'png' }), 'A5:B6');
+    const source = path.join(root, filename); await workbook.xlsx.writeFile(source);
+    const original = await readFile(source); const sourceSha256 = createHash('sha256').update(original).digest('hex');
+    let nativeJobId: string | undefined = undefined;
+    const nativeJobIds = new Set<string>();
+    const proveExcelAbsent = async (): Promise<void> => {
+      for (const nativeJobId of nativeJobIds) {
+        const journal = await readFile(path.join(dataRoot, 'runtime', 'effects', nativeJobId, 'native-process-identities.jsonl'), 'utf8');
+        const identities = journal.trim().split(/\r?\n/u).map((line) => {
+          const record = JSON.parse((JSON.parse(line) as { body: string }).body) as { provider: string; jobId: string; pid: number; birth: string; executable: string };
+          expect(record).toMatchObject({ provider: 'office', jobId: nativeJobId });
+          expect(Number.isSafeInteger(record.pid) && record.pid > 0).toBe(true);
+          expect(record.birth).toMatch(/^\d+$/u); expect(path.basename(record.executable).toLowerCase()).toBe('excel.exe');
+          return record;
+        });
+        expect(identities.length).toBeGreaterThan(0);
+        for (let observation = 0; observation < 2; observation++) {
+          const actual = await processIdentities(identities.map((identity) => identity.pid));
+          for (const identity of identities) {
+            expect(actual[identity.pid], 'Unknown process identity is not proof of Excel absence').not.toBe('unknown');
+            expect(actual[identity.pid]).toBeDefined();
+            expect(sameProcessIdentity(identity, actual[identity.pid])).toBe(false);
+          }
+        }
+      }
+    };
+    gotzji.beforeClose(async () => {
+      try {
+        if (nativeJobId) {
+          const job = await page.evaluate(async (jobId) => {
+            const request = Reflect.get(window, 'ownedTestRequest');
+            return { status: await request({ method: 'status', input: { jobId } }), logs: await request({ method: 'logs', input: { jobId, cursor: 0, limit: 8192 } }) };
+          }, nativeJobId);
+          const envelope = JSON.parse(await readFile(path.join(dataRoot, 'runtime', 'effects', nativeJobId, 'native-operation.json'), 'utf8')) as { body: string };
+          const native = JSON.parse(envelope.body) as Record<string, unknown>;
+          const cleanup = await readFile(path.join(dataRoot, 'runtime', 'effects', nativeJobId, 'native-cleanup-diagnostic.jsonl'), 'utf8');
+          await writeFile(path.join(desktopRoot, '..', '..', '.local-artifacts', `c4-excel-native-${nativeJobId}.json`), JSON.stringify({ jobId: nativeJobId, ...job,
+            cleanup: cleanup.trim().split(/\r?\n/u).map((line) => JSON.parse(line) as unknown),
+            native: { state: native.state, outcome: native.outcome, code: native.code, field: native.field, stopEvidence: native.stopEvidence, effectEvidence: native.effectEvidence } }, null, 2));
+        }
+      } finally { await proveExcelAbsent(); }
+    });
+    await page.evaluate(async ({ rootPath, projectId }) => Reflect.get(window, 'ownedTestRequest')({ method: 'registerProject', input: { projectId, displayName: 'Excel จริงของชุดทดสอบ', rootPath, kind: 'project' } }), { rootPath: root, projectId });
+    const prepared = await page.evaluate(async (input) => Reflect.get(window, 'ownedTestRequest')({ method: 'prepareOperation', input }), { projectId, requestId: 'excel-discovery', operation: 'excel.sheets.inspect', path: filename, expectedSha256: sourceSha256 });
+    const admitted = await page.evaluate(async (preparationId) => Reflect.get(window, 'ownedTestRequest')({ method: 'submit', input: { preparationId } }), prepared.preparationId);
+    nativeJobId = admitted.jobId;
+    nativeJobIds.add(admitted.jobId);
+    await page.getByRole('button', { name: 'ประวัติงาน', exact: true }).click();
+    await page.getByLabel('รหัสงาน', { exact: true }).fill(admitted.jobId);
+    await expect(page.getByRole('heading', { name: `งาน ${admitted.jobId}`, exact: true })).toBeVisible();
+    await expect(page.getByText('เสร็จแล้ว', { exact: true })).toBeVisible({ timeout: testInfo.timeout });
+    await page.getByRole('button', { name: 'ดูผลลัพธ์', exact: true }).click();
+    const table = page.getByRole('region', { name: 'รายชื่อแผ่นงาน Excel', exact: true });
+    await expect(table).toContainText('พบ 2 แผ่นงาน · แสดง 2 แผ่นงาน');
+    await expect(table.getByRole('row').nth(1).getByRole('cell')).toHaveText([sheetName, 'A1:D4', '4', '4', `เตรียมอ่านเซลล์แรก A1 ใน ${sheetName}`]);
+    await expect(table.getByRole('row').nth(2).getByRole('cell')).toHaveText(['Summary', 'A1', '1', '1', 'เตรียมอ่านเซลล์แรก A1 ใน Summary']);
+    const result = await page.evaluate(async (jobId) => Reflect.get(window, 'ownedTestRequest')({ method: 'result', input: { jobId } }), admitted.jobId);
+    expect(result.output.nativeReceipt).toMatchObject({ operation: 'excel.sheets.inspect', provider: 'excel', sourceSha256, outputSha256: null, originalPreserved: true, savedAndReopened: false, verified: true });
+    await table.screenshot({ path: path.join(desktopRoot, '..', '..', '.local-artifacts', 'parity-c4-excel-sheets.png') });
+    await table.getByRole('button', { name: `เตรียมอ่านเซลล์แรก A1 ใน ${sheetName}`, exact: true }).click();
+    await expect(page.getByRole('heading', { name: 'เตรียมคำสั่งของโครงการ', exact: true })).toBeVisible();
+    await expect(page.getByLabel('เครื่องมือ', { exact: true })).toHaveValue('excel.range.read');
+    await expect(page.getByLabel('ไฟล์ในโครงการ', { exact: true })).toHaveValue(filename);
+    await expect(page.getByLabel('ชื่อแผ่นงาน', { exact: true })).toHaveValue(sheetName);
+    await expect(page.getByLabel('ช่วงเซลล์ เช่น A1:B3', { exact: true })).toHaveValue('A1');
+    await page.evaluate(() => { Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (text: string): Promise<void> => { Reflect.set(window, 'excelCopiedPrompt', text); } } }); });
+    await page.getByRole('button', { name: 'คัดลอกคำสั่งสำหรับ ChatGPT', exact: true }).click();
+    const prompt = await page.evaluate(() => Reflect.get(window, 'excelCopiedPrompt') as string);
+    expect(JSON.parse(prompt.slice(prompt.indexOf('\n\n') + 2))).toMatchObject({ projectId, path: filename, expectedSha256: sourceSha256, operation: 'excel.range.read', sheet: sheetName, range: 'A1' });
+    expect(await page.evaluate(async () => Reflect.get(window, 'ownedTestRequest')({ method: 'listJobs', input: {} }))).toHaveLength(1);
+    const replay = await page.evaluate(async (preparationId) => Reflect.get(window, 'ownedTestRequest')({ method: 'submit', input: { preparationId } }), prepared.preparationId);
+    expect(replay.jobId).toBe(admitted.jobId);
+    await page.reload();
+    await page.getByRole('button', { name: 'ประวัติงาน', exact: true }).click();
+    await page.getByLabel('รหัสงาน', { exact: true }).fill(admitted.jobId);
+    await page.getByRole('button', { name: 'ดูผลลัพธ์', exact: true }).click();
+    await expect(page.getByRole('region', { name: 'รายชื่อแผ่นงาน Excel', exact: true })).toContainText(sheetName);
+    expect(await page.evaluate(async (jobId) => Reflect.get(window, 'ownedTestRequest')({ method: 'result', input: { jobId } }), admitted.jobId)).toEqual(result);
+    expect(await page.evaluate(async () => Reflect.get(window, 'ownedTestRequest')({ method: 'listJobs', input: {} }))).toHaveLength(1);
+    await proveExcelAbsent();
+    const rangeResults: unknown[] = [];
+    const selections = [
+      { requestId: 'excel-range-absolute', sheet: sheetName, range: '$A$1:$B$2', observed: sheetName, cells: [['A1', 'ข้อมูลคงเดิม'], ['B1', 'null'], ['A2', '2'], ['B2', '3']] },
+      { requestId: 'excel-range-reversed', sheet: 'summary', range: '$B$2:$A$1', observed: 'Summary', cells: [['A1', 'Original summary']] },
+    ];
+    for (const selection of selections) {
+      const rangePreparation = await page.evaluate(async (input) => Reflect.get(window, 'ownedTestRequest')({ method: 'prepareOperation', input }),
+        { projectId, requestId: selection.requestId, operation: 'excel.range.read', path: filename, expectedSha256: sourceSha256, sheet: selection.sheet, range: selection.range });
+      const rangeJob = await page.evaluate(async (preparationId) => Reflect.get(window, 'ownedTestRequest')({ method: 'submit', input: { preparationId } }), rangePreparation.preparationId);
+      nativeJobId = rangeJob.jobId; nativeJobIds.add(rangeJob.jobId);
+      await page.getByLabel('รหัสงาน', { exact: true }).fill(rangeJob.jobId);
+      await expect(page.getByRole('heading', { name: `งาน ${rangeJob.jobId}`, exact: true })).toBeVisible();
+      await expect(page.getByText('เสร็จแล้ว', { exact: true })).toBeVisible({ timeout: testInfo.timeout });
+      await page.getByRole('button', { name: 'ดูผลลัพธ์', exact: true }).click();
+      const rangeTable = page.getByRole('region', { name: 'ผลการอ่านช่วงเซลล์ Excel', exact: true });
+      await expect(rangeTable).toBeVisible();
+      await expect(rangeTable.locator('dd')).toHaveText([filename, selection.sheet, selection.range, selection.observed]);
+      await expect(rangeTable.getByRole('row')).toHaveCount(selection.cells.length + 1);
+      for (const [address, value] of selection.cells) {
+        await expect(rangeTable.getByRole('row').filter({ has: page.getByRole('cell', { name: address!, exact: true }) }).getByRole('cell')).toHaveText([address!, value!]);
+      }
+      const rangeResult = await page.evaluate(async (jobId) => Reflect.get(window, 'ownedTestRequest')({ method: 'result', input: { jobId } }), rangeJob.jobId);
+      expect(rangeResult).toMatchObject({ nativeSelection: { sheet: selection.sheet, range: selection.range },
+        output: { jobId: rangeJob.jobId, operation: 'excel.range.read', state: 'completed', nativeReceipt: {
+          sourceSha256, outputSha256: null, originalPreserved: true, unrelatedPreserved: true, savedAndReopened: false, verified: true } } });
+      expect((await page.evaluate(async (preparationId) => Reflect.get(window, 'ownedTestRequest')({ method: 'submit', input: { preparationId } }), rangePreparation.preparationId)).jobId).toBe(rangeJob.jobId);
+      await page.reload();
+      await page.getByRole('button', { name: 'ประวัติงาน', exact: true }).click();
+      await page.getByLabel('รหัสงาน', { exact: true }).fill(rangeJob.jobId);
+      await page.getByRole('button', { name: 'ดูผลลัพธ์', exact: true }).click();
+      await expect(page.getByRole('region', { name: 'ผลการอ่านช่วงเซลล์ Excel', exact: true })).toContainText(selection.range);
+      expect(await page.evaluate(async (jobId) => Reflect.get(window, 'ownedTestRequest')({ method: 'result', input: { jobId } }), rangeJob.jobId)).toEqual(rangeResult);
+      expect(await readFile(source)).toEqual(original); await proveExcelAbsent(); rangeResults.push(rangeResult);
+    }
+    expect(await page.evaluate(async () => Reflect.get(window, 'ownedTestRequest')({ method: 'listJobs', input: {} }))).toHaveLength(3);
+    expect(await readFile(source)).toEqual(original);
+    const reopened = new ExcelJS.Workbook(); await reopened.xlsx.readFile(source);
+    expect(reopened.worksheets.map((value) => value.name)).toEqual([sheetName, 'Summary']);
+    expect(reopened.getWorksheet(sheetName)!.getCell('C2').value).toEqual({ formula: 'SUM(A2:B2)', result: 5 });
+    expect(reopened.getWorksheet('Summary')!.getCell('A1').value).toBe('Original summary');
+    expect(Buffer.from(reopened.getImage(0).buffer!)).toEqual(imageBytes);
+    await proveExcelAbsent();
+    await testInfo.attach('actual-excel-receipt', { body: JSON.stringify({ jobId: admitted.jobId, sourceSha256, result }, null, 2), contentType: 'application/json' });
+    await testInfo.attach('actual-excel-range-receipts', { body: JSON.stringify({ sourceSha256, results: rangeResults }, null, 2), contentType: 'application/json' });
+  });
+});
+
 test.describe('actual Windows Chrome qualification', () => {
   test.skip(process.platform !== 'win32' || process.env.GOTZJI_NATIVE_BROWSER_QUALIFICATION !== '1', 'Explicit owned Chrome/network qualification; renderer CI is separate evidence');
   test('gotzji browser native read preserves independent Chrome and closes its own profiles', async ({ gotzji }, testInfo) => {
@@ -953,4 +1109,80 @@ async function waitForOwnedSubmission(page: Page, elementId: 'lost-ack-fixture' 
     if (!pending || typeof pending !== 'object' || typeof Reflect.get(pending, 'then') !== 'function') throw new Error('Owned submit promise was not captured');
     await pending;
   }, elementId);
+}
+
+for (const oldReply of ['success', 'rejection'] as const) {
+  test(`gotzji selected Excel result discards stale ${oldReply} and resets paging on selection and reload`, async ({ gotzji }) => {
+    const { page } = gotzji; const fixturePath = gotzji.rendererFixturePath();
+    await build({ stdin: { resolveDir: path.join(desktopRoot, 'src', 'renderer'), sourcefile: 'range-result-fixture.tsx', loader: 'tsx', contents: `
+      import { StrictMode } from 'react'; import { createRoot } from 'react-dom/client';
+      import { GotzjiApp } from './GotzjiApp.tsx';
+      document.getElementById('root').hidden=true;
+      const root=document.createElement('div');root.id='range-result-app-proof';document.body.append(root);
+      const ids=['1'.repeat(64),'2'.repeat(64)];const calls=[];const replies=[];const pending=[];
+      Reflect.set(root,'calls',calls);Reflect.set(root,'replies',replies);Reflect.set(root,'pending',pending);
+      const job=jobId=>({jobId,projectId:'range-display-fixture',requestedOperation:'excel.range.read',operation:'grace.product-operation',status:'completed'});
+      Reflect.set(root,'resultFor',(jobId,label)=>({operation:'excel.range.read',projectId:'range-display-fixture',nativeSelection:{sheet:'Data',range:'$A$1:$A$101'},output:{
+        jobId,operation:'excel.range.read',projectId:'range-display-fixture',path:'owned.xlsx',state:'completed',nativeReceipt:{operation:'excel.range.read',provider:'excel',verified:true,
+          originalPreserved:true,unrelatedPreserved:true,outputSha256:null,savedAndReopened:false,sourceSha256:'a'.repeat(64),
+          after:{selected:Array.from({length:101},(_,i)=>({sheet:'data',address:'A'+(i+1),value:label+'-'+(i+1),formula:label+'-'+(i+1),format:'General',bold:false}))}}}}));
+      const request=(method,input)=>{
+        calls.push({method,input});
+        if(method==='listJobs')return Promise.resolve(ids.map(job));
+        if(method==='status')return Promise.resolve(job(input.jobId));
+        if(method==='result'){
+          const value=new Promise((resolve,reject)=>replies.push({jobId:input.jobId,resolve,reject}));pending.push(value);return value;
+        }
+        if(['prepareOperation','submit','resume','cancel','reprioritize'].includes(method))throw new Error('UNEXPECTED_DISPLAY_MUTATION');
+        return window.gotzji.request({method,input});
+      };
+      createRoot(root,{identifierPrefix:'range-result-app-'}).render(<StrictMode><GotzjiApp requestPort={request}/></StrictMode>);
+    ` }, bundle: true, format: 'iife', platform: 'browser', jsx: 'automatic', loader: { '.css': 'empty', '.webp': 'dataurl' }, outfile: fixturePath, define: { 'process.env.NODE_ENV': '"production"' } });
+    await page.addScriptTag({ url: pathToFileURL(fixturePath).href });
+    const ui = page.locator('#range-result-app-proof');
+    const table = ui.getByRole('region', { name: 'ผลการอ่านช่วงเซลล์ Excel', exact: true });
+    const read = ui.getByRole('button', { name: 'ดูผลลัพธ์', exact: true });
+    const first = '1'.repeat(64); const second = '2'.repeat(64);
+    const select = async (id: string): Promise<void> => { await ui.getByRole('button', { name: new RegExp(id) }).click(); };
+    const count = async (): Promise<number> => page.evaluate(() => (Reflect.get(document.getElementById('range-result-app-proof')!, 'replies') as unknown[]).length);
+    const respond = async (index: number, kind: 'success' | 'rejection', label: string): Promise<void> => {
+      await page.evaluate(async ({ index, kind, label }) => {
+        const root = document.getElementById('range-result-app-proof')!;
+        const replies = Reflect.get(root, 'replies') as Array<{ jobId: string; resolve(value: unknown): void; reject(error: Error): void }>;
+        const makeResult = Reflect.get(root, 'resultFor') as (jobId: string, label: string) => unknown;
+        const reply = replies[index]!;
+        if (kind === 'success') reply.resolve(makeResult(reply.jobId, label)); else reply.reject(new Error(label));
+        await (Reflect.get(root, 'pending') as Promise<unknown>[])[index]!.catch(() => undefined);
+      }, { index, kind, label });
+    };
+    await ui.getByRole('button', { name: 'ประวัติงาน', exact: true }).click();
+    await select(first); await read.click(); await expect.poll(count).toBe(1);
+    await select(second); await read.click(); await expect.poll(count).toBe(2);
+    await respond(1, 'success', 'CURRENT_SECOND'); await expect(table).toContainText('CURRENT_SECOND-1');
+    await table.getByRole('button', { name: 'หน้าถัดไปของผลการอ่านช่วงเซลล์', exact: true }).click();
+    await expect(table).toContainText('หน้า 2 จาก 2'); await expect(table).toContainText('CURRENT_SECOND-101');
+    await respond(0, oldReply, 'STALE_FIRST');
+    await expect(table).toContainText('CURRENT_SECOND-101'); await expect(ui).not.toContainText('STALE_FIRST');
+
+    await select(first); await read.click(); await expect.poll(count).toBe(3);
+    await respond(2, 'success', 'CURRENT_FIRST'); await expect(table).toContainText('หน้า 1 จาก 2');
+    await expect(table).toContainText('CURRENT_FIRST-1');
+    await table.getByRole('button', { name: 'หน้าถัดไปของผลการอ่านช่วงเซลล์', exact: true }).click();
+    await expect(table).toContainText('หน้า 2 จาก 2');
+
+    await read.click(); await expect.poll(count).toBe(4); await expect(table).toHaveCount(0);
+    await read.click(); await expect.poll(count).toBe(5);
+    await respond(4, 'success', 'NEWEST_SAME_JOB'); await expect(table).toContainText('หน้า 1 จาก 2');
+    await expect(table).toContainText('NEWEST_SAME_JOB-1');
+    await respond(3, oldReply, 'STALE_RELOAD');
+    await expect(table).toContainText('NEWEST_SAME_JOB-1'); await expect(ui).not.toContainText('STALE_RELOAD');
+
+    await table.getByRole('button', { name: 'หน้าถัดไปของผลการอ่านช่วงเซลล์', exact: true }).click();
+    await read.click(); await expect.poll(count).toBe(6); await expect(table).toHaveCount(0);
+    await respond(5, 'rejection', 'CURRENT_RESULT_FAILURE');
+    await expect(ui.getByRole('alert')).toContainText('CURRENT_RESULT_FAILURE'); await expect(table).toHaveCount(0);
+    const calls = await page.evaluate(() => Reflect.get(document.getElementById('range-result-app-proof')!, 'calls') as Array<{method:string}>);
+    expect(calls.filter(call => ['prepareOperation','submit','resume','cancel','reprioritize'].includes(call.method))).toEqual([]);
+    expect(await page.evaluate(async () => (await Reflect.get(window, 'ownedTestRequest')({ method:'listJobs', input:{} }) as unknown[]).length)).toBe(0);
+  });
 }

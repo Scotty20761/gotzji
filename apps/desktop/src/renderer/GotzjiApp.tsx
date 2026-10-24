@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useRef, useState, type ReactElement } from 'react';
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type ReactElement } from 'react';
 import type { GotzjiHostStatus, GotzjiMethod } from '@lnwjud/ipc-contracts';
 import './gotzji.css';
 import gracePortrait from './assets/grace.webp';
@@ -21,14 +21,17 @@ import { GotzjiVersionNotes } from './GotzjiVersionNotes.js';
 import { GotzjiDeliveryApprovals } from './GotzjiDeliveryApprovals.js';
 import { GotzjiProjectManager, type ManagedProject } from './GotzjiProjectManager.js';
 import { GotzjiExcelSheetsResult, excelSheetsResult } from './GotzjiExcelSheetsResult.js';
+import { GotzjiExcelRangeResult, excelRangeResult } from './GotzjiExcelRangeResult.js';
 
 type Row = Readonly<Record<string, unknown>>;
+interface JobResultView { readonly jobId: string; readonly value: unknown; readonly loading: boolean; readonly error: string | null; readonly pageIndex: number }
 type Page = 'home' | 'projects' | 'workflows' | 'tools' | 'git' | 'worklog' | 'live' | 'queue' | 'settings' | 'doctor';
 const labels: Record<Page, string> = { home: 'ภาพรวม', projects: 'โครงการ', workflows: 'เวิร์กโฟลว์', tools: 'เครื่องมือ', git: 'Git', worklog: 'ประวัติงาน', live: 'บันทึกสด', queue: 'คิวงาน', settings: 'ตั้งค่า', doctor: 'ตรวจระบบ' };
 
 /** Product controls address explicit canonical IDs, never the inherited provider API. */
 export function GotzjiApp({ requestPort }: { readonly requestPort?: (method: GotzjiMethod, input: Record<string, unknown>) => Promise<unknown> } = {}): ReactElement {
   const workflowProjectSelectId = useId();
+  const operationSelectId = useId();
   const [page, setPage] = useState<Page>('home');
   const [host, setHost] = useState<GotzjiHostStatus | null>(null);
   const [projects, setProjects] = useState<readonly Row[]>([]);
@@ -39,7 +42,8 @@ export function GotzjiApp({ requestPort }: { readonly requestPort?: (method: Got
   const [projectId, setProjectId] = useState('');
   const [jobId, setJobId] = useState('');
   const [selectedJob, setSelectedJob] = useState<unknown>(null);
-  const [result, setResult] = useState<unknown>(null);
+  const [resultView, setResultView] = useState<JobResultView | null>(null);
+  const result = resultView?.jobId === jobId ? resultView.value : null;
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [registration, setRegistration] = useState({ projectId: '', displayName: '', rootPath: '' });
@@ -64,8 +68,14 @@ export function GotzjiApp({ requestPort }: { readonly requestPort?: (method: Got
   const [queue, setQueue] = useState<readonly Row[]>([]);
   const [jobPriority, setJobPriority] = useState('1');
   const refreshGeneration = useRef(0);
+  const resultGeneration = useRef(0);
+  const resultSelection = useRef('');
 
   const request = useCallback((method: GotzjiMethod, input: Record<string, unknown> = {}): Promise<unknown> => requestPort ? requestPort(method, input) : window.gotzji.request({ method, input }), [requestPort]);
+  useLayoutEffect(() => {
+    resultSelection.current = jobId; resultGeneration.current += 1; setResultView(null);
+    return (): void => { resultSelection.current = ''; resultGeneration.current += 1; };
+  }, [jobId, request]);
   const refresh = useCallback(async (): Promise<void> => {
     const generation = ++refreshGeneration.current;
     const status = await window.gotzji.hostStatus();
@@ -108,7 +118,7 @@ export function GotzjiApp({ requestPort }: { readonly requestPort?: (method: Got
     return (): void => { disposed = true; window.clearInterval(timer); };
   }, [page, request]);
   useEffect(() => {
-    setSelectedJob(null); setResult(null);
+    setSelectedJob(null);
     if (!jobId) return;
     let disposed = false;
     const update = (): void => {
@@ -120,6 +130,18 @@ export function GotzjiApp({ requestPort }: { readonly requestPort?: (method: Got
     return (): void => { disposed = true; window.clearInterval(timer); };
   }, [jobId, request]);
 
+  async function readResult(): Promise<void> {
+    if (!jobId) return;
+    const requestedJobId = jobId; const generation = ++resultGeneration.current;
+    const isCurrentResultRequest = (): boolean => resultSelection.current === requestedJobId && resultGeneration.current === generation;
+    setError(null); setResultView({ jobId: requestedJobId, value: null, loading: true, error: null, pageIndex: 0 });
+    try {
+      const value = await request('result', { jobId: requestedJobId });
+      if (isCurrentResultRequest()) setResultView({ jobId: requestedJobId, value, loading: false, error: null, pageIndex: 0 });
+    } catch (cause: unknown) {
+      if (isCurrentResultRequest()) setResultView({ jobId: requestedJobId, value: null, loading: false, error: message(cause), pageIndex: 0 });
+    }
+  }
   async function act(action: () => Promise<void>): Promise<void> {
     setBusy(true); setError(null);
     try { await action(); } catch (cause: unknown) { setError(message(cause)); }
@@ -154,6 +176,7 @@ export function GotzjiApp({ requestPort }: { readonly requestPort?: (method: Got
   const selectedProject = projects.find((item) => item.projectId === projectId);
   const browserResult = browserReadResult(result);
   const sheetsResult = excelSheetsResult(result);
+  const rangeResult = excelRangeResult(result, jobId);
   const boundRecipeIds = Array.isArray(selectedProject?.recipeIds) ? selectedProject.recipeIds as string[] : [];
   const projectCommands = projectCommandOptions(boundRecipeIds, catalog);
 
@@ -199,7 +222,7 @@ export function GotzjiApp({ requestPort }: { readonly requestPort?: (method: Got
         {selectedProject?.kind === 'library' && <GotzjiLibraryChannelPanel projectId={projectId} disabled={host?.state !== 'ready'} />}
         <details className="gotzji-advanced" open={operation === 'excel.range.read' && sheetsResult !== undefined}><summary>เครื่องมือขั้นสูง</summary><section><h3>เตรียมคำสั่งของโครงการ</h3><label>โครงการ<select disabled={busy} value={projectId} onChange={(event) => { const id = event.target.value; if (id) void act(async () => { await request('selectProject', { projectId: id }); setProjectId(id); }); }}><option value="">เลือกโครงการ</option>
           {projects.map((project) => <option key={String(project.projectId)} value={String(project.projectId)}>{String(project.displayName)}</option>)}</select></label>
-          <label>เครื่องมือ<select disabled={busy} value={operation} onChange={(event) => setOperation(event.target.value)}>{available.map((item) => <option key={String(item.name)} value={String(item.name)}>{String(item.name)}</option>)}{workflows.map((item) => <option key={`${item.workflowId}:${item.workflowVersion}`} value={`library:${item.workflowId}:${item.workflowVersion}`}>{String(item.workflowId)} · {String(item.description)}</option>)}</select></label>
+          <label htmlFor={operationSelectId}>เครื่องมือ</label><select id={operationSelectId} disabled={busy} value={operation} onChange={(event) => setOperation(event.target.value)}>{available.map((item) => <option key={String(item.name)} value={String(item.name)}>{String(item.name)}</option>)}{workflows.map((item) => <option key={`${item.workflowId}:${item.workflowVersion}`} value={`library:${item.workflowId}:${item.workflowVersion}`}>{String(item.workflowId)} · {String(item.description)}</option>)}</select>
           {!operation.startsWith('browser.') && !operation.startsWith('library:') && <label>{operation === 'command.run' ? 'คำสั่งที่ตรวจไว้แล้ว' : 'ไฟล์ในโครงการ'}{operation === 'command.run'
             ? <select disabled={busy} value={target} onChange={(event) => setTarget(event.target.value)}><option value="">เลือกคำสั่ง</option>{boundRecipeIds.map((id) => <option key={id} value={id}>{String(recipes.find((recipe) => recipe.recipeId === id)?.description ?? id)}</option>)}</select>
             : <input disabled={busy} value={target} onChange={(event) => setTarget(event.target.value)} />}</label>}
@@ -219,7 +242,9 @@ export function GotzjiApp({ requestPort }: { readonly requestPort?: (method: Got
           <button disabled={busy || host?.state !== 'ready'} onClick={() => void act(async () => { setSelectedJob(await request('resume', { jobId })); })}>ตรวจและทำต่อ</button>
           <button disabled={busy} onClick={() => void act(async () => { setSelectedJob(await request('cancel', { jobId })); await refresh(); })}>ยกเลิกงานนี้</button>
           <button disabled={busy} onClick={() => setPage('live')}>อ่านบันทึกต่อ</button>
-          <button disabled={busy} onClick={() => void act(async () => { setResult(await request('result', { jobId })); })}>ดูผลลัพธ์</button></div>
+          <button disabled={busy} onClick={() => void readResult()}>ดูผลลัพธ์</button></div>
+          {resultView?.jobId === jobId && resultView.loading && <p role="status">กำลังอ่านผลลัพธ์…</p>}
+          {resultView?.jobId === jobId && resultView.error !== null && <p role="alert" className="gotzji-error">{resultView.error}</p>}
           {record(selectedJob) && selectedJob.status === 'queued' && <label>เปลี่ยนลำดับความสำคัญ<select disabled={busy || host?.state !== 'ready'} value={jobPriority} onChange={(event) => setJobPriority(event.target.value)}>{priorityOptions()}</select>
             <button disabled={busy || host?.state !== 'ready'} onClick={() => void act(async () => { setSelectedJob(await request('reprioritize', { jobId, priority: Number(jobPriority) })); await refresh(); })}>ปรับคิวงานนี้</button></label>}
           {record(selectedJob) && selectedJob.requestedOperation === 'library.workflow' && <fieldset><legend>อนุญาตส่งผลงานของงานนี้</legend><p>เลือกขอบเขตสำหรับรหัสงานนี้เท่านั้น แล้วตรวจและทำต่อ</p>
@@ -234,6 +259,9 @@ export function GotzjiApp({ requestPort }: { readonly requestPort?: (method: Got
               setOperation('excel.range.read'); setTarget(sheetsResult.path); setExpectedSha256(sheetsResult.sourceSha256);
               setNativeValues((previous) => ({ ...previous, sheet: sheet.name, range: sheet.used_range.split(':')[0]! })); setPage('tools');
             })} /><details><summary>รายละเอียดการตรวจยืนยัน</summary><pre>{display(result)}</pre></details></>
+            : rangeResult ? <><GotzjiExcelRangeResult value={rangeResult} pageIndex={resultView?.pageIndex ?? 0}
+              pageChanged={(pageIndex) => setResultView((previous) => previous && previous === resultView ? { ...previous, pageIndex } : previous)} />
+              <details><summary>รายละเอียดการตรวจยืนยัน</summary><pre>{display(result)}</pre></details></>
             : browserResult ? <section aria-label="ผลการอ่านหน้าเว็บ"><h4>อ่านหน้าเว็บสำเร็จ</h4><p>{browserResult.url}</p><pre>{browserResult.text || 'หน้านี้ไม่มีข้อความ'}</pre><details><summary>รายละเอียดการตรวจยืนยัน</summary><pre>{display(result)}</pre></details></section> : <pre>{display(result)}</pre>)}</section>}</>}
       {page === 'queue' && <section><h3>งานที่กำลังรอ</h3><JobList jobs={queue} disabled={busy} select={(id) => { setJobId(id); setPage('worklog'); }} /></section>}
       {page === 'workflows' && <><section><label htmlFor={workflowProjectSelectId}>โครงการสำหรับเวิร์กโฟลว์</label><select id={workflowProjectSelectId} value={projectId} disabled={busy || host?.state !== 'ready'} onChange={(event) => { const id = event.target.value; if (id) void act(async () => { await request('selectProject', { projectId: id }); setProjectId(id); }); }}><option value="">เลือกโครงการ</option>{projects.map((project) => <option key={String(project.projectId)} value={String(project.projectId)}>{String(project.displayName)}</option>)}</select></section>

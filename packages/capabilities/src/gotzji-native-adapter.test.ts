@@ -1,9 +1,11 @@
-import type { ChildProcessWithoutNullStreams } from 'node:child_process';
+import { execFile, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { createHmac } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { GotzjiNativeAdapter, gotzjiNativeChildEnvironment, runGotzjiNativePowerShell } from './gotzji-native-adapter.js';
 import { nativeBytesDigest, planGotzjiNativeOperation, type GotzjiNativeGrant } from './gotzji-native-contract.js';
@@ -70,6 +72,90 @@ describe('gotzji native admission and verification', () => {
     expect(identity).toBeGreaterThan(0);
     for (const open of ['$application.Workbooks.Open(', '$application.Documents.Open(', '$application.Presentations.Open(']) expect(provider.indexOf(open)).toBeGreaterThan(identity);
     expect(provider).not.toMatch(/\bStop-Process\b|\.Kill\s*\(/u);
+  });
+  it.runIf(process.platform === 'win32')('authenticates the actual PowerShell Office identity function without creating Office', async () => {
+    const f = await fixture();
+    const provider = fileURLToPath(new URL('../../../apps/desktop/build/gotzji-native-office.ps1', import.meta.url)).replaceAll("'", "''");
+    const evidence = { schemaVersion: 1, provider: 'office', effectRoot: f.root, journalPath: path.join(f.root, 'native-process-identities.jsonl'), jobId: 'job', epoch: 'epoch', generation: 1, planDigest: 'b'.repeat(64), evidenceKey: 'a'.repeat(64), invocationId: '00000000-0000-0000-0000-000000000001' };
+    const encoded = Buffer.from(JSON.stringify(evidence)).toString('base64');
+    const script = `
+      $ErrorActionPreference='Stop'; Set-StrictMode -Version Latest
+      $tokens=$null; $parseErrors=$null
+      $tree=[Management.Automation.Language.Parser]::ParseFile('${provider}',[ref]$tokens,[ref]$parseErrors)
+      if($parseErrors.Count -ne 0){throw ($parseErrors|Out-String)}
+      foreach($name in @('Fail','Require-ProcessEvidence','Write-ProcessIdentity')){
+        $definition=$tree.FindAll({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name},$true)
+        if($definition.Count -ne 1){throw 'Function identity changed'}
+        Invoke-Expression $definition[0].Extent.Text
+      }
+      Add-Type -TypeDefinition 'public static class GotzjiNativeEvidenceJournal { public static string Journal; public static string Root; public static string Line; public static void Append(string journal, string root, string line) { Journal=journal; Root=root; Line=line; } }'
+      $script:processEvidence=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encoded}'))|ConvertFrom-Json
+      Write-ProcessIdentity 123 '638000000000000000' 'C:\\Owned\\EXCEL.EXE' 'office'
+      [Console]::Write(([ordered]@{journalPath=[GotzjiNativeEvidenceJournal]::Journal;effectRoot=[GotzjiNativeEvidenceJournal]::Root;line=[GotzjiNativeEvidenceJournal]::Line}|ConvertTo-Json -Compress))
+    `;
+    const executable = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+    const { stdout } = await promisify(execFile)(executable, ['-NoProfile', '-NonInteractive', '-Command', script], { windowsHide: true, timeout: 10000, maxBuffer: 64 * 1024 });
+    const captured = JSON.parse(stdout) as { journalPath: string; effectRoot: string; line: string };
+    expect(captured).toMatchObject({ journalPath: evidence.journalPath, effectRoot: f.root });
+    const envelope = JSON.parse(captured.line) as { body: string; mac: string };
+    expect(envelope.mac).toBe(createHmac('sha256', Buffer.from(evidence.evidenceKey, 'hex')).update(envelope.body).digest('hex'));
+    expect(JSON.parse(envelope.body)).toMatchObject({ schemaVersion: 1, recordType: 'identity', jobId: 'job', epoch: 'epoch', generation: 1, planDigest: evidence.planDigest, invocationId: evidence.invocationId, provider: 'office', pid: 123, birth: '638000000000000000', executable: 'c:\\owned\\excel.exe' });
+    expect(envelope.body).not.toContain(evidence.evidenceKey);
+  });
+  it.runIf(process.platform === 'win32')('records bounded actual Office finally diagnostics without creating Office', async () => {
+    const f = await fixture();
+    const provider = fileURLToPath(new URL('../../../apps/desktop/build/gotzji-native-office.ps1', import.meta.url)).replaceAll("'", "''");
+    const root = Buffer.from(f.root).toString('base64');
+    const script = `
+      $ErrorActionPreference='Stop'; Set-StrictMode -Version Latest
+      $tokens=$null; $parseErrors=$null
+      $tree=[Management.Automation.Language.Parser]::ParseFile('${provider}',[ref]$tokens,[ref]$parseErrors)
+      if($parseErrors.Count -ne 0){throw ($parseErrors|Out-String)}
+      $outer=@($tree.EndBlock.Statements|Where-Object {$_ -is [Management.Automation.Language.TryStatementAst] -and $null -ne $_.Finally})
+      if($outer.Count -ne 1){throw 'Outer cleanup identity changed'}
+      $cleanupBlock=[scriptblock]::Create(($outer[0].Finally.Statements|ForEach-Object {$_.Extent.Text}) -join "\n")
+      $definition=@($tree.FindAll({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'As-Json'},$true))
+      if($definition.Count -ne 1){throw 'JSON function identity changed'}
+      Invoke-Expression $definition[0].Extent.Text
+      Add-Type -TypeDefinition 'public static class GotzjiNativeEvidenceJournal { public static string Journal; public static string Root; public static string Line; public static System.Collections.Generic.List<string> Events=new System.Collections.Generic.List<string>(); public static void Append(string journal, string root, string line) { Events.Add("journal.append"); Journal=journal; Root=root; Line=line; } }'
+      function Release-Com($Value){[GotzjiNativeEvidenceJournal]::Events.Add('release.'+$Value.Kind)}
+      $processEvidence=[pscustomobject]@{jobId='job';effectRoot=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${root}'))}
+      $script:ownedPid=123; $provider='excel'; $results=@()
+      foreach($scenario in @('close-throws','count-throws','remaining','quit-throws','success','no-owned-pid')){
+        [GotzjiNativeEvidenceJournal]::Events.Clear()
+        [GotzjiNativeEvidenceJournal]::Line=''
+        $script:ownedPid=if($scenario -eq 'no-owned-pid'){0}else{123}
+        $document=[pscustomobject]@{Kind='document';Throws=($scenario -eq 'close-throws');SaveChanges=$null}
+        $document|Add-Member ScriptMethod Close {param($saveChanges) [GotzjiNativeEvidenceJournal]::Events.Add('document.close');$this.SaveChanges=$saveChanges;if($this.Throws){throw 'PRIVATE-CLOSE-DETAIL'}}
+        $books=[pscustomobject]@{Throws=($scenario -eq 'count-throws');Remaining=if($scenario -eq 'remaining'){1}else{0}}
+        $books|Add-Member ScriptProperty Count {[GotzjiNativeEvidenceJournal]::Events.Add('workbooks.count');if($this.Throws){throw 'PRIVATE-COUNT-DETAIL'};return $this.Remaining}
+        $application=[pscustomobject]@{Kind='application';Workbooks=$books;Throws=($scenario -eq 'quit-throws')}
+        $application|Add-Member ScriptMethod Quit {[GotzjiNativeEvidenceJournal]::Events.Add('application.quit');if($this.Throws){throw 'PRIVATE-QUIT-DETAIL'}}
+        & $cleanupBlock
+        $results += [ordered]@{scenario=$scenario;events=@([GotzjiNativeEvidenceJournal]::Events);saveChanges=$document.SaveChanges;journalPath=[GotzjiNativeEvidenceJournal]::Journal;effectRoot=[GotzjiNativeEvidenceJournal]::Root;line=[GotzjiNativeEvidenceJournal]::Line}
+      }
+      [Console]::Write((ConvertTo-Json -InputObject $results -Depth 10 -Compress))
+    `;
+    const executable = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+    const { stdout } = await promisify(execFile)(executable, ['-NoProfile', '-NonInteractive', '-Command', script], { windowsHide: true, timeout: 10000, maxBuffer: 64 * 1024 });
+    const results = JSON.parse(stdout) as { scenario: string; events: string[]; saveChanges: boolean; journalPath: string; effectRoot: string; line: string }[];
+    const expected = [
+      { scenario: 'close-throws', closed: false, closeError: true, remaining: 0, quitRequested: true, quitError: false },
+      // PowerShell suppresses the getter exception into null; the diagnostic must preserve unknown instead of casting it to zero.
+      { scenario: 'count-throws', closed: true, closeError: false, remaining: -1, quitRequested: false, quitError: false },
+      { scenario: 'remaining', closed: true, closeError: false, remaining: 1, quitRequested: false, quitError: false },
+      { scenario: 'quit-throws', closed: true, closeError: false, remaining: 0, quitRequested: false, quitError: true },
+      { scenario: 'success', closed: true, closeError: false, remaining: 0, quitRequested: true, quitError: false },
+    ];
+    expect(results).toHaveLength(expected.length + 1);
+    for (const [index, { scenario, ...flags }] of expected.entries()) {
+      const result = results[index]!;
+      expect(result).toMatchObject({ scenario, saveChanges: false, journalPath: path.join(f.root, 'native-cleanup-diagnostic.jsonl'), effectRoot: f.root });
+      expect(result.events).toEqual(['document.close', 'release.document', 'workbooks.count', ...(['count-throws', 'remaining'].includes(scenario) ? [] : ['application.quit']), 'release.application', 'journal.append']);
+      expect(JSON.parse(result.line)).toEqual({ schemaVersion: 1, jobId: 'job', pid: 123, ...flags });
+      expect(result.line).not.toMatch(/PRIVATE-|DETAIL|exception|token|evidenceKey/u);
+    }
+    expect(results.at(-1)).toMatchObject({ scenario: 'no-owned-pid', line: '', events: ['document.close', 'release.document', 'workbooks.count', 'release.application'] });
   });
   it('keeps Windows native prerequisites while excluding inherited credentials and incompatible module paths', () => {
     const environment = gotzjiNativeChildEnvironment({ SystemRoot: 'C:\\Windows', USERPROFILE: 'C:\\Owner', CLAUDE_API_KEY: 'private', SOME_AUTH: 'private', NODE_OPTIONS: 'untrusted-loader', PSModulePath: 'PowerShell-7-modules' });

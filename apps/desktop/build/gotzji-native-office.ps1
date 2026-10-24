@@ -46,12 +46,12 @@ function Require-ProcessEvidence([string]$ExpectedProvider) {
   if ([IO.Path]::GetDirectoryName($journal) -ine $root -or [IO.Path]::GetFileName($journal) -cne 'native-process-identities.jsonl') { Fail 'NATIVE_PROCESS_EVIDENCE_INVALID' }
   if ((Test-Path -LiteralPath $journal) -and ((Get-Item -LiteralPath $journal).Attributes -band [IO.FileAttributes]::ReparsePoint)) { Fail 'NATIVE_PROCESS_EVIDENCE_INVALID' }
 }
-function Write-ProcessIdentity([int]$Pid, [string]$Birth, [string]$Executable, [string]$Provider) {
+function Write-ProcessIdentity([int]$ProcessId, [string]$Birth, [string]$Executable, [string]$Provider) {
   Require-ProcessEvidence $Provider
   $body = [ordered]@{
     schemaVersion=1; recordType='identity'; jobId=[string]$script:processEvidence.jobId; epoch=[string]$script:processEvidence.epoch
     generation=[int]$script:processEvidence.generation; planDigest=[string]$script:processEvidence.planDigest
-    invocationId=[string]$script:processEvidence.invocationId; provider=$Provider; pid=$Pid; birth=$Birth
+    invocationId=[string]$script:processEvidence.invocationId; provider=$Provider; pid=$ProcessId; birth=$Birth
     executable=$Executable.ToLowerInvariant(); recordedAt=[DateTime]::UtcNow.ToString('o',[Globalization.CultureInfo]::InvariantCulture)
   } | ConvertTo-Json -Compress
   $key=New-Object byte[] 32
@@ -107,7 +107,10 @@ function Excel-Snapshot($Book, [string]$SheetName, [string]$Address) {
 function Excel-SheetsSnapshot($Book) {
   $worksheets=$Book.Worksheets
   try {
-    $total=[int]$worksheets.Count
+    if ($null -eq $worksheets) { Fail 'NATIVE_WORKSHEET_METADATA_UNAVAILABLE' }
+    $rawCount=$worksheets.Count
+    if ($null -eq $rawCount) { Fail 'NATIVE_WORKSHEET_METADATA_UNAVAILABLE' }
+    $total=[int]$rawCount
     $returned=[Math]::Min($total,256)
     $items=@()
     for ($index=1; $index -le $returned; $index++) {
@@ -252,11 +255,13 @@ public static class GotzjiNativePid { [DllImport("user32.dll")] public static ex
   if ($code -notmatch '^[A-Z][A-Z0-9_]{1,79}$') { $code='NATIVE_COM_OPERATION_FAILED' }
   [Console]::Write((As-Json ([ordered]@{ ok=$false; error=[ordered]@{ code=$code; field=$script:stage; outcome=if ($script:effectStarted -or ($null -ne $application -and $script:ownedPid -eq 0)) { 'unknown' } else { 'none' } } })))
 } finally {
-  if ($null -ne $document) { try { if ($provider -eq 'powerpoint') { $document.Close() } else { $document.Close($false) } } catch {}; Release-Com $document }
+  $cleanup=[ordered]@{ schemaVersion=1; jobId=[string]$processEvidence.jobId; pid=$script:ownedPid; closed=$false; closeError=$false; remaining=-1; quitRequested=$false; quitError=$false }
+  if ($null -ne $document) { try { if ($provider -eq 'powerpoint') { $document.Close() } else { $document.Close($false) }; $cleanup.closed=$true } catch { $cleanup.closeError=$true }; Release-Com $document }
   if ($null -ne $application) {
     if ($provider -eq 'cad' -and $script:ownedPid -gt 0) { foreach ($blankDocument in @($application.Documents)) { try { if ($startupBlankNames -contains [string]$blankDocument.Name -and $blankDocument.ModelSpace.Count -eq 0 -and $blankDocument.PaperSpace.Count -eq 0 -and $blankDocument.Saved) { $blankDocument.Close($false) } } catch {} } }
-    try { $remaining=if ($provider -eq 'excel') { $application.Workbooks.Count } elseif ($provider -eq 'powerpoint') { $application.Presentations.Count } else { $application.Documents.Count }; if ($remaining -eq 0 -and $script:ownedPid -gt 0) { $application.Quit() } } catch {}
+    try { $remaining=if ($provider -eq 'excel') { $application.Workbooks.Count } elseif ($provider -eq 'powerpoint') { $application.Presentations.Count } else { $application.Documents.Count }; $cleanup.remaining=if ($null -eq $remaining) { -1 } else { [int]$remaining }; if ($remaining -eq 0 -and $script:ownedPid -gt 0) { $application.Quit(); $cleanup.quitRequested=$true } } catch { $cleanup.quitError=$true }
     Release-Com $application
   }
   [GC]::Collect(); [GC]::WaitForPendingFinalizers()
+  if ($provider -eq 'excel' -and $script:ownedPid -gt 0) { [GotzjiNativeEvidenceJournal]::Append([IO.Path]::Combine([string]$processEvidence.effectRoot,'native-cleanup-diagnostic.jsonl'),[string]$processEvidence.effectRoot,((As-Json $cleanup)+"`n")) }
 }

@@ -846,6 +846,9 @@ export class ExecutionCore {
         return { ...result, output, before: { sha256: hash(snapshot), content: snapshot.toString('utf8') } };
       }
     }
+    if (prepared.kind === 'native' && prepared.native.input.operation === 'excel.range.read') {
+      return { ...result, output, nativeSelection: { sheet: prepared.native.input.sheet, range: prepared.native.input.range } };
+    }
     return { ...result, output };
   }
   public logs(credential:string,binding:TaskBinding,cursor=0,limit=4000):{text:string;nextCursor:number;expired?:true} {
