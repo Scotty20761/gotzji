@@ -22,7 +22,7 @@ Mutating a ChatGPT tab additionally requires both `allow_protected_tab_action: t
 | Source branch | `dev` |
 | Candidate code commit | `38ab96f` (acceptance evidence is committed afterward; no browser implementation changed during H) |
 | Package version | `4.29.0` |
-| Installed executable version/path | `C:\Users\ABCz\AppData\Local\Programs\lnwjud\lnwjud.exe`; FileVersion `4.29.0`, ProductVersion `4.29.0.0` |
+| Installed executable version/path | `%LOCALAPPDATA%\Programs\lnwjud\lnwjud.exe`; FileVersion `4.29.0`, ProductVersion `4.29.0.0` |
 | MCP transport | A-G: source-built `@lnwjud/capabilities` candidate against real lnwjud-managed Chrome CDP; H: actual ChatGPT request through the installed Secure MCP Tunnel runtime |
 | Chrome CDP port/profile | Managed Chrome CDP `127.0.0.1:9222`; disposable lnwjud-managed browser lifecycle used |
 | Harmless navigation destinations | A-G: `https://example.com/?issue16=verified`; H: `https://example.com/?issue16=case-h` |

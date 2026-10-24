@@ -1,9 +1,12 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { appError, err, ok, type InvocationAuthorization } from '@lnwjud/domain';
-import type { ManagedProcess } from '@lnwjud/process';
+import { ProcessManager, type ManagedProcess } from '@lnwjud/process';
+import { CodexAdapter, type CodexDiscoveryResult } from '@lnwjud/codex';
+import type { Workspace, WorkspaceRepository } from '@lnwjud/workspace';
+import { CodexService } from './codex-service.js';
 import { SqliteAgentSwarmRepository } from '../../storage/src/agent-swarm-repository.js';
 import { SqliteDatabase } from '../../storage/src/database.js';
 import { AgentSwarmService, type AgentSwarmCodexPort } from './agent-swarm-service.js';
@@ -145,6 +148,95 @@ describe('AgentSwarmService', () => {
 
       const cancelledAfterCompletion = await service.cancel(actor, 'workspace-a', started.value.swarmId, authorization);
       expect(cancelledAfterCompletion).toMatchObject({ ok: true, value: { state: 'completed' } });
+    } finally {
+      database.close();
+    }
+  });
+
+  it('continues collecting running agent results after the start request signal is aborted', async () => {
+    let finished = false;
+    const codex: AgentSwarmCodexPort = {
+      run: async () => ok({ codexTaskId: 'codex-detached', processId: 'process-detached' }),
+      taskStatus: async () => ok(managed('codex-detached', finished ? 'exited' : 'running')),
+      taskLogs: async () => ok({ entries: [{ sequence: 0, stream: 'stdout', text: 'repository-analysis-complete' }], truncated: false, nextSequence: 1 }),
+      stop: async () => ok(undefined),
+    };
+    const { database, service } = await fixture(codex);
+    const requestController = new AbortController();
+    try {
+      const started = await service.start(actor, startRequest(), requestController.signal, authorization);
+      expect(started).toMatchObject({ ok: true, value: { state: 'running' } });
+      if (!started.ok) return;
+
+      requestController.abort();
+      finished = true;
+      await vi.waitFor(async () => {
+        expect(await service.status(actor, 'workspace-a', started.value.swarmId)).toMatchObject({
+          ok: true, value: { state: 'completed', tasks: [expect.objectContaining({ state: 'completed', resultAvailable: true })] },
+        });
+      }, { timeout: 3000 });
+      expect(await service.result(actor, 'workspace-a', started.value.swarmId, 'inspect')).toMatchObject({
+        ok: true, value: { text: 'repository-analysis-complete', eof: true },
+      });
+    } finally {
+      database.close();
+    }
+  });
+
+  it('runs three read-only agents through actual managed processes and collects their EOF-driven results after request cancellation', async () => {
+    const workdir = await mkdtemp(path.join(os.tmpdir(), 'lnwjud-real-swarm-cli-'));
+    temporaryRoots.push(workdir);
+    await mkdir(path.join(workdir, 'workspace'));
+    const root = path.join(workdir, 'workspace');
+    const workspace: Workspace = { id: 'workspace-a', displayName: 'Swarm CLI fixture', rootPath: root, realRootPath: root, createdAt: new Date().toISOString() };
+    const workspaceRepository: WorkspaceRepository = {
+      async get(id) { return id === workspace.id ? workspace : null; },
+      async list() { return [workspace]; },
+      async insert() { throw new Error('Unexpected workspace insertion'); },
+      async delete() { throw new Error('Unexpected workspace deletion'); },
+    };
+    const discovered: CodexDiscoveryResult = {
+      status: { installed: true, executablePath: process.execPath, capabilities: ['exec', 'sandbox', 'read-only'] },
+      capabilities: { instructionMode: 'exec-argument', names: ['exec', 'sandbox', 'read-only'] },
+    };
+    const mockCli = new CodexAdapter(
+      { async discover(): Promise<ReturnType<typeof ok<CodexDiscoveryResult>>> { return ok(discovered); } },
+      new ProcessManager(),
+      { build(_executable, _capabilities, instruction, sandboxMode): ReturnType<typeof ok<{ executable: string; args: string[] }>> {
+        expect(sandboxMode).toBe('read-only');
+        return ok({ executable: process.execPath, args: [
+          '-e',
+          "process.stdin.resume(); process.stdin.on('end', () => { process.stdout.write('analysis:' + process.argv[1]); });",
+          instruction,
+        ] });
+      } },
+    );
+    const servicePort = new CodexService(workspaceRepository, { adapter: mockCli });
+    const { database, service } = await fixture(servicePort);
+    const requestSignal = new AbortController();
+    try {
+      const started = await service.start(actor, startRequest([
+        { id: 'analyze', prompt: 'repository' },
+        { id: 'security', prompt: 'permissions' },
+        { id: 'quality', prompt: 'tests' },
+      ], 3), requestSignal.signal, authorization);
+      expect(started).toMatchObject({ ok: true, value: { state: 'running' } });
+      if (!started.ok) return;
+      requestSignal.abort();
+      await vi.waitFor(async () => {
+        expect(await service.status(actor, 'workspace-a', started.value.swarmId)).toMatchObject({
+          ok: true, value: { state: 'completed', tasks: [
+            expect.objectContaining({ state: 'completed', resultAvailable: true }),
+            expect.objectContaining({ state: 'completed', resultAvailable: true }),
+            expect.objectContaining({ state: 'completed', resultAvailable: true }),
+          ] },
+        });
+      }, { timeout: 12000 });
+      for (const [id, prompt] of [['analyze', 'repository'], ['security', 'permissions'], ['quality', 'tests']]) {
+        expect(await service.result(actor, 'workspace-a', started.value.swarmId, id)).toMatchObject({
+          ok: true, value: { state: 'completed', text: 'analysis:' + prompt, eof: true },
+        });
+      }
     } finally {
       database.close();
     }

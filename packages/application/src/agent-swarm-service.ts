@@ -117,7 +117,7 @@ export class AgentSwarmService {
     await this.tick(stored.id, live, signal);
     const afterInitialTick = this.requireOwned(actor, request.workspaceId, stored.id);
     if (!isTerminalSwarm(afterInitialTick.state) && !live.abortController.signal.aborted && signal?.aborted !== true) {
-      live.monitor = this.monitor(stored.id, live, signal);
+      live.monitor = this.monitor(stored.id, live);
       void live.monitor.finally(() => this.live.delete(stored.id));
     } else {
       this.live.delete(stored.id);
@@ -190,11 +190,11 @@ export class AgentSwarmService {
     return ok({ items: items.slice(0, boundedLimit).map(toSnapshot), ...(hasMore ? { nextCursor: String(offset + boundedLimit) } : {}) });
   }
 
-  private async monitor(swarmId: string, live: LiveSwarm, outerSignal?: AbortSignal): Promise<void> {
-    while (!live.abortController.signal.aborted && outerSignal?.aborted !== true) {
+  private async monitor(swarmId: string, live: LiveSwarm): Promise<void> {
+    while (!live.abortController.signal.aborted) {
       const swarm = this.repository.getOwned(swarmId, live.actor.clientId, actorSessionId(live.actor), live.workspaceId);
       if (swarm === undefined || isTerminalSwarm(swarm.state)) return;
-      await this.tick(swarmId, live, outerSignal);
+      await this.tick(swarmId, live);
       const refreshed = this.repository.getOwned(swarmId, live.actor.clientId, actorSessionId(live.actor), swarm.workspaceId);
       if (refreshed === undefined || isTerminalSwarm(refreshed.state)) return;
       await delay(MONITOR_INTERVAL_MS);
@@ -277,7 +277,7 @@ export class AgentSwarmService {
 }
 
 function validateStart(request: AgentSwarmStartRequest): Result<void> {
-  if (request.accessMode !== 'read_only') return err(appError('PERMISSION_DENIED', 'Agent swarm v5.7.3 supports read_only access only'));
+  if (request.accessMode !== 'read_only') return err(appError('PERMISSION_DENIED', 'Agent swarm v1.0.0 supports read_only access only'));
   if (!Array.isArray(request.tasks) || request.tasks.length < 1 || request.tasks.length > MAX_TASKS) return err(appError('INVALID_INPUT', 'Agent swarm requires 1 to 4 tasks'));
   const ids = new Set<string>();
   for (const task of request.tasks) {

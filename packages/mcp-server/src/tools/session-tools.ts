@@ -1,8 +1,9 @@
 import { z } from 'zod';
+import { Redactor } from '@lnwjud/audit';
 import { appError, err, ok, type Result } from '@lnwjud/domain';
 import { IncrementalVerifier } from '../incremental-verifier.js';
 import { withCapabilityOwnerMetadata } from '../request-scope.js';
-import { defineTool, missingService, type McpToolContext, type McpToolDefinition } from './tool-types.js';
+import { defineTool, type McpToolContext, type McpToolDefinition } from './tool-types.js';
 
 const DEFAULT_TRACKER_PATH = 'docs/PHASE_PROGRESS.md';
 const DEFAULT_MAX_DIFF_BYTES = 16_000;
@@ -10,6 +11,66 @@ const MAX_TRACKER_EXCERPT_CHARS = 4_000;
 const MAX_BACKGROUND_TASKS = 8;
 const MAX_TASK_RECEIPT_CHARS = 1_200;
 const MAX_TASK_RECEIPT_LINES = 12;
+const redactor = new Redactor();
+
+interface SourceIssue {
+  readonly operation: string;
+  readonly code: string;
+}
+
+type SourceObservation<T> =
+  | { readonly status: 'ready'; readonly value: T; readonly errors: readonly SourceIssue[] }
+  | { readonly status: 'unavailable' | 'unknown'; readonly value: null; readonly errors: readonly SourceIssue[] };
+
+interface BackgroundTaskObservation {
+  readonly status: 'ready' | 'partial' | 'unavailable' | 'unknown';
+  readonly receipts: readonly Record<string, unknown>[];
+  readonly errors: readonly SourceIssue[];
+  readonly omittedTasks: number;
+}
+
+const recordSchema = z.record(z.string(), z.unknown());
+const goalHandoffSchema = z.object({
+  goalId: z.string().min(1).max(128),
+  goalKey: z.string(),
+  workspaceId: z.string().min(1).max(128),
+  status: z.enum(['active', 'completed', 'cancelled', 'failed', 'blocked']),
+  revision: z.number().int().nonnegative(),
+  userIntentRevision: z.number().int().nonnegative(),
+  objective: z.string(),
+  currentPhase: z.string(),
+  plan: z.object({ steps: z.array(recordSchema) }),
+  acceptanceCriteria: z.array(recordSchema),
+  blockers: z.array(z.string()),
+  trackedTasks: z.array(recordSchema),
+  nextAction: z.string(),
+  lastCheckpoint: recordSchema.nullable().optional(),
+  updatedAt: z.string().optional(),
+  terminalSummary: z.string().optional(),
+  terminalEvidence: z.array(recordSchema).optional(),
+  terminalAt: z.string().optional(),
+  currentContextCapsuleId: z.string().optional(),
+});
+const capsuleHandoffSchema = z.object({
+  id: z.string().min(1).max(128),
+  goalId: z.string().optional(),
+  sourceGoalRevision: z.number().int().nonnegative(),
+  sourceUserIntentRevision: z.number().int().nonnegative(),
+  previousCapsuleId: z.string().optional(),
+  payload: recordSchema,
+  createdAt: z.string(),
+});
+const taskSnapshotSchema = z.object({
+  task_id: z.string().min(1).max(128).regex(/^[A-Za-z0-9._:-]+$/),
+  state: z.enum(['running', 'completed', 'failed', 'timed_out', 'cancelled', 'termination_unverified']),
+  durable: z.boolean().optional(),
+  started_at: z.string().max(128).optional(),
+  finished_at: z.string().max(128).optional(),
+  exit_code: z.number().int().optional(),
+  error: z.string().optional(),
+  stdout: z.string().optional(),
+  stderr: z.string().optional(),
+});
 
 const sessionHandoffSchema = z.object({
   workspaceId: z.string().trim().min(1).max(128),
@@ -43,83 +104,70 @@ export function sessionTools(context: McpToolContext, verifier: IncrementalVerif
   ];
 }
 
-async function createSessionHandoff(
+export async function createSessionHandoff(
   context: McpToolContext,
   input: z.infer<typeof sessionHandoffSchema>,
   signal: AbortSignal,
 ): Promise<Result<Record<string, unknown>>> {
-  if (context.services.git === undefined) return missingService();
+  if (signal.aborted) return cancelledHandoff();
   const trackerPath = input.trackerPath ?? DEFAULT_TRACKER_PATH;
   const maxDiffBytes = input.maxDiffBytes ?? DEFAULT_MAX_DIFF_BYTES;
 
-  let goalState: Record<string, unknown> | null = null;
-  let goalExcerpt = '';
-  let capsuleState: Record<string, unknown> | null = null;
-  if (context.services.goals !== undefined) {
-    const activeGoals = await context.services.goals.listGoals(context.actor, {
-      workspaceId: input.workspaceId,
-      status: 'active',
-      limit: 5,
-    });
-    const activeGoal = activeGoals.ok ? activeGoals.value.goals[0] : undefined;
-    const latestGoals = activeGoal === undefined
-      ? await context.services.goals.listGoals(context.actor, { workspaceId: input.workspaceId, limit: 1 })
-      : null;
-    const goal = activeGoal ?? (latestGoals?.ok === true ? latestGoals.value.goals[0] : undefined);
-    if (goal !== undefined) {
-      const latestCapsules = await context.services.goals.listContextCapsules(context.actor, goal.goalId, 1);
-      const capsule = latestCapsules.ok ? latestCapsules.value[0] : undefined;
-      goalState = {
-        goalId: goal.goalId,
-        goalKey: goal.goalKey,
-        status: goal.status,
-        revision: goal.revision,
-        userIntentRevision: goal.userIntentRevision,
-        objective: goal.objective,
-        currentPhase: goal.currentPhase,
-        plan: goal.plan,
-        acceptanceCriteria: goal.acceptanceCriteria,
-        blockers: goal.blockers,
-        trackedTasks: goal.trackedTasks,
-        nextAction: goal.nextAction,
-        lastCheckpoint: goal.lastCheckpoint,
-        updatedAt: goal.updatedAt,
-        ...(goal.terminalSummary === undefined ? {} : { terminalSummary: goal.terminalSummary }),
-        ...(goal.terminalEvidence === undefined ? {} : { terminalEvidence: goal.terminalEvidence }),
-        ...(goal.terminalAt === undefined ? {} : { terminalAt: goal.terminalAt }),
-        ...(goal.currentContextCapsuleId === undefined ? {} : { currentContextCapsuleId: goal.currentContextCapsuleId }),
-      };
-      capsuleState = capsule === undefined ? null : {
-        id: capsule.id,
-        sourceGoalRevision: capsule.sourceGoalRevision,
-        sourceUserIntentRevision: capsule.sourceUserIntentRevision,
-        ...(capsule.previousCapsuleId === undefined ? {} : { previousCapsuleId: capsule.previousCapsuleId }),
-        payload: capsule.payload,
-        createdAt: capsule.createdAt,
-      };
-      goalExcerpt = formatGoalHandoff(goalState, capsuleState);
-    }
-  }
+  const goals = context.services.goals;
+  const goalListSchema = z.object({ goals: z.array(goalHandoffSchema.refine((goal) => goal.workspaceId === input.workspaceId)) });
+  const activeGoals = await observeSource('active_goals', goals === undefined ? undefined : (): Promise<Result<unknown>> => goals.listGoals(context.actor, {
+    workspaceId: input.workspaceId,
+    status: 'active',
+    limit: 5,
+  }), goalListSchema);
+  if (signal.aborted) return cancelledHandoff();
+  const activeGoal = activeGoals.value?.goals[0];
+  const latestGoals = activeGoal === undefined
+    ? await observeSource('latest_goals', goals === undefined ? undefined : (): Promise<Result<unknown>> => goals.listGoals(context.actor, { workspaceId: input.workspaceId, limit: 1 }), goalListSchema)
+    : null;
+  const goalState = activeGoal ?? latestGoals?.value?.goals[0] ?? null;
+  const goalErrors = [...activeGoals.errors, ...(latestGoals?.errors ?? [])];
+  const goalObservation = {
+    status: goalErrors.length === 0 ? 'ready' : goalState === null ? (latestGoals?.status ?? activeGoals.status) : 'partial',
+    errors: goalErrors,
+  };
+  if (signal.aborted) return cancelledHandoff();
+  const capsules = await observeSource('context_capsule', goals === undefined || goalState === null ? undefined : (): Promise<Result<unknown>> => goals.listContextCapsules(context.actor, goalState.goalId, 1),
+    z.array(capsuleHandoffSchema.refine((capsule) => capsule.goalId === undefined || capsule.goalId === goalState?.goalId)));
+  const capsuleState = capsules.value?.[0] ?? null;
+  const goalExcerpt = goalState === null ? '' : formatGoalHandoff(goalState, capsuleState, capsules.status);
   if (signal.aborted) return cancelledHandoff();
 
-  const tracker = context.services.file === undefined
-    ? null
-    : await context.services.file.readFile(context.actor, input.workspaceId, { path: trackerPath });
-  const trackerExcerpt = tracker?.ok === true ? compactTracker(tracker.value.content) : '';
+  const file = context.services.file;
+  const tracker = await observeSource('legacy_tracker', file === undefined ? undefined : (): Promise<Result<unknown>> => file.readFile(context.actor, input.workspaceId, { path: trackerPath }),
+    z.object({ content: z.string(), encoding: z.literal('utf8').optional() }));
+  const trackerExcerpt = tracker.value === null ? '' : compactTracker(tracker.value.content);
   if (signal.aborted) return cancelledHandoff();
 
-  const status = await context.services.git.status(context.actor, input.workspaceId, signal);
-  if (!status.ok) return err(status.error);
+  const git = context.services.git;
+  const unavailableGit = (): Result<never> => err(appError('INTERNAL_ERROR', 'Git service is unavailable for recovery'));
+  const status = git === undefined
+    ? unavailableGit()
+    : await git.status(context.actor, input.workspaceId, signal).catch(unavailableGit);
   if (signal.aborted) return cancelledHandoff();
-  const unstaged = await context.services.git.diff(context.actor, input.workspaceId, { maxBytes: maxDiffBytes }, signal);
-  if (!unstaged.ok) return err(unstaged.error);
+  const unstaged = git === undefined
+    ? unavailableGit()
+    : await git.diff(context.actor, input.workspaceId, { maxBytes: maxDiffBytes }, signal).catch(unavailableGit);
   if (signal.aborted) return cancelledHandoff();
-  const staged = await context.services.git.diff(context.actor, input.workspaceId, { staged: true, maxBytes: maxDiffBytes }, signal);
-  if (!staged.ok) return err(staged.error);
+  const staged = git === undefined
+    ? unavailableGit()
+    : await git.diff(context.actor, input.workspaceId, { staged: true, maxBytes: maxDiffBytes }, signal).catch(unavailableGit);
+  if (signal.aborted) return cancelledHandoff();
+  const gitErrors = [{ operation: 'status', result: status }, { operation: 'unstaged_diff', result: unstaged }, { operation: 'staged_diff', result: staged }]
+    .flatMap(({ operation, result }) => result.ok ? [] : [{ operation, error: { code: result.error.code } }]);
+  let gitState: 'ready' | 'partial' | 'unavailable' = 'partial';
+  if (gitErrors.length === 0) gitState = 'ready';
+  else if (gitErrors.length === 3) gitState = 'unavailable';
 
   const backgroundTasks = await readBackgroundTasks(context, input.workspaceId, signal);
-  const changedFiles = [...new Set(status.value.entries.map((entry) => entry.path))].sort();
-  const diffSummary = compactDiff(unstaged.value.patch, staged.value.patch, maxDiffBytes);
+  if (signal.aborted) return cancelledHandoff();
+  const changedFiles = status.ok ? [...new Set(status.value.entries.map((entry) => entry.path))].sort() : [];
+  const diffSummary = compactDiff(unstaged.ok ? unstaged.value.patch : '', staged.ok ? staged.value.patch : '', maxDiffBytes);
   const hasCheckpointResumeContext = goalState !== null
     && isRecord(goalState.lastCheckpoint)
     && isRecord(goalState.lastCheckpoint.resumeContext);
@@ -127,12 +175,15 @@ async function createSessionHandoff(
     goalExcerpt,
     trackerPath,
     trackerExcerpt,
-    trackerAvailable: tracker?.ok === true,
+    trackerAvailable: tracker.status === 'ready',
+    goalObservationStatus: goalObservation.status,
     changedFiles,
+    gitState,
+    gitStatusAvailable: status.ok,
     diffSummary,
     backgroundTasks,
   });
-  const recoveryReceipt = buildRecoveryReceipt(goalState, backgroundTasks);
+  const recoveryReceipt = buildRecoveryReceipt(goalState, backgroundTasks.receipts);
 
   return ok({
     prompt,
@@ -147,50 +198,89 @@ async function createSessionHandoff(
         : ['durable_goal', 'context_capsule', 'git_workspace', 'legacy_tracker'],
     goal_state: goalState,
     context_capsule: capsuleState,
+    source_observations: {
+      durable_goal: goalObservation,
+      context_capsule: { status: capsules.status, errors: capsules.errors },
+      legacy_tracker: { status: tracker.status, errors: tracker.errors },
+    },
     tracker_path: trackerPath,
-    tracker_available: tracker?.ok === true,
+    tracker_available: tracker.status === 'ready',
     tracker_excerpt: trackerExcerpt,
     changed_files: changedFiles,
-    git_status: status.value.entries,
+    git_state: { status: gitState, errors: gitErrors },
+    git_status: status.ok ? status.value.entries : null,
     git_diff: {
-      unstaged: unstaged.value.patch,
-      staged: staged.value.patch,
-      truncated: unstaged.value.truncated || staged.value.truncated,
+      unstaged: unstaged.ok ? unstaged.value.patch : null,
+      staged: staged.ok ? staged.value.patch : null,
+      truncated: unstaged.ok && staged.ok ? unstaged.value.truncated || staged.value.truncated : null,
     },
-    background_tasks: backgroundTasks,
+    background_tasks: backgroundTasks.receipts,
+    background_tasks_state: { status: backgroundTasks.status, errors: backgroundTasks.errors, omitted_tasks: backgroundTasks.omittedTasks },
   });
+}
+
+async function observeSource<T>(
+  operation: string,
+  read: (() => Promise<Result<unknown>>) | undefined,
+  schema: z.ZodType<T>,
+): Promise<SourceObservation<T>> {
+  if (read === undefined) return { status: 'unavailable', value: null, errors: [{ operation, code: 'PROVIDER_UNAVAILABLE' }] };
+  try {
+    const result = await read();
+    if (!isRecord(result) || typeof result.ok !== 'boolean') return { status: 'unknown', value: null, errors: [{ operation, code: 'MALFORMED_RESULT' }] };
+    if (!result.ok) {
+      const code = isRecord(result.error) && typeof result.error.code === 'string' && /^[A-Z_]{1,64}$/.test(result.error.code)
+        ? result.error.code : 'PROVIDER_ERROR';
+      return { status: 'unavailable', value: null, errors: [{ operation, code }] };
+    }
+    const parsed = schema.safeParse(result.value);
+    return parsed.success
+      ? { status: 'ready', value: parsed.data, errors: [] }
+      : { status: 'unknown', value: null, errors: [{ operation, code: 'MALFORMED_RESULT' }] };
+  } catch {
+    return { status: 'unavailable', value: null, errors: [{ operation, code: 'PROVIDER_REJECTED' }] };
+  }
 }
 
 async function readBackgroundTasks(
   context: McpToolContext,
   workspaceId: string,
   signal: AbortSignal,
-): Promise<readonly Record<string, unknown>[]> {
-  if (context.services.capabilities === undefined || signal.aborted) return [];
-  const listed = await context.services.capabilities.execute('shell', withCapabilityOwnerMetadata({
+): Promise<BackgroundTaskObservation> {
+  const capabilities = context.services.capabilities;
+  const listed = await observeSource('task_list', capabilities === undefined || signal.aborted ? undefined : (): Promise<Result<unknown>> => capabilities.execute('shell', withCapabilityOwnerMetadata({
     operation: 'list',
     workspaceId,
     limit: MAX_BACKGROUND_TASKS,
-  }, context.actor), signal);
-  if (!listed.ok || typeof listed.value !== 'object' || listed.value === null || Array.isArray(listed.value)) return [];
-  const tasks = (listed.value as { tasks?: unknown }).tasks;
-  if (!Array.isArray(tasks)) return [];
-  const selected = tasks
-    .filter((task): task is Record<string, unknown> => typeof task === 'object' && task !== null && !Array.isArray(task))
-    .filter((task) => task.durable === true && typeof task.task_id === 'string')
-    .slice(0, MAX_BACKGROUND_TASKS);
-  return Promise.all(selected.map(async (task) => {
-    if (signal.aborted) return taskReceipt(task);
-    const observed = await context.services.capabilities!.execute('shell', withCapabilityOwnerMetadata({
+  }, context.actor), signal), z.object({ tasks: z.array(z.unknown()) }));
+  if (listed.value === null) return { status: listed.status, receipts: [], errors: listed.errors, omittedTasks: 0 };
+  const selected: z.infer<typeof taskSnapshotSchema>[] = [];
+  const errors: SourceIssue[] = [];
+  let omittedTasks = Math.max(0, listed.value.tasks.length - MAX_BACKGROUND_TASKS);
+  for (const task of listed.value.tasks.slice(0, MAX_BACKGROUND_TASKS)) {
+    const parsed = taskSnapshotSchema.safeParse(task);
+    if (!parsed.success || parsed.data.durable === undefined) {
+      errors.push({ operation: 'task_list', code: 'MALFORMED_TASK' });
+      omittedTasks += 1;
+    } else if (parsed.data.durable === true) selected.push(parsed.data);
+  }
+  const receipts = await Promise.all(selected.map(async (task) => {
+    const observed = await observeSource('task_status', capabilities === undefined || signal.aborted ? undefined : (): Promise<Result<unknown>> => capabilities.execute('shell', withCapabilityOwnerMetadata({
       operation: 'status',
       workspaceId,
       task_id: task.task_id,
       tail_lines: MAX_TASK_RECEIPT_LINES,
       include_stdout: true,
       include_stderr: true,
-    }, context.actor), signal);
-    return taskReceipt(observed.ok && isRecord(observed.value) ? observed.value : task);
+    }, context.actor), signal), taskSnapshotSchema.refine((snapshot) => snapshot.task_id === task.task_id));
+    return {
+      receipt: { ...taskReceipt(observed.value ?? task), observation_status: observed.status === 'ready' ? 'ready' : 'partial',
+        status_observation: { status: observed.status, errors: observed.errors } },
+      errors: observed.errors,
+    };
   }));
+  errors.push(...receipts.flatMap((entry) => entry.errors));
+  return { status: errors.length === 0 && omittedTasks === 0 ? 'ready' : 'partial', receipts: receipts.map((entry) => entry.receipt), errors, omittedTasks };
 }
 
 function taskReceipt(task: Record<string, unknown>): Record<string, unknown> {
@@ -201,18 +291,18 @@ function taskReceipt(task: Record<string, unknown>): Record<string, unknown> {
     ...(task.finished_at === undefined ? {} : { finished_at: task.finished_at }),
     ...(task.exit_code === undefined ? {} : { exit_code: task.exit_code }),
     ...(typeof task.error === 'string' && task.error.trim().length > 0 ? { error: compactTaskOutput(task.error) } : {}),
-    ...(typeof task.stdout === 'string' && task.stdout.trim().length > 0 ? { stdout_tail: compactTaskOutput(task.stdout) } : {}),
-    ...(typeof task.stderr === 'string' && task.stderr.trim().length > 0 ? { stderr_tail: compactTaskOutput(task.stderr) } : {}),
+    ...(typeof task.stdout === 'string' ? { stdout_tail: compactTaskOutput(task.stdout) } : {}),
+    ...(typeof task.stderr === 'string' ? { stderr_tail: compactTaskOutput(task.stderr) } : {}),
   };
 }
 
 function compactTaskOutput(value: string): string {
-  const normalized = value.trim();
+  const normalized = redactor.redactText(value);
   if (normalized.length <= MAX_TASK_RECEIPT_CHARS) return normalized;
   return `... task output truncated ...\n${normalized.slice(-MAX_TASK_RECEIPT_CHARS)}`;
 }
 
-function formatGoalHandoff(goal: Record<string, unknown>, capsule: Record<string, unknown> | null): string {
+function formatGoalHandoff(goal: Record<string, unknown>, capsule: Record<string, unknown> | null, capsuleStatus: SourceObservation<unknown>['status']): string {
   const evidenceList = (value: unknown, limit = 20): string => {
     if (!Array.isArray(value) || value.length === 0) return '(none)';
     return value.slice(0, limit).map((entry) => {
@@ -290,7 +380,7 @@ function formatGoalHandoff(goal: Record<string, unknown>, capsule: Record<string
       `Checkpoint state facts: ${evidenceList(resumeContext.stateFacts)}`,
       `Checkpoint artifacts: ${evidenceList(resumeContext.artifacts)}`,
     ]),
-    capsule === null ? 'Context capsule: none published' : `Context capsule: ${String(capsule.id ?? '')} (goal rev ${String(capsule.sourceGoalRevision ?? '')}, intent rev ${String(capsule.sourceUserIntentRevision ?? '')})`,
+    capsule === null ? `Context capsule: ${capsuleStatus === 'ready' ? 'none published' : `${capsuleStatus}; no verified capsule observation`}` : `Context capsule: ${String(capsule.id ?? '')} (goal rev ${String(capsule.sourceGoalRevision ?? '')}, intent rev ${String(capsule.sourceUserIntentRevision ?? '')})`,
     ...(capsulePayload === null ? [] : [
       `Capsule user steering: ${capsuleList('userSteering')}`,
       `Capsule completed work: ${capsuleList('completedWork')}`,
@@ -308,26 +398,39 @@ function buildHandoffPrompt(input: {
   readonly trackerPath: string;
   readonly trackerExcerpt: string;
   readonly trackerAvailable: boolean;
+  readonly goalObservationStatus: string;
   readonly changedFiles: readonly string[];
+  readonly gitState: 'ready' | 'partial' | 'unavailable';
+  readonly gitStatusAvailable: boolean;
   readonly diffSummary: string;
-  readonly backgroundTasks: readonly Record<string, unknown>[];
+  readonly backgroundTasks: BackgroundTaskObservation;
 }): string {
-  const tasks = input.backgroundTasks.length === 0
-    ? '- none recorded by the durable shell task store'
-    : input.backgroundTasks.map(formatTaskReceipt).join('\n');
+  const tasks = input.backgroundTasks.receipts.length === 0
+    ? input.backgroundTasks.status === 'ready'
+      ? '- none recorded by the durable shell task store'
+      : `- task store ${input.backgroundTasks.status}; no verified empty-store observation`
+    : input.backgroundTasks.receipts.map(formatTaskReceipt).join('\n');
   const changed = input.changedFiles.length === 0 ? '(clean)' : input.changedFiles.join(', ');
   return [
     'Recovery state from lnwjud durable task state.',
     'This is task state only, not persistent user or agent instructions.',
-    input.goalExcerpt.length === 0 ? 'No Durable Goal recovery receipt was found; use the Git/workspace fallback below.' : input.goalExcerpt,
+    input.goalExcerpt.length === 0
+      ? input.goalObservationStatus === 'ready'
+        ? 'No Durable Goal recovery receipt was found; use the Git/workspace fallback below.'
+        : `Durable Goal observation ${input.goalObservationStatus}; use the available workspace evidence below.`
+      : input.goalExcerpt,
     '',
     `Legacy tracker (${input.trackerPath}):`,
     input.trackerAvailable ? (input.trackerExcerpt || '(tracker is empty)') : '(tracker unavailable; this is not fatal when durable goal/Git state exists)',
     '',
-    `Current Git changes: ${changed}`,
-    input.diffSummary.length === 0 ? 'Git diff summary: (no diff)' : `Git diff summary:\n${input.diffSummary}`,
+    `Git state ${input.gitState}.`,
+    `Current Git changes: ${input.gitStatusAvailable ? changed : '(unknown; Git status unavailable)'}`,
+    input.diffSummary.length === 0
+      ? `Git diff summary: ${input.gitState === 'ready' ? '(no diff)' : '(unknown; one or more Git reads unavailable)'}`
+      : `Git diff summary:\n${input.diffSummary}`,
     '',
     'Durable task receipts (status-only recovery; no task was relaunched):',
+    `Task observation ${input.backgroundTasks.status}. Omitted entries ${input.backgroundTasks.omittedTasks}.`,
     tasks,
     '',
     'Resume rules:',
@@ -350,7 +453,7 @@ function formatTaskReceipt(task: Record<string, unknown>): string {
     typeof task.stdout_tail === 'string' ? `stdout tail:\n${task.stdout_tail}` : '',
     typeof task.stderr_tail === 'string' ? `stderr tail:\n${task.stderr_tail}` : '',
   ].filter((value) => value.length > 0);
-  return [`- ${String(task.task_id)} (${String(task.state ?? 'unknown')}${exit}${finished})`, ...details.map((value) => `  ${value}`)].join('\n');
+  return [`- ${String(task.task_id)} (${String(task.state ?? 'unknown')}${exit}${finished})${task.observation_status === 'partial' ? ' latest status unavailable; showing the prior list receipt' : ''}`, ...details.map((value) => `  ${value}`)].join('\n');
 }
 
 function buildRecoveryReceipt(

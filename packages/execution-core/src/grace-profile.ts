@@ -13,20 +13,47 @@ export interface GraceRegistration {
   readonly expectedContent?: string;
   readonly validationMs?: number;
 }
+export interface ProductGraceRegistration {
+  readonly executable: string;
+  readonly libraryRoot: string;
+  readonly testDriver?: string;
+}
+/** Trusted host-only selection. Provider fixtures are never accepted from product config or MCP. */
+export interface HostDirectRegistration {
+  readonly mode: 'host-direct';
+  readonly libraryRoot: string;
+  readonly testOnlyProviders?: true;
+}
+export type ProductRegistration = ProductGraceRegistration | HostDirectRegistration;
 export interface GraceProfile {
-  readonly recipe: 'source-snapshot' | 'code-check';
+  readonly recipe: 'source-snapshot' | 'code-check' | 'product';
   readonly expectedContent: string | null;
   readonly expectedHash: string;
   readonly validationMs: number;
-  readonly mode: 'claude' | 'test-driver';
-  readonly executable: string;
-  readonly executableHash: string;
+  readonly mode: 'claude' | 'test-driver' | 'host-direct';
+  readonly testOnlyProviders?: true;
+  readonly executable?: string;
+  readonly executableHash?: string;
   readonly sourceFile: string;
   readonly sourceHash: string;
   readonly documents: Readonly<Record<string, { path: string; hash: string }>>;
   readonly libraryRoot: string;
   readonly testDriver: string | null;
   readonly testDriverHash: string | null;
+}
+export function productGraceProfile(registration: ProductRegistration): GraceProfile {
+  if ('mode' in registration && registration.mode === 'host-direct') {
+    const libraryRoot = realpathSync(registration.libraryRoot);
+    const documents = Object.fromEntries([['rules','CLAUDE.md'],['agents','AGENTS.md'],['workflow','references/agent-knowledge-workflow.md'],['index','KNOWLEDGE_INDEX.md']].map(([key, relative]) => {
+      const filename = realpathSync(path.join(libraryRoot, relative!));
+      return [key!, { path: filename, hash: hash(readFileSync(filename)) }];
+    }));
+    const sourceFile = documents.rules!.path; const sourceHash = documents.rules!.hash;
+    return { recipe: 'product', mode: 'host-direct', libraryRoot, documents, sourceFile, sourceHash, expectedContent: null, expectedHash: sourceHash, validationMs: 0, testDriver: null, testDriverHash: null, ...(registration.testOnlyProviders ? { testOnlyProviders: true } : {}) };
+  }
+  if (!('executable' in registration)) throw new CoreError('PRODUCT_PROFILE_INVALID');
+  const profile = graceProfile({ ...registration, sourceFile: path.join(registration.libraryRoot, 'CLAUDE.md') });
+  return { ...profile, recipe: 'product' };
 }
 export function graceProfile(registration: GraceRegistration): GraceProfile {
   const libraryRoot = realpathSync(registration.libraryRoot);
@@ -53,7 +80,13 @@ export function graceProfile(registration: GraceRegistration): GraceProfile {
     testDriverHash: testDriver ? hash(readFileSync(testDriver)) : null };
 }
 export function assertGraceProfile(profile: GraceProfile): void {
-  for (const entry of [{ path: profile.executable, hash: profile.executableHash }, { path: profile.sourceFile, hash: profile.sourceHash }, ...Object.values(profile.documents), ...(profile.testDriver && profile.testDriverHash ? [{ path: profile.testDriver, hash: profile.testDriverHash }] : [])]) {
+  for (const entry of profileDependencies(profile)) {
     try { verifyFingerprint(entry.path, entry.hash); } catch { throw new CoreError('GRACE_DEPENDENCIES_CHANGED'); }
   }
+}
+export function profileDependencies(profile: GraceProfile): readonly { path: string; hash: string }[] {
+  return [...(profile.mode === 'host-direct' ? [] : [{ path: profile.executable!, hash: profile.executableHash! }]), { path: profile.sourceFile, hash: profile.sourceHash }, ...Object.values(profile.documents), ...(profile.testDriver && profile.testDriverHash ? [{ path: profile.testDriver, hash: profile.testDriverHash }] : [])];
+}
+export function testProviderProfile(profile: Pick<GraceProfile, 'mode' | 'testOnlyProviders'> | null): boolean {
+  return profile?.mode === 'test-driver' || (profile?.mode === 'host-direct' && profile.testOnlyProviders === true);
 }

@@ -53,6 +53,17 @@ export const readFilePageContinueSchema = z.object({
 export const readFilesSchema = z.object({ workspaceId: optionalWorkspaceIdSchema, files: z.array(readFileSchema.omit({ workspaceId: true })).min(1).max(20) }).strict();
 export const searchFilesSchema = z.object({ workspaceId: optionalWorkspaceIdSchema, path: pathSchema.optional(), glob: z.string().max(1024).optional(), maxResults: z.number().int().min(1).max(MAX_SEARCH_RESULTS).optional(), includeIgnored: z.boolean().default(false) }).strict();
 export const searchTextSchema = searchFilesSchema.extend({ query: z.string().min(1).max(32_768), regex: z.boolean().default(false) }).strict();
+export const gitCloneSafeSchema = z.object({
+  workspaceId: workspaceIdSchema,
+  requestId: z.string().min(1).max(128),
+  url: z.string().min(1).max(2048),
+  destination: pathSchema,
+  commit: z.string().regex(/^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$/),
+}).strict();
+export const gitCloneHandleSchema = z.object({
+  workspaceId: workspaceIdSchema,
+  taskId: z.string().min(1).max(128),
+}).strict();
 export const gitStatusSchema = workspaceInfoSchema;
 export const gitDiffSchema = z.object({ workspaceId: workspaceIdSchema, path: pathSchema.optional(), staged: z.boolean().optional(), maxBytes: z.number().int().min(1).max(4 * 1024 * 1024).optional() }).strict();
 export const gitLogSchema = z.object({ workspaceId: workspaceIdSchema, maxCommits: z.number().int().min(1).max(100).optional(), maxBytes: z.number().int().min(1).max(4 * 1024 * 1024).optional() }).strict();
@@ -68,6 +79,7 @@ export const writeFileSchema = z.object({
   path: pathSchema,
   content: z.string().refine((value) => Buffer.byteLength(value, 'utf8') <= MAX_MULTI_FILE_BYTES, 'File is too large'),
   overwriteExisting: z.boolean().optional(),
+  mode: z.literal('create_new').optional(),
   userConfirmed: z.boolean().optional(),
 }).strict();
 export const applyPatchSchema = z.object({ workspaceId: optionalWorkspaceIdSchema, files: z.array(z.object({ path: pathSchema, content: z.string().refine((value) => Buffer.byteLength(value, 'utf8') <= MAX_MULTI_FILE_BYTES, 'File is too large') }).strict()).min(1).max(20), userConfirmed: z.boolean().optional() }).strict();
@@ -109,6 +121,15 @@ export const restoreCheckpointSchema = z.object({
 }).strict();
 
 export const workspaceListSchema = z.object({}).strict();
+export const workspaceWriterLeaseProofSchema = z.object({
+  leaseId: z.string().uuid(),
+  leaseToken: z.string().min(1).max(256),
+  generation: z.number().int().nonnegative(),
+});
+export const workspaceWriterLeaseAcquireSchema = z.object({ workspaceId: workspaceIdSchema, ttlSeconds: z.number().int().min(30).max(3600).optional(), recoverAbandoned: z.boolean().optional(), userConfirmed: z.boolean().optional() }).strict();
+export const workspaceWriterLeaseStatusSchema = z.object({ workspaceId: workspaceIdSchema }).strict();
+export const workspaceWriterLeaseProofActionSchema = z.object({ workspaceId: workspaceIdSchema, writerLease: workspaceWriterLeaseProofSchema, ttlSeconds: z.number().int().min(30).max(3600).optional() }).strict();
+export const workspacePathPreflightSchema = z.object({ path: pathSchema, userConfirmed: z.boolean().optional() }).strict();
 export const workspaceRegisterSchema = z.object({
   parentWorkspaceId: optionalWorkspaceIdSchema,
   path: pathSchema,
@@ -433,7 +454,9 @@ export const accessibilityCapabilitySchema = z.object({
 });
 
 export const inputEventCapabilitySchema = z.object({
-  operation: z.enum(['type_text', 'paste_text', 'press_key', 'hotkey', 'key_down', 'key_up', 'mouse_move', 'click', 'double_click', 'right_click', 'drag', 'scroll', 'button_down', 'button_up', 'release_all', 'sequence']),
+  workspaceId: optionalWorkspaceIdSchema,
+  operation: z.enum(['status', 'type_text', 'paste_text', 'press_key', 'hotkey', 'key_down', 'key_up', 'mouse_move', 'click', 'double_click', 'right_click', 'drag', 'scroll', 'button_down', 'button_up', 'release_all', 'sequence']),
+  session_id: z.string().min(1).max(512).optional(),
   parameters: capabilityParametersSchema.optional(),
   postcondition: nativePostconditionSchema.optional(),
   display_id: z.string().trim().min(1).max(128).optional(),
@@ -474,7 +497,9 @@ export const inputEventCapabilitySchema = z.object({
 });
 
 export const visionCapabilitySchema = z.object({
-  action: z.enum(['capture_display', 'capture_region', 'capture_window', 'annotate', 'ocr']),
+  workspaceId: optionalWorkspaceIdSchema,
+  action: z.enum(['status', 'capture_display', 'capture_region', 'capture_window', 'annotate', 'ocr']),
+  session_id: z.string().min(1).max(512).optional(),
   region: capabilityParametersSchema.optional(),
   app: capabilityParametersSchema.optional(),
   window_index: z.number().int().min(0).optional(),
@@ -619,16 +644,24 @@ export const webFetchCapabilitySchema = z.object({
 
 export const audioCapabilitySchema = z.object({
   workspaceId: optionalWorkspaceIdSchema,
-  action: z.enum(['record', 'play', 'stop']),
+  action: z.enum(['status', 'record', 'play', 'stop']),
+  handle: z.string().min(1).max(512).optional(),
+  cancel: z.boolean().optional(),
+  max_bytes: z.number().int().min(1024).max(67_108_864).optional(),
   output_path: z.string().max(MAX_PATH_LENGTH).optional(),
   file_path: z.string().max(MAX_PATH_LENGTH).optional(),
-  duration_seconds: z.number().int().min(1).max(600).optional(),
+  duration_seconds: z.number().min(0.1).max(600).optional(),
   ...capabilityRequestSchema,
 }).strict();
 
 export const screenRecordCapabilitySchema = z.object({
   workspaceId: optionalWorkspaceIdSchema,
   action: z.enum(['start', 'stop', 'status']),
+  handle: z.string().min(1).max(512).optional(),
+  session_id: z.string().min(1).max(512).optional(),
+  cancel: z.boolean().optional(),
+  duration_seconds: z.number().min(0.1).max(600).optional(),
+  max_bytes: z.number().int().min(1024).max(67_108_864).optional(),
   output_path: z.string().max(MAX_PATH_LENGTH).optional(),
   offset_x: z.number().int().min(-16_384).max(16_384).optional(),
   offset_y: z.number().int().min(-16_384).max(16_384).optional(),

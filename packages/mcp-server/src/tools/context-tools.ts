@@ -15,7 +15,7 @@ export function contextTools(context: McpToolContext, engine: ContextEngine): Mc
   return [
     defineTool({
       name: 'workspace_context',
-      description: 'Aggregate ranked workspace context with snippets, symbols, Git/test relevance, economy metadata, and continuation; automatic discovery can be explicitly expanded.',
+      description: 'Aggregate ranked workspace context with snippets, symbols, Git/test relevance and continuation. Preserve per-source observations and explicit completeness when a provider fails or search is truncated.',
       permission: 'READ',
       annotations: { readOnlyHint: true, destructiveHint: false },
       inputSchema: workspaceContextSchema,
@@ -40,7 +40,7 @@ export function contextTools(context: McpToolContext, engine: ContextEngine): Mc
     }),
     defineTool({
       name: 'workspace_full_scan',
-      description: 'Enumerate workspace files with full access by default; set includeIgnored false to use the persistent automatic index.',
+      description: 'Enumerate workspace files with per-source completeness. With includeIgnored false, use a fresh clean automatic index for prefix scans; stale or unavailable indexes and glob requests fall back to real filename search.',
       permission: 'READ',
       annotations: { readOnlyHint: true, destructiveHint: false },
       inputSchema: workspaceFullScanSchema,
@@ -62,7 +62,7 @@ export function contextTools(context: McpToolContext, engine: ContextEngine): Mc
     }),
     defineTool({
       name: 'workspace_snapshot',
-      description: 'Return workspace identity and project snapshot metadata without source contents.',
+      description: 'Return workspace identity and project snapshot metadata without source contents, retaining successful providers and explicit missing or unknown observations.',
       permission: 'READ',
       annotations: { readOnlyHint: true, destructiveHint: false },
       inputSchema: workspaceSnapshotSchema,
@@ -70,7 +70,7 @@ export function contextTools(context: McpToolContext, engine: ContextEngine): Mc
     }),
     defineTool({
       name: 'search_all',
-      description: 'Search text and filenames across one or all registered workspaces with automatic economy filters or an explicit includeIgnored override.',
+      description: 'Search text and filenames across registered workspaces, retaining each source observation and explicit truncation or partial completeness. Automatic economy filters can be expanded with includeIgnored.',
       permission: 'READ',
       annotations: { readOnlyHint: true, destructiveHint: false },
       inputSchema: searchAllSchema,

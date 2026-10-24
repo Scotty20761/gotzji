@@ -47,6 +47,47 @@ afterEach(() => {
 });
 
 describe('NativeHostProcessBridge', () => {
+  it('accepts coalesced complete frames that individually fit the response limit', async () => {
+    const bridge = new NativeHostProcessBridge({ platform: 'linux', executablePath: '/opt/native', maxPayloadBytes: 1024, terminator,
+      spawnProcess: (): never => {
+        const child = new FakeChild();
+        child.stdin.removeAllListeners('data');
+        const requests: { id: string }[] = [];
+        child.stdin.on('data', (chunk: Buffer) => {
+          requests.push(JSON.parse(chunk.toString()) as { id: string });
+          if (requests.length === 2) child.stdout.write(requests.map((request) => JSON.stringify({ id: request.id, ok: true, value: 'x'.repeat(900) })).join('\n') + '\n');
+        });
+        children.push(child);
+        return child as never;
+      },
+    });
+    await expect(Promise.all([bridge.execute('observe', {}), bridge.execute('observe', {})])).resolves.toEqual([{ ok: true, value: 'x'.repeat(900) }, { ok: true, value: 'x'.repeat(900) }]);
+    await bridge.close();
+  });
+
+  it('does not return a late success while cancellation still awaits verified termination', async () => {
+    const child = new FakeChild();
+    children.push(child);
+    child.stdin.removeAllListeners('data');
+    let releaseTermination!: () => void;
+    const terminationGate = new Promise<void>((resolve) => { releaseTermination = resolve; });
+    let entered!: () => void;
+    const dispatched = new Promise<void>((resolve) => { entered = resolve; });
+    let requestId = '';
+    child.stdin.on('data', (chunk: Buffer) => { requestId = (JSON.parse(chunk.toString()) as { id: string }).id; entered(); });
+    const bridge = new NativeHostProcessBridge({ platform: 'linux', executablePath: '/opt/native', terminator: { stop: async (): Promise<void> => { await terminationGate; child.kill(); } }, spawnProcess: (): never => child as never });
+    const controller = new AbortController();
+    let settled = false;
+    const request = bridge.execute('observe', {}, controller.signal).then((result) => { settled = true; return result; });
+    await dispatched;
+    controller.abort();
+    child.stdout.write(JSON.stringify({ id: requestId, ok: true, value: 'late result' }) + '\n');
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    releaseTermination();
+    await expect(request).resolves.toMatchObject({ ok: false, error: { code: 'PROCESS_TIMEOUT' } });
+    await bridge.close();
+  });
   it.each(['darwin', 'linux'] as const)('preserves split UTF-8 responses on %s', async (platform) => {
     const bridge = new NativeHostProcessBridge({
       platform,

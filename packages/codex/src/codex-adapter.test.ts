@@ -22,6 +22,7 @@ describe('CodexAdapter', () => {
       executable: 'C:\\tools\\codex.exe',
       args: ['exec', '--sandbox', 'workspace-write', 'review "quoted" input'],
       cwd: 'C:\\workspace',
+      stdinMode: 'ignore',
     }]);
   });
 

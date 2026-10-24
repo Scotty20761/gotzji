@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import {
   ipcChannels,
+  gotzjiIpcChannels,
   isIncidentClassification,
   pushChannels,
   type AddWorkspaceRequest,
@@ -19,6 +20,20 @@ import {
   type DoctorCheck,
   type DoctorReport,
   type ToolCatalogSnapshot,
+  type WorkflowTemplate,
+  type WorkflowPrepareRequest,
+  type WorkflowDraft,
+  type WorkflowChoicesRequest,
+  type WorkflowChoicesResult,
+  type CallHistoryRequest,
+  type CallHistoryPage,
+  type TaskResultSummary,
+  type RestoreTaskCheckpointRequest,
+  type RestoreTaskCheckpointResult,
+  type CancelOwnedGoalTaskRequest,
+  type CancelOwnedGoalTaskResult,
+  type ResourceSnapshotRequest,
+  type ResourceSnapshot,
   type ToolCatalogItem,
   type GetGitDiffRequest,
   type GetGitDiffResponse,
@@ -37,6 +52,8 @@ import {
   type InFlightWorkItem,
   type InstallActivitySnapshot,
   type LnwjudApi,
+  type GotzjiApi,
+  type GotzjiHostStatus,
   type LoadLogSessionHistoryRequest,
   type LoadLogSessionHistoryResult,
   type LogLine,
@@ -44,6 +61,7 @@ import {
   type OpenExternalSetupPageRequest,
   type LogSnapshot,
   type ManagedBrowserStatus,
+  type MutationApprovalPrompt,
   type PdfProviderInstallResult,
   type McpConnectionStatus,
   type PermissionProfileName,
@@ -54,6 +72,7 @@ import {
   type ProcessSummary,
   type PurgeRecoveryDataRequest,
   type RestoreCheckpointRequest,
+  type ResolveMutationApprovalPromptRequest,
   type RestoreRecoveryItemRequest,
   type SaveTunnelApiKeyRequest,
   type SaveRemoteMcpAuthtokenRequest,
@@ -85,6 +104,9 @@ import {
   type WorkspaceSummary,
 } from '@lnwjud/ipc-contracts';
 import { parseLogCorrelation } from './log-parser.js';
+
+declare const __GOTZJI_PRODUCT__: boolean | undefined;
+const gotzjiProductEnabled = typeof __GOTZJI_PRODUCT__ === 'boolean' ? __GOTZJI_PRODUCT__ : true;
 
 function invoke(channel: string, payload?: unknown): Promise<unknown> {
   return payload === undefined ? ipcRenderer.invoke(channel) : ipcRenderer.invoke(channel, payload);
@@ -1332,6 +1354,13 @@ function setGoalPonytailMode(request: SetGoalPonytailModeRequest): Promise<Ponyt
   return invoke(ipcChannels.setGoalPonytailMode, { workspaceId: request.workspaceId, goalId: request.goalId, expectedRevision: request.expectedRevision, mode }).then(ponytailPolicyContext);
 }
 
+function chooseWorkflowDataFile(): Promise<{ readonly filePath: string | null }> {
+  return invoke(ipcChannels.chooseWorkflowDataFile).then((value: unknown) => {
+    if (!isRecord(value)) throw new Error('Invalid IPC response');
+    return { filePath: nullableString(value.filePath) };
+  });
+}
+
 function chooseTunnelClientPath(): Promise<{ readonly clientPath: string | null }> {
   return invoke(ipcChannels.chooseTunnelClientPath).then((value: unknown) => {
     if (!isRecord(value)) throw new Error('Invalid IPC response');
@@ -1552,6 +1581,53 @@ function onLogEvent(callback: (line: LogLine) => void): () => void {
   };
 }
 
+function mutationApprovalPrompt(value: unknown): MutationApprovalPrompt | null {
+  if (value === null) return null;
+  if (!isRecord(value) || !Array.isArray(value.buttons) || value.buttons.length !== 2
+    || typeof value.buttons[0] !== 'string' || typeof value.buttons[1] !== 'string') {
+    throw new Error('Invalid IPC response');
+  }
+  return {
+    title: stringField(value, 'title'),
+    message: stringField(value, 'message'),
+    detail: stringField(value, 'detail'),
+    buttons: [value.buttons[0], value.buttons[1]],
+  };
+}
+
+/** Main owns the actual values; preload refuses malformed or unexpectedly large IPC replies. */
+function boundedWorkflowReply(value: unknown, kind: 'templates' | 'draft' | 'calls' | 'result' | 'resources'): unknown {
+  if (kind === 'templates') {
+    if (!Array.isArray(value) || value.length > 6 || value.some((item: unknown) =>
+      !isRecord(item) || typeof item.id !== 'string' || typeof item.titleTh !== 'string' ||
+      typeof item.titleEn !== 'string' || typeof item.revision !== 'number' || !Array.isArray(item.inputFields))) {
+      throw new Error('Invalid workflow template response');
+    }
+    return value;
+  }
+  if (!isRecord(value)) throw new Error('Invalid workflow IPC response');
+  if (kind === 'draft') {
+    if (value.schemaVersion !== 1 || typeof value.digest !== 'string' || !/^[a-f0-9]{64}$/.test(value.digest)
+      || typeof value.objective !== 'string' || value.objective.length > 2048
+      || !Array.isArray(value.steps) || value.steps.length > 20
+      || !Array.isArray(value.acceptance) || value.acceptance.length > 20
+      || !Array.isArray(value.blockers) || !isRecord(value.inputs)) throw new Error('Invalid workflow draft response');
+  }
+  if (kind === 'calls' && (!Array.isArray(value.items) || value.items.length > 200
+    || !isRecord(value.totals) || typeof value.sampledAt !== 'string'
+    || !(value.nextCursor === null || typeof value.nextCursor === 'string'))) throw new Error('Invalid call history response');
+  if (kind === 'result' && (typeof value.workspaceId !== 'string' || typeof value.goalId !== 'string'
+    || !Array.isArray(value.observedChanges) || !Array.isArray(value.artifacts) || !Array.isArray(value.checks)
+    || !Array.isArray(value.blockers) || typeof value.evidenceCoverage !== 'string')) {
+    throw new Error('Invalid task result response');
+  }
+  if (kind === 'resources' && (typeof value.workspaceId !== 'string' || !Array.isArray(value.resources)
+    || value.resources.length > 200 || !isRecord(value.context) || typeof value.sampledAt !== 'string')) {
+    throw new Error('Invalid resource response');
+  }
+  return value;
+}
+
 const api: LnwjudApi = {
   listWorkspaces: () => invoke(ipcChannels.listWorkspaces).then(workspaceList),
   addWorkspace,
@@ -1600,11 +1676,73 @@ const api: LnwjudApi = {
   setWorkspacePonytailMode,
   setGoalPonytailMode,
   chooseTunnelClientPath,
+  chooseWorkflowDataFile,
+  generateWorkflowMapping: (request: {workspaceId:string;templatePath:string;sheet:string}): Promise<{filePath:string}> => {
+    if (!isRecord(request) || typeof request.workspaceId !== 'string' || typeof request.templatePath !== 'string'
+      || typeof request.sheet !== 'string' || !request.sheet || request.sheet.length > 31
+      || !request.workspaceId || request.workspaceId.length > 128 || !request.templatePath || request.templatePath.length > 4096) return Promise.reject(new Error('Invalid mapping request'));
+    return invoke(ipcChannels.generateWorkflowMapping, request).then((value: unknown) => {
+      if (!isRecord(value) || typeof value.filePath !== 'string' || !value.filePath) throw new Error('Invalid mapping result');
+      return {filePath:value.filePath};
+    });
+  },
+  inspectWorkflowChoices: (request: WorkflowChoicesRequest): Promise<WorkflowChoicesResult> => {
+    if (!isRecord(request) || typeof request.workspaceId !== 'string' || !request.workspaceId || request.workspaceId.length > 128
+      || (request.filePath !== undefined && (typeof request.filePath !== 'string' || request.filePath.length > 4096))) {
+      return Promise.reject(new Error('Invalid workflow inspection request'));
+    }
+    return invoke(ipcChannels.inspectWorkflowChoices, request).then((value: unknown) => {
+      if (!isRecord(value) || (value.projectVersion !== null && typeof value.projectVersion !== 'string')
+        || !Array.isArray(value.branches) || value.branches.length > 80 || !value.branches.every((name: unknown) => typeof name === 'string' && name.length>0 && name.length<=256)
+        || (value.file !== null && (!isRecord(value.file) || !Array.isArray(value.file.sheets)))) {
+        throw new Error('Invalid workflow inspection result');
+      }
+      if (value.file !== null) {
+        if (value.file.fileType !== 'csv' && value.file.fileType !== 'xlsx') throw new Error('Invalid file type');
+        if ((value.file.sheets as unknown[]).length > 64 || !(value.file.sheets as unknown[]).every((sheet: unknown) => isRecord(sheet)
+          && typeof sheet.name === 'string' && sheet.name.length <= 64 && Array.isArray(sheet.columns)
+          && sheet.columns.length <= 256 && sheet.columns.every((column: unknown) => typeof column === 'string' && column.length <= 1024))) {
+          throw new Error('Invalid Office metadata');
+        }
+      }
+      return value as unknown as WorkflowChoicesResult;
+    });
+  },
   configureTunnelProfile,
   openExternalSetupPage,
   launchManagedBrowser,
   installPdfProvider,
   runDoctor: () => invoke(ipcChannels.runDoctor).then(doctorReport),
+  listWorkflowTemplates: (request: { workspaceId: string }) => invoke(ipcChannels.listWorkflowTemplates, request).then((value) => boundedWorkflowReply(value, 'templates') as readonly WorkflowTemplate[]),
+  prepareWorkflow: (request: WorkflowPrepareRequest) => invoke(ipcChannels.prepareWorkflow, request).then((value) => boundedWorkflowReply(value, 'draft') as WorkflowDraft),
+  getCallHistory: (request: CallHistoryRequest) => invoke(ipcChannels.getCallHistory, request).then((value) => boundedWorkflowReply(value, 'calls') as CallHistoryPage),
+  getDoctorGoals: (request: { workspaceId: string; view?: 'calls' | 'results' }) => invoke(ipcChannels.getDoctorGoals, request).then((value) => {
+    if (!Array.isArray(value) || value.length > 100 || !value.every((goal: unknown) => isRecord(goal)
+      && typeof goal.goalId === 'string' && goal.goalId.length <= 128
+      && typeof goal.goalKey === 'string' && goal.goalKey.length <= 128
+      && typeof goal.objective === 'string' && goal.objective.length <= 4096
+      && typeof goal.updatedAt === 'string' && goal.updatedAt.length <= 64)) throw new Error('Invalid Doctor goal list');
+    return value as import('@lnwjud/ipc-contracts').DoctorGoalOption[];
+  }),
+  getTaskResult: (request: { workspaceId: string; goalId: string }) => invoke(ipcChannels.getTaskResult, request).then((value) => boundedWorkflowReply(value, 'result') as TaskResultSummary),
+  restoreTaskCheckpoint: (request: RestoreTaskCheckpointRequest): Promise<RestoreTaskCheckpointResult> =>
+    invoke(ipcChannels.restoreTaskCheckpoint, request).then((value) => {
+      if (!isRecord(value) || value.restored !== true || !Array.isArray(value.paths)
+          || value.paths.length > 20 || !value.paths.every((item: unknown) => typeof item === 'string' && item.length <= 1024)
+          || (value.rollbackCheckpointId !== null && typeof value.rollbackCheckpointId !== 'string')) {
+        throw new Error('Invalid checkpoint restore response');
+      }
+      return value as unknown as RestoreTaskCheckpointResult;
+    }),
+  cancelOwnedGoalTask: (request: CancelOwnedGoalTaskRequest): Promise<CancelOwnedGoalTaskResult> =>
+    invoke(ipcChannels.cancelOwnedGoalTask, request).then((value) => {
+      if (!isRecord(value) || typeof value.taskId !== 'string'
+          || !['cancelled','already_terminal','not_found','skipped','failed'].includes(String(value.status))) {
+        throw new Error('Invalid Goal task cancellation response');
+      }
+      return value as unknown as CancelOwnedGoalTaskResult;
+    }),
+  getResourceSnapshot: (request: ResourceSnapshotRequest) => invoke(ipcChannels.getResourceSnapshot, request).then((value) => boundedWorkflowReply(value, 'resources') as ResourceSnapshot),
   getToolCatalog,
   recheckToolCatalog,
   setToolAvailability,
@@ -1625,6 +1763,12 @@ const api: LnwjudApi = {
   }),
   getUpdateStatus: () => invoke(ipcChannels.getUpdateStatus).then(updateStatus),
   getInstallActivity: () => invoke(ipcChannels.getInstallActivity).then(installActivitySnapshot),
+  getMutationApprovalPrompt: () => invoke(ipcChannels.getMutationApprovalPrompt).then(mutationApprovalPrompt),
+  resolveMutationApprovalPrompt: (request: ResolveMutationApprovalPromptRequest) =>
+    invoke(ipcChannels.resolveMutationApprovalPrompt, request).then((value: unknown) => {
+      if (!isRecord(value)) throw new Error('Invalid IPC response');
+      return { accepted: booleanField(value, 'accepted') };
+    }),
   factoryReset: () => invoke(ipcChannels.factoryReset).then((value: unknown) => {
     if (!isRecord(value)) throw new Error('Invalid IPC response');
     return { accepted: booleanField(value, 'accepted') };
@@ -1641,6 +1785,16 @@ const api: LnwjudApi = {
         path: stringField(value, 'path'),
         patch: stringField(value, 'patch'),
         truncated: booleanField(value, 'truncated'),
+        ...(isRecord(value.preview)
+          && ['text','image','binary','too_large','missing'].includes(String(value.preview.kind))
+          && (value.preview.sizeBytes === null || (typeof value.preview.sizeBytes === 'number' && Number.isSafeInteger(value.preview.sizeBytes) && value.preview.sizeBytes >= 0))
+          && typeof value.preview.extension === 'string' && value.preview.extension.length <= 32
+          && (value.preview.mimeType === null || (typeof value.preview.mimeType === 'string' && value.preview.mimeType.length <= 256))
+          ? { preview: {
+              kind: value.preview.kind as NonNullable<GetGitDiffResponse['preview']>['kind'],
+              sizeBytes: value.preview.sizeBytes as number | null, extension: value.preview.extension,
+              mimeType: value.preview.mimeType as string | null,
+            } } : {}),
         ...(typeof value.oldContent === 'string' ? { oldContent: value.oldContent } : {}),
         ...(typeof value.newContent === 'string' ? { newContent: value.newContent } : {}),
         ...(value.oldImage === undefined ? {} : { oldImage: gitImagePreviewResponse(value.oldImage) }),
@@ -1656,3 +1810,33 @@ const api: LnwjudApi = {
 };
 
 contextBridge.exposeInMainWorld('lnwjud', api);
+const gotzjiApi: GotzjiApi = {
+  hostStatus: async () => {
+    const value: unknown = await invoke(gotzjiIpcChannels.hostStatus);
+    if (!isRecord(value) || value.product !== 'gotzji' || (value.state !== 'ready' && value.state !== 'control-only' && value.state !== 'unavailable')
+      || value.controller !== 'chatgpt-plugin' || value.automaticUpdates !== false
+      || (value.ownerId !== null && typeof value.ownerId !== 'string')) throw new Error('Invalid gotzji host response');
+    return value as unknown as GotzjiHostStatus;
+  },
+  request: (request) => invoke(gotzjiIpcChannels.request, request),
+  connectionSetupDefaults: async () => {
+    const value: unknown = await invoke(gotzjiIpcChannels.connectionSetupDefaults);
+    if (!isRecord(value) || Object.keys(value).some((key) => !['tunnelId', 'organizationId'].includes(key))
+      || value.tunnelId !== undefined && (typeof value.tunnelId !== 'string' || !/^tunnel_[a-z0-9]{32}$/u.test(value.tunnelId))
+      || value.organizationId !== undefined && (typeof value.organizationId !== 'string' || !/^org[-_][A-Za-z0-9_-]{1,160}$/u.test(value.organizationId))) throw new Error('Invalid gotzji connection setup');
+    return { ...(typeof value.tunnelId === 'string' ? { tunnelId: value.tunnelId } : {}), ...(typeof value.organizationId === 'string' ? { organizationId: value.organizationId } : {}) };
+  },
+  openConnectionSetup: async (page) => { await invoke(gotzjiIpcChannels.openConnectionSetup, page); },
+  startupStatus: async () => parseGotzjiStartup(await invoke(gotzjiIpcChannels.startupStatus)),
+  setStartup: async (enabled) => parseGotzjiStartup(await invoke(gotzjiIpcChannels.setStartup, enabled)),
+  exportSupportReport: async () => {
+    const value: unknown = await invoke(gotzjiIpcChannels.exportSupportReport);
+    if (!isRecord(value) || typeof value.exported !== 'boolean' || typeof value.cancelled !== 'boolean') throw new Error('Invalid gotzji support report response');
+    return { exported: value.exported, cancelled: value.cancelled };
+  },
+};
+if (gotzjiProductEnabled) contextBridge.exposeInMainWorld('gotzji', gotzjiApi);
+function parseGotzjiStartup(value: unknown): { available: boolean; enabled: boolean; mode: 'inspect-and-resume'; reason?: string } {
+  if (!isRecord(value) || typeof value.available !== 'boolean' || typeof value.enabled !== 'boolean' || value.mode !== 'inspect-and-resume' || value.reason !== undefined && typeof value.reason !== 'string') throw new Error('Invalid gotzji startup state');
+  return { available: value.available, enabled: value.enabled, mode: 'inspect-and-resume', ...(typeof value.reason === 'string' ? { reason: value.reason } : {}) };
+}

@@ -8,6 +8,7 @@
   },
   "include": ["src/main/**/*.ts", "src/main/**/*.json", "src/preload/**/*.ts"],
   "references": [
+    { "path": "../../packages/execution-core" },
     { "path": "../../packages/ipc-contracts" },
     { "path": "../../packages/mcp-server" },
     { "path": "../../packages/application" },

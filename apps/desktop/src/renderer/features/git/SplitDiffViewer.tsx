@@ -1,6 +1,24 @@
+import { ActionButton } from '../ui/UiPrimitives.js';
 import { Fragment, useRef, useState, type ReactElement } from 'react';
-import type { GitImagePreview, UiLocale } from '@lnwjud/ipc-contracts';
+import type { GitFilePreviewInfo, GitImagePreview, UiLocale } from '@lnwjud/ipc-contracts';
 import { createTranslator } from '../../i18n/index.js';
+import { v580Strings } from '../../i18n/v580-copy.js';
+
+
+export function formatGitHunkLabel(header: string, locale: UiLocale): string {
+  const match = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(header);
+  if (!match) return header;
+  const range = (startText: string, countText?: string): string => {
+    const start = Number(startText);
+    const count = countText === undefined ? 1 : Number(countText);
+    if (count === 0) return '—';
+    return count === 1 ? String(start) : `${start}–${start + count - 1}`;
+  };
+  const oldRange = range(match[1]!, match[2]);
+  const newRange = range(match[3]!, match[4]);
+  const copy = v580Strings(locale).git;
+  return `${copy.changedRange} • ${copy.oldRange} ${oldRange} / ${copy.newRange} ${newRange}`;
+}
 
 export interface DiffRow {
   readonly oldLineNumber: number | null;
@@ -167,6 +185,7 @@ interface SplitDiffViewerProps {
   readonly oldImage?: GitImagePreview | undefined;
   readonly newImage?: GitImagePreview | undefined;
   readonly imagePreviewError?: 'too_large' | 'unsupported' | undefined;
+  readonly preview?: GitFilePreviewInfo | undefined;
   readonly additions?: number | undefined;
   readonly deletions?: number | undefined;
   readonly oldLabel?: string | undefined;
@@ -207,6 +226,7 @@ export function SplitDiffViewer({
   oldImage,
   newImage,
   imagePreviewError,
+  preview,
   additions: propAdditions,
   deletions: propDeletions,
   oldLabel = 'HEAD',
@@ -214,6 +234,7 @@ export function SplitDiffViewer({
   onClose,
 }: SplitDiffViewerProps): ReactElement {
   const t = createTranslator(locale);
+  const copy = v580Strings(locale).git;
   const [viewMode, setViewMode] = useState<'split' | 'unified'>('split');
   const [imageFit, setImageFit] = useState(true);
   const [oldImageFailed, setOldImageFailed] = useState(false);
@@ -276,14 +297,14 @@ export function SplitDiffViewer({
     <div className="split-diff-viewer">
       <div className="diff-header-bar">
         <div className="diff-header-left">
-          <button
+          <ActionButton
             type="button"
             className="diff-back-btn"
             onClick={onClose}
             title={t('diff.backTitle')}
           >
             ← {t('diff.back')}
-          </button>
+          </ActionButton>
           <span className="diff-file-title" title={filePath}>
             📄 {filePath}
           </span>
@@ -301,47 +322,57 @@ export function SplitDiffViewer({
           <div className="diff-view-toggle">
             {isImageDiff ? (
               <>
-                <button type="button" className={`toggle-btn ${imageFit ? 'active' : ''}`} onClick={() => { setImageFit(true); }}>
+                <ActionButton type="button" className={`toggle-btn ${imageFit ? 'active' : ''}`} onClick={() => { setImageFit(true); }}>
                   {t('diff.imageFit')}
-                </button>
-                <button type="button" className={`toggle-btn ${imageFit ? '' : 'active'}`} onClick={() => { setImageFit(false); }}>
+                </ActionButton>
+                <ActionButton type="button" className={`toggle-btn ${imageFit ? '' : 'active'}`} onClick={() => { setImageFit(false); }}>
                   {t('diff.imageActual')}
-                </button>
+                </ActionButton>
               </>
             ) : (
               <>
-                <button
+                <ActionButton
                   type="button"
                   className={`toggle-btn ${viewMode === 'split' ? 'active' : ''}`}
                   onClick={() => { setViewMode('split'); }}
                 >
                   {t('diff.splitView')}
-                </button>
-                <button
+                </ActionButton>
+                <ActionButton
                   type="button"
                   className={`toggle-btn ${viewMode === 'unified' ? 'active' : ''}`}
                   onClick={() => { setViewMode('unified'); }}
                 >
                   {t('diff.unifiedView')}
-                </button>
+                </ActionButton>
               </>
             )}
           </div>
-          <button
+          <ActionButton
             type="button"
             className="diff-close-btn"
             onClick={onClose}
             aria-label={t('diff.closeAria')}
           >
             {t('diff.close')}
-          </button>
+          </ActionButton>
         </div>
       </div>
 
       {isImageDiff ? imageDiffBody : null}
       {!isImageDiff && (parsed.hunks.length === 0 ? (
         <div className="diff-empty-notice">
-          <p>{t('diff.noChanges')}</p>
+          {preview?.kind === 'binary' || preview?.kind === 'too_large' || preview?.kind === 'missing'
+            ? <div className="git-preview-metadata">
+                <strong>{copy.details}</strong>
+                <dl>
+                  <dt>{copy.type}</dt><dd>{preview.mimeType ?? (preview.extension || 'Unknown')}</dd>
+                  <dt>{copy.size}</dt><dd>{preview.sizeBytes === null ? 'Unknown' : `${preview.sizeBytes.toLocaleString()} bytes`}</dd>
+                  <dt>{copy.preview}</dt>
+                  <dd>{preview.kind === 'binary' ? (copy.binary) : preview.kind === 'too_large' ? (copy.tooLarge) : (copy.removed)}</dd>
+                </dl>
+              </div>
+            : <p>{t('diff.noChanges')}</p>}
         </div>
       ) : viewMode === 'split' ? (
         <div className="diff-split-container">
@@ -366,7 +397,7 @@ export function SplitDiffViewer({
             >
               {parsed.hunks.map((hunk, hunkIdx) => (
                 <div key={`hunk-left-${hunkIdx}`} className="diff-hunk-block">
-                  <div className="diff-hunk-header">{hunk.header}</div>
+                  <div className="diff-hunk-header" title={hunk.header}>{formatGitHunkLabel(hunk.header, locale)}</div>
                   <table className="diff-table">
                     <tbody>
                       {hunk.rows.map((row, rowIdx) => (
@@ -399,7 +430,7 @@ export function SplitDiffViewer({
             >
               {parsed.hunks.map((hunk, hunkIdx) => (
                 <div key={`hunk-right-${hunkIdx}`} className="diff-hunk-block">
-                  <div className="diff-hunk-header">{hunk.header}</div>
+                  <div className="diff-hunk-header" title={hunk.header}>{formatGitHunkLabel(hunk.header, locale)}</div>
                   <table className="diff-table">
                     <tbody>
                       {hunk.rows.map((row, rowIdx) => (
@@ -430,7 +461,7 @@ export function SplitDiffViewer({
         <div className="diff-unified-container">
           {parsed.hunks.map((hunk, hunkIdx) => (
             <div key={`hunk-unified-${hunkIdx}`} className="diff-hunk-block">
-              <div className="diff-hunk-header">{hunk.header}</div>
+              <div className="diff-hunk-header" title={hunk.header}>{formatGitHunkLabel(hunk.header, locale)}</div>
               <table className="diff-table unified-table">
                 <tbody>
                   {hunk.rows.map((row, rowIdx) => {

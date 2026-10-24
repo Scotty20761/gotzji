@@ -30,6 +30,7 @@ import { isProtectedCriticalPath } from '@lnwjud/shared';
 import { isFilesystemRoot, isWithin, WorkspacePathGuard, type ResolvedWorkspacePath, type Workspace, type WorkspaceRepository } from '@lnwjud/workspace';
 import type { CheckpointServicePort } from './checkpoint-service.js';
 import { createGuardedWriteValidator } from './guarded-write.js';
+import type { ManagedWriterAdmissionPort } from './writer-admission.js';
 import { runMutationTransaction } from './mutation-transaction.js';
 import { resolveSharedWorkspace, resolveWorkspaceForPath } from './workspace-locator.js';
 
@@ -63,6 +64,8 @@ export interface ReadFilesResult {
 }
 
 export interface FileServiceDependencies {
+  /** Shared durable writer exclusion used for import collision safety. */
+  readonly writerAdmission?: ManagedWriterAdmissionPort;
   readonly writer?: AtomicFileWriter;
   readonly patchApplier?: PatchApplier;
   readonly checkpointService?: CheckpointServicePort;
@@ -88,6 +91,8 @@ export interface WriteFileRequest {
   readonly content: string;
   /** Existing targets are create-only unless this is explicitly true. */
   readonly overwriteExisting?: boolean;
+  /** Atomic destination-level create-only, independent of Permission Profile. */
+  readonly mode?: 'create_new';
   /** Required together with overwriteExisting after human approval. */
   readonly userConfirmed?: boolean;
 }
@@ -207,6 +212,7 @@ export interface PreparedExternalFileMutation {
 
 export class FileService {
   private readonly writer: AtomicFileWriter;
+  private readonly writerAdmission: ManagedWriterAdmissionPort | undefined;
   private readonly patchApplier: PatchApplier;
   private readonly checkpointService: CheckpointServicePort | undefined;
   private readonly permissionEngine: PermissionEngine;
@@ -226,6 +232,7 @@ export class FileService {
     dependencies: FileServiceDependencies = {},
   ) {
     this.writer = dependencies.writer ?? new AtomicFileWriter();
+    this.writerAdmission = dependencies.writerAdmission;
     this.patchApplier = dependencies.patchApplier ?? new PatchApplier();
     this.checkpointService = dependencies.checkpointService;
     this.permissionEngine = dependencies.permissionEngine ?? new DefaultPermissionEngine();
@@ -237,6 +244,25 @@ export class FileService {
     this.protectCriticalFiles = dependencies.protectCriticalFiles ?? ((): boolean => true);
     this.recoverableDelete = dependencies.recoverableDelete ?? ((): boolean => true);
     this.recoveryTrashRoot = dependencies.recoveryTrashRoot;
+  }
+
+  private async withWriterAdmission<T>(
+    actor: FileActor,
+    workspaceId: string | undefined,
+    mutation: () => Promise<Result<T>>,
+  ): Promise<Result<T>> {
+    if (this.writerAdmission === undefined) return mutation();
+    const admitted = await this.writerAdmission.enter({
+      actorClientId: actor.clientId,
+      workspaceId: workspaceId ?? 'implicit-workspace',
+      kind: 'synchronous_mutation',
+    });
+    if (!admitted.ok) return admitted;
+    try {
+      return await mutation();
+    } finally {
+      await admitted.value.releaseAfterVerifiedTermination();
+    }
   }
 
   private isTrustedWorkspace(workspace: Workspace): boolean {
@@ -319,8 +345,12 @@ export class FileService {
     return ok({ files });
   }
 
-  public async writeFile(actor: FileActor, workspaceId: string | undefined, request: WriteFileRequest, signal?: AbortSignal, authorization?: InvocationAuthorization): Promise<Result<WriteFileResult>> {
-    if (typeof request?.path !== 'string' || typeof request.content !== 'string') {
+  public writeFile(actor: FileActor, workspaceId: string | undefined, request: WriteFileRequest, signal?: AbortSignal, authorization?: InvocationAuthorization): Promise<Result<WriteFileResult>> {
+    return this.withWriterAdmission(actor, workspaceId, () => this.writeFileInternal(actor, workspaceId, request, signal, authorization));
+  }
+
+  private async writeFileInternal(actor: FileActor, workspaceId: string | undefined, request: WriteFileRequest, signal?: AbortSignal, authorization?: InvocationAuthorization): Promise<Result<WriteFileResult>> {
+    if (typeof request?.path !== 'string' || typeof request.content !== 'string' || (request.mode !== undefined && request.mode !== 'create_new') || (request.mode === 'create_new' && request.overwriteExisting === true)) {
       return err(appError('INVALID_INPUT', 'Write request is invalid'));
     }
     if (Buffer.byteLength(request.content, 'utf8') > MAX_FILE_WRITE_BYTES) {
@@ -340,8 +370,9 @@ export class FileService {
     if (existing.value === 'directory') return err(appError('INVALID_INPUT', 'Directories cannot be written as files'));
     const fullProfile = this.profileProvider().name === 'full';
     const applicationApproved = isApplicationAuthorized(authorization, request.userConfirmed === true) || fullProfile;
-    if (existing.value && request.overwriteExisting !== true && !fullProfile) {
-      return err(appError('INVALID_INPUT', 'Target already exists; use edit_file for a narrow repair or set overwriteExisting after reviewing the full replacement'));
+    if (existing.value && (request.mode === 'create_new' || request.overwriteExisting === false || (request.overwriteExisting !== true && !fullProfile))) {
+      const strictCreateOnly = request.mode === 'create_new' || request.overwriteExisting === false;
+      return err(appError(strictCreateOnly ? 'CONFLICT' : 'INVALID_INPUT', 'Target already exists; use edit_file for a narrow repair or set overwriteExisting after reviewing the full replacement'));
     }
     if (existing.value && !applicationApproved) {
       return err(appError('PERMISSION_REQUIRED', 'Replacing an existing file requires explicit user confirmation'));
@@ -358,7 +389,7 @@ export class FileService {
     }
     if (isAborted(signal)) return cancelledFileMutation();
     const validateDestination = createGuardedWriteValidator(this.guard, workspace, request.path, resolved.value, authorization);
-    const writeResult = await this.writer.write(resolved.value.realPath ?? resolved.value.absolutePath, request.content, { validateDestination });
+    const writeResult = await this.writer.write(resolved.value.realPath ?? resolved.value.absolutePath, request.content, { validateDestination, createNew: request.mode === 'create_new' || request.overwriteExisting === false });
     if (!writeResult.ok) return writeResult;
     return ok({
       path: resultPath(resolved.value),
@@ -367,7 +398,11 @@ export class FileService {
     });
   }
 
-  public async applyPatch(actor: FileActor, workspaceId: string | undefined, request: ApplyPatchRequest, signal?: AbortSignal, authorization?: InvocationAuthorization): Promise<Result<ApplyPatchResult>> {
+  public applyPatch(actor: FileActor, workspaceId: string | undefined, request: ApplyPatchRequest, signal?: AbortSignal, authorization?: InvocationAuthorization): Promise<Result<ApplyPatchResult>> {
+    return this.withWriterAdmission(actor, workspaceId, () => this.applyPatchInternal(actor, workspaceId, request, signal, authorization));
+  }
+
+  private async applyPatchInternal(actor: FileActor, workspaceId: string | undefined, request: ApplyPatchRequest, signal?: AbortSignal, authorization?: InvocationAuthorization): Promise<Result<ApplyPatchResult>> {
     const validation = this.patchApplier.validate(request?.files ?? []);
     if (!validation.ok) return validation;
     const firstPath = request.files[0]?.path;
@@ -472,7 +507,11 @@ export class FileService {
     });
   }
 
-  public async editFile(actor: FileActor, workspaceId: string | undefined, request: EditFileRequest, signal?: AbortSignal, authorization?: InvocationAuthorization): Promise<Result<EditFileResult>> {
+  public editFile(actor: FileActor, workspaceId: string | undefined, request: EditFileRequest, signal?: AbortSignal, authorization?: InvocationAuthorization): Promise<Result<EditFileResult>> {
+    return this.withWriterAdmission(actor, workspaceId, () => this.editFileInternal(actor, workspaceId, request, signal, authorization));
+  }
+
+  private async editFileInternal(actor: FileActor, workspaceId: string | undefined, request: EditFileRequest, signal?: AbortSignal, authorization?: InvocationAuthorization): Promise<Result<EditFileResult>> {
     const expectedOccurrences = request?.expectedOccurrences ?? 1;
     if (typeof request?.path !== 'string' || typeof request.oldText !== 'string' || request.oldText.length === 0
       || typeof request.newText !== 'string' || !Number.isInteger(expectedOccurrences) || expectedOccurrences < 1 || expectedOccurrences > 100) {
@@ -525,7 +564,11 @@ export class FileService {
     });
   }
 
-  public async moveFile(actor: FileActor, workspaceId: string | undefined, request: MoveFileRequest, signal?: AbortSignal, authorization?: InvocationAuthorization): Promise<Result<void>> {
+  public moveFile(actor: FileActor, workspaceId: string | undefined, request: MoveFileRequest, signal?: AbortSignal, authorization?: InvocationAuthorization): Promise<Result<void>> {
+    return this.withWriterAdmission(actor, workspaceId, () => this.moveFileInternal(actor, workspaceId, request, signal, authorization));
+  }
+
+  private async moveFileInternal(actor: FileActor, workspaceId: string | undefined, request: MoveFileRequest, signal?: AbortSignal, authorization?: InvocationAuthorization): Promise<Result<void>> {
     const prepared = await this.prepareTransfer(actor, workspaceId, request, 'move_file', signal, authorization);
     if (!prepared.ok) return prepared;
     if (isAborted(signal)) return cancelledFileMutation();
@@ -550,7 +593,11 @@ export class FileService {
     return ok(undefined);
   }
 
-  public async copyFile(actor: FileActor, workspaceId: string | undefined, request: CopyFileRequest, signal?: AbortSignal, authorization?: InvocationAuthorization): Promise<Result<CopyFileResult>> {
+  public copyFile(actor: FileActor, workspaceId: string | undefined, request: CopyFileRequest, signal?: AbortSignal, authorization?: InvocationAuthorization): Promise<Result<CopyFileResult>> {
+    return this.withWriterAdmission(actor, workspaceId, () => this.copyFileInternal(actor, workspaceId, request, signal, authorization));
+  }
+
+  private async copyFileInternal(actor: FileActor, workspaceId: string | undefined, request: CopyFileRequest, signal?: AbortSignal, authorization?: InvocationAuthorization): Promise<Result<CopyFileResult>> {
     const prepared = await this.prepareTransfer(actor, workspaceId, request, 'copy_file', signal, authorization);
     if (!prepared.ok) return prepared;
     if (isAborted(signal)) return cancelledFileMutation();
@@ -647,7 +694,11 @@ export class FileService {
     });
   }
 
-  public async deleteFile(actor: FileActor, workspaceId: string | undefined, request: DeleteFileRequest, signal?: AbortSignal, authorization?: InvocationAuthorization): Promise<Result<DeleteFileResult>> {
+  public deleteFile(actor: FileActor, workspaceId: string | undefined, request: DeleteFileRequest, signal?: AbortSignal, authorization?: InvocationAuthorization): Promise<Result<DeleteFileResult>> {
+    return this.withWriterAdmission(actor, workspaceId, () => this.deleteFileInternal(actor, workspaceId, request, signal, authorization));
+  }
+
+  private async deleteFileInternal(actor: FileActor, workspaceId: string | undefined, request: DeleteFileRequest, signal?: AbortSignal, authorization?: InvocationAuthorization): Promise<Result<DeleteFileResult>> {
     if (typeof request?.path !== 'string') return err(appError('INVALID_INPUT', 'Delete request is invalid'));
     const fullBypass = isFullBypassAuthorization(authorization);
     const policyAllowsDelete = this.allowDeleteWithoutConfirmation() || fullBypass;
@@ -770,7 +821,17 @@ export class FileService {
     }
   }
 
-  public async restoreDeletedFile(
+  public restoreDeletedFile(
+    actor: FileActor,
+    workspaceId: string,
+    request: RestoreDeletedFileRequest,
+    signal?: AbortSignal,
+    authorization?: InvocationAuthorization,
+  ): Promise<Result<RestoreDeletedFileResult>> {
+    return this.withWriterAdmission(actor, workspaceId, () => this.restoreDeletedFileInternal(actor, workspaceId, request, signal, authorization));
+  }
+
+  private async restoreDeletedFileInternal(
     actor: FileActor,
     workspaceId: string,
     request: RestoreDeletedFileRequest,

@@ -70,7 +70,12 @@ function normalizeProjectProfileValue(value: unknown, depth: number): unknown {
     if (/(token|secret|password|api[_-]?key|private[_-]?key|authorization|credential)/i.test(key)) {
       throw new Error(`Project profile must not persist secret-bearing field: ${key}`);
     }
-    result[key] = normalizeProjectProfileValue(entry, depth + 1);
+    Object.defineProperty(result, key, {
+      value: normalizeProjectProfileValue(entry, depth + 1),
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    });
   }
   return result;
 }

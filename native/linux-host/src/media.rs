@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 pub(crate) fn audio_status(pipewire: bool, pulse: bool) -> String {
     if pipewire || pulse {
-        return r#"{"available":true,"ready":false,"backend":"pipewire-pulse","supportedActions":["status"],"reason":"provider_not_implemented","readinessReason":"provider_not_implemented"}"#.to_string();
+        return r#"{"available":true,"ready":false,"backend":"gstreamer-pulse","supportedActions":["status","record","play","stop"],"reason":"provider_unavailable","readinessReason":"provider_unavailable"}"#.to_string();
     }
     r#"{"available":false,"ready":false,"backend":"pipewire-pulse","supportedActions":["status"],"reason":"dependency_missing","readinessReason":"dependency_missing"}"#.to_string()
 }
@@ -20,78 +20,26 @@ pub(crate) fn screen_record_status(wayland: bool, portal_hint: bool, x11: bool) 
         );
     }
     if x11 {
-        return r#"{"available":false,"ready":false,"backend":"pipewire-screen-record","supportedActions":["status"],"reason":"provider_not_implemented","readinessReason":"provider_not_implemented"}"#.to_string();
+        return r#"{"available":true,"ready":false,"backend":"gstreamer-x11","supportedActions":["status","start","stop"],"reason":"provider_unavailable","readinessReason":"provider_unavailable"}"#.to_string();
     }
     r#"{"available":false,"ready":false,"backend":"pipewire-screen-record","supportedActions":["status"],"reason":"dependency_missing","readinessReason":"dependency_missing"}"#.to_string()
 }
 
 pub(crate) fn audio_execute(
     action: &str,
-    _input: &BTreeMap<String, String>,
+    input: &BTreeMap<String, String>,
 ) -> Result<String, (&'static str, &'static str, bool)> {
-    if action == "status" {
-        return Ok(audio_status(
-            env_present("PIPEWIRE_REMOTE"),
-            env_present("PULSE_SERVER"),
-        ));
-    }
-    if env_present("PIPEWIRE_REMOTE") || env_present("PULSE_SERVER") {
-        return Err((
-            "UNSUPPORTED_PLATFORM",
-            "Linux audio recording/playback is dependency-gated until an owned media provider is implemented",
-            true,
-        ));
-    }
-    Err((
-        "EXECUTABLE_NOT_FOUND",
-        "PipeWire or PulseAudio is unavailable on this host",
-        true,
-    ))
+    super::desktop_session::execute("audio", action, input)
 }
 
 pub(crate) fn screen_record_execute(
     action: &str,
-    _input: &BTreeMap<String, String>,
+    input: &BTreeMap<String, String>,
 ) -> Result<String, (&'static str, &'static str, bool)> {
-    if action == "status" {
-        return Ok(screen_record_status(
-            wayland_session(),
-            env_present("DBUS_SESSION_BUS_ADDRESS"),
-            super::x11::display_available(),
-        ));
-    }
-    if wayland_session() {
-        return Err((
-            "PERMISSION_REQUIRED",
-            "Wayland screen recording requires a visible ScreenCast portal session",
-            true,
-        ));
-    }
-    if super::x11::display_available() {
-        return Err((
-            "UNSUPPORTED_PLATFORM",
-            "Linux screen recording is dependency-gated until an owned PipeWire provider is implemented",
-            true,
-        ));
-    }
-    Err((
-        "EXECUTABLE_NOT_FOUND",
-        "A desktop screen-recording session is unavailable on this host",
-        true,
-    ))
+    super::desktop_session::execute("screen_record", action, input)
 }
 
-fn env_present(name: &str) -> bool {
-    std::env::var_os(name).is_some_and(|value| !value.is_empty())
-}
-
-fn wayland_session() -> bool {
-    wayland_session_for(
-        std::env::var("XDG_SESSION_TYPE").ok().as_deref(),
-        env_present("WAYLAND_DISPLAY"),
-    )
-}
-
+#[cfg(test)]
 fn wayland_session_for(session_type: Option<&str>, wayland_display: bool) -> bool {
     match session_type {
         Some(value) if value.eq_ignore_ascii_case("x11") => false,

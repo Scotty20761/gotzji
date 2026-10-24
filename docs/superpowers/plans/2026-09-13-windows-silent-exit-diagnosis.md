@@ -54,7 +54,7 @@ log/search ปริมาณสูง
 
 ### 2.2 สถานะรอบปัจจุบัน
 
-- executable ที่ติดตั้ง: `C:\Users\ABCz\AppData\Local\Programs\lnwjud\lnwjud.exe`
+- executable ที่ติดตั้ง: `%LOCALAPPDATA%\Programs\lnwjud\lnwjud.exe`
 - รุ่น: `4.62.1`
 - main process เริ่มเวลา `2026-09-13 11:53:47 +07:00`
 - command line มี `--updated` แปลว่ารอบนี้ถูกเปิดต่อจากขั้นตอนติดตั้ง/อัปเดต

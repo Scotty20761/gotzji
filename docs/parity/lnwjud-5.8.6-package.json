@@ -1,0 +1,57 @@
+{
+  "schemaVersion": 1,
+  "capturedOn": "2026-10-19",
+  "tool": "REA6.4.0 analyze-javascript-application",
+  "evidenceId": "ev_7b4233665d2b07d73a7f69b4bb354c81f4fecd0a0e654de44c21c8bf05137214",
+  "inventoryManifestId": "agm_83cfc926c9ec40df2a3ddcf435a9599c9b2a505ca67190b32a1077d418ed26dd",
+  "inventoryGraphSha256": "a821ff55241006f195118b523ca652c95f29aeafea2cb47ec10a4e454c474ba4",
+  "integrityContradictions": [],
+  "limitations": [
+    "CommonJS and ESM binding relationships were recovered from inert syntax and resolved only within the inventoried artifact container.",
+    "Dynamic IPC channel expressions remain unresolved and are never paired by textual similarity.",
+    "Electron API identity follows proven lexical module aliases. Reassigned bindings, dynamic selections, and visibly overwritten namespace members are unresolved; missing findings do not establish absence. Arbitrary call side effects and runtime registration are not evaluated."
+  ],
+  "subject": {
+    "name": "lnwjud app.asar",
+    "digest": {
+      "sha256": "d62201e34a29c85d31a718992118fe383f293da7ac932ad5437d3eb242e276d4"
+    },
+    "format": "asar"
+  },
+  "summaryCounts": {
+    "browser_windows": 6,
+    "explicit_web_preferences": 30,
+    "preload_entrypoints": 0,
+    "context_bridge_apis": 2,
+    "exposed_api_members": 0,
+    "ipc": {
+      "operations": 11,
+      "literal_channels": 0,
+      "dynamic_channel_operations": 11,
+      "renderer_transmissions": 4,
+      "renderer_listeners": 6,
+      "main_handlers": 1,
+      "paired_renderer_transmissions": 0,
+      "ambiguous_renderer_transmissions": 0,
+      "unpaired_literal_renderer_transmissions": 0
+    },
+    "sender_validation_observations": 7,
+    "utility_processes": 0,
+    "resolved_utility_entrypoints": 0,
+    "native_addon_bindings": 2,
+    "resolved_native_addon_bindings": 0
+  },
+  "statistics": {
+    "relevant_files": 8146,
+    "nested_asar_containers": 0,
+    "text_bytes_read": 90052688,
+    "invalid_utf8_files": 0,
+    "parsed_javascript_files": 7068,
+    "visited_ast_nodes": 8100719,
+    "findings": 30368,
+    "modules": 581,
+    "parse_failures": 74
+  },
+  "privateFullEvidenceSha256": "f5e7fdec34befd783bc08b4a5b2b3e5783e106b89c884e75e9944a2b4d35fb26",
+  "limitationCount": 14081
+}

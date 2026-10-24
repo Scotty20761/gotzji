@@ -1,6 +1,6 @@
 # lnwjud upgrade architecture contract
 
-Status: God-Tier local-first implementation checkpoint synchronized for `v5.7.3`.
+Status: God-Tier local-first implementation checkpoint synchronized for `v1.0.0`.
 
 This document is the architectural boundary for the upgrade roadmap. It describes
 the existing runtime before Phase 01 and the invariants every later phase must
@@ -42,7 +42,7 @@ MCP clients (ChatGPT / Codex / Claude / other agents)
              MCP stdio or loopback Streamable HTTP
                          |
                          v
-                  ToolRegistry (279 total definitions; 267 default; all 279 with Codex + Agent Swarm)
+                  ToolRegistry (286 total definitions; 274 default; all 286 with Codex + Agent Swarm)
                          |
        +-----------------+------------------+
        |                 |                  |
@@ -85,7 +85,7 @@ MCP clients (ChatGPT / Codex / Claude / other agents)
 | `packages/capabilities` | shell, durable task index, CDP, Windows UI, input, vision, media, Office, scheduler, WSL, OCR boundary | Windows/browser intelligence |
 | `packages/extensions` | skills and local MCP bridge discovery/calls | plugin SDK, schema registry, aliases |
 | `packages/ipc-contracts` | typed Electron main/preload/renderer contracts | dashboard and Live Logs v2 contracts |
-| `apps/cli` | CLI runtime and packaged stdio launcher | benchmark and automation entrypoints |
+| `apps/cli` | CLI runtime and source-retained standalone stdio compatibility | benchmark and automation entrypoints |
 | `apps/desktop` | Electron lifecycle, local HTTP, tunnel, IPC, renderer | observability, planner and session UI |
 
 `domain` and `application` must not import Electron, React, SQLite
@@ -144,11 +144,12 @@ continuation rather than lowering an existing limit silently.
 ### stdio
 
 - MCP protocol is the only stdout payload; diagnostics go to stderr.
-- The packaged direct-node `lnwjud-mcp-stdio.cmd` launcher remains available
-  for direct local stdio hosts such as Codex CLI. Secure Tunnel does **not** use
-  this headless runtime; it forwards to the Desktop loopback HTTP MCP and uses
-  Desktop profile/Full Bypass state. Active Project and native approval remain
-  authoritative only while Desktop Full Bypass is OFF.
+- gotzji v1 ships no packaged stdio launcher and provides no direct packaged
+  Codex or Claude route. The source-retained standalone CLI/stdio runtime is
+  compatibility coverage, not a product connection path.
+- ChatGPT connects through Secure Tunnel, which forwards to the Desktop
+  loopback HTTP MCP and uses Desktop profile/Full Bypass state. Active Project
+  and native approval remain authoritative only while Desktop Full Bypass is OFF.
 - Closing the peer is a normal shutdown; owned runtime resources are closed once.
 
 ### loopback Streamable HTTP
@@ -166,8 +167,9 @@ MCP is running, and rewrites the tunnel profile to `mcp.server_urls` using the
 current Desktop `/mcp` endpoint. The tunnel therefore shares the same dynamic
 Active Project provider, permission profile, activity tracker, and native
 exact-action approval provider and Desktop Full Bypass state as local Desktop MCP.
-Standalone/headless stdio fails closed for mutations requiring host approval when
-its independent STDIO Full Bypass is OFF. The controller records
+The source-retained standalone/headless stdio runtime fails closed for mutations
+requiring host approval when its independent STDIO Full Bypass is OFF. It is not
+shipped as a gotzji v1 product route. The controller records
 the persistent tunnel log, distinguishes owned from externally started clients,
 and surfaces unexpected exits/reconnect state.
 
@@ -176,12 +178,14 @@ and surfaces unexpected exits/reconnect state.
 - Workspace paths are normalized and checked against registered roots and
   reparse/junction traversal rules.
 - Secret-file policy is denied by default for sensitive filenames and paths.
-- Permission profiles are `safe`, `balanced`, `full`, and `custom`. Desktop MCP
-  uses the selected profile; packaged stdio keeps `full` as the backward-compatible
-  default and can use a separately configured profile plus optional Strict Roots.
-- Desktop HTTP/Secure Tunnel and direct STDIO expose separate Full Bypass toggles
-  under Full Access (Unrestricted). They default OFF, require profile `full`, and
-  are never inferred merely from selecting Full.
+- Permission profiles are `safe`, `balanced`, `full`, and `custom`. The shipped
+  gotzji Desktop HTTP/Secure Tunnel route uses the selected Desktop profile.
+  Source-retained standalone stdio keeps its compatibility profile and optional
+  Strict Roots behavior, but gotzji v1 does not package that route.
+- Desktop HTTP/Secure Tunnel exposes the gotzji product Full Bypass toggle under
+  Full Access (Unrestricted). It defaults OFF, requires profile `full`, and is
+  never inferred merely from selecting Full. The separate source-compatibility
+  stdio toggle does not make stdio a packaged product route.
 - Trusted Full Bypass skips ordinary lnwjud application prompts/denials,
   including always-confirm tools, host approval, command policy, Active
   Project/allowed roots/protected paths, and explicit absolute outside targets.

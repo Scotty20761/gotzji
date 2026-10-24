@@ -7,7 +7,7 @@ const repositoryRoot = path.resolve(import.meta.dirname, '..', '..');
 const releaseNotesModuleUrl = pathToFileURL(path.join(repositoryRoot, 'scripts', 'release-notes.mjs')).href;
 
 describe('standardized GitHub release notes', () => {
-  it('keeps the READMEs concise while retaining historical highlights for backfill', async () => {
+  it('keeps gotzji READMEs scoped while retaining upstream historical highlights for backfill', async () => {
     const { extractCuratedHighlights } = await import(releaseNotesModuleUrl);
     const [readme, fullReadme, releaseHistory] = await Promise.all([
       readFile(path.join(repositoryRoot, 'README.md'), 'utf8'),
@@ -19,11 +19,11 @@ describe('standardized GitHub release notes', () => {
       (match) => match[1],
     );
 
-    expect(versions(readme)).toHaveLength(3);
-    expect(versions(fullReadme)).toEqual(versions(readme));
-    expect(readme).toContain('[RELEASE_NOTES.md](RELEASE_NOTES.md)');
-    expect(fullReadme).toContain('[RELEASE_NOTES.md](RELEASE_NOTES.md)');
-    for (const version of [...versions(readme), '5.6.1', '4.52.0']) {
+    expect(versions(readme)).toEqual([]);
+    expect(versions(fullReadme)).toEqual([]);
+    expect(readme).toContain('docs/upstream/README-v5.7.3.md');
+    expect(fullReadme).toContain('docs/upstream/');
+    for (const version of ['5.7.3', '5.6.1', '4.52.0']) {
       expect(extractCuratedHighlights(releaseHistory, `v${version}`, 'engasnm111/lnwjud')).not.toEqual([]);
     }
   });
@@ -149,6 +149,20 @@ describe('standardized GitHub release notes', () => {
     });
     expect(body).toMatch(/^## Highlights\n\n- \*\*Tunnel discovery fixed:/);
     expect(body).not.toContain('None.');
+  });
+
+  it('uses current-source change bullets as highlights before the version is published', async () => {
+    const { extractCuratedHighlights } = await import(releaseNotesModuleUrl);
+    const readme = `### Current source changes in v5.7.4\n\n- High-risk approval dialogs stay on-screen across operating systems.\n- Other native alerts bound oversized error text.`;
+
+    const previewReadme = `### What's new in v5.8.3 (development preview; not yet published)\n\n- Verified files and safer workflows.`;
+    expect(extractCuratedHighlights(previewReadme, 'v5.8.3', 'engasnm111/lnwjud')).toEqual([
+      'Verified files and safer workflows.',
+    ]);
+    expect(extractCuratedHighlights(readme, 'v5.7.4', 'engasnm111/lnwjud')).toEqual([
+      'High-risk approval dialogs stay on-screen across operating systems.',
+      'Other native alerts bound oversized error text.',
+    ]);
   });
 
   it('uses the published comparison base when unpublished tags sit between releases', async () => {

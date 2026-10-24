@@ -2,6 +2,47 @@ import { describe, expect, it, vi } from 'vitest';
 import { WorkspaceIndexQueue } from './workspace-index-queue.js';
 
 describe('WorkspaceIndexQueue', () => {
+  it('resolves every concurrent drain after a blocked worker finishes', async () => {
+    const started = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const queue = new WorkspaceIndexQueue(async () => {
+      started.resolve();
+      await release.promise;
+    }, { concurrency: 1 });
+    queue.enqueue({ relativePath: 'first.ts', kind: 'change' });
+    const firstDrain = queue.drain();
+    await started.promise;
+    const secondDrain = queue.drain();
+    const thirdDrain = queue.drain();
+    await Promise.resolve();
+    release.resolve();
+    await Promise.all([firstDrain, secondDrain, thirdDrain]);
+    expect(queue.status()).toMatchObject({ completedEvents: 1, activeWorkers: 0, pendingEvents: 0 });
+  }, 1000);
+
+  it('drains pending events while all worker slots are occupied', async () => {
+    const started = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const seen: string[] = [];
+    const queue = new WorkspaceIndexQueue(async (event) => {
+      seen.push(event.relativePath);
+      if (event.relativePath === 'first.ts') {
+        started.resolve();
+        await release.promise;
+      }
+    }, { concurrency: 1 });
+    queue.enqueue({ relativePath: 'first.ts', kind: 'change' });
+    const firstDrain = queue.drain();
+    await started.promise;
+    queue.enqueue({ relativePath: 'second.ts', kind: 'change' });
+    const secondDrain = queue.drain();
+    const completion = Promise.all([firstDrain, secondDrain]);
+    release.resolve();
+    await completion;
+    expect(seen).toEqual(['first.ts', 'second.ts']);
+    expect(queue.status()).toMatchObject({ completedEvents: 2, activeWorkers: 0, pendingEvents: 0 });
+  });
+
   it('coalesces duplicate paths without dropping distinct paths', async () => {
     const seen: string[] = [];
     const queue = new WorkspaceIndexQueue(async (event) => {

@@ -1,3 +1,5 @@
+/* global fetch, AbortSignal */
+import process from 'node:process';
 import { readFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import path from 'node:path';

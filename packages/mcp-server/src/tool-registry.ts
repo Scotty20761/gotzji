@@ -73,6 +73,8 @@ import { fileTools } from './tools/file-tools.js';
 import { engineeringTools } from './tools/engineering-tools.js';
 import { gitTools } from './tools/git-tools.js';
 import { goalTools } from './tools/goal-tools.js';
+import { observedMutationReceipt } from './task-mutation-receipt.js';
+import { workflowTools } from './tools/workflow-tools.js';
 import { mcpBridgeTools } from './tools/mcp-bridge-tools.js';
 import { processTools } from './tools/process-tools.js';
 import { sessionTools } from './tools/session-tools.js';
@@ -81,6 +83,16 @@ import { scheduledContinuationTools } from './tools/scheduled-continuation-tools
 import { skillTools } from './tools/skill-tools.js';
 import { workspaceTools } from './tools/workspace-tools.js';
 import type { McpApplicationServices, McpInternalInvocationContext, McpToolContext, McpToolDefinition } from './tools/tool-types.js';
+import { workspaceWriterLeaseProofSchema } from './tools/schemas.js';
+import type { WorkspaceWriterLeaseProof } from '@lnwjud/capabilities';
+import {
+  engineeringTaskBindingSchema,
+  goalLeaseProofSchema,
+  type CheckedInvocationEnvelope,
+  type EngineeringTaskBinding,
+  type RegistryPermissionPreview,
+  type RegistryPermissionProfile,
+} from './registry-runtime-port.js';
 
 export type { McpApplicationServices } from './tools/tool-types.js';
 export type { ActiveProjectScope, WorkspaceScope } from './destructive-scope.js';
@@ -179,6 +191,9 @@ const MAX_REMEMBERED_ACTIVITY_HANDLES = 512;
 const AUTOMATION_MUTATION_TOOL_NAMES: ReadonlySet<string> = new Set([
   'automation_create', 'automation_run', 'automation_control', 'automation_finalize',
 ]);
+const TOOL_AVAILABILITY_NAME_ALIASES: Readonly<Record<string, string>> = Object.freeze({
+  checkpoint_goal_engineering: 'checkpoint_goal',
+});
 
 interface BudgetedToolExecution {
   readonly response: McpToolResponse;
@@ -194,6 +209,16 @@ type ApprovalPreparation =
 interface ResolvedPonytailInvocation {
   readonly context: PonytailActivationContext;
   readonly policy: ResolvedPonytailPolicy;
+}
+
+interface InvocationPolicyAssessment {
+  readonly activeRoutedInput: unknown;
+  readonly mutationDecision: MutationPolicyDecision;
+  readonly mutationWorkspaceId: string | undefined;
+  readonly activeWorkspaceScope: WorkspaceScope | null;
+  readonly policyAllowsScopedDestructive: boolean;
+  readonly hostApprovalRequired: boolean;
+  readonly permissionDecision: 'ALLOW' | 'ASK' | 'DENY';
 }
 
 export class ToolRegistry {
@@ -253,8 +278,18 @@ export class ToolRegistry {
     const contextServices = automation === undefined ? services : { ...services, automation };
     const context: McpToolContext = {
       services: contextServices,
-      actor,
+      actor: { ...actor, sessionId: this.sessionId ?? actor.sessionId ?? actor.clientId },
       contextEconomy,
+      registryRuntime: {
+        profile: () => this.permissionProfile(),
+        preview: (name, input, envelope) => this.previewPermission(name, this.withCheckedEnvelope(name, input, envelope)),
+        validate: (name, input) => {
+          const tool = this.allTools.find((candidate) => candidate.name === name);
+          return tool === undefined ? err(appError('INVALID_INPUT', 'Unknown MCP tool')) : tool.parse(input);
+        },
+        invoke: (name, input, signal, envelope) => this.invoke(name, this.withCheckedEnvelope(name, input, envelope), undefined, signal),
+        describeInputJsonSchema: (name) => this.describeInputJsonSchema(name),
+      },
       isToolExposed: (name) => this.isEffectivelyExposed(name),
       setPonytailSessionSuppressed: (workspaceId, goalId, suppressed) => this.setPonytailSessionSuppressed(workspaceId, goalId, suppressed),
     };
@@ -287,6 +322,7 @@ export class ToolRegistry {
       ...workspaceIndexTools(context),
       ...sessionTools(context, incrementalVerifier),
       ...goalTools(context),
+      ...workflowTools(context),
       ...scheduledContinuationTools(context),
       ...upgradeTools(context, incrementalVerifier, this.activity),
     ];
@@ -322,7 +358,7 @@ export class ToolRegistry {
     const inputSchema = this.schemaRegistry.describe(name)?.inputSchema;
     if (!(inputSchema instanceof z.ZodType)) return undefined;
     try {
-      const jsonSchema = z.toJSONSchema(inputSchema);
+      const jsonSchema = z.toJSONSchema(inputSchema, { io: 'input', target: 'draft-2020-12' });
       return typeof jsonSchema === 'object' && jsonSchema !== null && !Array.isArray(jsonSchema)
         ? jsonSchema as Record<string, unknown>
         : undefined;
@@ -364,11 +400,12 @@ export class ToolRegistry {
         return false;
       }
     }
+    const availabilityName = TOOL_AVAILABILITY_NAME_ALIASES[name] ?? name;
     return resolveEffectiveToolAvailability({
-      name,
+      name: availabilityName,
       snapshot: this.currentToolAvailabilitySnapshot(),
-      systemEligible: this.systemEligibleToolNames.has(name),
-      defaultEnabled: this.defaultExposedToolNames.has(name),
+      systemEligible: this.systemEligibleToolNames.has(name) && this.systemEligibleToolNames.has(availabilityName),
+      defaultEnabled: this.defaultExposedToolNames.has(name) && this.defaultExposedToolNames.has(availabilityName),
     }).effectiveExposed;
   }
 
@@ -418,13 +455,11 @@ export class ToolRegistry {
     parentSignal?: AbortSignal,
     internal?: McpInternalInvocationContext,
   ): Promise<McpToolResponse> {
-    const invocationGuardMessage = this.currentInvocationGuardMessage();
-    const profile = invocationGuardMessage === null ? this.profileProvider() : permissionProfiles.safe;
-    const fullBypass = invocationGuardMessage === null && profile.name === 'full' && this.authorizationModeProvider() === 'full_bypass';
+    const { invocationGuardMessage, profile, fullBypass } = this.currentPolicy();
     const authorizationMode: AuthorizationMode = fullBypass ? 'full_bypass' : 'standard';
     const activityWorkspaceId = await this.resolveActivityWorkspaceId(name, input);
     const workspaceActivityInput = withActivityWorkspaceId(
-      stripEngineeringTaskEnvelope(stripGoalLeaseEnvelope(input)),
+      stripEngineeringTaskEnvelope(stripGoalLeaseEnvelope(stripWorkspaceWriterLeaseEnvelope(input))),
       activityWorkspaceId,
     );
     const activityInput = this.withRememberedActivityTarget(name, workspaceActivityInput);
@@ -436,6 +471,7 @@ export class ToolRegistry {
     );
     const started = Date.now();
     let fencedMutationEnd: (() => Promise<void>) | undefined;
+    let workspaceWriterLeaseEnd: (() => Promise<void>) | undefined;
     try {
       if (invocationGuardMessage !== null) {
         const response = mapError(appError('CONFLICT', invocationGuardMessage, true));
@@ -455,68 +491,21 @@ export class ToolRegistry {
         return response;
       }
       const goalLease = readGoalLeaseProof(parsed.value);
+      const writerLease = readWorkspaceWriterLeaseProof(parsed.value);
       const engineeringTask = readEngineeringTaskBinding(parsed.value);
-      const parsedInput = stripEngineeringTaskEnvelope(stripGoalLeaseEnvelope(parsed.value));
-      if (AUTOMATION_MUTATION_TOOL_NAMES.has(tool.name) && goalLease !== undefined) {
-        if (!isRecord(parsedInput)
-          || parsedInput.goalId !== goalLease.goalId
-          || parsedInput.leaseToken !== goalLease.leaseToken) {
-          const message = `${tool.name} goalId and leaseToken must match goalLease`;
-          const response = mapError(appError('CONFLICT', message, true));
-          await this.activity.end(callId, 'CONFLICT', Date.now() - started, message);
-          return response;
-        }
+      const parsedInput = stripEngineeringTaskEnvelope(stripGoalLeaseEnvelope(stripWorkspaceWriterLeaseEnvelope(parsed.value)));
+      const goalBound = bindInvocationToGoal(tool.name, parsedInput, goalLease);
+      if (!goalBound.ok) {
+        await this.activity.end(callId, goalBound.error.code, Date.now() - started, goalBound.error.message);
+        return mapError(goalBound.error);
       }
-      if (
-        tool.name === 'task_create'
-        && goalLease !== undefined
-        && isRecord(parsedInput)
-        && parsedInput.goalId !== undefined
-        && parsedInput.goalId !== goalLease.goalId
-      ) {
-        const message = 'task_create goalId must match goalLease.goalId';
-        const response = mapError(appError('CONFLICT', message, true));
-        await this.activity.end(callId, 'CONFLICT', Date.now() - started, message);
-        return response;
+      const assessed = await this.assessInvocationPolicy(tool, goalBound.value, profile, fullBypass);
+      if (!assessed.ok) {
+        await this.activity.end(callId, assessed.error.code, Date.now() - started, assessed.error.message);
+        return mapError(assessed.error);
       }
-      const goalBoundInput = tool.name === 'task_create'
-        && goalLease !== undefined
-        && isRecord(parsedInput)
-        && parsedInput.goalId === undefined
-        ? { ...parsedInput, goalId: goalLease.goalId }
-        : parsedInput;
-      const activeRoutedInput = await this.routeInputToActiveWorkspace(goalBoundInput);
-      const prohibitedReason = fullBypass ? undefined : prohibitedInvocationReason(tool.name, activeRoutedInput);
-      if (prohibitedReason !== undefined) {
-        const response = mapError(appError('PERMISSION_DENIED', prohibitedReason));
-        await this.activity.end(callId, 'PERMISSION_DENIED', Date.now() - started, prohibitedReason);
-        return response;
-      }
-      let mutationDecision = inspectMutationOperation(tool.name, activeRoutedInput, tool.permission);
-      const policy = this.destructivePolicyProvider();
-      const mutationWorkspaceId = readExplicitWorkspaceId(activeRoutedInput);
-      const nativePathScopeRequired = requiresNativePathScope(tool.name, activeRoutedInput);
-      const activeWorkspaceScope = !this.enforceActiveWorkspaceScope
-        || (mutationDecision.kind === 'read' && !nativePathScopeRequired)
-        ? null
-        : await this.resolveActiveWorkspaceScope(mutationWorkspaceId);
-      if (!fullBypass && mutationDecision.kind === 'execute' && commandExecutionLeavesActiveWorkspace(tool.name, activeRoutedInput, activeWorkspaceScope)) {
-        mutationDecision = { kind: 'opaque_mutation', reason: 'Command execution explicitly targets a working directory outside the host Active Project' };
-      }
-      const mutationScopeMismatch = mutationDecision.kind !== 'read'
-        && !COMMAND_EXECUTION_TOOLS.has(tool.name)
-        && (mutationWorkspaceId !== undefined || requiresActiveWorkspaceScope(tool.name, mutationDecision))
-        && (activeWorkspaceScope === null || mutationWorkspaceId === undefined || mutationWorkspaceId !== activeWorkspaceScope.workspaceId);
-      const nativePathScopeMismatch = nativePathScopeRequired
-        && (activeWorkspaceScope === null || (mutationWorkspaceId !== undefined && mutationWorkspaceId !== activeWorkspaceScope.workspaceId));
-      if (!fullBypass && this.enforceActiveWorkspaceScope && (mutationScopeMismatch || nativePathScopeMismatch)) {
-        const message = nativePathScopeMismatch
-          ? 'Path-bearing native target does not match the host active workspace'
-          : 'Mutation target does not match the host active workspace';
-        const response = mapError(appError('PERMISSION_DENIED', message));
-        await this.activity.end(callId, 'PERMISSION_DENIED', Date.now() - started, message);
-        return response;
-      }
+      const { activeRoutedInput, mutationDecision, mutationWorkspaceId, activeWorkspaceScope,
+        policyAllowsScopedDestructive, hostApprovalRequired, permissionDecision } = assessed.value;
       const mutationFenceWorkspaceId = mutationWorkspaceId ?? activeWorkspaceScope?.workspaceId ?? activityWorkspaceId;
       const codingMutation = mutationDecision.kind !== 'read' && isCodingMutation(tool.name, activeRoutedInput);
       const isInformational = isInformationalCommandInvocation(tool.name, activeRoutedInput);
@@ -554,7 +543,7 @@ export class ToolRegistry {
           return response;
         }
         if (fence.value !== null) {
-          if (goalLease === undefined) {
+          if (goalLease === undefined || goalLease.goalId !== fence.value.goalId || goalLease.leaseGeneration !== fence.value.leaseGeneration) {
             const message = 'This rolling scheduled goal requires the current goalLease proof before workspace mutation';
             const response = mapError(appError('CONFLICT', message, true));
             await this.activity.end(callId, 'CONFLICT', Date.now() - started, message);
@@ -563,17 +552,6 @@ export class ToolRegistry {
           mutationFenceProof = goalLease;
         }
       }
-      const policyAllowsScopedDestructive = !fullBypass && mutationWorkspaceId !== undefined
-        && isScopedAutoApprovalAllowed(tool.name, activeRoutedInput, mutationDecision, policy, activeWorkspaceScope);
-      const hostApprovalRequired = !fullBypass && requiresProfileMutationConfirmation(tool.name, mutationDecision, profile);
-      const effectivePermission = permissionLevelForMutationDecision(mutationDecision);
-      const permissionDecision = fullBypass ? 'ALLOW' : this.permissionEngine.decide(profile, {
-        action: 'mcp:' + tool.name,
-        level: policyAllowsScopedDestructive ? 'WRITE' : effectivePermission,
-        workspaceId: readWorkspaceId(activeRoutedInput),
-        target: tool.name,
-        destructive: isDestructiveMutation(mutationDecision),
-      });
       const chatConfirmationRequired = permissionDecision !== 'DENY'
         && !policyAllowsScopedDestructive
         && (permissionDecision === 'ASK' || hostApprovalRequired);
@@ -589,7 +567,9 @@ export class ToolRegistry {
         const code = permissionDecision === 'DENY' ? 'PERMISSION_DENIED' : 'PERMISSION_REQUIRED';
         const message = permissionDecision === 'DENY'
           ? 'MCP tool ' + tool.name + ' is denied by the active permission profile'
-          : 'MCP tool ' + tool.name + ' requires permission approval';
+          : tool.name === 'mcp_call'
+            ? 'Direct mcp_call requires explicit userConfirmed: true and trusted host exact-action approval; mcp_describe is read-only and tool_batch cannot bypass this child gate'
+            : 'MCP tool ' + tool.name + ' requires permission approval';
         const response = mapError(appError(code, message, permissionDecision === 'ASK'));
         await this.activity.end(callId, code, Date.now() - started, message);
         return response;
@@ -615,7 +595,11 @@ export class ToolRegistry {
       if (ponytailInvocation !== undefined && ponytailInvocation.policy.mode !== 'off') {
         const activation = this.ponytailActivation.state(ponytailInvocation.context, ponytailInvocation.policy);
         if (!activation.primarySkillLoaded && !activation.sessionSuppressed) {
-          const message = `Ponytail ${ponytailInvocation.policy.mode.toUpperCase()} is active. Call skill_load with skillId=${BUNDLED_PONYTAIL_SKILL_ID}, this workspaceId, and the same goalId when applicable, then retry this code mutation.`;
+          const goalScopedLoadWithoutLease = goalLease === undefined
+            && this.ponytailActivation.hasGoalScopedPrimaryLoad(this.actor.clientId, ponytailInvocation.context.workspaceId);
+          const message = goalScopedLoadWithoutLease
+            ? `Ponytail ${ponytailInvocation.policy.mode.toUpperCase()} was loaded for a goal, but this code mutation has no goalLease. Supply the active goalLease (goalId, leaseToken, leaseGeneration) with this mutation to use that goal-scoped skill_load, or call skill_load with skillId=${BUNDLED_PONYTAIL_SKILL_ID} and workspaceId only for an unbound edit. Goal-scoped activation cannot authorize an unbound mutation.`
+            : `Ponytail ${ponytailInvocation.policy.mode.toUpperCase()} is active. Call skill_load with skillId=${BUNDLED_PONYTAIL_SKILL_ID} and workspaceId for an unbound mutation, or load the same goalId and supply goalLease on each goal-bound mutation.`;
           const response = mapError(appError('CONFLICT', message, true));
           await this.activity.end(callId, 'CONFLICT', Date.now() - started, message);
           return response;
@@ -638,8 +622,8 @@ export class ToolRegistry {
       if (hostApprovalRequired && !policyAllowsScopedDestructive) {
         if (this.hostMutationApprovalProvider === undefined) {
           const message = 'Host exact-action approval is unavailable for this mutation; use Desktop or a trusted host approval adapter';
-          const response = mapError(appError('PERMISSION_DENIED', message));
-          await this.activity.end(callId, 'PERMISSION_DENIED', Date.now() - started, message);
+          const response = mapError({ ...appError('PERMISSION_DENIED', message), details: { denialSource: 'host_approval_adapter', approvalState: 'unavailable' } });
+          await this.activity.end(callId, 'HOST_APPROVAL_UNAVAILABLE', Date.now() - started, message);
           return response;
         }
         let hostApproved = false;
@@ -657,8 +641,8 @@ export class ToolRegistry {
         }
         if (!hostApproved) {
           const message = 'The host denied or could not verify exact-action approval for this mutation';
-          const response = mapError(appError('PERMISSION_DENIED', message));
-          await this.activity.end(callId, 'PERMISSION_DENIED', Date.now() - started, message);
+          const response = mapError({ ...appError('PERMISSION_DENIED', message), details: { denialSource: 'host_approval_adapter', approvalState: 'denied_or_unverified' } });
+          await this.activity.end(callId, 'HOST_APPROVAL_DENIED_OR_UNVERIFIED', Date.now() - started, message);
           return response;
         }
       }
@@ -684,6 +668,45 @@ export class ToolRegistry {
           admitted.value.leaseGeneration,
         );
       }
+      if (goalLease !== undefined && mutationDecision.kind !== 'read') {
+        // An admitted Goal mutation fence has already verified this exact proof and
+        // workspace; do not require a second validator from hosts that expose only
+        // the fenced mutation contract. Without a fence, validate independently.
+        if (fencedMutationEnd === undefined) {
+          const validated = this.services.goals?.validateGoalLease
+            ? await this.services.goals.validateGoalLease(this.actor, { goalId: goalLease.goalId, leaseToken: goalLease.leaseToken })
+            : err(appError('CONFLICT', 'Goal lease validation service is unavailable'));
+          if (!validated.ok || (mutationFenceWorkspaceId !== undefined && validated.value.workspaceId !== mutationFenceWorkspaceId)
+            || validated.value.leaseGeneration !== goalLease.leaseGeneration) {
+            const message = validated.ok ? 'Goal lease workspace or generation mismatch' : validated.error.message;
+            const response = mapError(appError('CONFLICT', message, true));
+            await this.activity.end(callId, 'CONFLICT', Date.now() - started, message);
+            return response;
+          }
+        }
+        this.activity.bindVerifiedGoal(callId, goalLease.goalId);
+      }
+      if (mutationDecision.kind !== 'read'
+        && mutationFenceWorkspaceId !== undefined
+        && !WORKSPACE_WRITER_LEASE_CONTROL_TOOLS.has(tool.name)
+        && this.services.workspaceWriterLease !== undefined) {
+        const admitted = await this.services.workspaceWriterLease.begin(
+          mutationFenceWorkspaceId,
+          this.actor.clientId,
+          this.sessionId ?? this.actor.sessionId ?? this.actor.clientId,
+          callId,
+          writerLease,
+        );
+        if (!admitted.ok) {
+          await this.activity.end(callId, admitted.error.code, Date.now() - started, admitted.error.message);
+          return mapError(admitted.error);
+        }
+        workspaceWriterLeaseEnd = admitted.value.required
+          ? startWorkspaceWriterLeaseHeartbeat(
+            this.services.workspaceWriterLease, mutationFenceWorkspaceId, callId, admitted.value.generation,
+          )
+          : (): Promise<void> => this.services.workspaceWriterLease!.end(mutationFenceWorkspaceId, callId, admitted.value.generation);
+      }
       const resolvedActivityInput = this.withRememberedActivityTarget(
         name,
         withActivityWorkspaceId(approvalExecutionInput, activityWorkspaceId),
@@ -704,7 +727,10 @@ export class ToolRegistry {
         parentSignal,
         goalLease === undefined ? undefined : goalLease.goalId,
         callId,
-        internal,
+        { ...internal, checkedInvocation: {
+          ...(goalLease === undefined ? {} : { goalLease }),
+          ...(engineeringTask === undefined ? {} : { engineeringTask }),
+        } },
       );
       const response = execution.response;
       const rawResultTargetSummary = summarizeStructuredResultTarget(response.structuredContent);
@@ -720,18 +746,25 @@ export class ToolRegistry {
       const resultDetail = describeStructuredResultDetail(response.structuredContent ?? response.content);
       if (execution.deferredSettlement !== undefined) {
         const endFence = fencedMutationEnd;
+        const endWriterLease = workspaceWriterLeaseEnd;
         fencedMutationEnd = undefined;
+        workspaceWriterLeaseEnd = undefined;
         void execution.deferredSettlement.then(async () => {
+          await endWriterLease?.();
           await endFence?.();
-          await this.activity.end(callId, resultCode, Date.now() - started, resultMessage, resultDetail);
+          await this.activity.end(callId, resultCode, Date.now() - started, resultMessage, resultDetail, observedMutationReceipt(name, response));
         });
       } else {
+        await workspaceWriterLeaseEnd?.();
+        workspaceWriterLeaseEnd = undefined;
         await fencedMutationEnd?.();
         fencedMutationEnd = undefined;
-        await this.activity.end(callId, resultCode, Date.now() - started, resultMessage, resultDetail);
+        await this.activity.end(callId, resultCode, Date.now() - started, resultMessage, resultDetail, observedMutationReceipt(name, response));
       }
       return response;
     } catch (error: unknown) {
+      await workspaceWriterLeaseEnd?.().catch(() => undefined);
+      workspaceWriterLeaseEnd = undefined;
       await fencedMutationEnd?.().catch(() => undefined);
       fencedMutationEnd = undefined;
       let sanitizedDiagnostic: unknown;
@@ -944,6 +977,150 @@ export class ToolRegistry {
     }
   }
 
+  private currentPolicy(): { readonly invocationGuardMessage: string | null; readonly profile: PermissionProfile; readonly fullBypass: boolean } {
+    const invocationGuardMessage = this.currentInvocationGuardMessage();
+    if (invocationGuardMessage !== null) return { invocationGuardMessage, profile: permissionProfiles.safe, fullBypass: false };
+    try {
+      const profile = this.profileProvider();
+      return { invocationGuardMessage: null, profile, fullBypass: profile.name === 'full' && this.authorizationModeProvider() === 'full_bypass' };
+    } catch {
+      return { invocationGuardMessage: 'Runtime permission settings could not be verified', profile: permissionProfiles.safe, fullBypass: false };
+    }
+  }
+
+  private permissionProfile(): RegistryPermissionProfile {
+    const policy = this.currentPolicy();
+    return {
+      profile: policy.profile.name,
+      defaults: { ...policy.profile.defaults },
+      authorizationMode: policy.fullBypass ? 'full_bypass' : 'standard',
+      bypassApplicationAuthorization: policy.fullBypass,
+      invocationGuard: policy.invocationGuardMessage === null ? 'ready' : 'blocked',
+      operatingSystemAndRemotePolicyRemain: true,
+      goalLeaseFenceRemains: true,
+    };
+  }
+
+  private withCheckedEnvelope(name: string, input: unknown, envelope?: CheckedInvocationEnvelope): unknown {
+    if (envelope === undefined || !isRecord(input)) return input;
+    return {
+      ...input,
+      ...(envelope.goalLease !== undefined && SCHEDULED_CONTINUATION_FENCED_TOOLS.has(name) ? { goalLease: envelope.goalLease } : {}),
+      ...(envelope.engineeringTask !== undefined && ENGINEERING_GUARDED_MUTATION_TOOLS.has(name) ? { engineeringTask: envelope.engineeringTask } : {}),
+    };
+  }
+
+  private async assessInvocationPolicy(
+    tool: McpToolDefinition,
+    input: unknown,
+    profile: PermissionProfile,
+    fullBypass: boolean,
+  ): Promise<Result<InvocationPolicyAssessment>> {
+    const activeRoutedInput = await this.routeInputToActiveWorkspace(input);
+    const requestedWorkspaceId = readExplicitWorkspaceId(input);
+    if (requestedWorkspaceId !== undefined
+      && requestedWorkspaceId !== readExplicitWorkspaceId(activeRoutedInput)
+      && ['shell', 'wsl_exec', 'task_create', 'process_start'].includes(tool.name)) {
+      return err(appError('INVALID_INPUT', 'The explicit command workspace conflicts with its working directory. Use the matching workspace or omit workspaceId to infer it.'));
+    }
+    const prohibitedReason = fullBypass ? undefined : prohibitedInvocationReason(tool.name, activeRoutedInput);
+    if (prohibitedReason !== undefined) return err(appError('PERMISSION_DENIED', prohibitedReason));
+    let mutationDecision = inspectMutationOperation(tool.name, activeRoutedInput, tool.permission);
+    const policy = this.destructivePolicyProvider();
+    const mutationWorkspaceId = readExplicitWorkspaceId(activeRoutedInput);
+    const nativePathScopeRequired = requiresNativePathScope(tool.name, activeRoutedInput);
+    const activeWorkspaceScope = !this.enforceActiveWorkspaceScope || (mutationDecision.kind === 'read' && !nativePathScopeRequired)
+      ? null : await this.resolveActiveWorkspaceScope(mutationWorkspaceId);
+    if (!fullBypass && mutationDecision.kind === 'execute' && commandExecutionLeavesActiveWorkspace(tool.name, activeRoutedInput, activeWorkspaceScope)) {
+      mutationDecision = { kind: 'opaque_mutation', reason: 'Command execution explicitly targets a working directory outside the host Active Project' };
+    }
+    const mutationScopeMismatch = mutationDecision.kind !== 'read' && !COMMAND_EXECUTION_TOOLS.has(tool.name)
+      && (mutationWorkspaceId !== undefined || requiresActiveWorkspaceScope(tool.name, mutationDecision))
+      && (activeWorkspaceScope === null || mutationWorkspaceId === undefined || mutationWorkspaceId !== activeWorkspaceScope.workspaceId);
+    const nativePathScopeMismatch = nativePathScopeRequired
+      && (activeWorkspaceScope === null || (mutationWorkspaceId !== undefined && mutationWorkspaceId !== activeWorkspaceScope.workspaceId));
+    if (!fullBypass && this.enforceActiveWorkspaceScope && (mutationScopeMismatch || nativePathScopeMismatch)) {
+      return err(appError('PERMISSION_DENIED', nativePathScopeMismatch
+        ? 'Path-bearing native target does not match the host active workspace' : 'Mutation target does not match the host active workspace'));
+    }
+    const policyAllowsScopedDestructive = !fullBypass && mutationWorkspaceId !== undefined
+      && isScopedAutoApprovalAllowed(tool.name, activeRoutedInput, mutationDecision, policy, activeWorkspaceScope);
+    const hostApprovalRequired = !fullBypass && requiresProfileMutationConfirmation(tool.name, mutationDecision, profile);
+    const permissionDecision = fullBypass ? 'ALLOW' : this.permissionEngine.decide(profile, {
+      action: 'mcp:' + tool.name,
+      level: policyAllowsScopedDestructive ? 'WRITE' : permissionLevelForMutationDecision(mutationDecision),
+      workspaceId: readWorkspaceId(activeRoutedInput),
+      target: tool.name,
+      destructive: isDestructiveMutation(mutationDecision),
+    });
+    return ok({ activeRoutedInput, mutationDecision, mutationWorkspaceId, activeWorkspaceScope,
+      policyAllowsScopedDestructive, hostApprovalRequired, permissionDecision });
+  }
+
+  private async previewPermission(name: string, input: unknown): Promise<RegistryPermissionPreview> {
+    const { invocationGuardMessage, profile, fullBypass } = this.currentPolicy();
+    const base = {
+      tool: name, profile: profile.name, authorizationMode: fullBypass ? 'full_bypass' : 'standard',
+      hostApprovalRequired: false, goalLeaseRequired: false, sideEffectsStarted: false, advisory: true,
+    } satisfies Omit<RegistryPermissionPreview, 'decision' | 'reason'>;
+    const denied = (reason: string): RegistryPermissionPreview => ({ ...base, decision: 'deny', reason });
+    if (invocationGuardMessage !== null) return denied(invocationGuardMessage);
+    const tool = this.allTools.find((candidate) => candidate.name === name);
+    if (tool === undefined || !this.isEffectivelyExposed(name)) return denied('Unknown or disabled MCP tool');
+    const parsed = tool.parse(input);
+    if (!parsed.ok) return denied(parsed.error.message);
+    const goalLease = readGoalLeaseProof(parsed.value);
+    const engineeringTask = readEngineeringTaskBinding(parsed.value);
+    const parsedInput = stripEngineeringTaskEnvelope(stripGoalLeaseEnvelope(parsed.value));
+    const goalBound = bindInvocationToGoal(name, parsedInput, goalLease);
+    if (!goalBound.ok) return denied(goalBound.error.message);
+    try {
+      const assessed = await this.assessInvocationPolicy(tool, goalBound.value, profile, fullBypass);
+      if (!assessed.ok) return denied(assessed.error.message);
+      const assessment = assessed.value;
+      const resultBase = { ...base, mutationKind: assessment.mutationDecision.kind, hostApprovalRequired: assessment.hostApprovalRequired };
+      const mutationWorkspaceId = assessment.mutationWorkspaceId ?? assessment.activeWorkspaceScope?.workspaceId
+        ?? await this.resolveActivityWorkspaceId(name, parsedInput);
+      let goalLeaseRequired = false;
+      if (assessment.mutationDecision.kind !== 'read' && mutationWorkspaceId !== undefined
+        && SCHEDULED_CONTINUATION_FENCED_TOOLS.has(name) && this.services.goalMutationFence !== undefined) {
+        const fence = await this.services.goalMutationFence.inspectWorkspaceFence(this.actor, mutationWorkspaceId);
+        if (!fence.ok) return { ...resultBase, decision: 'deny', reason: fence.error.message };
+        goalLeaseRequired = fence.value !== null;
+        if (fence.value !== null && (goalLease === undefined || fence.value.goalId !== goalLease.goalId || fence.value.leaseGeneration !== goalLease.leaseGeneration)) {
+          return { ...resultBase, goalLeaseRequired, decision: 'deny', reason: 'This rolling scheduled goal requires the current goalLease proof before workspace mutation' };
+        }
+      }
+      if (assessment.permissionDecision === 'DENY') return { ...resultBase, goalLeaseRequired, decision: 'deny', reason: 'Denied by the active permission profile' };
+      if (goalLease !== undefined && assessment.mutationDecision.kind !== 'read') {
+        if (this.services.goals?.validateGoalLease === undefined) {
+          return { ...resultBase, goalLeaseRequired, decision: 'unknown', reason: 'Lease token validation is available only at mutation dispatch' };
+        }
+        const lease = await this.services.goals.validateGoalLease(this.actor, { goalId: goalLease.goalId, leaseToken: goalLease.leaseToken });
+        if (!lease.ok || (mutationWorkspaceId !== undefined && lease.value.workspaceId !== mutationWorkspaceId)
+          || lease.value.leaseGeneration !== goalLease.leaseGeneration) {
+          return { ...resultBase, goalLeaseRequired, decision: 'deny', reason: lease.ok ? 'Goal lease workspace or generation mismatch' : lease.error.message };
+        }
+      }
+      if (assessment.mutationDecision.kind !== 'read' && mutationWorkspaceId !== undefined
+        && ENGINEERING_GUARDED_MUTATION_TOOLS.has(name) && !isInformationalCommandInvocation(name, assessment.activeRoutedInput)) {
+        const admission = await resolveEngineeringAdmission(this.services, this.actor, mutationWorkspaceId, name,
+          assessment.activeRoutedInput, engineeringTask, goalLease, fullBypass);
+        if (!admission.ok) return { ...resultBase, goalLeaseRequired, decision: 'deny', reason: admission.error.message };
+      }
+      const scoped = fullBypass ? { ok: true } : bindCommandExecutionToActiveWorkspace(name, assessment.activeRoutedInput, assessment.activeWorkspaceScope);
+      if (!scoped.ok) return { ...resultBase, goalLeaseRequired, decision: 'deny', reason: 'message' in scoped ? scoped.message : 'Invalid command scope' };
+      if (!assessment.policyAllowsScopedDestructive && assessment.hostApprovalRequired && this.hostMutationApprovalProvider === undefined) {
+        return { ...resultBase, goalLeaseRequired, decision: 'deny', reason: 'Host exact-action approval is unavailable for this mutation' };
+      }
+      const needsApproval = !assessment.policyAllowsScopedDestructive
+        && (assessment.permissionDecision === 'ASK' || assessment.hostApprovalRequired);
+      return { ...resultBase, goalLeaseRequired, decision: needsApproval ? 'ask' : 'allow', reason: assessment.mutationDecision.reason };
+    } catch {
+      return { ...base, decision: 'unknown', reason: 'The host could not observe all required admission policy' };
+    }
+  }
+
   private async routeInputToActiveWorkspace(input: unknown): Promise<unknown> {
     if (!isRecord(input) || this.activeWorkspaceScopesProvider === undefined) return input;
     const absolutePaths = absoluteWorkspaceScopePaths(input);
@@ -988,6 +1165,10 @@ export class ToolRegistry {
     let onParentAbort: (() => void) | undefined;
     let operation: Promise<McpToolResponse> | undefined;
     let registrationReleased = false;
+    let recipeCancellationSnapshot: (() => unknown) | undefined;
+    const cancellationResponse = (message: string): McpToolResponse => recipeCancellationSnapshot === undefined
+      ? mapError(appError('PROCESS_TIMEOUT', message, true))
+      : mapResult(ok(recipeCancellationSnapshot()));
     const releaseRegistration = (): void => {
       if (registrationReleased) return;
       registrationReleased = true;
@@ -1003,7 +1184,7 @@ export class ToolRegistry {
         onParentAbort = (): void => {
           deadlineExceeded = true;
           controller.abort();
-          finish(mapError(appError('PROCESS_TIMEOUT', `MCP tool ${tool.name} was cancelled because its parent request ended; cancellation was requested, but an underlying operation may still be finishing. Check task/process status before retrying.`, true)));
+          finish(cancellationResponse(`MCP tool ${tool.name} was cancelled because its parent request ended; cancellation was requested, but an underlying operation may still be finishing. Check task/process status before retrying.`));
         };
         if (parentSignal?.aborted) {
           onParentAbort();
@@ -1020,11 +1201,13 @@ export class ToolRegistry {
           timer = setTimeout(() => {
             deadlineExceeded = true;
             controller.abort();
-            finish(mapError(appError('PROCESS_TIMEOUT', `MCP tool ${tool.name} exceeded the ${Math.ceil(responseBudgetMs / 1000)}s response budget; cancellation was requested, but an underlying operation may still be finishing. Check task/process status before retrying.`, true)));
+            finish(cancellationResponse(`MCP tool ${tool.name} exceeded the ${Math.ceil(responseBudgetMs / 1000)}s response budget; cancellation was requested, but an underlying operation may still be finishing. Check task/process status before retrying.`));
           }, responseBudgetMs);
         }
         try {
-          operation = tool.execute(input, controller.signal, authorization, internal).then(mapResult);
+          operation = tool.execute(input, controller.signal, authorization, tool.name === 'recipe_run'
+            ? { ...internal, recipeCancellation: { register(snapshot): void { recipeCancellationSnapshot = snapshot; } } }
+            : internal).then(mapResult);
         } catch (error: unknown) {
           releaseRegistration();
           reject(error);
@@ -1189,54 +1372,34 @@ function normalizeActiveWorkspaceScopesProvider(options: ActiveWorkspaceScopeOpt
 const NATIVE_ACTIVE_SCOPE_TOOLS = new Set(['dom_cdp', 'office', 'audio', 'screen_record', ...OFFICE_SEMANTIC_TOOL_NAMES]);
 const COMMAND_EXECUTION_TOOLS = new Set(['shell', 'wsl_exec', 'process_start']);
 export const SCHEDULED_CONTINUATION_FENCED_TOOLS = new Set([
-  'write_file', 'apply_patch', 'edit_file', 'move_file', 'copy_file', 'delete_file',
-  'restore_deleted_file', 'restore_checkpoint', 'lsp_rename', 'git', 'shell', 'wsl_exec',
+  'workspace_register', 'write_file', 'apply_patch', 'edit_file', 'move_file', 'copy_file', 'delete_file',
+  'restore_deleted_file', 'restore_checkpoint', 'lsp_rename', 'git', 'git_clone_safe', 'git_clone_cancel', 'shell', 'wsl_exec',
   'process_start', 'process_stop', 'project_dev', 'project_test', 'project_lint', 'project_typecheck', 'project_build',
   'verify_incremental', 'codex_run', 'codex_stop', 'agent_swarm_run', 'git_worktree_spawn', 'git_worktree_remove', 'self_heal_apply',
   'computer_use', 'dom_cdp', 'accessibility', 'input_event', 'ui_target_action', 'window',
   'clipboard', 'file_dialog', 'notification', 'web_fetch', 'scheduler',
   'office', 'audio', 'screen_record', 'docx_merge', 'office_ppt', ...OFFICE_SEMANTIC_TOOL_NAMES,
-  'task_create',
+  'task_create', 'benchmark_run', 'recipe_run', 'debug_attach', 'debug_step',
   ...AUTOMATION_TOOL_NAMES.filter((name) => AUTOMATION_MUTATION_TOOL_NAMES.has(name)),
+]);
+const WORKSPACE_WRITER_LEASE_CONTROL_TOOLS = new Set([
+  'workspace_writer_lease_acquire', 'workspace_writer_lease_status',
+  'workspace_writer_lease_renew', 'workspace_writer_lease_release',
 ]);
 const ENGINEERING_GUARDED_MUTATION_TOOLS = new Set([
   'write_file', 'apply_patch', 'edit_file', 'move_file', 'copy_file', 'delete_file', 'restore_deleted_file', 'restore_checkpoint',
-  'lsp_rename', 'git', 'shell', 'wsl_exec', 'process_start', 'process_stop',
+  'lsp_rename', 'git', 'git_clone_safe', 'git_clone_cancel', 'shell', 'wsl_exec', 'process_start', 'process_stop',
   'project_dev', 'project_test', 'project_lint', 'project_typecheck', 'project_build', 'verify_incremental',
-  'codex_run', 'codex_stop', 'agent_swarm_run', 'git_worktree_spawn', 'git_worktree_remove', 'self_heal_apply', 'task_create',
+  'codex_run', 'codex_stop', 'agent_swarm_run', 'git_worktree_spawn', 'git_worktree_remove', 'self_heal_apply', 'task_create', 'benchmark_run', 'recipe_run', 'debug_attach', 'debug_step',
 ]);
 const ENGINEERING_LIGHTWEIGHT_MUTATION_TOOLS = new Set([
   'write_file', 'apply_patch', 'edit_file', 'move_file', 'copy_file',
 ]);
-const goalLeaseProofSchema = z.object({
-  goalId: z.string().min(1).max(128),
-  leaseToken: z.string().min(1).max(256),
-  leaseGeneration: z.number().int().nonnegative(),
-}).strict();
-const engineeringGoalTaskBindingSchema = z.object({
-  goalId: z.string().min(1).max(128),
-  policyDigest: z.string().min(1).max(256),
-  goalRevision: z.number().int().nonnegative(),
-  userIntentRevision: z.number().int().nonnegative(),
-  scopedPath: z.string().min(1).max(4096).optional(),
-  sessionId: z.string().min(1).max(256).optional(),
-}).strict();
-const engineeringPreparedTaskBindingSchema = z.object({
-  objective: z.string().trim().min(1).max(32_768),
-  scopedPath: z.string().min(1).max(4096).optional(),
-  policyDigest: z.string().min(1).max(256),
-  primaryTaskKind: z.enum(['feature', 'bugfix', 'refactor', 'review', 'incident', 'release', 'maintenance', 'docs', 'unknown']),
-  riskTier: z.enum(['low', 'medium', 'high', 'critical']),
-  deliveryScope: z.enum(['local', 'commit', 'push', 'pull_request', 'merge', 'release', 'deploy']),
-  sessionId: z.string().min(1).max(256).optional(),
-}).strict();
-const engineeringTaskBindingSchema = z.union([engineeringGoalTaskBindingSchema, engineeringPreparedTaskBindingSchema]);
-type EngineeringTaskBinding = z.infer<typeof engineeringTaskBindingSchema>;
 const approvalEnvelopeSchema = z.boolean();
 const GOAL_MUTATION_HEARTBEAT_MS = 10_000;
 
 function withToolEnvelopes(tool: McpToolDefinition): McpToolDefinition {
-  return withApprovalEnvelope(withEngineeringTaskEnvelope(withGoalLeaseEnvelope(tool)));
+  return withApprovalEnvelope(withEngineeringTaskEnvelope(withGoalLeaseEnvelope(withWorkspaceWriterLeaseEnvelope(tool))));
 }
 
 function withApprovalEnvelope(tool: McpToolDefinition): McpToolDefinition {
@@ -1302,6 +1465,39 @@ function withEngineeringTaskEnvelope(tool: McpToolDefinition): McpToolDefinition
   };
 }
 
+function withWorkspaceWriterLeaseEnvelope(tool: McpToolDefinition): McpToolDefinition {
+  if (WORKSPACE_WRITER_LEASE_CONTROL_TOOLS.has(tool.name) || (tool.permission === 'READ' && !SCHEDULED_CONTINUATION_FENCED_TOOLS.has(tool.name))) return tool;
+  const extend = (schema: z.ZodObject): z.ZodObject =>
+    schema.safeExtend({ writerLease: workspaceWriterLeaseProofSchema.optional() });
+  const inputSchema = tool.inputSchema instanceof z.ZodObject
+    ? extend(tool.inputSchema)
+    : tool.inputSchema instanceof z.ZodUnion
+      ? z.union(tool.inputSchema.options.map((entry) => {
+        if (!(entry instanceof z.ZodObject)) throw new Error('Writer-fenced tool must have object input');
+        return extend(entry);
+      }) as [z.ZodObject, z.ZodObject, ...z.ZodObject[]])
+      : undefined;
+  if (inputSchema === undefined) throw new Error('Writer-fenced tool must have object input');
+  return {
+    ...tool, inputSchema,
+    parse(input: unknown): ReturnType<McpToolDefinition['parse']> {
+      const raw = isRecord(input) ? input.writerLease : undefined;
+      const proof = raw === undefined ? undefined : workspaceWriterLeaseProofSchema.safeParse(raw);
+      if (proof !== undefined && !proof.success) return err(appError('INVALID_INPUT', 'writerLease is invalid'));
+      const parsed = tool.parse(stripWorkspaceWriterLeaseEnvelope(input));
+      if (!parsed.ok || proof === undefined) return parsed;
+      if (!isRecord(parsed.value)) return err(appError('INVALID_INPUT', 'Writer-fenced input must be an object'));
+      return ok({ ...parsed.value, writerLease: proof.data });
+    },
+  };
+}
+
+function readWorkspaceWriterLeaseProof(input: unknown): WorkspaceWriterLeaseProof | undefined {
+  if (!isRecord(input) || input.writerLease === undefined) return undefined;
+  const proof = workspaceWriterLeaseProofSchema.safeParse(input.writerLease);
+  return proof.success ? proof.data : undefined;
+}
+
 function withGoalLeaseEnvelope(tool: McpToolDefinition): McpToolDefinition {
   if (!SCHEDULED_CONTINUATION_FENCED_TOOLS.has(tool.name)) return tool;
   const extendObjectSchema = (schema: z.ZodObject): z.ZodObject =>
@@ -1340,6 +1536,21 @@ function readGoalLeaseProof(input: unknown): GoalLeaseProof | undefined {
   return parsed.success ? parsed.data : undefined;
 }
 
+function bindInvocationToGoal(name: string, input: unknown, goalLease: GoalLeaseProof | undefined): Result<unknown> {
+  if (goalLease === undefined) return ok(input);
+  if (AUTOMATION_MUTATION_TOOL_NAMES.has(name)
+    && (!isRecord(input) || input.goalId !== goalLease.goalId || input.leaseToken !== goalLease.leaseToken)) {
+    return err(appError('CONFLICT', `${name} goalId and leaseToken must match goalLease`, true));
+  }
+  if (name === 'task_create' && isRecord(input)) {
+    if (input.goalId !== undefined && input.goalId !== goalLease.goalId) {
+      return err(appError('CONFLICT', 'task_create goalId must match goalLease.goalId', true));
+    }
+    return ok(input.goalId === undefined ? { ...input, goalId: goalLease.goalId } : input);
+  }
+  return ok(input);
+}
+
 function readEngineeringTaskBinding(input: unknown): EngineeringTaskBinding | undefined {
   if (!isRecord(input) || input.engineeringTask === undefined) return undefined;
   const parsed = engineeringTaskBindingSchema.safeParse(input.engineeringTask);
@@ -1349,6 +1560,11 @@ function readEngineeringTaskBinding(input: unknown): EngineeringTaskBinding | un
 function stripEngineeringTaskEnvelope(input: unknown): unknown {
   if (!isRecord(input) || !Object.prototype.hasOwnProperty.call(input, 'engineeringTask')) return input;
   return Object.fromEntries(Object.entries(input).filter(([key]) => key !== 'engineeringTask'));
+}
+
+function stripWorkspaceWriterLeaseEnvelope(input: unknown): unknown {
+  if (!isRecord(input) || !Object.prototype.hasOwnProperty.call(input, 'writerLease')) return input;
+  return Object.fromEntries(Object.entries(input).filter(([key]) => key !== 'writerLease'));
 }
 
 function stripGoalLeaseEnvelope(input: unknown): unknown {
@@ -1509,6 +1725,30 @@ function engineeringMutationWithinScope(scopedPath: string | undefined, toolName
   });
 }
 
+function startWorkspaceWriterLeaseHeartbeat(
+  service: NonNullable<McpApplicationServices['workspaceWriterLease']>,
+  workspaceId: string,
+  callId: string,
+  generation: number,
+): () => Promise<void> {
+  let closed = false;
+  let pending = false;
+  const timer = setInterval(() => {
+    if (closed || pending) return;
+    pending = true;
+    void service.heartbeat(workspaceId, callId, generation)
+      .catch(() => undefined)
+      .finally(() => { pending = false; });
+  }, 10_000);
+  timer.unref?.();
+  return async (): Promise<void> => {
+    if (closed) return;
+    closed = true;
+    clearInterval(timer);
+    await service.end(workspaceId, callId, generation);
+  };
+}
+
 function startGoalMutationFenceHeartbeat(
   service: NonNullable<McpApplicationServices['goalMutationFence']>,
   callId: string,
@@ -1602,7 +1842,7 @@ function summarizeMutationForApproval(toolName: string, input: unknown, activeWo
       lines.push(`launchCount = ${taskIds.length}`);
       if (taskIds.length > 0) lines.push(`taskIds = ${JSON.stringify(taskIds)}`);
     }
-    lines.push('WARNING: this consumes explicitly enabled Codex quota; v5.7.3 enforces read-only child sandboxes.');
+    lines.push('WARNING: this consumes explicitly enabled Codex quota; v1.0.0 enforces read-only child sandboxes.');
     return boundedApprovalSummary(lines);
   }
   const projectKind = projectCommandKind(toolName);
@@ -1727,7 +1967,7 @@ function isInformationalCommandInvocation(toolName: string, input: unknown): boo
   return false;
 }
 
-const LOCAL_MUTATION_TOOLS = new Set(['write_file', 'apply_patch', 'edit_file', 'move_file', 'copy_file', 'delete_file', 'restore_deleted_file', 'restore_recovery_item', 'restore_checkpoint', 'git', 'shell', 'wsl_exec', 'process_start', 'process_stop', 'codex_run', 'codex_stop', 'agent_swarm_run', 'office', 'office_ppt', 'docx_merge', 'git_worktree_spawn', 'git_worktree_remove', 'self_heal_apply', ...OFFICE_SEMANTIC_TOOL_NAMES]);
+const LOCAL_MUTATION_TOOLS = new Set(['write_file', 'apply_patch', 'edit_file', 'move_file', 'copy_file', 'delete_file', 'restore_deleted_file', 'restore_recovery_item', 'restore_checkpoint', 'git', 'shell', 'wsl_exec', 'process_start', 'process_stop', 'codex_run', 'codex_stop', 'agent_swarm_run', 'office', 'office_ppt', 'docx_merge', 'git_worktree_spawn', 'git_worktree_remove', 'self_heal_apply', 'debug_attach', 'debug_step', ...OFFICE_SEMANTIC_TOOL_NAMES]);
 const LOCAL_OUTPUT_REPLACEMENT_TOOLS = new Set(['audio', 'screen_record']);
 function requiresActiveWorkspaceScope(toolName: string, decision: MutationPolicyDecision): boolean {
   return decision.kind !== 'read' && (LOCAL_MUTATION_TOOLS.has(toolName) || (decision.kind === 'replace' && LOCAL_OUTPUT_REPLACEMENT_TOOLS.has(toolName)));

@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 const hash=(x)=>createHash('sha256').update(x).digest('hex');
 const display=(x)=>/^[A-Za-z0-9_./:@+\\-]+$/.test(x)?x:JSON.stringify(x);
 export function validationManager(config,directory,callbacks){
-  let child, current;
+  let child, current, childClosed;
   const validator=fileURLToPath(new URL('./phase-r-validator.mjs',import.meta.url));
   const filename=path.join(config.effectRoot,'result.txt');
   const args=[validator,filename,config.grace?.expectedHash??'',String(config.grace?.validationMs??0)];
@@ -21,7 +21,8 @@ export function validationManager(config,directory,callbacks){
       if(current) return {runId,state:current.state};
       current={...base,state:'running',exitCode:null,checks:0,elapsedMs:0,lastProgressAt:new Date().toISOString()};persist();
       child=spawn(process.execPath,args,{windowsHide:true,shell:false,stdio:['ignore','pipe','pipe']});
-      if(child.pid) callbacks.register(child.pid);
+      childClosed=new Promise(resolve=>child.once('close',resolve));
+      if(child.pid) callbacks.register(child.pid, child);
       let buffer='',verified=false;
       const deadline=setTimeout(()=>{if(child.exitCode===null) child.kill();},config.grace.validationMs+30000);
       child.stdout.on('data',(chunk)=>{
@@ -44,7 +45,9 @@ export function validationManager(config,directory,callbacks){
     },
     stop:async()=>{
       if(current&&current.state==='running'){current={...current,state:'cancelled',exitCode:-1,lastProgressAt:new Date().toISOString()};persist();}
-      if(child&&child.exitCode===null) await new Promise((resolve)=>{child.once('close',resolve);child.kill();});
+      if(child&&child.exitCode===null&&child.signalCode===null) child.kill();
+      // Retain the original close promise: a signalled child keeps exitCode=null after close.
+      if(childClosed) await childClosed;
     }
   };
 }

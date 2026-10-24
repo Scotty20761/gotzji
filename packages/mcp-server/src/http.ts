@@ -272,6 +272,8 @@ function createSessionfulMcpHandler(options: McpHttpServerOptions): McpHttpHandl
   const endpointFallbackSessionId = randomUUID();
   const modernServersByRequest = new WeakMap<Request, McpServer>();
   const activeModernServers = new Set<McpServer>();
+  let toolAvailabilityTimer: ReturnType<typeof setTimeout> | undefined;
+  let closed = false;
 
   const factory = (request?: Request): McpServer => {
     const server = createMcpServer({
@@ -308,8 +310,19 @@ function createSessionfulMcpHandler(options: McpHttpServerOptions): McpHttpHandl
   };
 
   const modernHandler = createMcpHandler((context) => factory(context.requestInfo), { legacy: 'reject', onerror: writeDiagnostic });
+  const unsubscribeModernToolAvailability = options.toolAvailabilitySubscribe?.(() => {
+    if (closed) return;
+    if (toolAvailabilityTimer !== undefined) clearTimeout(toolAvailabilityTimer);
+    toolAvailabilityTimer = setTimeout(() => {
+      toolAvailabilityTimer = undefined;
+      try {
+        modernHandler.notify.toolsChanged();
+      } catch (error: unknown) {
+        writeDiagnostic(error instanceof Error ? error : new Error(String(error)));
+      }
+    }, 25);
+  });
   const sessions = new Map<string, LegacySession>();
-  let closed = false;
 
   const closeLegacySession = async (sessionId: string, session: LegacySession): Promise<void> => {
     if (sessions.get(sessionId) === session) sessions.delete(sessionId);
@@ -402,6 +415,11 @@ function createSessionfulMcpHandler(options: McpHttpServerOptions): McpHttpHandl
     async close(): Promise<void> {
       if (closed) return;
       closed = true;
+      if (toolAvailabilityTimer !== undefined) {
+        clearTimeout(toolAvailabilityTimer);
+        toolAvailabilityTimer = undefined;
+      }
+      unsubscribeModernToolAvailability?.();
       await modernHandler.close();
       await Promise.all([...activeModernServers].map(closeModernMcpServer));
       const activeSessions = [...sessions.entries()];

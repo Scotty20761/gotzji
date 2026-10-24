@@ -1,8 +1,11 @@
+import { ActionButton } from '../ui/UiPrimitives.js';
 import { useEffect, useRef, type ReactElement } from 'react';
 import { createPortal } from 'react-dom';
 import type { UiLocale } from '@lnwjud/ipc-contracts';
+import { APP_NAME, APP_VERSION } from '@lnwjud/ipc-contracts';
+import { gotzjiReleaseNotes } from '../../gotzji-release-notes.js';
 import { createTranslator } from '../../i18n/index.js';
-import { releaseNotesForVersion } from './release-notes.js';
+import { releaseNotesForSeries } from './release-notes.js';
 
 interface WhatsNewModalProps {
   readonly locale: UiLocale;
@@ -58,8 +61,8 @@ export function WhatsNewModal({ locale, version, onClose }: WhatsNewModalProps):
     };
   }, [onClose]);
 
-  const note = releaseNotesForVersion(version);
-  const categories = note?.categories.filter((category) => category.items.length > 0) ?? [];
+  const notes = releaseNotesForSeries(version);
+  const ownedNotes = APP_NAME === 'gotzji' && version === APP_VERSION ? gotzjiReleaseNotes(version) : null;
   const modal = (
     <div className="tool-modal-backdrop whats-new-backdrop" role="presentation" onMouseDown={(event): void => { if (event.currentTarget === event.target) onClose(); }}>
       <section ref={dialogRef} className="tool-modal whats-new-modal" role="dialog" aria-modal="true" aria-labelledby="whats-new-title">
@@ -68,28 +71,39 @@ export function WhatsNewModal({ locale, version, onClose }: WhatsNewModalProps):
             <p className="eyebrow">{t('whatsNew.eyebrow')}</p>
             <h2 ref={titleRef} tabIndex={-1} id="whats-new-title">{t('whatsNew.title', { version })}</h2>
           </div>
-          <button className="tool-modal-close" type="button" onClick={onClose} aria-label={t('whatsNew.close')}>×</button>
+          <ActionButton className="tool-modal-close" type="button" onClick={onClose} aria-label={t('whatsNew.close')}>×</ActionButton>
         </header>
         <div className="tool-modal-scroll whats-new-scroll">
-          {note === undefined || categories.length === 0 ? (
+          {ownedNotes ? (
+            <section className="whats-new-version" aria-label={`v${version}`}>
+              <h3 className="whats-new-version-title">v{version}</h3>
+              {ownedNotes.status === 'development' && <p>{t('whatsNew.developmentStatus')}</p>}
+              <ul>{ownedNotes[locale].map((entry) => <li key={entry} className="whats-new-item"><p>{entry}</p></li>)}</ul>
+            </section>
+          ) : notes.length === 0 ? (
             <section className="whats-new-empty" role="status">
               <h3>{t('whatsNew.emptyTitle')}</h3>
               <p>{t('whatsNew.emptyBody', { version })}</p>
             </section>
-          ) : categories.map((category) => (
-            <section className="whats-new-category" key={category.id}>
-              <h3>{t(category.titleKey)}</h3>
-              <div className="whats-new-items">
-                {category.items.map((item) => (
-                  <article className="whats-new-item" key={item.id}>
-                    <div className="whats-new-item-heading">
-                      <strong>{t(item.titleKey)}</strong>
-                      {item.badge === undefined ? null : <span className={`whats-new-badge ${item.badge}`}>{t(badgeKeys[item.badge])}</span>}
-                    </div>
-                    <p>{t(item.descriptionKey)}</p>
-                  </article>
-                ))}
-              </div>
+          ) : notes.map((note) => (
+            <section className="whats-new-version" key={note.version} aria-label={`v${note.version}`}>
+              <h3 className="whats-new-version-title">v{note.version}</h3>
+              {note.categories.filter((category) => category.items.length > 0).map((category) => (
+                <section className="whats-new-category" key={category.id}>
+                  <h4>{t(category.titleKey)}</h4>
+                  <div className="whats-new-items">
+                    {category.items.map((item) => (
+                      <article className="whats-new-item" key={item.id}>
+                        <div className="whats-new-item-heading">
+                          <strong>{t(item.titleKey)}</strong>
+                          {item.badge === undefined ? null : <span className={`whats-new-badge ${item.badge}`}>{t(badgeKeys[item.badge])}</span>}
+                        </div>
+                        <p>{t(item.descriptionKey)}</p>
+                      </article>
+                    ))}
+                  </div>
+                </section>
+              ))}
             </section>
           ))}
         </div>

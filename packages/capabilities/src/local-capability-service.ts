@@ -33,15 +33,20 @@ export interface LocalCapabilityBackends {
 }
 
 export class LocalCapabilityService implements CapabilityService {
+  private closed = false;
   public constructor(private readonly backends: LocalCapabilityBackends) {}
 
+  public close(): void { this.closed = true; }
+
   public execute(tool: CapabilityToolName, input: unknown, signal?: AbortSignal, authorization?: InvocationAuthorization): Promise<Result<unknown>> {
+    if (this.closed) return Promise.resolve(err(appError('CONFLICT', 'Capability runtime is closed')));
     if (signal?.aborted === true) {
       return Promise.resolve(err(appError('PROCESS_TIMEOUT', 'Capability operation was cancelled before dispatch', true)));
     }
     const backend = this.backendFor(tool);
     if (backend === undefined) return Promise.resolve(err(appError('INVALID_INPUT', 'Capability tool is not supported')));
     const dispatch = async (): Promise<Result<unknown>> => {
+      if (this.closed) return err(appError('CONFLICT', 'Capability runtime is closed'));
       const result = await backend.execute(input, signal, authorization);
       return result.ok ? this.withPostcondition(tool, input, result, signal, authorization) : result;
     };

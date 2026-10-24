@@ -87,10 +87,23 @@ describe('multi-workspace concurrency acceptance', () => {
       const processA = stringField(buildA, 'processId');
       const processB = stringField(testB, 'processId');
 
-      await Promise.all([
-        waitForFile(path.join(workspaceRootA, 'build.started')),
-        waitForFile(path.join(workspaceRootB, 'test.started')),
-      ]);
+      try {
+        await Promise.all([
+          waitForFile(path.join(workspaceRootA, 'build.started')),
+          waitForFile(path.join(workspaceRootB, 'test.started')),
+        ]);
+      } catch (error: unknown) {
+        // An accepted native process may still fail before its fixture runs.
+        // Preserve the live process states in CI diagnostics instead of only
+        // reporting an uninformative timeout.
+        const [statusA, statusB] = await Promise.allSettled([
+          clientA.callTool({ name: 'process_status', arguments: { workspaceId: workspaceA.id, processId: processA } }),
+          clientB.callTool({ name: 'process_status', arguments: { workspaceId: workspaceB.id, processId: processB } }),
+        ]);
+        const a = statusA.status === 'fulfilled' ? statusA.value.structuredContent?.state : 'unavailable';
+        const b = statusB.status === 'fulfilled' ? statusB.value.structuredContent?.state : 'unavailable';
+        throw new Error(`Process startup did not reach both fixtures: ${error instanceof Error ? error.message : String(error)}; build=${String(a)}, test=${String(b)}`);
+      }
 
       const deniedProcess = await clientB.callTool({
         name: 'process_status',
@@ -328,7 +341,7 @@ async function prepareSessionFiles(client: Client, workspaceId: string, label: s
   expect(victim.isError).not.toBe(true);
 }
 
-async function waitForFile(filePath: string, timeoutMs = process.env.CI ? 60_000 : 20_000): Promise<void> {
+async function waitForFile(filePath: string, timeoutMs = process.env.CI ? 90_000 : 20_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try {

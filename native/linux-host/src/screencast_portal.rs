@@ -20,24 +20,23 @@ pub(crate) fn status_json(wayland: bool, portal_hint: bool, x11: bool) -> String
 
 pub(crate) fn execute(
     action: &str,
-    _input: &BTreeMap<String, String>,
+    input: &BTreeMap<String, String>,
 ) -> Result<String, (&'static str, &'static str, bool)> {
     if action == "status" {
+        if wayland_session() {
+            return super::desktop_session::execute("vision", "status", input);
+        }
         return Ok(status_json(
             wayland_session(),
             std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_some_and(|value| !value.is_empty()),
-            super::x11::display_available(),
+            super::x11::capture_available(),
         ));
     }
     if wayland_session() {
-        return Err((
-            "PERMISSION_REQUIRED",
-            "Wayland capture requires a visible ScreenCast portal session",
-            true,
-        ));
+        return super::desktop_session::execute("vision", action, input);
     }
     if super::x11::display_available() {
-        return super::x11::capture(action, _input);
+        return super::x11::capture(action, input);
     }
     Err((
         "EXECUTABLE_NOT_FOUND",

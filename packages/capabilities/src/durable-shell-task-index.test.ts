@@ -17,6 +17,60 @@ afterEach(async () => {
 });
 
 describe('DurableShellTaskIndex', () => {
+  it('does not allow a different client or workspace to attach to another import reservation', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'lnwjud-import-owner-'));
+    temporaryRoots.push(root);
+    const index = new DurableShellTaskIndex(root, { maxConcurrentTasks: 10, inspectTask: async (): Promise<'active'> => 'active' });
+    const owned = {
+      taskId: 'same-request', requestDigest: 'f'.repeat(64),
+      mutationKind: 'repository_import' as const,
+      ownerClientId: 'owner-client', ownerWorkspaceId: 'owner-workspace',
+    };
+    expect(await index.reserve(owned)).toMatchObject({ ok: true, value: { created: true } });
+    expect(await index.reserve(owned)).toMatchObject({ ok: true, value: { created: false } });
+    expect(await index.reserve({ ...owned, ownerClientId: 'other-client' })).toMatchObject({ ok: false, error: { code: 'CONFLICT' } });
+    expect(await index.reserve({ ...owned, ownerWorkspaceId: 'other-workspace' })).toMatchObject({ ok: false, error: { code: 'CONFLICT' } });
+  });
+
+  it.each(['active', 'unknown', 'missing'] as const)('blocks import across workspaces while an opaque writer is %s', async (state) => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'lnwjud-import-admission-'));
+    temporaryRoots.push(root);
+    const index = new DurableShellTaskIndex(root, { maxConcurrentTasks: 10, inspectTask: async (): Promise<typeof state> => state });
+    expect(await index.reserve({ taskId: 'opaque', requestDigest: 'a'.repeat(64), ownerClientId: 'other-client', ownerWorkspaceId: 'other-workspace' })).toMatchObject({ ok: true });
+    const restarted = new DurableShellTaskIndex(root, { maxConcurrentTasks: 10, inspectTask: async (): Promise<typeof state> => state });
+    expect(await restarted.reserve({ taskId: 'import', requestDigest: 'b'.repeat(64), ownerClientId: 'import-client', ownerWorkspaceId: 'import-workspace', mutationKind: 'repository_import' })).toMatchObject({ ok: false, error: { code: 'CONFLICT' } });
+  });
+
+  it('atomically excludes import and opaque launches across index instances', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'lnwjud-import-race-'));
+    temporaryRoots.push(root);
+    const options = { maxConcurrentTasks: 10, inspectTask: async (): Promise<'unknown'> => 'unknown' };
+    const first = new DurableShellTaskIndex(root, options);
+    const second = new DurableShellTaskIndex(root, options);
+    const results = await Promise.all([
+      first.reserve({ taskId: 'import', requestDigest: 'a'.repeat(64), ownerClientId: 'a', mutationKind: 'repository_import' }),
+      second.reserve({ taskId: 'opaque', requestDigest: 'b'.repeat(64), ownerClientId: 'b' }),
+    ]);
+    expect(results.filter((result) => result.ok)).toHaveLength(1);
+  });
+
+  it('retains import exclusion across restart and permits writers after verified terminal observation', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'lnwjud-import-lifetime-'));
+    temporaryRoots.push(root);
+    let terminal = false;
+    const options = { maxConcurrentTasks: 10, inspectTask: async (): Promise<'terminal' | 'unknown'> => terminal ? 'terminal' : 'unknown' };
+    const first = new DurableShellTaskIndex(root, options);
+    const reservation = { taskId: 'import', requestDigest: 'a'.repeat(64), ownerClientId: 'a', mutationKind: 'repository_import' as const };
+    expect(await first.reserve(reservation)).toMatchObject({ ok: true, value: { created: true } });
+    const restarted = new DurableShellTaskIndex(root, options);
+    expect(await restarted.reserve(reservation)).toMatchObject({ ok: true, value: { created: false } });
+    expect(await restarted.reserve({ ...reservation, mutationKind: 'opaque' })).toMatchObject({ ok: false });
+    const writer = { taskId: 'writer', requestDigest: 'b'.repeat(64), ownerClientId: 'b' };
+    expect(await restarted.reserve(writer)).toMatchObject({ ok: false });
+    terminal = true;
+    expect(await restarted.reserve(writer)).toMatchObject({ ok: true });
+  });
+
   it('bootstraps legacy terminal and active history once, then reinspects only active markers', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'lnwjud-durable-index-bootstrap-'));
     temporaryRoots.push(root);

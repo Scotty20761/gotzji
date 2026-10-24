@@ -1,4 +1,4 @@
-export type WorkspaceIndexEventKind = 'change' | 'delete';
+export type WorkspaceIndexEventKind = 'change' | 'delete' | 'rescan';
 
 export interface WorkspaceIndexEvent {
   readonly relativePath: string;
@@ -36,7 +36,7 @@ export class WorkspaceIndexQueue {
   private readonly concurrency: number;
   private readonly listeners = new Set<QueueErrorListener>();
   private timer: ReturnType<typeof setTimeout> | undefined;
-  private wake: (() => void) | undefined;
+  private readonly idleWaiters = new Set<() => void>();
   private activeWorkers = 0;
   private enqueuedEvents = 0;
   private coalescedEvents = 0;
@@ -83,7 +83,7 @@ export class WorkspaceIndexQueue {
     await this.flush();
     if (this.pending.size > 0 || this.activeWorkers > 0 || this.timer !== undefined) {
       await new Promise<void>((resolve) => {
-        this.wake = resolve;
+        this.idleWaiters.add(resolve);
       });
       await this.drain();
     }
@@ -107,11 +107,11 @@ export class WorkspaceIndexQueue {
       workers.push(this.run(next[1]));
     }
     if (workers.length > 0) await Promise.all(workers);
-    if (this.pending.size > 0) await this.flush();
+    if (this.pending.size > 0 && this.activeWorkers < this.concurrency) await this.flush();
     if (this.pending.size === 0 && this.activeWorkers === 0) {
-      const wake = this.wake;
-      this.wake = undefined;
-      wake?.();
+      const waiters = [...this.idleWaiters];
+      this.idleWaiters.clear();
+      for (const resolve of waiters) resolve();
     }
   }
 

@@ -24,6 +24,9 @@ export const capabilityToolNames = Object.freeze([
 export type CapabilityToolName = (typeof capabilityToolNames)[number];
 
 export { prohibitedAgentCommandReason } from './agent-command-policy.js';
+export { SecureRepositoryImportRuntime } from './repository-import-runtime.js';
+export { SharedManagedWriterAdmission } from './shared-managed-writer-admission.js';
+export { SqliteWorkspaceWriterLease, type WorkspaceWriterLeasePort, type WorkspaceWriterLeaseProof, type WorkspaceWriterLeaseStatus } from './workspace-writer-lease.js';
 
 export interface CapabilityService {
   execute(tool: CapabilityToolName, input: unknown, signal?: AbortSignal, authorization?: InvocationAuthorization): Promise<Result<unknown>>;
@@ -96,3 +99,5 @@ export {
 } from './capability-descriptors.js';
 
 export { WINDOWS_CAPABILITY_BRIDGE_SHA256, WINDOWS_CAPABILITY_BRIDGE_SIZE_BYTES } from './windows-capability-integrity.generated.js';
+export { BoundedEventBuffer, type BufferedEvent, type EventPage } from './bounded-event-buffer.js';
+export { resolveNativeHostBridge } from './native-host-resolver.js';

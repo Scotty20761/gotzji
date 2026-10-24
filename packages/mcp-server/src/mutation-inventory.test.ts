@@ -22,6 +22,7 @@ const mandatoryCases = [
  * mixed tool cannot silently inherit this exception.
  */
 const mixedOperationReadCases = [
+  ['recipe_run', { name: 'safe-job', dryRun: true }, 'EXECUTE'],
   ['workspace_list', {}, 'READ'],
   ['skills_list', {}, 'READ'],
   ['skills_read', { skillId: 'agents-skills/executing-plans' }, 'READ'],

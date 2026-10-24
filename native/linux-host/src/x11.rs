@@ -71,6 +71,30 @@ pub(crate) fn request_input(
             flatten_scalar(&mut fields, name, value);
         }
     }
+    fields.retain(|name, _| !name.starts_with("metadata.lnwjud.taskOwner.v1."));
+    if let Some(owner) = input
+        .get("metadata")
+        .and_then(Value::as_object)
+        .and_then(|metadata| metadata.get("lnwjud.taskOwner.v1"))
+    {
+        let owner = owner
+            .as_object()
+            .ok_or("Native owner metadata must be an object")?;
+        for name in ["clientId", "sessionId", "workspaceId"] {
+            match owner.get(name) {
+                Some(Value::String(value))
+                    if !value.trim().is_empty() && value.len() <= 256 && !value.contains('\0') =>
+                {
+                    fields.insert(
+                        format!("metadata.lnwjud.taskOwner.v1.{name}"),
+                        value.clone(),
+                    );
+                }
+                None if name == "workspaceId" => {}
+                _ => return Err("Native owner metadata is invalid"),
+            }
+        }
+    }
     Ok((action, fields))
 }
 
@@ -524,9 +548,21 @@ pub(crate) fn capture(
                 })?;
             let translated = conn
                 .translate_coordinates(window, root, 0, 0)
-                .map_err(|_| ("INTERNAL_ERROR", "X11 window origin could not be resolved", true))?
+                .map_err(|_| {
+                    (
+                        "INTERNAL_ERROR",
+                        "X11 window origin could not be resolved",
+                        true,
+                    )
+                })?
                 .reply()
-                .map_err(|_| ("INTERNAL_ERROR", "X11 window origin could not be resolved", true))?;
+                .map_err(|_| {
+                    (
+                        "INTERNAL_ERROR",
+                        "X11 window origin could not be resolved",
+                        true,
+                    )
+                })?;
             capture_drawable(
                 &conn,
                 window,
@@ -1341,7 +1377,9 @@ fn mutate_window(
 }
 
 fn selector_value<'a>(input: &'a BTreeMap<String, String>, name: &str) -> Option<&'a String> {
-    input.get(name).or_else(|| input.get(&format!("app.{name}")))
+    input
+        .get(name)
+        .or_else(|| input.get(&format!("app.{name}")))
 }
 
 fn selected_window(
@@ -1434,9 +1472,15 @@ fn selected_window(
             continue;
         }
         if let Some(expected) = &process_name {
-            let Some(window_pid) = window_pid else { continue; };
-            let Some(actual) = process_name_for_pid(window_pid) else { continue; };
-            if !actual.eq_ignore_ascii_case(expected) { continue; }
+            let Some(window_pid) = window_pid else {
+                continue;
+            };
+            let Some(actual) = process_name_for_pid(window_pid) else {
+                continue;
+            };
+            if !actual.eq_ignore_ascii_case(expected) {
+                continue;
+            }
         }
         let actual_title = title_atoms.and_then(|(wm_name, utf8)| {
             property_text(conn, window, wm_name, utf8).or_else(|| {
@@ -1449,8 +1493,12 @@ fn selected_window(
             })
         });
         if let Some(expected) = &title {
-            let Some(actual) = &actual_title else { continue; };
-            if !actual.to_lowercase().contains(&expected.to_lowercase()) { continue; }
+            let Some(actual) = &actual_title else {
+                continue;
+            };
+            if !actual.to_lowercase().contains(&expected.to_lowercase()) {
+                continue;
+            }
         }
         if let Some(expected) = &natural_name {
             let process_matches = window_pid
@@ -1459,7 +1507,9 @@ fn selected_window(
             let title_matches = actual_title
                 .as_ref()
                 .is_some_and(|actual| actual.to_lowercase().contains(&expected.to_lowercase()));
-            if !process_matches && !title_matches { continue; }
+            if !process_matches && !title_matches {
+                continue;
+            }
         }
         return Ok(window);
     }
@@ -1714,6 +1764,21 @@ mod tests {
         assert_eq!(fields.get("x").map(String::as_str), Some("120"));
         assert_eq!(fields.get("y").map(String::as_str), Some("240"));
         assert_eq!(fields.get("text").map(String::as_str), Some("ok"));
+    }
+
+    #[test]
+    fn parameters_cannot_override_trusted_media_ownership() {
+        let line = r#"{"input":{"metadata":{"lnwjud.taskOwner.v1":{"clientId":"client","sessionId":"session","workspaceId":"workspace"}},"parameters":{"metadata.lnwjud.taskOwner.v1.sessionId":"foreign"}}}"#;
+        let (_, input) = request_input(line).unwrap();
+        assert_eq!(
+            input.get("metadata.lnwjud.taskOwner.v1.sessionId").unwrap(),
+            "session"
+        );
+        assert!(request_input(
+            r#"{"input":{"metadata":{"lnwjud.taskOwner.v1":{"clientId":"client"}}}}"#
+        )
+        .is_err());
+        assert!(request_input(r#"{"input":{"metadata":{"lnwjud.taskOwner.v1":false}}}"#).is_err());
     }
 
     #[test]

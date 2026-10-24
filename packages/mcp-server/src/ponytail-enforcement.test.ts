@@ -22,6 +22,10 @@ function createServices(workspaceProfile?: unknown, skillMatchFailure = false): 
         writes.push(request.path);
         return ok({ path: request.path, replacedExisting: false });
       },
+      async editFile() {
+        // The reporter's impossible-match probe must never alter a file.
+        return err(appError('CONFLICT', 'Exact edit conflict: expected 1 occurrence(s), found 0', true));
+      },
     },
     extensions: {
       async listSkills() {
@@ -146,6 +150,7 @@ describe('Ponytail ToolRegistry enforcement', () => {
       ...base.services,
       goals: {
         async getGoal() { return ok({ workspaceId: 'workspace-1', ponytailMode: 'full' }); },
+        async validateGoalLease() { return ok({workspaceId:'workspace-1', leaseGeneration: 1}); },
       },
     } as unknown as McpApplicationServices;
     const registry = fullRegistry(services);
@@ -170,12 +175,68 @@ describe('Ponytail ToolRegistry enforcement', () => {
     expect(base.writes).toEqual(['src/canonical-skill-read.ts']);
   });
 
+  it('explains missing goalLease for goal-scoped Ponytail load without granting unbound edit_file or batch access', async () => {
+    const base = createServices();
+    const services = {
+      ...base.services,
+      goals: {
+        async getGoal() { return ok({ workspaceId: 'workspace-1', ponytailMode: 'ultra' }); },
+        async validateGoalLease() { return ok({ workspaceId: 'workspace-1', leaseGeneration: 1 }); },
+      },
+    } as unknown as McpApplicationServices;
+    const registry = new ToolRegistry(services, actor, { ponytailModeProvider: (): 'ultra' => 'ultra' });
+    const probe = {
+      workspaceId: 'workspace-1', path: 'src/safe.ts',
+      oldText: '__IMPOSSIBLE_PROBE__', newText: '__IMPOSSIBLE_PROBE__',
+      expectedOccurrences: 1,
+    };
+    const loaded = await registry.invoke('skill_load', {
+      skillId: BUNDLED_PONYTAIL_SKILL_ID, workspaceId: 'workspace-1', goalId: 'goal-ultra',
+    });
+    expect(loaded.isError).not.toBe(true);
+
+    const blocked = await registry.invoke('edit_file', probe);
+    expect(blocked).toMatchObject({ isError: true, structuredContent: { error: {
+      code: 'CONFLICT', message: expect.stringContaining('has no goalLease'),
+    } } });
+    expect(JSON.stringify(blocked.structuredContent)).toContain('Goal-scoped activation cannot authorize an unbound mutation.');
+
+    const batch = await registry.invoke('tool_batch', {
+      parallel: false, maxConcurrency: 1,
+      calls: [{ id: 'unbound-edit', tool: 'edit_file', arguments: probe, dependsOn: [] }],
+    });
+    expect(batch.structuredContent).toMatchObject({
+      summary: { failed: 1, succeeded: 0 },
+      results: [{ status: 'failed', error: { code: 'CONFLICT', message: expect.stringContaining('goalLease') } }],
+    });
+
+    const goalLease = { goalId: 'goal-ultra', leaseToken: 'lease-token', leaseGeneration: 1 };
+    const leased = await registry.invoke('edit_file', { ...probe, goalLease });
+    expect(leased).toMatchObject({ isError: true, structuredContent: { error: {
+      message: expect.stringContaining('Exact edit conflict: expected 1 occurrence(s), found 0'),
+    } } });
+
+    const unrelatedWorkspace = await registry.invoke('edit_file', { ...probe, workspaceId: 'workspace-other' });
+    expect(JSON.stringify(unrelatedWorkspace.structuredContent)).not.toContain('has no goalLease');
+
+    const workspaceLoaded = await registry.invoke('skill_load', {
+      skillId: BUNDLED_PONYTAIL_SKILL_ID, workspaceId: 'workspace-1',
+    });
+    expect(workspaceLoaded.isError).not.toBe(true);
+    const unboundAfterWorkspaceLoad = await registry.invoke('edit_file', probe);
+    expect(unboundAfterWorkspaceLoad).toMatchObject({ isError: true, structuredContent: { error: {
+      message: expect.stringContaining('Exact edit conflict: expected 1 occurrence(s), found 0'),
+    } } });
+    expect(base.writes).toEqual([]);
+  });
+
   it('keeps durable-goal Ponytail activation across transport session rotation for the same client/workspace/goal', async () => {
     const base = createServices();
     const services = {
       ...base.services,
       goals: {
         async getGoal() { return ok({ workspaceId: 'workspace-1', ponytailMode: 'ultra' }); },
+        async validateGoalLease() { return ok({workspaceId:'workspace-1', leaseGeneration: 1}); },
       },
     } as unknown as McpApplicationServices;
     const ledger = new PonytailActivationLedger();
@@ -301,7 +362,7 @@ describe('Ponytail ToolRegistry enforcement', () => {
         dependsOn: [],
       }],
     });
-    expect(result.isError).not.toBe(true);
+    expect(result.isError).toBe(true);
     expect(result.structuredContent).toMatchObject({
       summary: { failed: 1, succeeded: 0 },
       results: [{ status: 'failed', error: { code: 'CONFLICT', message: expect.stringContaining('Ponytail FULL is active') } }],
@@ -317,6 +378,7 @@ describe('Ponytail ToolRegistry enforcement', () => {
       ...base.services,
       goals: {
         async getGoal() { return ok(goalSnapshot); },
+        async validateGoalLease() { return ok({workspaceId:'workspace-1', leaseGeneration: 1}); },
         async finishGoal() { finishes += 1; return ok({ status: 'completed' }); },
       },
     } as unknown as McpApplicationServices;
@@ -363,6 +425,7 @@ describe('Ponytail ToolRegistry enforcement', () => {
       ...base.services,
       goals: {
         async getGoal() { return ok(goalSnapshot); },
+        async validateGoalLease() { return ok({workspaceId:'workspace-1', leaseGeneration: 1}); },
         async finishGoal() {
           finishes += 1;
           return ok({ ...goalSnapshot, status: 'completed', completionState: 'completed', scheduledTaskCancellation: { action: 'none', reason: 'no_live_task' } });

@@ -41,7 +41,7 @@ class BatchChildError extends Error {
 export function batchTools(invoker: BatchToolInvoker): readonly McpToolDefinition[] {
   return [defineTool({
     name: 'tool_batch',
-    description: 'Execute multiple MCP tools with parallel, dependency-aware, timeout, cancellation, and partial-result handling.',
+    description: 'Execute multiple MCP tools with dependency-aware and timeout handling. A successful batch dispatch does not guarantee its child calls succeeded: inspect summary.succeeded/failed and results[].status. An all-failed batch returns MCP isError=true with every child receipt preserved. Child permission and host-approval checks match direct invocation.',
     permission: 'EXECUTE',
     annotations: { readOnlyHint: false, destructiveHint: true },
     inputSchema: toolBatchSchema,
@@ -57,6 +57,17 @@ export function batchTools(invoker: BatchToolInvoker): readonly McpToolDefinitio
           if (response.isError === true) throw toChildError(response);
           return response;
         }, { signal, maxConcurrency: input.maxConcurrency });
+        // MCP clients often display only the outer isError bit. Never report
+        // an all-failed batch as success just because its dispatcher returned.
+        // Preserve the per-child evidence for clients that inspect the payload;
+        // a mixed/partial batch remains successful with explicit child statuses.
+        if (result.summary.total > 0 && result.summary.succeeded === 0) {
+          return ok({
+            content: [{ type: 'text', text: `All ${result.summary.total} batched tool calls failed; inspect structuredContent.results for each child failure` }],
+            structuredContent: result,
+            isError: true,
+          });
+        }
         return ok(result);
       } catch (error: unknown) {
         return err({

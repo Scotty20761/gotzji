@@ -1,0 +1,3974 @@
+{
+  "schemaVersion": 1,
+  "capturedOn": "2026-10-19",
+  "source": "actual lnwjud tool_search per every returned category; no user work executed",
+  "expectedTotal": 205,
+  "tools": [
+    {
+      "name": "accessibility",
+      "phase": 0,
+      "description": "accessibility local capability (window)",
+      "permission": "READ",
+      "tags": [
+        "accessibility",
+        "window",
+        "capability"
+      ],
+      "deliveryState": "operational",
+      "parallelSafe": true,
+      "primitive": true,
+      "auditTarget": "window"
+    },
+    {
+      "name": "affected_modules",
+      "phase": 11,
+      "description": "Find modules affected by current changes.",
+      "permission": "READ",
+      "tags": [
+        "git",
+        "module"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "agent_swarm_run",
+      "phase": 46,
+      "description": "Run or inspect a bounded, owner-scoped Codex agent swarm in enforced read-only mode.",
+      "permission": "EXECUTE",
+      "tags": [
+        "agent",
+        "swarm",
+        "parallel",
+        "codex"
+      ],
+      "parallelSafe": false,
+      "deliveryState": "dependency_gated",
+      "availability": "optional",
+      "requirements": [
+        "Codex opt-in",
+        "Codex runtime",
+        "ownership ledger",
+        "read-only sandbox",
+        "mutation policy"
+      ],
+      "supportsCancel": true,
+      "supportsDryRun": false,
+      "auditTarget": "agent-swarm"
+    },
+    {
+      "name": "apply_patch",
+      "phase": 0,
+      "description": "Apply a guarded workspace patch.",
+      "permission": "WRITE",
+      "tags": [
+        "workspace",
+        "file",
+        "write"
+      ],
+      "deliveryState": "operational",
+      "parallelSafe": false,
+      "primitive": true
+    },
+    {
+      "name": "audio",
+      "phase": 0,
+      "description": "audio local capability (audio)",
+      "permission": "WRITE",
+      "tags": [
+        "audio",
+        "audio",
+        "capability"
+      ],
+      "deliveryState": "operational",
+      "parallelSafe": false,
+      "primitive": true,
+      "auditTarget": "audio"
+    },
+    {
+      "name": "automation_control",
+      "phase": 49,
+      "description": "Pause, resume, or cancel one durable automation run under its current Goal lease.",
+      "permission": "DANGEROUS",
+      "tags": [
+        "automation",
+        "goal",
+        "durable",
+        "control"
+      ],
+      "parallelSafe": false,
+      "deliveryState": "operational",
+      "requirements": [
+        "durable Goal runtime"
+      ],
+      "supportsCancel": true,
+      "supportsDryRun": false,
+      "auditTarget": "automation-control"
+    },
+    {
+      "name": "automation_create",
+      "phase": 49,
+      "description": "Create a bounded owner-scoped durable shell automation plan beneath an existing leased Goal.",
+      "permission": "WRITE",
+      "tags": [
+        "automation",
+        "goal",
+        "durable",
+        "shell"
+      ],
+      "parallelSafe": false,
+      "deliveryState": "operational",
+      "requirements": [
+        "durable Goal runtime",
+        "shell capability"
+      ],
+      "supportsCancel": false,
+      "supportsDryRun": false,
+      "auditTarget": "automation-run"
+    },
+    {
+      "name": "automation_events",
+      "phase": 49,
+      "description": "Read a bounded page of owner- and workspace-scoped durable automation events.",
+      "permission": "READ",
+      "tags": [
+        "automation",
+        "goal",
+        "durable",
+        "events"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "automation_finalize",
+      "phase": 49,
+      "description": "Finalize a fully verified automation run only after its root Goal reaches confirmed terminal completion.",
+      "permission": "WRITE",
+      "tags": [
+        "automation",
+        "goal",
+        "durable",
+        "verification"
+      ],
+      "parallelSafe": false,
+      "deliveryState": "operational",
+      "requirements": [
+        "durable Goal runtime",
+        "verified evidence"
+      ],
+      "supportsCancel": false,
+      "supportsDryRun": false,
+      "auditTarget": "automation-finalize"
+    },
+    {
+      "name": "automation_run",
+      "phase": 49,
+      "description": "Advance one durable automation run to its next deterministic dispatch, observation, or verification boundary.",
+      "permission": "EXECUTE",
+      "tags": [
+        "automation",
+        "goal",
+        "durable",
+        "shell"
+      ],
+      "parallelSafe": false,
+      "deliveryState": "operational",
+      "requirements": [
+        "durable Goal runtime",
+        "shell capability"
+      ],
+      "supportsCancel": true,
+      "supportsDryRun": false,
+      "auditTarget": "automation-dispatch"
+    },
+    {
+      "name": "automation_status",
+      "phase": 49,
+      "description": "Read one owner- and workspace-scoped durable automation run.",
+      "permission": "READ",
+      "tags": [
+        "automation",
+        "goal",
+        "durable",
+        "status"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "backend_context",
+      "phase": 7,
+      "description": "Gather backend project context.",
+      "permission": "READ",
+      "tags": [
+        "backend",
+        "context"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational",
+      "streamable": true
+    },
+    {
+      "name": "benchmark_run",
+      "phase": 40,
+      "description": "Preview or start the detected managed benchmark project command and retain bounded run evidence.",
+      "permission": "EXECUTE",
+      "tags": [
+        "benchmark",
+        "regression"
+      ],
+      "parallelSafe": false,
+      "deliveryState": "dependency_gated",
+      "availability": "optional",
+      "requirements": [
+        "managed process service",
+        "detected benchmark project command"
+      ],
+      "supportsCancel": true,
+      "supportsDryRun": true,
+      "auditTarget": "benchmark-process"
+    },
+    {
+      "name": "browser_debug_context",
+      "phase": 19,
+      "description": "Combine browser diagnostics for one request. Requires an exact dom_cdp tab_id from list_tabs or new_tab; never uses the active/first tab.",
+      "permission": "READ",
+      "tags": [
+        "browser",
+        "debug"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "cache_clear",
+      "phase": 13,
+      "description": "Clear safe local runtime caches.",
+      "permission": "WRITE",
+      "tags": [
+        "cache"
+      ],
+      "parallelSafe": false,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "cache_invalidate",
+      "phase": 13,
+      "description": "Invalidate cache entries for a path or workspace.",
+      "permission": "WRITE",
+      "tags": [
+        "cache"
+      ],
+      "parallelSafe": false,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "cache_stats",
+      "phase": 13,
+      "description": "Return shared cache hit/miss telemetry.",
+      "permission": "READ",
+      "tags": [
+        "cache",
+        "telemetry"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "call_hierarchy",
+      "phase": 5,
+      "description": "Return a deterministic call hierarchy approximation.",
+      "permission": "READ",
+      "tags": [
+        "code",
+        "calls"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "capabilities",
+      "phase": 33,
+      "description": "Discover capability categories without requiring every full schema.",
+      "permission": "READ",
+      "tags": [
+        "capability",
+        "discovery"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "capture_screenshot",
+      "phase": 37,
+      "description": "Capture screenshot metadata for visual validation. Requires an exact dom_cdp tab_id from list_tabs or new_tab; never uses the active/first tab.",
+      "permission": "READ",
+      "tags": [
+        "visual",
+        "browser"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "capture_ui_state",
+      "phase": 19,
+      "description": "Capture a structured UI state. Requires an exact dom_cdp tab_id from list_tabs or new_tab; never uses the active/first tab.",
+      "permission": "READ",
+      "tags": [
+        "browser",
+        "ui"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "change_context",
+      "phase": 7,
+      "description": "Gather changed files, symbols, dependencies, and tests.",
+      "permission": "READ",
+      "tags": [
+        "change",
+        "git",
+        "context"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational",
+      "streamable": true
+    },
+    {
+      "name": "changed_symbols",
+      "phase": 11,
+      "description": "Find symbols in changed files.",
+      "permission": "READ",
+      "tags": [
+        "git",
+        "symbol"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "clipboard",
+      "phase": 0,
+      "description": "clipboard local capability (clipboard)",
+      "permission": "WRITE",
+      "tags": [
+        "clipboard",
+        "clipboard",
+        "capability"
+      ],
+      "deliveryState": "operational",
+      "parallelSafe": false,
+      "primitive": true,
+      "auditTarget": "clipboard"
+    },
+    {
+      "name": "compare_pdf_pages",
+      "phase": 37,
+      "description": "Compare two PDFs by bounded page/text metadata through the local PDF provider.",
+      "permission": "READ",
+      "tags": [
+        "visual",
+        "pdf",
+        "provider"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "dependency_gated",
+      "availability": "optional",
+      "requirements": [
+        "local PDF provider",
+        "registered workspace"
+      ]
+    },
+    {
+      "name": "compare_screenshot",
+      "phase": 37,
+      "description": "Compare screenshot metadata or supplied artifacts.",
+      "permission": "READ",
+      "tags": [
+        "visual",
+        "browser"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "compare_workbook_layout",
+      "phase": 37,
+      "description": "Compare two workbook sheet/layout samples through the local Excel/Office provider.",
+      "permission": "READ",
+      "tags": [
+        "visual",
+        "excel",
+        "office"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "dependency_gated",
+      "availability": "optional",
+      "requirements": [
+        "Microsoft Excel",
+        "Office COM policy",
+        "registered workspace"
+      ]
+    },
+    {
+      "name": "computer_use",
+      "phase": 0,
+      "description": "Codex-style native Windows desktop control with semantic, visual-mark, pointer, and keyboard routing.",
+      "permission": "EXECUTE",
+      "tags": [
+        "computer",
+        "desktop",
+        "ui",
+        "mouse",
+        "keyboard",
+        "click",
+        "type",
+        "vision",
+        "execute"
+      ],
+      "deliveryState": "operational",
+      "parallelSafe": false,
+      "primitive": true
+    },
+    {
+      "name": "console_context",
+      "phase": 19,
+      "description": "Summarize browser console context when a retained CDP Runtime/Log event stream is available.",
+      "permission": "READ",
+      "tags": [
+        "browser",
+        "console"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "dependency_gated",
+      "availability": "optional",
+      "requirements": [
+        "CDP Runtime/Log event subscription and retained event stream"
+      ]
+    },
+    {
+      "name": "context_economy_stats",
+      "phase": 41,
+      "description": "Return context discovery, deduplication, ledger, and token-efficiency telemetry.",
+      "permission": "READ",
+      "tags": [
+        "context",
+        "economy",
+        "quota",
+        "telemetry"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "context_expand",
+      "phase": 30,
+      "description": "Return optional import, caller, type, test, and change references.",
+      "permission": "READ",
+      "tags": [
+        "context",
+        "dependency"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "context_ranking",
+      "phase": 6,
+      "description": "Explain ranking signals without removing lower-ranked context.",
+      "permission": "READ",
+      "tags": [
+        "context",
+        "ranking"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "coverage_context",
+      "phase": 12,
+      "description": "Return coverage context when project tooling provides it.",
+      "permission": "READ",
+      "tags": [
+        "test",
+        "coverage"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "crash_trace",
+      "phase": 42,
+      "description": "Return bounded crash and service-diagnostic context from allowlisted user-mode sources.",
+      "permission": "READ",
+      "tags": [
+        "windows",
+        "crash",
+        "diagnostics"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "dependency_gated",
+      "availability": "optional",
+      "requirements": [
+        "allowlisted provider",
+        "Windows Event Log"
+      ],
+      "supportsCancel": true,
+      "supportsDryRun": true,
+      "auditTarget": "crash-diagnostic"
+    },
+    {
+      "name": "db_inspect",
+      "phase": 44,
+      "description": "Inspect a local database schema through a configured, read-only connection.",
+      "permission": "READ",
+      "tags": [
+        "database",
+        "schema",
+        "local"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "dependency_gated",
+      "availability": "optional",
+      "requirements": [
+        "local database driver",
+        "registered database target"
+      ],
+      "supportsCancel": true,
+      "supportsDryRun": true,
+      "auditTarget": "database-schema"
+    },
+    {
+      "name": "db_query",
+      "phase": 44,
+      "description": "Run a bounded read-only local SQLite SELECT, PRAGMA, or WITH...SELECT query.",
+      "permission": "READ",
+      "tags": [
+        "database",
+        "query",
+        "local"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "dependency_gated",
+      "availability": "optional",
+      "requirements": [
+        "local database driver",
+        "approved database target"
+      ],
+      "supportsCancel": true,
+      "supportsDryRun": true,
+      "auditTarget": "database-query"
+    },
+    {
+      "name": "debug_attach",
+      "phase": 43,
+      "description": "Attach to an already running numeric-loopback TCP DAP adapter with bounded initialization and attach-only configuration. The host retains sockets under the actual client, MCP session and registered workspace. dryRun validates without connecting. No debugger process is launched.",
+      "permission": "EXECUTE",
+      "tags": [
+        "code",
+        "dap",
+        "debug"
+      ],
+      "parallelSafe": false,
+      "deliveryState": "dependency_gated",
+      "availability": "optional",
+      "requirements": [
+        "running loopback DAP adapter",
+        "registered workspace"
+      ],
+      "supportsCancel": true,
+      "supportsDryRun": true,
+      "auditTarget": "debug-session"
+    },
+    {
+      "name": "debug_context",
+      "phase": 7,
+      "description": "Gather deterministic debugging context and continuation metadata.",
+      "permission": "READ",
+      "tags": [
+        "debug",
+        "context"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational",
+      "streamable": true
+    },
+    {
+      "name": "debug_step",
+      "phase": 43,
+      "description": "Read bounded owned-session status/events by cursor, disconnect the adapter without terminating the debuggee, or issue a validated DAP command. Adapter replies and output retain their exact values. Event overflow and connection gaps are explicit. Control/evaluation uses current host permission, Engineering and Goal lease admission. dryRun sends no frame.",
+      "permission": "EXECUTE",
+      "tags": [
+        "code",
+        "dap",
+        "debug"
+      ],
+      "parallelSafe": false,
+      "deliveryState": "dependency_gated",
+      "availability": "optional",
+      "requirements": [
+        "owned debug session"
+      ],
+      "supportsCancel": true,
+      "supportsDryRun": true,
+      "auditTarget": "debug-session"
+    },
+    {
+      "name": "debug_ui",
+      "phase": 19,
+      "description": "Gather deterministic UI debugging context. Requires an exact dom_cdp tab_id from list_tabs or new_tab; never uses the active/first tab.",
+      "permission": "READ",
+      "tags": [
+        "browser",
+        "ui",
+        "debug"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "delegate",
+      "phase": 23,
+      "description": "Delegate one bounded read-only task through the owned agent-swarm provider when configured.",
+      "permission": "EXECUTE",
+      "tags": [
+        "agent",
+        "delegate"
+      ],
+      "parallelSafe": false,
+      "deliveryState": "dependency_gated",
+      "availability": "optional",
+      "requirements": [
+        "configured owned agent-swarm provider"
+      ],
+      "supportsCancel": true,
+      "auditTarget": "agent-swarm"
+    },
+    {
+      "name": "delegate_cancel",
+      "phase": 23,
+      "description": "Cancel an owned delegated agent task.",
+      "permission": "EXECUTE",
+      "tags": [
+        "agent",
+        "delegate"
+      ],
+      "parallelSafe": false,
+      "deliveryState": "dependency_gated",
+      "availability": "optional",
+      "requirements": [
+        "configured owned agent-swarm provider"
+      ],
+      "supportsCancel": true,
+      "auditTarget": "agent-swarm"
+    },
+    {
+      "name": "delegate_result",
+      "phase": 23,
+      "description": "Read an owned delegated agent result.",
+      "permission": "READ",
+      "tags": [
+        "agent",
+        "delegate"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "dependency_gated",
+      "availability": "optional",
+      "requirements": [
+        "configured owned agent-swarm provider"
+      ],
+      "auditTarget": "agent-swarm"
+    },
+    {
+      "name": "delegate_status",
+      "phase": 23,
+      "description": "Read delegated agent state from the owned agent-swarm provider.",
+      "permission": "READ",
+      "tags": [
+        "agent",
+        "delegate"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "dependency_gated",
+      "availability": "optional",
+      "requirements": [
+        "configured owned agent-swarm provider"
+      ],
+      "auditTarget": "agent-swarm"
+    },
+    {
+      "name": "dependency_context",
+      "phase": 7,
+      "description": "Gather dependency-related context.",
+      "permission": "READ",
+      "tags": [
+        "dependency",
+        "context"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational",
+      "streamable": true
+    },
+    {
+      "name": "dependency_graph",
+      "phase": 5,
+      "description": "Return package and module dependency metadata.",
+      "permission": "READ",
+      "tags": [
+        "code",
+        "dependency",
+        "graph"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "dev_context",
+      "phase": 35,
+      "description": "Run the unified deterministic development-context facade.",
+      "permission": "READ",
+      "tags": [
+        "development",
+        "context"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational",
+      "streamable": true
+    },
+    {
+      "name": "discover_tests",
+      "phase": 12,
+      "description": "Discover project tests without imposing an execution limit.",
+      "permission": "READ",
+      "tags": [
+        "test",
+        "discover"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "docx_merge",
+      "phase": 45,
+      "description": "Create a deterministic DOCX merge plan and write only after approval.",
+      "permission": "WRITE",
+      "tags": [
+        "document",
+        "docx",
+        "merge"
+      ],
+      "parallelSafe": false,
+      "deliveryState": "dependency_gated",
+      "availability": "optional",
+      "requirements": [
+        "local DOCX provider",
+        "edit approval"
+      ],
+      "supportsCancel": true,
+      "supportsDryRun": true,
+      "auditTarget": "document"
+    },
+    {
+      "name": "dom_cdp",
+      "phase": 0,
+      "description": "dom_cdp local capability (browser)",
+      "permission": "READ",
+      "tags": [
+        "dom_cdp",
+        "browser",
+        "capability"
+      ],
+      "deliveryState": "operational",
+      "parallelSafe": true,
+      "primitive": true,
+      "auditTarget": "browser"
+    },
+    {
+      "name": "dom_snapshot",
+      "phase": 37,
+      "description": "Return a structured DOM snapshot. Requires an exact dom_cdp tab_id from list_tabs or new_tab; never uses the active/first tab.",
+      "permission": "READ",
+      "tags": [
+        "visual",
+        "browser"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "dry_run",
+      "phase": 10,
+      "description": "Return a no-side-effect execution preview.",
+      "permission": "READ",
+      "tags": [
+        "dry-run",
+        "preview"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "ecc_catalog",
+      "phase": 47,
+      "description": "Search the pinned ECC artifact catalog without eagerly loading artifact bodies.",
+      "permission": "READ",
+      "tags": [
+        "ecc",
+        "provider",
+        "catalog",
+        "skills",
+        "agents",
+        "rules"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "ecc_configure",
+      "phase": 47,
+      "description": "Persist selective ECC activation settings without granting imported artifacts extra runtime authority.",
+      "permission": "WRITE",
+      "tags": [
+        "ecc",
+        "provider",
+        "configuration"
+      ],
+      "parallelSafe": false,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "ecc_load",
+      "phase": 47,
+      "description": "Load one selected bounded ECC text artifact by stable catalog ID.",
+      "permission": "READ",
+      "tags": [
+        "ecc",
+        "provider",
+        "context",
+        "skills",
+        "agents",
+        "rules"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "ecc_memory_doctor",
+      "phase": 48,
+      "description": "Validate ECC Memory Vault documents, symlinks, duplicates, and schema health without rewriting them.",
+      "permission": "READ",
+      "tags": [
+        "ecc",
+        "memory",
+        "vault",
+        "diagnostics"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "ecc_memory_read",
+      "phase": 48,
+      "description": "Read one ECC Memory Vault entry by stable memory id after completeness checks.",
+      "permission": "READ",
+      "tags": [
+        "ecc",
+        "memory",
+        "vault"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "ecc_memory_save",
+      "phase": 48,
+      "description": "Create one unreviewed ecc.memory.v1 document without overwriting existing memory.",
+      "permission": "WRITE",
+      "tags": [
+        "ecc",
+        "memory",
+        "vault"
+      ],
+      "parallelSafe": false,
+      "deliveryState": "operational",
+      "auditTarget": "ecc-memory-vault"
+    },
+    {
+      "name": "ecc_memory_search",
+      "phase": 48,
+      "description": "Search active ECC Memory Vault entries with bounded local lexical retrieval.",
+      "permission": "READ",
+      "tags": [
+        "ecc",
+        "memory",
+        "vault",
+        "search"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "ecc_security_scan",
+      "phase": 47,
+      "description": "Run the pinned bundled AgentShield scanner against ECC resources or a registered workspace with bounded JSON output.",
+      "permission": "EXECUTE",
+      "tags": [
+        "ecc",
+        "security",
+        "agentshield"
+      ],
+      "parallelSafe": false,
+      "deliveryState": "dependency_gated",
+      "availability": "optional",
+      "requirements": [
+        "bundled pinned AgentShield scanner"
+      ],
+      "supportsCancel": true,
+      "supportsDryRun": true,
+      "auditTarget": "ecc-agentshield"
+    },
+    {
+      "name": "ecc_status",
+      "phase": 47,
+      "description": "Report the pinned ECC provider, provenance, activation policy, and bundled security-scanner readiness.",
+      "permission": "READ",
+      "tags": [
+        "ecc",
+        "provider",
+        "security"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "edit_file",
+      "phase": 0,
+      "description": "First-choice exact guarded text replacement for narrow source and config repairs; use instead of shell editing scripts.",
+      "permission": "WRITE",
+      "tags": [
+        "workspace",
+        "file",
+        "write",
+        "edit",
+        "replace",
+        "source",
+        "config",
+        "text"
+      ],
+      "deliveryState": "operational",
+      "parallelSafe": false,
+      "primitive": true
+    },
+    {
+      "name": "engineering_get_status",
+      "phase": 0,
+      "description": "Read the current Engineering Harness task projection, effective policy, required gates, blockers, and truthful delivery boundary without changing goal state.",
+      "permission": "READ",
+      "tags": [
+        "engineering",
+        "harness",
+        "task",
+        "status",
+        "gates",
+        "workflow"
+      ],
+      "deliveryState": "operational",
+      "parallelSafe": true,
+      "primitive": true
+    },
+    {
+      "name": "engineering_prepare_task",
+      "phase": 0,
+      "description": "Read-only Engineering Harness preparation. Assess the registered workspace, applicable project instructions, effective Engineering policy, and policy digest without creating a goal, starting a process, scheduling work, or writing repository files.",
+      "permission": "READ",
+      "tags": [
+        "engineering",
+        "harness",
+        "task",
+        "workflow",
+        "preflight",
+        "prepare"
+      ],
+      "deliveryState": "operational",
+      "parallelSafe": true,
+      "primitive": true
+    },
+    {
+      "name": "engineering_start_task",
+      "phase": 0,
+      "description": "Start or resume a substantive Engineering Harness task by reusing the existing durable Goal authority. This operation does not create or authorize a scheduled continuation.",
+      "permission": "WRITE",
+      "tags": [
+        "engineering",
+        "harness",
+        "task",
+        "goal",
+        "workflow",
+        "start",
+        "resume"
+      ],
+      "deliveryState": "operational",
+      "parallelSafe": false,
+      "primitive": true
+    },
+    {
+      "name": "event_log_context",
+      "phase": 20,
+      "description": "Inspect host-native event and log context.",
+      "permission": "READ",
+      "tags": [
+        "events",
+        "diagnostics"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "event_watch",
+      "phase": 42,
+      "description": "Watch an allowlisted user-mode ETW or Windows Event Log diagnostic stream.",
+      "permission": "EXECUTE",
+      "tags": [
+        "windows",
+        "etw",
+        "events",
+        "diagnostics"
+      ],
+      "parallelSafe": false,
+      "deliveryState": "dependency_gated",
+      "availability": "optional",
+      "requirements": [
+        "allowlisted provider",
+        "admin diagnostics only when required"
+      ],
+      "supportsCancel": true,
+      "supportsDryRun": true,
+      "auditTarget": "event-provider"
+    },
+    {
+      "name": "execution_plan",
+      "phase": 28,
+      "description": "Return the cheapest deterministic execution plan and reason.",
+      "permission": "READ",
+      "tags": [
+        "planner",
+        "telemetry"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "file_dialog",
+      "phase": 0,
+      "description": "file_dialog local capability (window)",
+      "permission": "WRITE",
+      "tags": [
+        "file_dialog",
+        "window",
+        "capability"
+      ],
+      "deliveryState": "operational",
+      "parallelSafe": false,
+      "primitive": true,
+      "auditTarget": "window"
+    },
+    {
+      "name": "find_definition",
+      "phase": 5,
+      "description": "Find deterministic symbol definitions.",
+      "permission": "READ",
+      "tags": [
+        "code",
+        "definition"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "find_implementations",
+      "phase": 5,
+      "description": "Find interface and class implementations.",
+      "permission": "READ",
+      "tags": [
+        "code",
+        "implementation"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "find_references",
+      "phase": 5,
+      "description": "Find textual and indexed references to a symbol.",
+      "permission": "READ",
+      "tags": [
+        "code",
+        "references"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "form_context",
+      "phase": 19,
+      "description": "Inspect form controls and values metadata. Requires an exact dom_cdp tab_id from list_tabs or new_tab; never uses the active/first tab.",
+      "permission": "READ",
+      "tags": [
+        "browser",
+        "form"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "frontend_context",
+      "phase": 7,
+      "description": "Gather frontend project context.",
+      "permission": "READ",
+      "tags": [
+        "frontend",
+        "context"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational",
+      "streamable": true
+    },
+    {
+      "name": "git",
+      "phase": 0,
+      "description": "Run a guarded Git operation.",
+      "permission": "EXECUTE",
+      "tags": [
+        "git",
+        "execute"
+      ],
+      "deliveryState": "operational",
+      "parallelSafe": false,
+      "primitive": true
+    },
+    {
+      "name": "git_blame_context",
+      "phase": 11,
+      "description": "Return line ownership context for a file.",
+      "permission": "READ",
+      "tags": [
+        "git",
+        "blame"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "git_context",
+      "phase": 7,
+      "description": "Gather Git status, diff, and history context.",
+      "permission": "READ",
+      "tags": [
+        "git",
+        "context"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational",
+      "streamable": true
+    },
+    {
+      "name": "git_history_context",
+      "phase": 11,
+      "description": "Return relevant recent Git history.",
+      "permission": "READ",
+      "tags": [
+        "git",
+        "history"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "git_worktree_remove",
+      "phase": 44,
+      "description": "Remove a ledger-owned Git worktree after dry-run and standard-mode confirmation; trusted Full Bypass skips lnwjud approval.",
+      "permission": "DANGEROUS",
+      "tags": [
+        "git",
+        "worktree",
+        "agent"
+      ],
+      "parallelSafe": false,
+      "deliveryState": "dependency_gated",
+      "availability": "optional",
+      "requirements": [
+        "registered Git workspace",
+        "ownership ledger entry"
+      ],
+      "supportsCancel": true,
+      "supportsDryRun": true,
+      "auditTarget": "git-worktree"
+    },
+    {
+      "name": "git_worktree_spawn",
+      "phase": 44,
+      "description": "Create a confined, ledger-owned Git worktree for isolated agent work with collision metadata.",
+      "permission": "WRITE",
+      "tags": [
+        "git",
+        "worktree",
+        "agent"
+      ],
+      "parallelSafe": false,
+      "deliveryState": "dependency_gated",
+      "availability": "optional",
+      "requirements": [
+        "registered Git workspace"
+      ],
+      "supportsCancel": true,
+      "supportsDryRun": true,
+      "auditTarget": "git-worktree"
+    },
+    {
+      "name": "handoff_context",
+      "phase": 39,
+      "description": "Recover the durable Goal, checkpoint, capsule and owned task receipts first, then observe optional workspace context with explicit provider states. Missing Git or search preserves available recovery state.",
+      "permission": "READ",
+      "tags": [
+        "handoff",
+        "session"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational",
+      "requirements": [
+        "registered workspace"
+      ],
+      "supportsCancel": true
+    },
+    {
+      "name": "health",
+      "phase": 0,
+      "description": "health local capability (diagnostics)",
+      "permission": "READ",
+      "tags": [
+        "health",
+        "diagnostics",
+        "capability"
+      ],
+      "deliveryState": "operational",
+      "parallelSafe": true,
+      "primitive": true,
+      "auditTarget": "diagnostics"
+    },
+    {
+      "name": "hook_list",
+      "phase": 14,
+      "description": "List registered lifecycle hooks.",
+      "permission": "READ",
+      "tags": [
+        "hooks",
+        "lifecycle"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "hook_register",
+      "phase": 14,
+      "description": "Register a deterministic lifecycle hook descriptor.",
+      "permission": "WRITE",
+      "tags": [
+        "hooks",
+        "lifecycle"
+      ],
+      "parallelSafe": false,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "hook_remove",
+      "phase": 14,
+      "description": "Remove a lifecycle hook descriptor.",
+      "permission": "WRITE",
+      "tags": [
+        "hooks",
+        "lifecycle"
+      ],
+      "parallelSafe": false,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "import_graph",
+      "phase": 5,
+      "description": "Return indexed imports and exports for a module.",
+      "permission": "READ",
+      "tags": [
+        "code",
+        "imports",
+        "graph"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "input_event",
+      "phase": 0,
+      "description": "input_event local capability (window)",
+      "permission": "EXECUTE",
+      "tags": [
+        "input_event",
+        "window",
+        "capability"
+      ],
+      "deliveryState": "operational",
+      "parallelSafe": false,
+      "primitive": true,
+      "auditTarget": "window"
+    },
+    {
+      "name": "inspect_pdf",
+      "phase": 37,
+      "description": "Inspect PDF page structure and text through the local PDF provider.",
+      "permission": "READ",
+      "tags": [
+        "visual",
+        "pdf",
+        "provider"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "dependency_gated",
+      "availability": "optional",
+      "requirements": [
+        "local PDF provider",
+        "registered workspace"
+      ]
+    },
+    {
+      "name": "inspect_web_app",
+      "phase": 19,
+      "description": "Combine DOM, console, network, URL, and screenshot metadata. Requires an exact dom_cdp tab_id from list_tabs or new_tab; never uses the active/first tab.",
+      "permission": "READ",
+      "tags": [
+        "browser",
+        "ui"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "inspect_workbook",
+      "phase": 37,
+      "description": "Inspect workbook sheets, used ranges, and a bounded sample through Excel COM.",
+      "permission": "READ",
+      "tags": [
+        "visual",
+        "excel",
+        "office"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "installed_runtime_context",
+      "phase": 20,
+      "description": "Inspect installed runtimes and package managers.",
+      "permission": "READ",
+      "tags": [
+        "runtime",
+        "diagnostics"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "layout_metadata",
+      "phase": 37,
+      "description": "Return layout metadata for visual validation. Requires an exact dom_cdp tab_id from list_tabs or new_tab; never uses the active/first tab.",
+      "permission": "READ",
+      "tags": [
+        "visual",
+        "browser"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "live_logs_query",
+      "phase": 26,
+      "description": "Query bounded structured MCP activity events with tool, workspace, phase, result, call/trace correlation filters.",
+      "permission": "READ",
+      "tags": [
+        "logs",
+        "audit"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "live_logs_status",
+      "phase": 26,
+      "description": "Return the built-in MCP activity-log pipeline health and bounded source status.",
+      "permission": "READ",
+      "tags": [
+        "logs",
+        "audit"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "lsp_diagnostics",
+      "phase": 43,
+      "description": "Read diagnostics from an owned language-server child process.",
+      "permission": "READ",
+      "tags": [
+        "code",
+        "lsp",
+        "diagnostics"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "dependency_gated",
+      "availability": "optional",
+      "requirements": [
+        "language server executable",
+        "registered workspace"
+      ],
+      "supportsCancel": true,
+      "supportsDryRun": true,
+      "auditTarget": "language-server"
+    },
+    {
+      "name": "lsp_rename",
+      "phase": 43,
+      "description": "Create a cross-file LSP rename edit plan before any workspace write.",
+      "permission": "WRITE",
+      "tags": [
+        "code",
+        "lsp",
+        "refactor"
+      ],
+      "parallelSafe": false,
+      "deliveryState": "dependency_gated",
+      "availability": "optional",
+      "requirements": [
+        "language server executable",
+        "edit-plan approval"
+      ],
+      "supportsCancel": true,
+      "supportsDryRun": true,
+      "auditTarget": "workspace-edit-plan"
+    },
+    {
+      "name": "mcp_discover",
+      "phase": 21,
+      "description": "Discover external MCP servers without flattening native tools.",
+      "permission": "READ",
+      "tags": [
+        "mcp",
+        "gateway"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "mcp_health",
+      "phase": 21,
+      "description": "Return external MCP connection health.",
+      "permission": "READ",
+      "tags": [
+        "mcp",
+        "gateway",
+        "health"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "mcp_hub",
+      "phase": 41,
+      "description": "Describe the additive MCP hub boundary without flattening child tools or retaining credentials.",
+      "permission": "READ",
+      "tags": [
+        "mcp",
+        "gateway",
+        "hub"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "dependency_gated",
+      "availability": "optional",
+      "requirements": [
+        "configured child MCP server",
+        "credential provider outside repository"
+      ],
+      "supportsCancel": true,
+      "supportsDryRun": true,
+      "auditTarget": "mcp-server"
+    },
+    {
+      "name": "mcp_resources",
+      "phase": 21,
+      "description": "List resources exposed by connected MCP servers when the child server supports resources/list.",
+      "permission": "READ",
+      "tags": [
+        "mcp",
+        "gateway",
+        "resources"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "dependency_gated",
+      "availability": "optional",
+      "requirements": [
+        "configured external MCP server with resources capability"
+      ]
+    },
+    {
+      "name": "module_graph",
+      "phase": 5,
+      "description": "Return the workspace module graph.",
+      "permission": "READ",
+      "tags": [
+        "code",
+        "module",
+        "graph"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "network_context",
+      "phase": 19,
+      "description": "Summarize browser network context when a retained CDP network event stream is available.",
+      "permission": "READ",
+      "tags": [
+        "browser",
+        "network"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "dependency_gated",
+      "availability": "optional",
+      "requirements": [
+        "CDP network event subscription and retained event stream"
+      ]
+    },
+    {
+      "name": "notification",
+      "phase": 0,
+      "description": "notification local capability (notification)",
+      "permission": "WRITE",
+      "tags": [
+        "notification",
+        "notification",
+        "capability"
+      ],
+      "deliveryState": "operational",
+      "parallelSafe": false,
+      "primitive": true,
+      "auditTarget": "notification"
+    },
+    {
+      "name": "office",
+      "phase": 0,
+      "description": "office local capability (office)",
+      "permission": "WRITE",
+      "tags": [
+        "office",
+        "office",
+        "capability"
+      ],
+      "deliveryState": "operational",
+      "parallelSafe": false,
+      "primitive": true,
+      "auditTarget": "office"
+    },
+    {
+      "name": "office_access",
+      "phase": 46,
+      "description": "Automate Microsoft Access only when a verified local Access provider is installed.",
+      "permission": "WRITE",
+      "tags": [
+        "office",
+        "access",
+        "windows"
+      ],
+      "parallelSafe": false,
+      "deliveryState": "dependency_gated",
+      "availability": "optional",
+      "requirements": [
+        "Windows host",
+        "Microsoft Access automation provider"
+      ],
+      "supportsCancel": true,
+      "supportsDryRun": true,
+      "auditTarget": "office-database"
+    },
+    {
+      "name": "office_batch",
+      "phase": 46,
+      "description": "Run a bounded ordered Office batch with per-step results, dry-run support, and fail-fast semantics; operations are not atomic across apps.",
+      "permission": "WRITE",
+      "tags": [
+        "office",
+        "batch"
+      ],
+      "parallelSafe": false,
+      "deliveryState": "dependency_gated",
+      "availability": "optional",
+      "requirements": [
+        "verified provider for each requested operation"
+      ],
+      "supportsCancel": true,
+      "supportsDryRun": true,
+      "auditTarget": "office-batch"
+    },
+    {
+      "name": "office_calendar",
+      "phase": 46,
+      "description": "Read and manage Outlook/Microsoft 365 calendar events through a verified provider with guarded invite/cancel actions.",
+      "permission": "WRITE",
+      "tags": [
+        "office",
+        "calendar"
+      ],
+      "parallelSafe": false,
+      "deliveryState": "dependency_gated",
+      "availability": "optional",
+      "requirements": [
+        "verified Outlook or Microsoft Graph calendar provider"
+      ],
+      "supportsCancel": true,
+      "supportsDryRun": true,
+      "auditTarget": "office-calendar"
+    },
+    {
+      "name": "office_contacts",
+      "phase": 46,
+      "description": "Read and manage Outlook/Microsoft 365 contacts through a verified provider.",
+      "permission": "WRITE",
+      "tags": [
+        "office",
+        "contacts"
+      ],
+      "parallelSafe": false,
+      "deliveryState": "dependency_gated",
+      "availability": "optional",
+      "requirements": [
+        "verified Outlook or Microsoft Graph contacts provider"
+      ],
+      "supportsCancel": true,
+      "supportsDryRun": true,
+      "auditTarget": "office-contacts"
+    },
+    {
+      "name": "office_convert",
+      "phase": 46,
+      "description": "Convert supported Office formats through a verified provider and verify the produced artifact before reporting success.",
+      "permission": "WRITE",
+      "tags": [
+        "office",
+        "convert"
+      ],
+      "parallelSafe": false,
+      "deliveryState": "dependency_gated",
+      "availability": "optional",
+      "requirements": [
+        "verified Office conversion provider",
+        "registered workspace"
+      ],
+      "supportsCancel": true,
+      "supportsDryRun": true,
+      "auditTarget": "office-conversion"
+    },
+    {
+      "name": "office_excel",
+      "phase": 46,
+      "description": "Automate structured Excel workbook reads, edits, formulas, sheets, formatting, exports, and validation through a verified provider.",
+      "permission": "WRITE",
+      "tags": [
+        "office",
+        "excel",
+        "spreadsheet"
+      ],
+      "parallelSafe": false,
+      "deliveryState": "dependency_gated",
+      "availability": "optional",
+      "requirements": [
+        "verified Excel provider for requested action",
+        "registered workspace for local files"
+      ],
+      "supportsCancel": true,
+      "supportsDryRun": true,
+      "auditTarget": "office-workbook"
+    },
+    {
+      "name": "office_onedrive",
+      "phase": 46,
+      "description": "Manage OneDrive files through Microsoft Graph while respecting Active Project boundaries for local transfers.",
+      "permission": "WRITE",
+      "tags": [
+        "office",
+        "graph",
+        "onedrive"
+      ],
+      "parallelSafe": false,
+      "deliveryState": "dependency_gated",
+      "availability": "optional",
+      "requirements": [
+        "Microsoft Graph OAuth",
+        "OneDrive scopes"
+      ],
+      "supportsCancel": true,
+      "supportsDryRun": true,
+      "auditTarget": "office-cloud"
+    },
+    {
+      "name": "office_onenote",
+      "phase": 46,
+      "description": "Read and manage OneNote through Microsoft Graph when OAuth and required scopes are configured.",
+      "permission": "WRITE",
+      "tags": [
+        "office",
+        "graph",
+        "onenote"
+      ],
+      "parallelSafe": false,
+      "deliveryState": "dependency_gated",
+      "availability": "optional",
+      "requirements": [
+        "Microsoft Graph OAuth",
+        "OneNote scopes"
+      ],
+      "supportsCancel": true,
+      "supportsDryRun": true,
+      "auditTarget": "office-cloud"
+    },
+    {
+      "name": "office_outlook",
+      "phase": 46,
+      "description": "Read Outlook mail, create and update drafts, and perform guarded mailbox mutations through a verified provider.",
+      "permission": "WRITE",
+      "tags": [
+        "office",
+        "outlook",
+        "mail"
+      ],
+      "parallelSafe": false,
+      "deliveryState": "dependency_gated",
+      "availability": "optional",
+      "requirements": [
+        "verified Outlook or Microsoft Graph provider"
+      ],
+      "supportsCancel": true,
+      "supportsDryRun": true,
+      "auditTarget": "office-mail"
+    },
+    {
+      "name": "office_powerpoint",
+      "phase": 46,
+      "description": "Author, inspect, edit, export, and validate PowerPoint presentations through a verified provider.",
+      "permission": "WRITE",
+      "tags": [
+        "office",
+        "powerpoint",
+        "presentation"
+      ],
+      "parallelSafe": false,
+      "deliveryState": "dependency_gated",
+      "availability": "optional",
+      "requirements": [
+        "verified PowerPoint provider for requested action",
+        "registered workspace for local files"
+      ],
+      "supportsCancel": true,
+      "supportsDryRun": true,
+      "auditTarget": "office-presentation"
+    },
+    {
+      "name": "office_ppt",
+      "phase": 45,
+      "description": "Read PowerPoint content or save a copy through the existing Office policy boundary.",
+      "permission": "WRITE",
+      "tags": [
+        "office",
+        "powerpoint",
+        "com"
+      ],
+      "parallelSafe": false,
+      "deliveryState": "dependency_gated",
+      "availability": "optional",
+      "requirements": [
+        "Microsoft PowerPoint",
+        "Office COM policy"
+      ],
+      "supportsCancel": false,
+      "supportsDryRun": true,
+      "auditTarget": "office-presentation"
+    },
+    {
+      "name": "office_project",
+      "phase": 46,
+      "description": "Automate Microsoft Project only when a verified local Project provider is installed.",
+      "permission": "WRITE",
+      "tags": [
+        "office",
+        "project",
+        "windows"
+      ],
+      "parallelSafe": false,
+      "deliveryState": "dependency_gated",
+      "availability": "optional",
+      "requirements": [
+        "Windows host",
+        "Microsoft Project automation provider"
+      ],
+      "supportsCancel": true,
+      "supportsDryRun": true,
+      "auditTarget": "office-project"
+    },
+    {
+      "name": "office_publisher",
+      "phase": 46,
+      "description": "Automate legacy Microsoft Publisher only when an installed automation provider is verified.",
+      "permission": "WRITE",
+      "tags": [
+        "office",
+        "publisher",
+        "windows"
+      ],
+      "parallelSafe": false,
+      "deliveryState": "dependency_gated",
+      "availability": "optional",
+      "requirements": [
+        "Windows host",
+        "Microsoft Publisher automation provider"
+      ],
+      "supportsCancel": true,
+      "supportsDryRun": true,
+      "auditTarget": "office-publication"
+    },
+    {
+      "name": "office_sharepoint",
+      "phase": 46,
+      "description": "Read and manage bounded SharePoint sites, lists, drives, and files through Microsoft Graph.",
+      "permission": "WRITE",
+      "tags": [
+        "office",
+        "graph",
+        "sharepoint"
+      ],
+      "parallelSafe": false,
+      "deliveryState": "dependency_gated",
+      "availability": "optional",
+      "requirements": [
+        "Microsoft Graph OAuth",
+        "SharePoint scopes"
+      ],
+      "supportsCancel": true,
+      "supportsDryRun": true,
+      "auditTarget": "office-cloud"
+    },
+    {
+      "name": "office_status",
+      "phase": 46,
+      "description": "Report truthful Office provider, app, action, dependency, and policy readiness without exposing credentials.",
+      "permission": "READ",
+      "tags": [
+        "office",
+        "status",
+        "provider"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "office_tasks",
+      "phase": 46,
+      "description": "Read and manage Outlook/Microsoft 365 tasks only when the configured provider exposes a compatible task API.",
+      "permission": "WRITE",
+      "tags": [
+        "office",
+        "tasks"
+      ],
+      "parallelSafe": false,
+      "deliveryState": "dependency_gated",
+      "availability": "optional",
+      "requirements": [
+        "verified Outlook or Microsoft Graph tasks provider"
+      ],
+      "supportsCancel": true,
+      "supportsDryRun": true,
+      "auditTarget": "office-tasks"
+    },
+    {
+      "name": "office_teams",
+      "phase": 46,
+      "description": "Read and send guarded Microsoft Teams messages only through supported Microsoft Graph permissions.",
+      "permission": "WRITE",
+      "tags": [
+        "office",
+        "graph",
+        "teams"
+      ],
+      "parallelSafe": false,
+      "deliveryState": "dependency_gated",
+      "availability": "optional",
+      "requirements": [
+        "Microsoft Graph OAuth",
+        "Teams scopes"
+      ],
+      "supportsCancel": true,
+      "supportsDryRun": true,
+      "auditTarget": "office-cloud"
+    },
+    {
+      "name": "office_visio",
+      "phase": 46,
+      "description": "Automate Microsoft Visio only when a verified local Visio provider is installed.",
+      "permission": "WRITE",
+      "tags": [
+        "office",
+        "visio",
+        "windows"
+      ],
+      "parallelSafe": false,
+      "deliveryState": "dependency_gated",
+      "availability": "optional",
+      "requirements": [
+        "Windows host",
+        "Microsoft Visio automation provider"
+      ],
+      "supportsCancel": true,
+      "supportsDryRun": true,
+      "auditTarget": "office-diagram"
+    },
+    {
+      "name": "office_word",
+      "phase": 46,
+      "description": "Read, create, edit, inspect, merge, convert, and validate Word documents through a verified Office provider.",
+      "permission": "WRITE",
+      "tags": [
+        "office",
+        "word",
+        "document"
+      ],
+      "parallelSafe": false,
+      "deliveryState": "dependency_gated",
+      "availability": "optional",
+      "requirements": [
+        "verified Word provider for requested action",
+        "registered workspace for local files"
+      ],
+      "supportsCancel": true,
+      "supportsDryRun": true,
+      "auditTarget": "office-document"
+    },
+    {
+      "name": "parallel_delegate",
+      "phase": 24,
+      "description": "Run up to four isolated read-only agent tasks through the owned swarm provider with explicit dependency/collision metadata.",
+      "permission": "EXECUTE",
+      "tags": [
+        "agent",
+        "parallel"
+      ],
+      "parallelSafe": false,
+      "deliveryState": "dependency_gated",
+      "availability": "optional",
+      "requirements": [
+        "configured owned agent-swarm provider",
+        "ownership ledger"
+      ],
+      "supportsCancel": true,
+      "auditTarget": "agent-swarm"
+    },
+    {
+      "name": "path_context",
+      "phase": 20,
+      "description": "Resolve executable and PATH context.",
+      "permission": "READ",
+      "tags": [
+        "path",
+        "diagnostics"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "pdf_extract_tables",
+      "phase": 45,
+      "description": "Extract bounded PDF text and tables through a local document provider.",
+      "permission": "READ",
+      "tags": [
+        "document",
+        "pdf",
+        "extract"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "dependency_gated",
+      "availability": "optional",
+      "requirements": [
+        "local PDF provider",
+        "bounded document size"
+      ],
+      "supportsCancel": true,
+      "supportsDryRun": true,
+      "auditTarget": "document"
+    },
+    {
+      "name": "permission_check",
+      "phase": 25,
+      "description": "Evaluate an action class without limiting allowed context reads.",
+      "permission": "READ",
+      "tags": [
+        "permission",
+        "policy"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "permission_profile",
+      "phase": 25,
+      "description": "Return the active Permission v2 profile.",
+      "permission": "READ",
+      "tags": [
+        "permission",
+        "policy"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "plugin_disable",
+      "phase": 16,
+      "description": "Disable an installed plugin descriptor in persistent shared runtime state.",
+      "permission": "WRITE",
+      "tags": [
+        "plugin"
+      ],
+      "parallelSafe": false,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "plugin_enable",
+      "phase": 16,
+      "description": "Enable an installed plugin descriptor in persistent shared runtime state.",
+      "permission": "WRITE",
+      "tags": [
+        "plugin"
+      ],
+      "parallelSafe": false,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "plugin_install",
+      "phase": 16,
+      "description": "Register a validated plugin descriptor in the locked shared runtime registry. This manages declared plugin state; it does not execute untrusted plugin code.",
+      "permission": "WRITE",
+      "tags": [
+        "plugin"
+      ],
+      "parallelSafe": false,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "plugin_list",
+      "phase": 16,
+      "description": "List plugin descriptors from the locked shared runtime registry.",
+      "permission": "READ",
+      "tags": [
+        "plugin"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "plugin_remove",
+      "phase": 16,
+      "description": "Remove an installed plugin descriptor from persistent shared runtime state.",
+      "permission": "DANGEROUS",
+      "tags": [
+        "plugin"
+      ],
+      "parallelSafe": false,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "port_context",
+      "phase": 20,
+      "description": "Inspect local listening-port context.",
+      "permission": "READ",
+      "tags": [
+        "network",
+        "diagnostics"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "process_context",
+      "phase": 20,
+      "description": "Inspect host process-tree context.",
+      "permission": "READ",
+      "tags": [
+        "process",
+        "diagnostics"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "project_profile_get",
+      "phase": 38,
+      "description": "Read the validated workspace project-intelligence profile.",
+      "permission": "READ",
+      "tags": [
+        "project",
+        "profile"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "project_profile_set",
+      "phase": 38,
+      "description": "Persist validated workspace project-intelligence conventions through the guarded file boundary.",
+      "permission": "WRITE",
+      "tags": [
+        "project",
+        "profile"
+      ],
+      "parallelSafe": false,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "read_file",
+      "phase": 0,
+      "description": "Read one guarded workspace file.",
+      "permission": "READ",
+      "tags": [
+        "workspace",
+        "file",
+        "read"
+      ],
+      "deliveryState": "operational",
+      "parallelSafe": true,
+      "primitive": true
+    },
+    {
+      "name": "read_files",
+      "phase": 0,
+      "description": "Read multiple guarded workspace files.",
+      "permission": "READ",
+      "tags": [
+        "workspace",
+        "file",
+        "read"
+      ],
+      "deliveryState": "operational",
+      "parallelSafe": true,
+      "primitive": true
+    },
+    {
+      "name": "recipe_catalog",
+      "phase": 36,
+      "description": "Return inspectable developer automation recipes.",
+      "permission": "READ",
+      "tags": [
+        "recipe",
+        "automation"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "recipe_describe",
+      "phase": 9,
+      "description": "Describe a recipe plan and permissions.",
+      "permission": "READ",
+      "tags": [
+        "recipe"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "recipe_list",
+      "phase": 9,
+      "description": "List built-in and user recipe names.",
+      "permission": "READ",
+      "tags": [
+        "recipe"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "recipe_run",
+      "phase": 9,
+      "description": "Preview or run a deterministic recipe plan.",
+      "permission": "EXECUTE",
+      "tags": [
+        "recipe",
+        "workflow"
+      ],
+      "parallelSafe": false,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "recovery_status",
+      "phase": 31,
+      "description": "Return reconnect, retry, continuation, cache, and worker recovery state.",
+      "permission": "READ",
+      "tags": [
+        "resilience",
+        "recovery"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "registry_context",
+      "phase": 20,
+      "description": "Inspect Windows registry context through the Windows capability boundary.",
+      "permission": "READ",
+      "tags": [
+        "windows",
+        "registry"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "dependency_gated",
+      "availability": "optional",
+      "requirements": [
+        "Windows host"
+      ]
+    },
+    {
+      "name": "regression_report",
+      "phase": 40,
+      "description": "Return retained local benchmark run evidence and regression comparisons for the current runtime session.",
+      "permission": "READ",
+      "tags": [
+        "benchmark",
+        "regression"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "render_excel_preview",
+      "phase": 37,
+      "description": "Render a bounded structured Excel preview from sheet names and sampled cell values through the local Excel/Office provider.",
+      "permission": "READ",
+      "tags": [
+        "visual",
+        "excel",
+        "office"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "dependency_gated",
+      "availability": "optional",
+      "requirements": [
+        "Microsoft Excel",
+        "Office COM policy",
+        "registered workspace"
+      ]
+    },
+    {
+      "name": "repo_map",
+      "phase": 29,
+      "description": "Return a traversable repository structural map.",
+      "permission": "READ",
+      "tags": [
+        "repository",
+        "map"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational",
+      "streamable": true
+    },
+    {
+      "name": "response_mode",
+      "phase": 18,
+      "description": "Select compact, normal, verbose, or stream formatting.",
+      "permission": "READ",
+      "tags": [
+        "response",
+        "stream"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational",
+      "streamable": true
+    },
+    {
+      "name": "review_changes",
+      "phase": 11,
+      "description": "Review current Git changes and affected context.",
+      "permission": "READ",
+      "tags": [
+        "git",
+        "review"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "review_context",
+      "phase": 7,
+      "description": "Gather code-review context.",
+      "permission": "READ",
+      "tags": [
+        "review",
+        "context"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational",
+      "streamable": true
+    },
+    {
+      "name": "route_intent",
+      "phase": 8,
+      "description": "Classify a prompt with a deterministic, overridable route.",
+      "permission": "READ",
+      "tags": [
+        "router",
+        "intent"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "run_affected_tests",
+      "phase": 12,
+      "description": "Plan or run tests affected by changed files.",
+      "permission": "EXECUTE",
+      "tags": [
+        "test",
+        "execute"
+      ],
+      "parallelSafe": false,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "sandbox_exec",
+      "phase": 42,
+      "description": "Run an artifact-based Windows Sandbox job with networking disabled and read-only mapped input.",
+      "permission": "EXECUTE",
+      "tags": [
+        "windows",
+        "sandbox",
+        "detonation"
+      ],
+      "parallelSafe": false,
+      "deliveryState": "dependency_gated",
+      "availability": "optional",
+      "requirements": [
+        "Windows Sandbox feature",
+        "interactive user session",
+        "artifact output directory"
+      ],
+      "supportsCancel": false,
+      "supportsDryRun": true,
+      "auditTarget": "sandbox-artifact"
+    },
+    {
+      "name": "scheduler",
+      "phase": 0,
+      "description": "scheduler local capability (scheduler)",
+      "permission": "EXECUTE",
+      "tags": [
+        "scheduler",
+        "scheduler",
+        "capability"
+      ],
+      "deliveryState": "operational",
+      "parallelSafe": false,
+      "primitive": true,
+      "auditTarget": "scheduler"
+    },
+    {
+      "name": "screen_record",
+      "phase": 0,
+      "description": "screen_record local capability (display)",
+      "permission": "READ",
+      "tags": [
+        "screen_record",
+        "display",
+        "capability"
+      ],
+      "deliveryState": "operational",
+      "parallelSafe": true,
+      "primitive": true,
+      "auditTarget": "display"
+    },
+    {
+      "name": "search_files",
+      "phase": 0,
+      "description": "Search guarded workspace file paths.",
+      "permission": "READ",
+      "tags": [
+        "workspace",
+        "search",
+        "read"
+      ],
+      "deliveryState": "operational",
+      "parallelSafe": true,
+      "primitive": true
+    },
+    {
+      "name": "search_text",
+      "phase": 0,
+      "description": "Search guarded workspace text.",
+      "permission": "READ",
+      "tags": [
+        "workspace",
+        "search",
+        "read"
+      ],
+      "deliveryState": "operational",
+      "parallelSafe": true,
+      "primitive": true
+    },
+    {
+      "name": "self_heal_apply",
+      "phase": 46,
+      "description": "Apply a current reversible recovery plan without automatic destructive retries; standard mode requires confirmation and trusted Full Bypass skips lnwjud approval.",
+      "permission": "DANGEROUS",
+      "tags": [
+        "recovery",
+        "self-healing",
+        "safety"
+      ],
+      "parallelSafe": false,
+      "deliveryState": "dependency_gated",
+      "availability": "optional",
+      "requirements": [
+        "current recovery plan from self_heal_plan",
+        "dry-run preview"
+      ],
+      "supportsCancel": true,
+      "supportsDryRun": true,
+      "auditTarget": "recovery-mutation"
+    },
+    {
+      "name": "self_heal_plan",
+      "phase": 46,
+      "description": "Propose safe, deterministic, reversible recovery steps without applying mutations.",
+      "permission": "READ",
+      "tags": [
+        "recovery",
+        "self-healing",
+        "safety"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational",
+      "availability": "ready",
+      "requirements": [
+        "diagnostic evidence"
+      ],
+      "supportsCancel": false,
+      "supportsDryRun": true,
+      "auditTarget": "recovery-plan"
+    },
+    {
+      "name": "service_context",
+      "phase": 20,
+      "description": "Inspect host service-manager metadata.",
+      "permission": "READ",
+      "tags": [
+        "services",
+        "diagnostics"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "session_checkpoint",
+      "phase": 17,
+      "description": "Persist a development-session checkpoint.",
+      "permission": "WRITE",
+      "tags": [
+        "session"
+      ],
+      "parallelSafe": false,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "session_context",
+      "phase": 17,
+      "description": "Return persisted development-session context.",
+      "permission": "READ",
+      "tags": [
+        "session",
+        "handoff"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "session_history",
+      "phase": 17,
+      "description": "Return session checkpoints and decisions.",
+      "permission": "READ",
+      "tags": [
+        "session"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "session_resume",
+      "phase": 17,
+      "description": "Resume a persisted session context.",
+      "permission": "READ",
+      "tags": [
+        "session"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "shell",
+      "phase": 0,
+      "description": "Run builds, tests, package managers, and system operations; not a text editor when edit_file, apply_patch, or write_file can perform the change.",
+      "permission": "EXECUTE",
+      "tags": [
+        "shell",
+        "process",
+        "execute",
+        "build",
+        "test"
+      ],
+      "deliveryState": "operational",
+      "parallelSafe": false,
+      "primitive": true
+    },
+    {
+      "name": "skill_load",
+      "phase": 15,
+      "description": "Load a selected local skill by identifier.",
+      "permission": "READ",
+      "tags": [
+        "skills"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "skill_match",
+      "phase": 15,
+      "description": "Match relevant local skills without loading all skill text.",
+      "permission": "READ",
+      "tags": [
+        "skills",
+        "discovery"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "skills_import",
+      "phase": 46,
+      "description": "Import a validated local SKILL.md into the selected workspace skill catalog through guarded file read/write operations.",
+      "permission": "WRITE",
+      "tags": [
+        "skills",
+        "compatibility",
+        "import"
+      ],
+      "parallelSafe": false,
+      "deliveryState": "operational",
+      "supportsCancel": false,
+      "supportsDryRun": true,
+      "auditTarget": "skill-catalog"
+    },
+    {
+      "name": "startup_context",
+      "phase": 20,
+      "description": "Inspect host startup configuration context.",
+      "permission": "READ",
+      "tags": [
+        "startup",
+        "diagnostics"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "symbol_context",
+      "phase": 7,
+      "description": "Gather context around a symbol.",
+      "permission": "READ",
+      "tags": [
+        "symbol",
+        "context"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational",
+      "streamable": true
+    },
+    {
+      "name": "symbol_search",
+      "phase": 5,
+      "description": "Search indexed symbols across the workspace.",
+      "permission": "READ",
+      "tags": [
+        "code",
+        "symbol",
+        "search"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "system_info",
+      "phase": 0,
+      "description": "system_info local capability (system)",
+      "permission": "READ",
+      "tags": [
+        "system_info",
+        "system",
+        "capability"
+      ],
+      "deliveryState": "operational",
+      "parallelSafe": true,
+      "primitive": true,
+      "auditTarget": "system"
+    },
+    {
+      "name": "task_cancel",
+      "phase": 22,
+      "description": "Cancel a durable managed task by taskId using the same verified process-tree termination path as shell tasks.",
+      "permission": "EXECUTE",
+      "tags": [
+        "task",
+        "runtime"
+      ],
+      "parallelSafe": false,
+      "deliveryState": "operational",
+      "supportsCancel": true
+    },
+    {
+      "name": "task_create",
+      "phase": 22,
+      "description": "Create a durable background task through the local shell task runtime. When the task belongs to a durable goal, pass goalId (or the current goalLease envelope) so terminal goals reject stale task creation before launch. Pass executable plus arguments; command is only an executable alias, never a shell command line. Pass cwd, timeout_seconds, and workspaceId as needed.",
+      "permission": "EXECUTE",
+      "tags": [
+        "task",
+        "runtime"
+      ],
+      "parallelSafe": false,
+      "deliveryState": "operational",
+      "supportsCancel": true
+    },
+    {
+      "name": "task_list",
+      "phase": 22,
+      "description": "List durable managed tasks owned by the current client/session/workspace.",
+      "permission": "READ",
+      "tags": [
+        "task",
+        "runtime"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "task_result",
+      "phase": 22,
+      "description": "Read the current durable managed task result and captured output by taskId.",
+      "permission": "READ",
+      "tags": [
+        "task",
+        "runtime"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "task_status",
+      "phase": 22,
+      "description": "Read durable managed task state with bounded recent output by taskId; use task_result for the full captured result.",
+      "permission": "READ",
+      "tags": [
+        "task",
+        "runtime"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "telemetry_dashboard",
+      "phase": 27,
+      "description": "Return measured MCP activity, latency, error, cache, and context-economy telemetry from the local runtime.",
+      "permission": "READ",
+      "tags": [
+        "telemetry",
+        "dashboard"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "test_context",
+      "phase": 7,
+      "description": "Gather relevant test context.",
+      "permission": "READ",
+      "tags": [
+        "test",
+        "context"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational",
+      "streamable": true
+    },
+    {
+      "name": "test_failures",
+      "phase": 12,
+      "description": "Summarize recorded test failures.",
+      "permission": "READ",
+      "tags": [
+        "test",
+        "failure"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "test_history",
+      "phase": 12,
+      "description": "Return recent test execution history.",
+      "permission": "READ",
+      "tags": [
+        "test",
+        "history"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "tool_aliases",
+      "phase": 33,
+      "description": "List stable shorthand aliases and their primitive tool targets.",
+      "permission": "READ",
+      "tags": [
+        "tool",
+        "alias",
+        "discovery"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "tool_batch",
+      "phase": 0,
+      "description": "Invoke registered tools with bounded dependency groups.",
+      "permission": "EXECUTE",
+      "tags": [
+        "workflow",
+        "execute"
+      ],
+      "deliveryState": "operational",
+      "parallelSafe": false,
+      "primitive": true
+    },
+    {
+      "name": "tool_categories",
+      "phase": 33,
+      "description": "List tool categories and counts.",
+      "permission": "READ",
+      "tags": [
+        "tool",
+        "discovery"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "tool_describe",
+      "phase": 33,
+      "description": "Describe one tool contract on demand.",
+      "permission": "READ",
+      "tags": [
+        "tool",
+        "discovery"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "tool_dynamic_filter",
+      "phase": 33,
+      "description": "Return a bounded ranked tool set using deterministic scoring with optional local rerank fallback.",
+      "permission": "READ",
+      "tags": [
+        "tool",
+        "search",
+        "router",
+        "filter"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "tool_function_find",
+      "phase": 34,
+      "description": "Find the best local tool/function candidates for a prompt.",
+      "permission": "READ",
+      "tags": [
+        "tool",
+        "search"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "tool_schema_list",
+      "phase": 32,
+      "description": "List versioned tool schema metadata.",
+      "permission": "READ",
+      "tags": [
+        "schema",
+        "registry"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "tool_schema_register",
+      "phase": 32,
+      "description": "Register a validated backward-compatible versioned tool schema descriptor in the local runtime registry.",
+      "permission": "WRITE",
+      "tags": [
+        "schema",
+        "registry"
+      ],
+      "parallelSafe": false,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "tool_search",
+      "phase": 33,
+      "description": "Search tools, tags, phases, and descriptions deterministically.",
+      "permission": "READ",
+      "tags": [
+        "tool",
+        "search",
+        "discovery"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "trace_symbol",
+      "phase": 5,
+      "description": "Combine definition, references, imports, tests, and recent context.",
+      "permission": "READ",
+      "tags": [
+        "code",
+        "trace"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "type_search",
+      "phase": 5,
+      "description": "Search indexed TypeScript, JavaScript, and Python types.",
+      "permission": "READ",
+      "tags": [
+        "code",
+        "type"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "ui_target_action",
+      "phase": 0,
+      "description": "Act on a revalidated visual mark.",
+      "permission": "EXECUTE",
+      "tags": [
+        "vision",
+        "ui",
+        "execute"
+      ],
+      "deliveryState": "operational",
+      "parallelSafe": false,
+      "primitive": true
+    },
+    {
+      "name": "vision",
+      "phase": 0,
+      "description": "Capture local screen content or use the OCR boundary.",
+      "permission": "READ",
+      "tags": [
+        "vision",
+        "display",
+        "read"
+      ],
+      "deliveryState": "operational",
+      "parallelSafe": true,
+      "primitive": true
+    },
+    {
+      "name": "vision_annotated_capture",
+      "phase": 0,
+      "description": "Capture an expiring Set-of-Marks observation.",
+      "permission": "READ",
+      "tags": [
+        "vision",
+        "ui",
+        "read"
+      ],
+      "deliveryState": "operational",
+      "parallelSafe": true,
+      "primitive": true
+    },
+    {
+      "name": "visual_context",
+      "phase": 37,
+      "description": "Combine screenshot, DOM, layout, console, and network references. Requires an exact dom_cdp tab_id from list_tabs or new_tab; never uses the active/first tab.",
+      "permission": "READ",
+      "tags": [
+        "visual",
+        "context"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "operational"
+    },
+    {
+      "name": "web_fetch",
+      "phase": 0,
+      "description": "web_fetch local capability (network)",
+      "permission": "READ",
+      "tags": [
+        "web_fetch",
+        "network",
+        "capability"
+      ],
+      "deliveryState": "operational",
+      "parallelSafe": true,
+      "primitive": true,
+      "auditTarget": "network"
+    },
+    {
+      "name": "window",
+      "phase": 0,
+      "description": "window local capability (window)",
+      "permission": "WRITE",
+      "tags": [
+        "window",
+        "window",
+        "capability"
+      ],
+      "deliveryState": "operational",
+      "parallelSafe": false,
+      "primitive": true,
+      "auditTarget": "window"
+    },
+    {
+      "name": "windows_environment",
+      "phase": 20,
+      "description": "Inspect Windows environment metadata.",
+      "permission": "READ",
+      "tags": [
+        "windows",
+        "environment"
+      ],
+      "parallelSafe": true,
+      "deliveryState": "dependency_gated",
+      "availability": "optional",
+      "requirements": [
+        "Windows host"
+      ]
+    },
+    {
+      "name": "workspace_list",
+      "phase": 0,
+      "description": "List registered workspaces.",
+      "permission": "READ",
+      "tags": [
+        "workspace",
+        "read"
+      ],
+      "deliveryState": "operational",
+      "parallelSafe": true,
+      "primitive": true
+    },
+    {
+      "name": "workspace_tree",
+      "phase": 0,
+      "description": "Read a bounded registered workspace tree.",
+      "permission": "READ",
+      "tags": [
+        "workspace",
+        "tree",
+        "read"
+      ],
+      "deliveryState": "operational",
+      "parallelSafe": true,
+      "primitive": true
+    },
+    {
+      "name": "write_file",
+      "phase": 0,
+      "description": "Guarded text file creation or replacement with checkpoint protection; prefer over shell filesystem scripts.",
+      "permission": "WRITE",
+      "tags": [
+        "workspace",
+        "file",
+        "write",
+        "create",
+        "replace",
+        "text"
+      ],
+      "deliveryState": "operational",
+      "parallelSafe": false,
+      "primitive": true
+    },
+    {
+      "name": "wsl_exec",
+      "phase": 0,
+      "description": "wsl_exec local capability (workspace)",
+      "permission": "EXECUTE",
+      "tags": [
+        "wsl_exec",
+        "workspace",
+        "capability"
+      ],
+      "deliveryState": "operational",
+      "parallelSafe": false,
+      "primitive": true,
+      "auditTarget": "workspace"
+    },
+    {
+      "name": "wsl_fs",
+      "phase": 0,
+      "description": "wsl_fs local capability (workspace)",
+      "permission": "READ",
+      "tags": [
+        "wsl_fs",
+        "workspace",
+        "capability"
+      ],
+      "deliveryState": "operational",
+      "parallelSafe": true,
+      "primitive": true,
+      "auditTarget": "workspace"
+    }
+  ],
+  "queries": [
+    {
+      "category": "alias",
+      "totalMatches": 1,
+      "returned": 1,
+      "error": null
+    },
+    {
+      "category": "agentshield",
+      "totalMatches": 1,
+      "returned": 1,
+      "error": null
+    },
+    {
+      "category": "agents",
+      "totalMatches": 2,
+      "returned": 2,
+      "error": null
+    },
+    {
+      "category": "audit",
+      "totalMatches": 2,
+      "returned": 2,
+      "error": null
+    },
+    {
+      "category": "agent",
+      "totalMatches": 8,
+      "returned": 8,
+      "error": null
+    },
+    {
+      "category": "automation",
+      "totalMatches": 7,
+      "returned": 7,
+      "error": null
+    },
+    {
+      "category": "access",
+      "totalMatches": 1,
+      "returned": 1,
+      "error": null
+    },
+    {
+      "category": "backend",
+      "totalMatches": 1,
+      "returned": 1,
+      "error": null
+    },
+    {
+      "category": "batch",
+      "totalMatches": 1,
+      "returned": 1,
+      "error": null
+    },
+    {
+      "category": "blame",
+      "totalMatches": 1,
+      "returned": 1,
+      "error": null
+    },
+    {
+      "category": "benchmark",
+      "totalMatches": 2,
+      "returned": 2,
+      "error": null
+    },
+    {
+      "category": "browser",
+      "totalMatches": 12,
+      "returned": 12,
+      "error": null
+    },
+    {
+      "category": "cache",
+      "totalMatches": 3,
+      "returned": 3,
+      "error": null
+    },
+    {
+      "category": "calendar",
+      "totalMatches": 1,
+      "returned": 1,
+      "error": null
+    },
+    {
+      "category": "calls",
+      "totalMatches": 1,
+      "returned": 1,
+      "error": null
+    },
+    {
+      "category": "catalog",
+      "totalMatches": 1,
+      "returned": 1,
+      "error": null
+    },
+    {
+      "category": "capability",
+      "totalMatches": 17,
+      "returned": 17,
+      "error": null
+    },
+    {
+      "category": "change",
+      "totalMatches": 1,
+      "returned": 1,
+      "error": null
+    },
+    {
+      "category": "codex",
+      "totalMatches": 1,
+      "returned": 1,
+      "error": null
+    },
+    {
+      "category": "code",
+      "totalMatches": 14,
+      "returned": 14,
+      "error": null
+    },
+    {
+      "category": "com",
+      "totalMatches": 1,
+      "returned": 1,
+      "error": null
+    },
+    {
+      "category": "compatibility",
+      "totalMatches": 1,
+      "returned": 1,
+      "error": null
+    },
+    {
+      "category": "configuration",
+      "totalMatches": 1,
+      "returned": 1,
+      "error": null
+    },
+    {
+      "category": "control",
+      "totalMatches": 1,
+      "returned": 1,
+      "error": null
+    },
+    {
+      "category": "console",
+      "totalMatches": 1,
+      "returned": 1,
+      "error": null
+    },
+    {
+      "category": "contacts",
+      "totalMatches": 1,
+      "returned": 1,
+      "error": null
+    },
+    {
+      "category": "convert",
+      "totalMatches": 1,
+      "returned": 1,
+      "error": null
+    },
+    {
+      "category": "context",
+      "totalMatches": 15,
+      "returned": 15,
+      "error": null
+    },
+    {
+      "category": "coverage",
+      "totalMatches": 1,
+      "returned": 1,
+      "error": null
+    },
+    {
+      "category": "dap",
+      "totalMatches": 2,
+      "returned": 2,
+      "error": null
+    },
+    {
+      "category": "dashboard",
+      "totalMatches": 1,
+      "returned": 1,
+      "error": null
+    },
+    {
+      "category": "debug",
+      "totalMatches": 5,
+      "returned": 5,
+      "error": null
+    },
+    {
+      "category": "definition",
+      "totalMatches": 1,
+      "returned": 1,
+      "error": null
+    },
+    {
+      "category": "crash",
+      "totalMatches": 1,
+      "returned": 1,
+      "error": null
+    },
+    {
+      "category": "database",
+      "totalMatches": 2,
+      "returned": 2,
+      "error": null
+    },
+    {
+      "category": "delegate",
+      "totalMatches": 4,
+      "returned": 4,
+      "error": null
+    },
+    {
+      "category": "dependency",
+      "totalMatches": 3,
+      "returned": 3,
+      "error": null
+    },
+    {
+      "category": "detonation",
+      "totalMatches": 1,
+      "returned": 1,
+      "error": null
+    },
+    {
+      "category": "development",
+      "totalMatches": 1,
+      "returned": 1,
+      "error": null
+    },
+    {
+      "category": "diagnostics",
+      "totalMatches": 12,
+      "returned": 12,
+      "error": null
+    },
+    {
+      "category": "document",
+      "totalMatches": 3,
+      "returned": 3,
+      "error": null
+    },
+    {
+      "category": "discovery",
+      "totalMatches": 6,
+      "returned": 6,
+      "error": null
+    },
+    {
+      "category": "durable",
+      "totalMatches": 6,
+      "returned": 6,
+      "error": null
+    },
+    {
+      "category": "docx",
+      "totalMatches": 1,
+      "returned": 1,
+      "error": null
+    },
+    {
+      "category": "discover",
+      "totalMatches": 1,
+      "returned": 1,
+      "error": null
+    },
+    {
+      "category": "dry-run",
+      "totalMatches": 1,
+      "returned": 1,
+      "error": null
+    },
+    {
+      "category": "economy",
+      "totalMatches": 1,
+      "returned": 1,
+      "error": null
+    },
+    {
+      "category": "ecc",
+      "totalMatches": 9,
+      "returned": 9,
+      "error": null
+    },
+    {
+      "category": "events",
+      "totalMatches": 3,
+      "returned": 3,
+      "error": null
+    },
+    {
+      "category": "failure",
+      "totalMatches": 1,
+      "returned": 1,
+      "error": null
+    },
+    {
+      "category": "etw",
+      "totalMatches": 1,
+      "returned": 1,
+      "error": null
+    },
+    {
+      "category": "extract",
+      "totalMatches": 1,
+      "returned": 1,
+      "error": null
+    },
+    {
+      "category": "execute",
+      "totalMatches": 6,
+      "returned": 6,
+      "error": null
+    },
+    {
+      "category": "excel",
+      "totalMatches": 4,
+      "returned": 4,
+      "error": null
+    },
+    {
+      "category": "environment",
+      "totalMatches": 1,
+      "returned": 1,
+      "error": null
+    },
+    {
+      "category": "gateway",
+      "totalMatches": 4,
+      "returned": 4,
+      "error": null
+    },
+    {
+      "category": "goal",
+      "totalMatches": 7,
+      "returned": 7,
+      "error": null
+    },
+    {
+      "category": "form",
+      "totalMatches": 1,
+      "returned": 1,
+      "error": null
+    },
+    {
+      "category": "git",
+      "totalMatches": 10,
+      "returned": 10,
+      "error": null
+    },
+    {
+      "category": "frontend",
+      "totalMatches": 1,
+      "returned": 1,
+      "error": null
+    },
+    {
+      "category": "filter",
+      "totalMatches": 1,
+      "returned": 1,
+      "error": null
+    },
+    {
+      "category": "handoff",
+      "totalMatches": 2,
+      "returned": 2,
+      "error": null
+    },
+    {
+      "category": "graph",
+      "totalMatches": 7,
+      "returned": 7,
+      "error": null
+    },
+    {
+      "category": "hooks",
+      "totalMatches": 3,
+      "returned": 3,
+      "error": null
+    },
+    {
+      "category": "health",
+      "totalMatches": 2,
+      "returned": 2,
+      "error": null
+    },
+    {
+      "category": "hub",
+      "totalMatches": 1,
+      "returned": 1,
+      "error": null
+    },
+    {
+      "category": "history",
+      "totalMatches": 2,
+      "returned": 2,
+      "error": null
+    },
+    {
+      "category": "implementation",
+      "totalMatches": 1,
+      "returned": 1,
+      "error": null
+    },
+    {
+      "category": "import",
+      "totalMatches": 1,
+      "returned": 1,
+      "error": null
+    },
+    {
+      "category": "imports",
+      "totalMatches": 1,
+      "returned": 1,
+      "error": null
+    },
+    {
+      "category": "lsp",
+      "totalMatches": 2,
+      "returned": 2,
+      "error": null
+    },
+    {
+      "category": "logs",
+      "totalMatches": 2,
+      "returned": 2,
+      "error": null
+    },
+    {
+      "category": "local",
+      "totalMatches": 2,
+      "returned": 2,
+      "error": null
+    },
+    {
+      "category": "intent",
+      "totalMatches": 1,
+      "returned": 1,
+      "error": null
+    },
+    {
+      "category": "lifecycle",
+      "totalMatches": 3,
+      "returned": 3,
+      "error": null
+    },
+    {
+      "category": "map",
+      "totalMatches": 1,
+      "returned": 1,
+      "error": null
+    },
+    {
+      "category": "mail",
+      "totalMatches": 1,
+      "returned": 1,
+      "error": null
+    },
+    {
+      "category": "mcp",
+      "totalMatches": 4,
+      "returned": 4,
+      "error": null
+    },
+    {
+      "category": "memory",
+      "totalMatches": 4,
+      "returned": 4,
+      "error": null
+    },
+    {
+      "category": "module",
+      "totalMatches": 2,
+      "returned": 2,
+      "error": null
+    },
+    {
+      "category": "merge",
+      "totalMatches": 1,
+      "returned": 1,
+      "error": null
+    },
+    {
+      "category": "network",
+      "totalMatches": 3,
+      "returned": 3,
+      "error": null
+    },
+    {
+      "category": "onedrive",
+      "totalMatches": 1,
+      "returned": 1,
+      "error": null
+    },
+    {
+      "category": "office",
+      "totalMatches": 23,
+      "returned": 23,
+      "error": null
+    },
+    {
+      "category": "outlook",
+      "totalMatches": 1,
+      "returned": 1,
+      "error": null
+    },
+    {
+      "category": "parallel",
+      "totalMatches": 2,
+      "returned": 2,
+      "error": null
+    },
+    {
+      "category": "onenote",
+      "totalMatches": 1,
+      "returned": 1,
+      "error": null
+    },
+    {
+      "category": "path",
+      "totalMatches": 1,
+      "returned": 1,
+      "error": null
+    },
+    {
+      "category": "pdf",
+      "totalMatches": 3,
+      "returned": 3,
+      "error": null
+    },
+    {
+      "category": "permission",
+      "totalMatches": 2,
+      "returned": 2,
+      "error": null
+    },
+    {
+      "category": "planner",
+      "totalMatches": 1,
+      "returned": 1,
+      "error": null
+    },
+    {
+      "category": "policy",
+      "totalMatches": 2,
+      "returned": 2,
+      "error": null
+    },
+    {
+      "category": "process",
+      "totalMatches": 2,
+      "returned": 2,
+      "error": null
+    },
+    {
+      "category": "plugin",
+      "totalMatches": 5,
+      "returned": 5,
+      "error": null
+    },
+    {
+      "category": "powerpoint",
+      "totalMatches": 2,
+      "returned": 2,
+      "error": null
+    },
+    {
+      "category": "presentation",
+      "totalMatches": 1,
+      "returned": 1,
+      "error": null
+    },
+    {
+      "category": "preview",
+      "totalMatches": 1,
+      "returned": 1,
+      "error": null
+    },
+    {
+      "category": "profile",
+      "totalMatches": 2,
+      "returned": 2,
+      "error": null
+    },
+    {
+      "category": "provider",
+      "totalMatches": 7,
+      "returned": 7,
+      "error": null
+    },
+    {
+      "category": "query",
+      "totalMatches": 1,
+      "returned": 1,
+      "error": null
+    },
+    {
+      "category": "project",
+      "totalMatches": 3,
+      "returned": 3,
+      "error": null
+    },
+    {
+      "category": "quota",
+      "totalMatches": 1,
+      "returned": 1,
+      "error": null
+    },
+    {
+      "category": "ranking",
+      "totalMatches": 1,
+      "returned": 1,
+      "error": null
+    },
+    {
+      "category": "recipe",
+      "totalMatches": 4,
+      "returned": 4,
+      "error": null
+    },
+    {
+      "category": "publisher",
+      "totalMatches": 1,
+      "returned": 1,
+      "error": null
+    },
+    {
+      "category": "recovery",
+      "totalMatches": 3,
+      "returned": 3,
+      "error": null
+    },
+    {
+      "category": "registry",
+      "totalMatches": 3,
+      "returned": 3,
+      "error": null
+    },
+    {
+      "category": "refactor",
+      "totalMatches": 1,
+      "returned": 1,
+      "error": null
+    },
+    {
+      "category": "regression",
+      "totalMatches": 2,
+      "returned": 2,
+      "error": null
+    },
+    {
+      "category": "repository",
+      "totalMatches": 1,
+      "returned": 1,
+      "error": null
+    },
+    {
+      "category": "references",
+      "totalMatches": 1,
+      "returned": 1,
+      "error": null
+    },
+    {
+      "category": "resilience",
+      "totalMatches": 1,
+      "returned": 1,
+      "error": null
+    },
+    {
+      "category": "resources",
+      "totalMatches": 1,
+      "returned": 1,
+      "error": null
+    },
+    {
+      "category": "response",
+      "totalMatches": 1,
+      "returned": 1,
+      "error": null
+    },
+    {
+      "category": "review",
+      "totalMatches": 2,
+      "returned": 2,
+      "error": null
+    },
+    {
+      "category": "sandbox",
+      "totalMatches": 1,
+      "returned": 1,
+      "error": null
+    },
+    {
+      "category": "rules",
+      "totalMatches": 2,
+      "returned": 2,
+      "error": null
+    },
+    {
+      "category": "safety",
+      "totalMatches": 2,
+      "returned": 2,
+      "error": null
+    },
+    {
+      "category": "runtime",
+      "totalMatches": 6,
+      "returned": 6,
+      "error": null
+    },
+    {
+      "category": "schema",
+      "totalMatches": 3,
+      "returned": 3,
+      "error": null
+    },
+    {
+      "category": "router",
+      "totalMatches": 2,
+      "returned": 2,
+      "error": null
+    },
+    {
+      "category": "search",
+      "totalMatches": 7,
+      "returned": 7,
+      "error": null
+    },
+    {
+      "category": "security",
+      "totalMatches": 2,
+      "returned": 2,
+      "error": null
+    },
+    {
+      "category": "services",
+      "totalMatches": 1,
+      "returned": 1,
+      "error": null
+    },
+    {
+      "category": "session",
+      "totalMatches": 5,
+      "returned": 5,
+      "error": null
+    },
+    {
+      "category": "self-healing",
+      "totalMatches": 2,
+      "returned": 2,
+      "error": null
+    },
+    {
+      "category": "skills",
+      "totalMatches": 5,
+      "returned": 5,
+      "error": null
+    },
+    {
+      "category": "spreadsheet",
+      "totalMatches": 1,
+      "returned": 1,
+      "error": null
+    },
+    {
+      "category": "sharepoint",
+      "totalMatches": 1,
+      "returned": 1,
+      "error": null
+    },
+    {
+      "category": "startup",
+      "totalMatches": 1,
+      "returned": 1,
+      "error": null
+    },
+    {
+      "category": "status",
+      "totalMatches": 3,
+      "returned": 3,
+      "error": null
+    },
+    {
+      "category": "stream",
+      "totalMatches": 1,
+      "returned": 1,
+      "error": null
+    },
+    {
+      "category": "shell",
+      "totalMatches": 3,
+      "returned": 3,
+      "error": null
+    },
+    {
+      "category": "swarm",
+      "totalMatches": 1,
+      "returned": 1,
+      "error": null
+    },
+    {
+      "category": "symbol",
+      "totalMatches": 3,
+      "returned": 3,
+      "error": null
+    },
+    {
+      "category": "task",
+      "totalMatches": 8,
+      "returned": 8,
+      "error": null
+    },
+    {
+      "category": "tasks",
+      "totalMatches": 1,
+      "returned": 1,
+      "error": null
+    },
+    {
+      "category": "teams",
+      "totalMatches": 1,
+      "returned": 1,
+      "error": null
+    },
+    {
+      "category": "telemetry",
+      "totalMatches": 4,
+      "returned": 4,
+      "error": null
+    },
+    {
+      "category": "test",
+      "totalMatches": 7,
+      "returned": 7,
+      "error": null
+    },
+    {
+      "category": "trace",
+      "totalMatches": 1,
+      "returned": 1,
+      "error": null
+    },
+    {
+      "category": "tool",
+      "totalMatches": 6,
+      "returned": 6,
+      "error": null
+    },
+    {
+      "category": "ui",
+      "totalMatches": 6,
+      "returned": 6,
+      "error": null
+    },
+    {
+      "category": "vault",
+      "totalMatches": 4,
+      "returned": 4,
+      "error": null
+    },
+    {
+      "category": "verification",
+      "totalMatches": 1,
+      "returned": 1,
+      "error": null
+    },
+    {
+      "category": "visio",
+      "totalMatches": 1,
+      "returned": 1,
+      "error": null
+    },
+    {
+      "category": "type",
+      "totalMatches": 2,
+      "returned": 2,
+      "error": null
+    },
+    {
+      "category": "word",
+      "totalMatches": 1,
+      "returned": 1,
+      "error": null
+    },
+    {
+      "category": "windows",
+      "totalMatches": 9,
+      "returned": 9,
+      "error": null
+    },
+    {
+      "category": "visual",
+      "totalMatches": 10,
+      "returned": 10,
+      "error": null
+    },
+    {
+      "category": "workflow",
+      "totalMatches": 5,
+      "returned": 5,
+      "error": null
+    },
+    {
+      "category": "worktree",
+      "totalMatches": 2,
+      "returned": 2,
+      "error": null
+    }
+  ],
+  "coverage": "205 unique tools = reported total; category queries plus initial unfiltered first page",
+  "initialUnfilteredReturned": 100,
+  "baselineVersion": "5.8.6"
+}

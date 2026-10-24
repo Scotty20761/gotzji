@@ -11,6 +11,8 @@ One user request owns one durable goal and at most one live Native ChatGPT watch
 
 - Never require the user to type `continue`, `ทำต่อ`, or ask for status to resume unfinished work.
 - Never report completion while `get_goal` is `active`.
+- A ChatGPT Task marked **Active** proves only that the recurring schedule is enabled; it does not prove an MCP tool was invoked, the Goal lease was acquired, or any work ran between hourly firings. Verify the exact host last-run receipt, the first connector call and durable Goal/activity evidence before describing execution.
+- An hourly recurring ChatGPT Task cannot guarantee continuous model execution or a gap shorter than its next firing. If the Goal opted out of lnwjud scheduled continuation, there is no lnwjud continuation row to claim; a separate native task must call the connector and resume the same Goal normally, and must report blocked host/tool safety checks honestly.
 - `run_goal` defaults to `scheduledContinuation:auto`; follow this skill automatically for an unfinished goal.
 - Use exactly one Native ChatGPT recurring Scheduled Task for a v4.53 active goal: `occurrence=interval`, `intervalMinutes=60`, destination=current chat, cloud requested.
 - Never use lnwjud `scheduler`, Windows Task Scheduler, `schtasks.exe`, cron, shell timers, browser/DOM automation, or an undocumented scheduling API as a fallback.
@@ -95,7 +97,7 @@ gh run watch 123456 -i 20 --exit-status
 
 ## Recurring scheduled wake
 
-The Native Scheduled Task prompt must explicitly bind back to the connected lnwjud plugin/connector for the current chat. When the host exposes an `@connector` mention, pass the exact mention as `prepare_scheduled_continuation.connectorMention`; the returned `scheduleRequest.prompt` must prefix/preserve the exact lnwjud mention used in the chat and the native task creator must use that prompt verbatim; do **not** rely on the bare tool name alone. On wake, resolve that connected lnwjud connector before producing user-visible prose. If the connector cannot be resolved or invoked, treat it as scheduler transport degradation only: perform no workspace mutation, do not claim progress, leave the durable goal active, and let the recurring task try again.
+The Native Scheduled Task prompt must explicitly bind back to the connected lnwjud plugin/connector for the current chat. When the host exposes a connector mention, pass the **exact host-provided value** as `prepare_scheduled_continuation.connectorMention`: either a plain `@name` or the ChatGPT app mention `[$name](app://asdk_app_<32 hex digits>)`. The returned `scheduleRequest.prompt` must prefix/preserve that exact mention verbatim, including its actual app ID, without assuming a universal `lnwjud`/`lnwjud-pc` alias. Never fabricate, reuse from a different user or infer a connector app ID; if no connector is installed/exposed, omit the mention and treat unresolved tool access as transport degradation. Mention text does not grant host tool approval; continue to respect exact-action Host Safety. Do **not** rely on a bare tool name alone. On wake, resolve that connected lnwjud connector before producing user-visible prose. If the connector cannot be resolved or invoked, treat it as scheduler transport degradation only: perform no workspace mutation, do not claim progress, leave the durable goal active, and let the recurring task try again.
 
 `claim_scheduled_continuation` must be the **first connected lnwjud action before any workspace mutation** and before any user-visible status reply.
 

@@ -6,6 +6,31 @@ import { ok } from '@lnwjud/domain';
 import { WindowsNativeCapabilityBackend, type WindowsCapabilityBridge } from './windows-native-backend.js';
 
 describe('WindowsNativeCapabilityBackend', () => {
+  it.each([
+    ['excel', 'read_styles'], ['excel', 'read_tables'], ['excel', 'read_charts'],
+    ['excel', 'read_pivots'], ['excel', 'read_named_ranges'], ['excel', 'read_filters'],
+    ['excel', 'read_data_validation'], ['excel', 'read_conditional_formatting'],
+    ['excel', 'connection_metadata'], ['word', 'get_images'], ['word', 'get_headers_footers'],
+    ['word', 'get_runs'], ['word', 'get_styles'], ['word', 'get_fields'],
+    ['word', 'get_footnotes'], ['word', 'get_endnotes'],
+  ])('allows %s %s without mutation confirmation', async (app, action) => {
+    let calls = 0;
+    const backend = new WindowsNativeCapabilityBackend('office', {
+      execute: async (): Promise<ReturnType<typeof ok>> => { calls += 1; return ok({ observed: true }); },
+    }, 'win32');
+    await expect(backend.execute({ app, action })).resolves.toMatchObject({ ok: true });
+    expect(calls).toBe(1);
+  });
+
+  it('rejects a buried Office file identity before native dispatch', async () => {
+    let calls = 0;
+    const backend = new WindowsNativeCapabilityBackend('office', {
+      execute: async (): Promise<ReturnType<typeof ok>> => { calls += 1; return ok({}); },
+    }, 'win32');
+    await expect(backend.execute({ app: 'excel', action: 'insert_image', parameters: { image_path: 'outside.png' }, userConfirmed: true }))
+      .resolves.toMatchObject({ ok: false, error: { code: 'INVALID_INPUT' } });
+    expect(calls).toBe(0);
+  });
   it('forwards a native capability request to the local bridge', async () => {
     const requests: unknown[] = [];
     const bridge: WindowsCapabilityBridge = {

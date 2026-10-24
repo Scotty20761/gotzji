@@ -24,6 +24,7 @@ import {
   type GoalDeliveryState,
   type GoalIterationPolicy,
   type EngineeringGoalMetadata,
+  type StoredWorkflowMetadata,
   type CreateGoalContextCapsuleRecordRequest,
   type RecordGoalDeliveryReceiptRequest,
   type GoalPlan,
@@ -71,6 +72,7 @@ interface GoalRow {
   readonly user_intent_revision: number;
   readonly iteration_policy_json: string;
   readonly engineering_metadata_json: string | null;
+  readonly workflow_json: string | null;
   readonly current_context_capsule_id: string | null;
   readonly status: string;
   readonly revision: number;
@@ -223,6 +225,7 @@ export class SqliteGoalRepository implements GoalRepository, ScheduledContinuati
           request.now,
           request.now,
         );
+        if (request.workflow !== undefined) this.database.connection.prepare('UPDATE goals SET workflow_json = ? WHERE id = ?').run(JSON.stringify(request.workflow), request.goalId);
         return { goal: this.requireById(request.goalId), acquired: true };
       }
 
@@ -242,6 +245,9 @@ export class SqliteGoalRepository implements GoalRepository, ScheduledContinuati
       }
       if (request.engineering !== undefined && JSON.stringify(request.engineering) !== JSON.stringify(existing.engineering)) {
         throw new GoalStateError('conflict', 'Existing goal engineering metadata does not match the requested metadata');
+      }
+      if (request.workflow !== undefined && JSON.stringify(request.workflow) !== JSON.stringify(existing.workflow)) {
+        throw new GoalStateError('conflict', 'Existing goal workflow metadata does not match the requested metadata');
       }
       if (existing.status !== 'active') return { goal: existing, acquired: false };
 
@@ -332,6 +338,19 @@ export class SqliteGoalRepository implements GoalRepository, ScheduledContinuati
     return rows.map((row) => this.toGoalRecord(this.requireGoalRow(row)));
   }
 
+  /** Recent Goal metadata for the trusted Desktop Doctor view, scoped to one workspace. */
+  public async listWorkspaceGoalFilters(workspaceId: string, limit = 100): Promise<readonly Pick<GoalRecord, 'id' | 'goalKey' | 'objective' | 'status' | 'updatedAt'>[]> {
+    const boundedLimit = Math.min(100, Math.max(1, Math.trunc(limit)));
+    const rows = this.database.connection.prepare(`
+      SELECT * FROM goals WHERE workspace_id = ?
+      ORDER BY updated_at DESC, id DESC LIMIT ?
+    `).all(workspaceId, boundedLimit);
+    return rows.map((row) => {
+      const goal = this.toGoalRecord(this.requireGoalRow(row));
+      return { id: goal.id, goalKey: goal.goalKey, objective: goal.objective, status: goal.status, updatedAt: goal.updatedAt };
+    });
+  }
+
   /**
    * Changes only the Ponytail override of an idle durable goal. A live lease,
    * scheduled continuation, or fenced mutation wins over Desktop Settings.
@@ -387,6 +406,42 @@ export class SqliteGoalRepository implements GoalRepository, ScheduledContinuati
         createdAt: request.now,
       });
       return this.requireById(current.id);
+    });
+  }
+
+  /** Trusted host only: preserve an expired lease after it independently proves the exact owned work is still live. */
+  public async renewExpiredOwnedLease(request: {
+    readonly goalId: string; readonly ownerClientId: string; readonly ownerSessionId: string; readonly leaseTokenHash: string;
+    readonly expectedRevision: number; readonly expectedUserIntentRevision: number; readonly expectedGeneration: number;
+    readonly expectedActivitySeq: number; readonly expectedHeartbeat: string | undefined; readonly expectedExpiry: string;
+    readonly now: string;
+  }): Promise<GoalRecord> {
+    return this.transaction(() => {
+      const current = this.requireById(request.goalId);
+      this.assertOwner(current, request.ownerClientId);
+      if (current.status !== 'active' || current.leaseOwnerClientId !== request.ownerClientId
+        || current.leaseOwnerSessionId !== request.ownerSessionId || current.leaseTokenHash !== request.leaseTokenHash
+        || current.revision !== request.expectedRevision || current.userIntentRevision !== request.expectedUserIntentRevision
+        || current.leaseGeneration !== request.expectedGeneration || current.leaseActivitySeq !== request.expectedActivitySeq
+        || current.leaseHeartbeatAt !== request.expectedHeartbeat || current.leaseExpiresAt !== request.expectedExpiry) {
+        throw new GoalStateError('conflict', 'Owned lease changed before live-work renewal');
+      }
+      if (!current.leaseExpiresAt || parseIso(current.leaseExpiresAt, 'lease expiry') > parseIso(request.now, 'request time')
+        || !Number.isSafeInteger(current.leaseDurationSeconds) || current.leaseDurationSeconds! <= 0
+        || this.selectLiveScheduledContinuation(current.id) !== undefined) {
+        throw new GoalStateError('lease_invalid', 'Only an expired unscheduled owned lease may be renewed');
+      }
+      const changed = this.database.connection.prepare(`
+        UPDATE goals SET lease_activity_seq=lease_activity_seq+1,lease_heartbeat_at=?,lease_expires_at=?,updated_at=?
+        WHERE id=? AND status='active' AND owner_client_id=? AND lease_owner_client_id=? AND lease_owner_session_id=?
+          AND lease_token_hash=? AND revision=? AND user_intent_revision=? AND lease_generation=? AND lease_activity_seq=?
+          AND lease_heartbeat_at IS ? AND lease_expires_at=?
+      `).run(request.now, addSeconds(request.now, current.leaseDurationSeconds!), request.now, request.goalId,
+        request.ownerClientId, request.ownerClientId, request.ownerSessionId, request.leaseTokenHash,
+        request.expectedRevision, request.expectedUserIntentRevision, request.expectedGeneration, request.expectedActivitySeq,
+        request.expectedHeartbeat ?? null, request.expectedExpiry);
+      if (Number(changed.changes) !== 1) throw new GoalStateError('conflict', 'Owned lease renewal lost the compare-and-swap race');
+      return this.requireById(request.goalId);
     });
   }
 
@@ -2397,6 +2452,7 @@ export class SqliteGoalRepository implements GoalRepository, ScheduledContinuati
     const acceptanceCriteria = parseAcceptanceCriteria(row.acceptance_criteria_json);
     const iterationPolicy = parseIterationPolicy(row.iteration_policy_json);
     const engineering = row.engineering_metadata_json === null ? undefined : parseEngineeringGoalMetadata(row.engineering_metadata_json);
+    const workflow = row.workflow_json === null ? undefined : parseStoredWorkflowMetadata(row.workflow_json);
     const blockers = parseStringArray(row.blockers_json, 'goal blockers');
     const trackedTasks = parseTrackedTasks(row.tracked_tasks_json, row.active_task_ids_json, 'goal tracked tasks');
     const activeTaskIds = blockingTaskIds(trackedTasks);
@@ -2427,6 +2483,7 @@ export class SqliteGoalRepository implements GoalRepository, ScheduledContinuati
       userIntentRevision: row.user_intent_revision,
       iterationPolicy,
       ...(engineering === undefined ? {} : { engineering }),
+      ...(workflow === undefined ? {} : { workflow }),
       ...(row.current_context_capsule_id === null ? {} : { currentContextCapsuleId: row.current_context_capsule_id }),
       status,
       revision: row.revision,
@@ -2477,7 +2534,7 @@ export class SqliteGoalRepository implements GoalRepository, ScheduledContinuati
     if (!isRecord(value)) throw corrupt('Goal row is invalid');
     const requiredStrings = ['id','workspace_id','goal_key','owner_client_id','objective','plan_json','acceptance_criteria_json','iteration_policy_json','status','current_phase','next_action','blockers_json','active_task_ids_json','created_at','updated_at'];
     if (!requiredStrings.every((key) => typeof value[key] === 'string') || typeof value.revision !== 'number' || typeof value.user_intent_revision !== 'number') throw corrupt('Goal row fields are invalid');
-    const nullableStrings = ['engineering_metadata_json','current_context_capsule_id','tracked_tasks_json','ponytail_mode','lease_owner_client_id','lease_owner_session_id','lease_token_hash','lease_heartbeat_at','lease_expires_at','terminal_summary','terminal_evidence_json','terminal_at'];
+    const nullableStrings = ['workflow_json','engineering_metadata_json','current_context_capsule_id','tracked_tasks_json','ponytail_mode','lease_owner_client_id','lease_owner_session_id','lease_token_hash','lease_heartbeat_at','lease_expires_at','terminal_summary','terminal_evidence_json','terminal_at'];
     if (!nullableStrings.every((key) => value[key] === null || typeof value[key] === 'string')) throw corrupt('Goal nullable fields are invalid');
     if (value.lease_duration_seconds !== null && typeof value.lease_duration_seconds !== 'number') throw corrupt('Goal lease duration is invalid');
     if (typeof value.lease_generation !== 'number' || !Number.isInteger(value.lease_generation) || value.lease_generation < 0) throw corrupt('Goal lease generation is invalid');
@@ -3250,6 +3307,21 @@ function parseStringArray(serialized: string, label: string): readonly string[] 
   const value = parseJson(serialized, label);
   if (!Array.isArray(value) || !value.every((entry) => typeof entry === 'string')) throw corrupt(`${label} is invalid`);
   return value;
+}
+
+function parseStoredWorkflowMetadata(raw: string): StoredWorkflowMetadata {
+  const value = parseJson(raw, 'workflow metadata');
+  if (!isRecord(value) || !Number.isSafeInteger(value.schemaVersion) || (value.schemaVersion as number) < 1) {
+    throw corrupt('Goal workflow metadata is invalid');
+  }
+  if (value.schemaVersion === 1) {
+    if (typeof value.templateId !== 'string' || !Number.isSafeInteger(value.templateRevision) ||
+        typeof value.inputDigest !== 'string' || typeof value.requestKeyHash !== 'string' || !isRecord(value.inputs) ||
+        !Object.values(value.inputs).every((input) => typeof input === 'string')) {
+      throw corrupt('Goal workflow v1 metadata is invalid');
+    }
+  }
+  return value as StoredWorkflowMetadata;
 }
 
 function parseJson(serialized: string, label: string): unknown {

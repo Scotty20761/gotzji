@@ -3,6 +3,7 @@ use std::io::{self, BufRead, Write};
 use serde_json::Value;
 
 mod atspi;
+mod desktop_session;
 mod media;
 mod remote_desktop_portal;
 mod screencast_portal;
@@ -95,12 +96,21 @@ fn dispatch_native_provider(
         "accessibility" => atspi::execute(&action, &input),
         "window" => windows::execute(&action, &input),
         "input_event" if session_type() == "wayland" => {
-            if action == "status" {
+            if action == "status"
+                && !input.contains_key("handle")
+                && !input.contains_key("session_id")
+            {
                 let portal_hint = env_present("XDG_DESKTOP_PORTAL_DIR")
                     || env_present("DBUS_SESSION_BUS_ADDRESS");
-                Ok(remote_desktop_portal::status_json(true, portal_hint))
+                remote_desktop_portal::execute("status", &input).or_else(|error| {
+                    if error.0 == "EXECUTABLE_NOT_FOUND" {
+                        Ok(remote_desktop_portal::status_json(true, portal_hint))
+                    } else {
+                        Err(error)
+                    }
+                })
             } else {
-                remote_desktop_portal::execute()
+                remote_desktop_portal::execute(&action, &input)
             }
         }
         "input_event" => x11_input::execute(&action, &input),
@@ -191,16 +201,22 @@ fn linux_health_json() -> String {
     let office_hint = executable_in_path("soffice") || executable_in_path("libreoffice");
     let accessibility_status = atspi::status_json();
     let input_status = if wayland {
-        remote_desktop_portal::status_json(wayland, portal_hint)
+        remote_desktop_portal::execute("status", &Default::default())
+            .unwrap_or_else(|_| remote_desktop_portal::status_json(wayland, false))
     } else {
         x11_input::status_json()
     };
-    let vision_status =
-        screencast_portal::status_json(wayland, portal_hint, x11::capture_available());
+    let vision_status = if wayland {
+        desktop_session::execute("vision", "status", &Default::default())
+            .unwrap_or_else(|_| screencast_portal::status_json(true, false, false))
+    } else {
+        screencast_portal::status_json(false, portal_hint, x11::capture_available())
+    };
     let window_status = windows::status_json_for(x11_ready);
-    let audio_status =
-        media::audio_status(env_present("PIPEWIRE_REMOTE"), env_present("PULSE_SERVER"));
-    let screen_record_status = media::screen_record_status(wayland, portal_hint, x11_ready);
+    let audio_status = media::audio_execute("status", &Default::default())
+        .unwrap_or_else(|_| media::audio_status(false, false));
+    let screen_record_status = media::screen_record_execute("status", &Default::default())
+        .unwrap_or_else(|_| media::screen_record_status(wayland, false, false));
     format!(
         r#"{{"platform":"linux","backend":"linux-native-host","available":true,"ready":true,"session":{{"type":"{}","x11":{},"wayland":{},"dbus":{},"portalHint":{},"atspi":{}}},"capabilities":{{"accessibility":{},"input_event":{},"vision":{},"window":{},"audio":{},"screen_record":{},"office":{}}}}}"#,
         escape(session),
@@ -274,6 +290,7 @@ fn main() {
             );
         }
     }
+    desktop_session::close();
 }
 
 fn parse_envelope(line: &str) -> Result<(String, String), &'static str> {

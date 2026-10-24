@@ -41,7 +41,7 @@ export interface WindowsNativeBackendOptions {
   readonly unrestricted?: boolean;
 }
 
-type NativePathField = 'file_path' | 'output_path' | 'target_path' | 'source_path' | 'image_path' | 'merge_paths' | 'attachments';
+type NativePathField = 'file_path' | 'output_path' | 'target_path' | 'source_path' | 'image_path' | 'theme_path' | 'merge_paths' | 'attachments';
 
 const PATH_FIELDS: Readonly<Record<WindowsCapabilityName, readonly NativePathField[]>> = {
   accessibility: [],
@@ -54,7 +54,7 @@ const PATH_FIELDS: Readonly<Record<WindowsCapabilityName, readonly NativePathFie
   clipboard: [],
   audio: ['file_path', 'output_path'],
   screen_record: ['output_path'],
-  office: ['file_path', 'target_path', 'source_path', 'image_path', 'merge_paths', 'attachments'],
+  office: ['file_path', 'target_path', 'source_path', 'image_path', 'theme_path', 'merge_paths', 'attachments'],
 };
 
 export class WindowsNativeCapabilityBackend implements CapabilityBackend {
@@ -68,6 +68,9 @@ export class WindowsNativeCapabilityBackend implements CapabilityBackend {
   public async execute(input: unknown, signal?: AbortSignal, authorization?: InvocationAuthorization): Promise<Result<unknown>> {
     if (this.platform !== 'win32') return err(appError('INTERNAL_ERROR', 'Windows capability is unavailable on this platform', true));
     if (!isRecord(input)) return err(appError('INVALID_INPUT', 'Native capability input must be an object'));
+    if (this.capability === 'office' && ['parameters', 'range', 'style', 'table'].some((field) => containsBuriedFileIdentity(input[field]))) {
+      return err(appError('INVALID_INPUT', 'Office file identities must use scoped top-level path fields'));
+    }
     if (input.dry_run === true) return ok({ dry_run: true, capability: this.capability });
     if (isSignalAborted(signal)) return cancelledOperation();
 
@@ -207,14 +210,21 @@ function requiresExplicitConfirmation(capability: WindowsCapabilityName, input: 
     case 'screen_record': return action !== 'status';
     case 'office': {
       const app = typeof input.app === 'string' ? input.app : '';
-      if (app === 'excel') return !['read', 'sheets', 'list_sheets', 'inspect_workbook', 'used_range', 'read_range', 'read_values', 'read_formulas', 'workbook_properties', 'calculation_status', 'formula_errors', 'list_macros', 'search'].includes(action);
-      if (app === 'word') return !['read_text', 'inspect_document', 'read_range', 'get_structure', 'get_sections', 'get_paragraphs', 'get_headings', 'get_tables', 'get_bookmarks', 'get_hyperlinks', 'get_comments', 'get_revisions', 'search', 'document_properties', 'page_setup', 'protection_status', 'read_comments'].includes(action);
+      if (app === 'excel') return !['read', 'sheets', 'list_sheets', 'inspect_workbook', 'used_range', 'read_range', 'read_values', 'read_formulas', 'read_number_formats', 'read_styles', 'read_tables', 'read_named_ranges', 'read_charts', 'read_pivots', 'read_filters', 'read_data_validation', 'read_conditional_formatting', 'connection_metadata', 'workbook_properties', 'calculation_status', 'formula_errors', 'list_macros', 'search'].includes(action);
+      if (app === 'word') return !['read_text', 'inspect_document', 'read_range', 'get_structure', 'get_sections', 'get_paragraphs', 'get_runs', 'get_styles', 'get_headings', 'get_tables', 'get_images', 'get_headers_footers', 'get_bookmarks', 'get_hyperlinks', 'get_fields', 'get_comments', 'get_revisions', 'get_footnotes', 'get_endnotes', 'search', 'document_properties', 'page_setup', 'protection_status', 'read_comments'].includes(action);
       if (app === 'powerpoint') return !['read', 'inspect_presentation', 'list_slides', 'get_slide', 'get_slide_text', 'get_shapes', 'get_images', 'get_tables', 'get_charts', 'get_notes', 'get_layout', 'presentation_properties', 'slide_size', 'get_hyperlinks', 'get_transitions'].includes(action);
       if (app === 'outlook') return !['list_folders', 'list_messages', 'get_message', 'get_headers', 'get_body', 'list_attachments', 'search', 'conversation', 'get_state', 'mailbox_status', 'list_calendars', 'get_events', 'search_events', 'get_event', 'availability', 'list_contacts', 'search_contacts', 'get_contact', 'list_task_folders', 'list_tasks', 'search_tasks', 'get_task'].includes(action);
       return true;
     }
     default: return false;
   }
+}
+
+function containsBuriedFileIdentity(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(containsBuriedFileIdentity);
+  if (!isRecord(value)) return false;
+  return Object.entries(value).some(([key, child]) => /^(?:file|output|target|source|image|theme|template|mapping)[_]?path(?:s)?$/i.test(key)
+    || key === 'attachments' || key === 'merge_paths' || containsBuriedFileIdentity(child));
 }
 
 function isWithin(root: string, candidate: string): boolean {

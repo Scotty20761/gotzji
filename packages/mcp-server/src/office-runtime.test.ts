@@ -32,6 +32,49 @@ function servicesWithOffice(calls: Array<{ tool: string; input: Record<string, u
 
 describe('OfficeRuntimeService provider truthfulness', () => {
   it.each([
+    ['office_word', { action: 'print', file_path: 'a.docx' }],
+    ['office_excel', { action: 'run_macro', file_path: 'a.xlsm', macro: 'Module1.Run' }],
+    ['office_excel', { action: 'refresh_connections', file_path: 'a.xlsx' }],
+    ['office_powerpoint', { action: 'export_video', file_path: 'a.pptx', target_path: 'a.mp4' }],
+    ['office_outlook', { action: 'permanent_delete', message_id: 'message' }],
+    ['office_outlook', { action: 'reply_all_draft', message_id: 'message' }],
+    ['office_calendar', { action: 'send_update', event_id: 'event' }],
+    ['office_calendar', { action: 'cancel_event', event_id: 'event' }],
+    ['office_calendar', { action: 'respond', event_id: 'event', parameters: { response: 'accept' } }],
+    ['office_contacts', { action: 'create_group', name: 'group', members: ['a@example.test'] }],
+  ] as const)('requires approval and preserves dry-run/cancel boundaries for %s', async (tool, input) => {
+    const calls: Array<{ tool: string; input: Record<string, unknown> }> = [];
+    const runtime = new OfficeRuntimeService(servicesWithOffice(calls), actor);
+    await expect(runtime.execute(tool, { ...input, dryRun: false })).resolves.toMatchObject({ ok: false, error: { code: 'PERMISSION_REQUIRED' } });
+    await expect(runtime.execute(tool, input)).resolves.toMatchObject({ ok: true, value: { dryRun: true, executed: false } });
+    const controller = new AbortController(); controller.abort();
+    await expect(runtime.execute(tool, { ...input, dryRun: false, userConfirmed: true }, controller.signal)).resolves.toMatchObject({ ok: false, error: { code: 'PROCESS_TIMEOUT' } });
+    expect(calls).toEqual([]);
+  });
+
+  it('rejects missing selectors or buried files before even a dry-run plan', async () => {
+    const calls: Array<{ tool: string; input: Record<string, unknown> }> = [];
+    const runtime = new OfficeRuntimeService(servicesWithOffice(calls), actor);
+    await expect(runtime.execute('office_word', { action: 'delete_range', file_path: 'a.docx' })).resolves.toMatchObject({ ok: false, error: { code: 'INVALID_INPUT' } });
+    await expect(runtime.execute('office_excel', { action: 'insert_image', file_path: 'a.xlsx', parameters: { image_path: 'outside.png' } })).resolves.toMatchObject({ ok: false, error: { code: 'INVALID_INPUT' } });
+    expect(calls).toEqual([]);
+  });
+
+  it('normalizes every auxiliary file identity in the replacement-recovery request', async () => {
+    const calls: Array<{ tool: string; input: Record<string, unknown> }> = [];
+    let requestedSources: readonly string[] = [];
+    const services = servicesWithOffice(calls);
+    const runtime = new OfficeRuntimeService({ ...services, file: {
+      async prepareExternalFileMutation(_actor: unknown, _workspace: string, request: { sourcePaths: readonly string[] }) {
+        requestedSources = request.sourcePaths;
+        return ok({ sourcePaths: request.sourcePaths.map((source) => `C:/workspace/${source}`), targetPath: 'C:/workspace/new.docx', targetRelativePath: 'new.docx' });
+      },
+    } } as unknown as McpApplicationServices, actor);
+    await expect(runtime.execute('office_word', { action: 'mail_merge', workspaceId: 'ws', file_path: 'template.docx', source_path: 'ข้อมูล.csv', target_path: 'new.docx', dryRun: false, userConfirmed: true })).resolves.toMatchObject({ ok: true, value: { executed: true } });
+    expect(requestedSources).toEqual(['template.docx', 'ข้อมูล.csv']);
+    expect(calls[0]?.input).toMatchObject({ file_path: 'C:/workspace/template.docx', source_path: 'C:/workspace/ข้อมูล.csv', target_path: 'C:/workspace/new.docx' });
+  });
+  it.each([
     ['linux', 'office_word', { action: 'read_text', file_path: 'package.json' }, 'Verified LibreOffice UNO or equivalent native provider for word'],
     ['darwin', 'office_outlook', { action: 'list_folders' }, 'Verified native macOS Office automation provider for outlook'],
   ] as const)('reports actionable non-Windows provider requirements on %s', async (platform, tool, input, requirement) => {
@@ -52,22 +95,23 @@ describe('OfficeRuntimeService provider truthfulness', () => {
     });
   });
 
-  it('does not report unsupported Windows actions as ready merely because they default to dry run', async () => {
+  it('plans the implemented macro action without opening or executing a workbook', async () => {
     const calls: Array<{ tool: string; input: Record<string, unknown> }> = [];
     const runtime = new OfficeRuntimeService(servicesWithOffice(calls), actor);
 
     const result = await runtime.execute('office_excel', {
       action: 'run_macro',
-      file_path: 'C:\\workspace\\book.xlsx',
+      file_path: 'C:\\workspace\\book.xlsm',
+      macro: 'Module1.SafeProcedure',
     });
 
     expect(result).toMatchObject({
       ok: true,
       value: {
         tool: 'office_excel',
-        status: 'unsupported',
-        available: false,
-        ready: false,
+        status: 'ready',
+        available: true,
+        ready: true,
         executed: false,
         action: 'run_macro',
       },

@@ -1,6 +1,6 @@
 import { defineTool, missingService, type McpInternalInvocationContext, type McpToolContext, type McpToolDefinition } from './tool-types.js';
 import { appError, err, ok, type InvocationAuthorization, type Result } from '@lnwjud/domain';
-import { withAutomationShellDispatchContext } from '@lnwjud/capabilities';
+import { withAutomationShellDispatchContext, type CapabilityService } from '@lnwjud/capabilities';
 import { DEFAULT_MCP_POLL_WAIT_SECONDS, MAX_CONFIGURABLE_WAIT_SECONDS, MIN_CONFIGURABLE_WAIT_SECONDS } from '@lnwjud/shared';
 import { SetOfMarksObservationStore, SetOfMarksService } from '../set-of-marks-service.js';
 import { ComputerUseService } from '../computer-use-service.js';
@@ -49,6 +49,10 @@ function normalizeNonBlockingCliInput(input: unknown, maxPollWaitSeconds: number
 }
 
 export function capabilityTools(context: McpToolContext, setOfMarksStore?: SetOfMarksObservationStore): McpToolDefinition[] {
+  const capabilities = context.services.capabilities;
+  const ownedCapabilities: CapabilityService | undefined = capabilities === undefined ? undefined : {
+    execute: (tool, input, signal, authorization) => capabilities.execute(tool, withCapabilityOwnerMetadata(input, context.actor), signal, authorization),
+  };
   const execute = async (
     tool: Parameters<NonNullable<McpToolContext['services']['capabilities']>['execute']>[0],
     input: unknown,
@@ -72,9 +76,7 @@ export function capabilityTools(context: McpToolContext, setOfMarksStore?: SetOf
       normalized = prepared.value.input;
       replacementBackup = prepared.value.replacementBackup;
     }
-    const owned = tool === 'shell' || tool === 'wsl_exec'
-      ? withCapabilityOwnerMetadata(normalized, context.actor)
-      : normalized;
+    const owned = withCapabilityOwnerMetadata(normalized, context.actor);
     const internalized = tool === 'shell' && internal?.automationDispatch !== undefined
       ? withAutomationShellDispatchContext(owned, internal.automationDispatch)
       : owned;
@@ -85,11 +87,11 @@ export function capabilityTools(context: McpToolContext, setOfMarksStore?: SetOf
     return ok({ ...value, replacementBackup });
   };
   const setOfMarksOwnerKey = `${context.actor.clientId}:${context.actor.sessionId?.trim() || context.actor.clientId}`;
-  const setOfMarks = new SetOfMarksService(context.services.capabilities, {
+  const setOfMarks = new SetOfMarksService(ownedCapabilities, {
     ...(setOfMarksStore === undefined ? {} : { store: setOfMarksStore }),
     ownerKey: setOfMarksOwnerKey,
   });
-  const computerUse = new ComputerUseService(context.services.capabilities, setOfMarks);
+  const computerUse = new ComputerUseService(ownedCapabilities, setOfMarks);
 
   return [
     defineTool({
@@ -215,7 +217,7 @@ export function capabilityTools(context: McpToolContext, setOfMarksStore?: SetOf
     }),
     defineTool({
       name: 'audio',
-      description: 'Record the microphone to a WAV file or play a local audio file through the host media provider. In standard mode recording requires the host-selected Active Project workspaceId and explicit confirmation; trusted Full Bypass skips lnwjud approval/scope checks. Existing in-workspace outputs use Recovery Trash before replacement when available. record is synchronous and limited to 600 seconds. Use stop to abort an ongoing record/play.',
+      description: 'Record microphone audio or play a scoped local file through the native media provider. Native macOS/Linux starts return an owned handle; use status to observe it and stop to finalize or cancel it. An initial running receipt does not prove an artifact exists. Terminal artifacts include verification evidence. Duration is bounded to 600 seconds and max_bytes to 64 MiB. Windows delivery behavior is reported by its provider. Recording requires application authorization and a scoped output; existing outputs use Recovery Trash when available. Cancellation of a macOS/Linux native request closes that owner process and its resources while preserving other owners.',
       permission: 'EXECUTE',
       annotations: { readOnlyHint: false, destructiveHint: true },
       inputSchema: audioCapabilitySchema,
@@ -223,7 +225,7 @@ export function capabilityTools(context: McpToolContext, setOfMarksStore?: SetOf
     }),
     defineTool({
       name: 'screen_record',
-      description: 'Record the screen to an MP4 using the host-native media provider. In standard mode starting a recording requires the host-selected Active Project workspaceId and explicit confirmation; trusted Full Bypass skips lnwjud approval/scope checks. Existing in-workspace outputs use Recovery Trash before replacement when available. start spawns a background capture, status checks it, stop finalizes the file. Recording stops automatically after 3600 seconds.',
+      description: 'Start a bounded native screen recording and retain its returned owned handle. Use status to observe the handle and stop to finalize or cancel it. macOS/Linux artifacts are published only after terminal content verification, with a duration limit of 600 seconds and max_bytes of 64 MiB. Linux Wayland capture requires a granted session_id and reports denial or revocation. Application authorization, Active Project paths and replacement recovery apply to capture output. Cancellation of a macOS/Linux native request closes that owner process and its resources while preserving other owners.',
       permission: 'EXECUTE',
       annotations: { readOnlyHint: false, destructiveHint: true },
       inputSchema: screenRecordCapabilitySchema,

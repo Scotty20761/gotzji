@@ -5,20 +5,23 @@ $desktopDirectory = Join-Path $repositoryRoot 'apps\desktop'
 $installerDirectory = Join-Path $desktopDirectory 'dist\installers'
 $rootPackage = Get-Content -LiteralPath (Join-Path $repositoryRoot 'package.json') -Raw | ConvertFrom-Json
 $expectedArtifacts = @(
-    "lnwjud-Setup-$($rootPackage.version).exe",
-    "lnwjud-Setup-$($rootPackage.version).exe.blockmap",
-    "lnwjud-Portable-$($rootPackage.version).exe",
+    "gotzji-Setup-$($rootPackage.version).exe",
+    "gotzji-Setup-$($rootPackage.version).exe.blockmap",
+    "gotzji-Portable-$($rootPackage.version).exe",
     'latest.yml',
     'portable.yml',
     'SHA256SUMS.txt',
-    'PROVENANCE.json'
+    'PROVENANCE.json',
+    "gotzji-plugin-$($rootPackage.version)-unbound.zip",
+    "gotzji-plugin-$($rootPackage.version)-unbound.zip.sha256",
+    'PLUGIN_PROVENANCE.json'
 )
 $capturedSourceDirtyAtStart = $false
 
 Push-Location $repositoryRoot
 try {
     if ([string]::IsNullOrWhiteSpace($env:LNWJUD_SOURCE_DIRTY_AT_START)) {
-        $sourceStatusAtStart = @(git status --porcelain=v1 --untracked-files=normal)
+        $sourceStatusAtStart = @(git --no-optional-locks status --porcelain=v1 --untracked-files=normal)
         if ($LASTEXITCODE -ne 0) {
             throw "Unable to inspect repository status before Windows packaging"
         }

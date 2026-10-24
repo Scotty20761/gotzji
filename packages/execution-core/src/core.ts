@@ -1,5 +1,6 @@
-import { randomUUID } from 'node:crypto';
-import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, openSync, readSync, closeSync } from 'node:fs';
+import { randomUUID, createHmac } from 'node:crypto';
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, openSync, readSync, closeSync, type Dirent } from 'node:fs';
+import { lstat, readdir, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -9,17 +10,76 @@ import {
 import { isEngineeringGateEvidenceFailureReason, type Result } from '@lnwjud/domain';
 import { RuntimeEngineeringEvidenceVerifier } from '@lnwjud/mcp-server/engineering-evidence-verifier';
 import { SqliteGoalRepository, SqliteWorkspaceRepository } from '@lnwjud/storage';
-import { CoreStore, hash, secret, type AdapterRow, type ClaimRow, type WorkerRow } from './store.js';
+import { CoreStore, hash, secret, type AdapterRow, type ClaimRow, type WorkerRow, type WriterRow, type CoreUpgrade } from './store.js';
 import { callWorker, launchWorker, observeWorker, stopWorker, workerFingerprint } from './managed-worker.js';
 import { signed } from './managed-worker.js';
-import { assertGraceProfile, graceProfile, type GraceProfile, type GraceRegistration } from './grace-profile.js';
-import { CoreError, type JobView, type Preparation, type RequestInput, type TaskBinding, type CodeRunReceipt } from './types.js';
+import { processIdentities, sameProcessIdentity, type ProcessIdentity } from './process-identity.mjs';
+import { assertGraceProfile, graceProfile, productGraceProfile, profileDependencies, testProviderProfile, type GraceProfile, type GraceRegistration, type ProductRegistration } from './grace-profile.js';
+import { PRODUCT_CATALOG, claimsOverlap, folderClaim, registeredProject, productOperation, reviewedRecipe } from './product-projects.js';
+import { readProjectMemory, writeProjectMemory, type ProjectMemory, type ProjectMemorySnapshot } from './project-context.js';
+import { activeProjectLifecycle, assertProjectLifecycleCurrent, listManagedProjectRows, projectLifecycle, type ProjectLifecycleSnapshot } from './project-lifecycle.js';
+import { CoreError, type JobView, type SettleDecision, type Preparation, type RequestInput, type TaskBinding, type CodeRunReceipt, type RegisteredProject, type ManagedProject, type ProjectRegistration, type ProductOperationInput, type BasicProductOperationInput, type ProductOperation, type PreparedProductOperation, type CatalogEntry, type ReviewedCommandRegistration, type PrepareOptions, type SupportReport } from './types.js';
+import { PRODUCT_NATIVE_OPERATIONS, prepareProductNativeOperation, type ProductNativeInput, type TrustedProductNativeOptions, type ProductNativeOperationName, type PreparedProductNativeOperation } from './product-native.js';
+import { libraryRoute, libraryCatalog, assertHostDirectLibraryWorkflow, prepareLibraryOperation, verifiedLibraryNavigationEvolution, type ProductLibraryInput, type TrustedLibraryOptions } from './product-library.js';
+import type { LibraryRouteKind, LibraryDeliveryScope } from './library-workflow-contract.js';
+import { readProjectFile, listProjectFiles, searchProjectFiles } from './product-file-reads.js';
+import { readProjectGit, type ProjectGitResult } from './product-git-reads.js';
+import { decodeUtf8LogPage } from './utf8-log-page.js';
+import type { ProjectGitInput } from './types.js';
+import type { ProjectReadInput, ProjectFileResult, ProjectListInput, ProjectListResult, ProjectSearchInput, ProjectSearchResult } from './types.js';
+import { PRODUCT_BROWSER_OPERATIONS, prepareProductBrowserOperation, type ProductBrowserInput, type ProductBrowserOperationName, type TrustedProductBrowserOptions } from './product-browser.js';
 
 const WORKSPACE = 'gotzji-qualification-library';
 const MUTATION_QUEUES = new Map<string, Promise<unknown>>();
+// Engineering defaults: two write-class Grace jobs (multi-job spec) plus one more slot that only reads can reach, so a
+// version-pinned read never waits behind long commands while total model sessions stay bounded.
+const GRACE_SLOTS = 3;
+const WRITE_SLOTS = 2;
+// A live worker that misses a status call is busy (a synchronous SQLite wait, a file retry), not lost. Healthy checks
+// renew it every 30 s; only one left unrenewed this long is treated as unobservable.
+const UNOBSERVED_GRACE_MS = 90_000;
+// Retention (incident I8): a finished job's worker and effect folders are kept 30 days after its worker retired, and
+// fewer while all job folders pass 256 MiB. Its rows stay. One pass an hour.
+const RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+const RETENTION_BYTES = 256 * 1024 * 1024;
+const RETENTION_INTERVAL_MS = 60 * 60 * 1000;
+const RESULT_EXPIRED = 'Retention removed this job’s files; its status and history remain';
+const SETTLE_REFUSALS = {
+  SETTLE_UNSUPPORTED: 'Only project file, command and proved-stopped native jobs can be settled by the owner',
+  JOB_NOT_SETTLEABLE: 'Only a blocked job that still holds its project can be settled',
+  WORKER_STOP_REQUIRED: 'The job worker must be proven stopped before settling',
+  JOB_STILL_RUNNING: 'This job has not finished working; cancel it instead',
+} as const;
+export interface CoreNativeOptions extends TrustedProductNativeOptions {
+  readonly operations?: readonly ProductNativeOperationName[];
+  readonly testRunnerModule?: string;
+}
+export interface CoreBrowserOptions extends TrustedProductBrowserOptions { readonly testTransportModule?: string }
+/** A resource key with its class kept and the rest reduced to 12 hex characters, so no path, URL or document name leaves in a report (I8). */
+function supportResource(key: string): string {
+  if (key.startsWith('read:') || key === 'globalui:windows') return key;
+  const prefix = /^([a-z][a-z-]*):/u.exec(key)?.[1];
+  return prefix ? `${prefix}:${hash(key.slice(prefix.length + 1)).slice(0, 12)}` : `opaque:${hash(key).slice(0, 12)}`;
+}
+/** A code or one of the core's plain sentences; text with paths, quotes or URLs (old provider messages) is withheld (I8). */
+function reportText(value: string): string {
+  return /^[A-Z][A-Z0-9_]{1,79}$/u.test(value) || /^[A-Za-z0-9 ,.()-]{1,160}$/u.test(value) ? value : 'PROVIDER_FAILURE_REDACTED';
+}
 function unwrap<T>(result: Result<T>): T { if (!result.ok) {const reason=result.error.details?.reason;throw new CoreError(result.error.code,isEngineeringGateEvidenceFailureReason(reason)?reason:undefined);} return result.value; }
 
 /** Foundation host. Only fixed qualification recipes are executable in this version. */
+/** Bytes of the regular files under a folder, never following links. */
+async function treeBytes(folder: string): Promise<number> {
+  let entries: Dirent[];
+  try { entries = await readdir(folder, { withFileTypes: true }); } catch { return 0; }
+  let total = 0;
+  for (const entry of entries) {
+    const child = path.join(folder, entry.name);
+    if (entry.isDirectory()) total += await treeBytes(child);
+    else if (entry.isFile()) { try { total += (await lstat(child)).size; } catch { /* removed meanwhile */ } }
+  }
+  return total;
+}
 export class ExecutionCore {
   readonly #store: CoreStore;
   readonly #goals: SqliteGoalRepository;
@@ -29,27 +89,44 @@ export class ExecutionCore {
   readonly #now: () => Date;
   readonly #grace: GraceProfile | null;
   readonly #controlOnly: boolean;
+  readonly #native: CoreNativeOptions | null;
+  readonly #library: TrustedLibraryOptions | null;
+  #browser: CoreBrowserOptions | null;
+  readonly #builtinRecipes = new Map<string, Map<string, string>>();
+  readonly #privateRuntimeRoots: readonly string[];
   #timer: ReturnType<typeof setInterval> | undefined;
+  readonly #retentionBytes: number;
+  #prunedAt = -Infinity;
   #closed = false;
 
-  private constructor(root: string, now: () => Date, grace: GraceRegistration | undefined, controlOnly: boolean) {
+  private constructor(root: string, now: () => Date, grace: GraceRegistration | undefined, controlOnly: boolean, product?: ProductRegistration, upgrade?: CoreUpgrade, nativeOptions?: CoreNativeOptions, libraryOptions?: TrustedLibraryOptions, browserOptions?: CoreBrowserOptions, privateRuntimeRoots: readonly string[] = [], retentionBytes?: number) {
     mkdirSync(root, { recursive: true, mode: 0o700 });
     this.#root = realpathSync(root);
+    this.#privateRuntimeRoots=[...new Set([this.#root,...privateRuntimeRoots.map((entry)=>realpathSync(entry))])];
     this.#now = now;
     this.#controlOnly = controlOnly;
-    this.#grace = !controlOnly && grace ? graceProfile(grace) : null;
+    this.#native = nativeOptions ? { ...nativeOptions } : null;
+    this.#library = libraryOptions ? { ...libraryOptions } : null;
+    this.#browser = browserOptions ? { ...browserOptions } : null;
+    this.#grace = !controlOnly && product ? productGraceProfile(product) : !controlOnly && grace ? graceProfile(grace) : null;
+    if (nativeOptions?.testRunnerModule && !testProviderProfile(this.#grace)) throw new CoreError('NATIVE_TEST_RUNNER_DENIED');
+    if (libraryOptions?.testRunnerModule && !testProviderProfile(this.#grace)) throw new CoreError('LIBRARY_TEST_RUNNER_DENIED');
+    if (browserOptions?.testTransportModule && !testProviderProfile(this.#grace)) throw new CoreError('BROWSER_TEST_TRANSPORT_DENIED');
+    if (retentionBytes !== undefined && !testProviderProfile(this.#grace)) throw new CoreError('RETENTION_TEST_CAP_DENIED');
+    this.#retentionBytes = retentionBytes ?? RETENTION_BYTES;
     this.#policy = controlOnly ? CoreStore.existingPolicy(path.join(this.#root,'core.sqlite')) : this.policyFingerprint();
-    this.#store = new CoreStore(path.join(this.#root, 'core.sqlite'), this.#policy);
+    this.#store = new CoreStore(path.join(this.#root, 'core.sqlite'), this.#policy, upgrade && this.#grace?.mode === 'host-direct' ? { ...upgrade, requireNoPendingJobs: true } : upgrade);
     this.#goals = new SqliteGoalRepository(this.#store.database);
     const workspaces = new SqliteWorkspaceRepository(this.#store.database);
     const fence = new GoalMutationFenceService(this.#goals, {
       now,
       taskStateReader: { read: async (_workspaceId, task): Promise<'running' | 'terminal' | 'absent' | 'unknown'> => {
         const epoch = typeof task === 'string' ? task : task.taskId;
-        const row = this.#store.database.connection.prepare('SELECT * FROM gotzji_workers WHERE epoch=?').get(epoch) as unknown as WorkerRow | undefined;
-        if (row) return observeWorker(row);
+        // A retired epoch is terminal even while its row is kept (incident I8) and after retention prunes its files.
         const retired = this.#store.database.connection.prepare('SELECT reason FROM gotzji_worker_history WHERE epoch=?').get(epoch);
-        return retired && ['stopped','not_launched'].includes(String(retired.reason)) ? 'terminal' : 'unknown';
+        if (retired && ['stopped','absent','not_launched'].includes(String(retired.reason))) return 'terminal';
+        const row = this.#store.database.connection.prepare('SELECT * FROM gotzji_workers WHERE epoch=?').get(epoch) as unknown as WorkerRow | undefined;
+        return row ? observeWorker(row) : 'unknown';
       } },
     });
     this.#service = new GoalContinuationService(workspaces, this.#goals, {
@@ -81,8 +158,10 @@ export class ExecutionCore {
       })) },
     });
   }
-  public static async open(root: string, options: { now?: () => Date; grace?: GraceRegistration; controlOnly?: boolean } = {}): Promise<ExecutionCore> {
-    const core = new ExecutionCore(root, options.now ?? ((): Date => new Date()), options.grace, options.controlOnly === true);
+  public static async open(root: string, options: { now?: () => Date; grace?: GraceRegistration; product?: ProductRegistration; controlOnly?: boolean; upgrade?: CoreUpgrade; nativeOptions?: CoreNativeOptions; libraryOptions?: TrustedLibraryOptions; browserOptions?: CoreBrowserOptions; privateRuntimeRoots?: readonly string[]; retentionBytes?: number } = {}): Promise<ExecutionCore> {
+    if (options.grace && options.product) throw new CoreError('CORE_PROFILE_CONFLICT');
+    if (options.controlOnly && options.upgrade) throw new CoreError('CONTROL_ONLY');
+    const core = new ExecutionCore(root, options.now ?? ((): Date => new Date()), options.grace, options.controlOnly === true, options.product, options.upgrade, options.nativeOptions, options.libraryOptions, options.browserOptions, options.privateRuntimeRoots, options.retentionBytes);
     const workersPath = path.join(core.#root, 'workers');
     if (existsSync(workersPath)) for (const entry of readdirSync(workersPath)) {
       if (existsSync(path.join(workersPath, entry, 'config.json')) && !core.#store.database.connection.prepare('SELECT 1 FROM gotzji_workers WHERE epoch=? UNION ALL SELECT 1 FROM gotzji_worker_history WHERE epoch=?').get(entry,entry)) {
@@ -90,10 +169,15 @@ export class ExecutionCore {
       }
     }
     const workspaces = new SqliteWorkspaceRepository(core.#store.database);
+    await core.retireFinishedWorkers();
     if (!await workspaces.get(WORKSPACE)) await workspaces.insert({ id: WORKSPACE, displayName: 'Gotzji qualification', rootPath: core.#root, realRootPath: core.#root, createdAt: core.#now().toISOString() });
     return core;
   }
   public static async openForControl(root: string): Promise<ExecutionCore> { return ExecutionCore.open(root,{controlOnly:true}); }
+  /** Trusted updater metadata; not a user work tool or credential. */
+  public authority(): { policy: string; authorityId: string } {
+    this.assertAuthority(); return CoreStore.inspectAuthority(path.join(this.#root, 'core.sqlite'));
+  }
   /** Host-management API; never exposed in the adapter/model tool catalog. */
   public enrollAdapter(adapterId: string, owner: string): string {
     this.assertEffects();
@@ -102,12 +186,35 @@ export class ExecutionCore {
     this.#store.database.connection.prepare('INSERT INTO gotzji_adapters VALUES (?,?,?,?)').run(adapterId, owner, hash(credential), this.#policy);
     return credential;
   }
+  /** Trusted startup replay: persist the private credential before calling this. */
+  public ensureAdapterEnrollment(adapterId: string, owner: string, credential: string): void {
+    this.assertEffects();
+    if (!/^[a-z0-9-]{1,64}$/.test(adapterId) || !/^[a-z0-9-]{1,64}$/.test(owner) || !/^[a-f0-9]{64}$/.test(credential)) throw new CoreError('INVALID_ENROLLMENT');
+    const digest = hash(credential);
+    this.#store.database.connection.prepare('INSERT OR IGNORE INTO gotzji_adapters VALUES (?,?,?,?)').run(adapterId, owner, digest, this.#policy);
+    const row = this.#store.database.connection.prepare('SELECT * FROM gotzji_adapters WHERE id=?').get(adapterId);
+    if (!row || row.owner !== owner || row.policy !== this.#policy || row.credential_hash !== digest) throw new CoreError('ADAPTER_ENROLLMENT_CONFLICT', 'The persisted adapter credential does not match its existing authority');
+  }
   public prepare(credential: string, input: RequestInput): Preparation {
+    if (input?.operation === 'grace.product-operation') throw new CoreError('PRODUCT_PREPARATION_REQUIRED');
+    return this.createPreparation(credential, input);
+  }
+  private createPreparation(credential: string, input: RequestInput, lifecycle?: ProjectLifecycleSnapshot): Preparation {
     const adapter = this.authorize(credential, true);
     const normalized = this.validateInput(input);
     const digest = hash(JSON.stringify({ input: normalized, policy: this.#policy }));
     const id = randomUUID();
-    this.#store.database.connection.prepare('INSERT INTO gotzji_preparations VALUES (?,?,?,?,?,?)').run(id, adapter.id, adapter.owner, digest, JSON.stringify(normalized), this.#policy);
+    const database = this.#store.database.connection;
+    if (!lifecycle) database.prepare('INSERT INTO gotzji_preparations VALUES (?,?,?,?,?,?)').run(id, adapter.id, adapter.owner, digest, JSON.stringify(normalized), this.#policy);
+    else {
+      database.exec('BEGIN IMMEDIATE;');
+      try {
+        assertProjectLifecycleCurrent(database, adapter.owner, lifecycle);
+        database.prepare('INSERT INTO gotzji_preparations VALUES (?,?,?,?,?,?)').run(id, adapter.id, adapter.owner, digest, JSON.stringify(normalized), this.#policy);
+        database.prepare('INSERT INTO gotzji_preparation_projects VALUES (?,?,?,?)').run(id, adapter.owner, lifecycle.project.projectId, lifecycle.generation);
+        database.exec('COMMIT;');
+      } catch (error) { database.exec('ROLLBACK;'); throw error; }
+    }
     return { preparationId: id, digest };
   }
   public prepareSourceSnapshot(credential: string, requestId: string): Preparation {
@@ -121,29 +228,584 @@ export class ExecutionCore {
     if (this.#grace?.recipe !== 'code-check' || this.#grace.expectedContent === null) throw new CoreError('CODE_RECIPE_NOT_REGISTERED');
     return this.prepare(credential,{requestId,operation:'grace.code-check',text:this.#grace.expectedContent});
   }
+  /** Trusted app/host enrollment. Do not expose this method as an MCP tool. */
+  public registerProject(credential: string, registration: ProjectRegistration): RegisteredProject {
+    const adapter = this.authorize(credential, true);
+    if (this.#grace?.recipe !== 'product') throw new CoreError('PRODUCT_PROFILE_REQUIRED');
+    let project = registeredProject(adapter.owner, registration);
+    for (const recipeId of project.recipeIds) if (!this.#store.database.connection.prepare('SELECT 1 FROM gotzji_reviewed_recipes WHERE owner=? AND recipe_id=?').get(adapter.owner, recipeId)) throw new CoreError('RECIPE_NOT_REGISTERED', 'Choose a recipe from the server catalog', 'recipeIds');
+    const related = this.listManagedProjects(credential).filter((entry) => {
+      const relative = path.relative(entry.rootPath, project.rootPath);
+      const reverse = path.relative(project.rootPath, entry.rootPath);
+      return (!relative || (!relative.startsWith('..') && !path.isAbsolute(relative))) || (!reverse || (!reverse.startsWith('..') && !path.isAbsolute(reverse)));
+    });
+    if (new Set(related.map((entry) => entry.resourceKey)).size > 1) throw new CoreError('PROJECT_REGISTRATION_CONFLICT', 'A parent enrollment cannot merge already independent project authorities', 'rootPath');
+    if (related[0]) project = { ...project, resourceKey: related[0].resourceKey };
+    const previous = this.#store.database.connection.prepare('SELECT registration FROM gotzji_projects WHERE owner=? AND project_id=?').get(adapter.owner, project.projectId);
+    if (previous && String(previous.registration) !== JSON.stringify(project)) throw new CoreError('PROJECT_REGISTRATION_CONFLICT', 'Use a new project ID for a changed trusted registration', 'projectId');
+    this.#store.database.connection.prepare('INSERT OR IGNORE INTO gotzji_projects VALUES (?,?,?)').run(adapter.owner, project.projectId, JSON.stringify(project));
+    this.#store.database.connection.prepare('INSERT OR IGNORE INTO gotzji_project_lifecycle VALUES (?,?,NULL,0)').run(adapter.owner, project.projectId);
+    return project;
+  }
+  /** Packaged host bootstrap only. App updates append immutable revisions; project approval never moves. */
+  public registerBuiltinCommand(credential: string, registration: ReviewedCommandRegistration): CatalogEntry {
+    const adapter = this.authorize(credential, true);
+    if (this.#grace?.recipe !== 'product') throw new CoreError('PRODUCT_PROFILE_REQUIRED');
+    if (!['node-check', 'pnpm-build', 'pnpm-test', 'pnpm-lint', 'pnpm-typecheck'].includes(registration.recipeId)) throw new CoreError('BUILTIN_RECIPE_DENIED');
+    const recipe = reviewedRecipe(registration);
+    const revision = `${registration.recipeId}-${hash(JSON.stringify(recipe)).slice(0, 48)}`;
+    const versioned = { ...recipe, recipeId: revision, builtinId: registration.recipeId };
+    const entry = this.storeReviewedCommand(adapter.owner, versioned);
+    const current = this.#builtinRecipes.get(adapter.owner) ?? new Map<string, string>();
+    current.set(registration.recipeId, revision); this.#builtinRecipes.set(adapter.owner, current);
+    return entry;
+  }
+  /** Trusted composition, test setup, or the owner through the local app (incident I7). Never callable through MCP. */
+  public registerReviewedCommand(credential: string, registration: ReviewedCommandRegistration): CatalogEntry {
+    const adapter = this.authorize(credential, true);
+    if (this.#grace?.recipe !== 'product') throw new CoreError('PRODUCT_PROFILE_REQUIRED');
+    return this.storeReviewedCommand(adapter.owner, reviewedRecipe(registration));
+  }
+  private storeReviewedCommand(owner: string, recipe: ReturnType<typeof reviewedRecipe>): CatalogEntry {
+    const serialized = JSON.stringify(recipe);
+    const previous = this.#store.database.connection.prepare('SELECT recipe FROM gotzji_reviewed_recipes WHERE owner=? AND recipe_id=?').get(owner, recipe.recipeId);
+    if (previous && String(previous.recipe) !== serialized) throw new CoreError('RECIPE_REGISTRATION_CONFLICT', 'Review changed code as a new immutable recipe ID', 'recipeId');
+    this.#store.database.connection.prepare('INSERT OR IGNORE INTO gotzji_reviewed_recipes VALUES (?,?,?)').run(owner, recipe.recipeId, serialized);
+    return { name: `command.recipe.${recipe.recipeId}`, recipeId: recipe.recipeId, state: 'available', description: recipe.displayName ?? recipe.recipeId, controller: this.#grace?.mode === 'host-direct' ? 'chatgpt-plugin' : 'grace' };
+  }
+  /** App-only and append-only: binds a reviewed recipe to a project without rewriting the registration jobs embed. */
+  public bindProjectRecipe(credential: string, binding: { readonly projectId: string; readonly recipeId: string }): RegisteredProject {
+    const adapter = this.authorize(credential, true);
+    if (this.#grace?.recipe !== 'product') throw new CoreError('PRODUCT_PROFILE_REQUIRED');
+    const database = this.#store.database.connection;
+    database.exec('BEGIN IMMEDIATE;');
+    try {
+      const project = this.readProject(credential, binding.projectId);
+      if (project.kind === 'library') throw new CoreError('RECIPE_BINDING_UNSUPPORTED', 'Library projects run their own workflows', 'projectId');
+      if (!database.prepare('SELECT 1 FROM gotzji_reviewed_recipes WHERE owner=? AND recipe_id=?').get(adapter.owner, binding.recipeId)) throw new CoreError('RECIPE_NOT_REGISTERED', 'Choose a recipe from the server catalog', 'recipeId');
+      database.prepare('INSERT OR IGNORE INTO gotzji_project_recipes VALUES (?,?,?,?)').run(adapter.owner, project.projectId, binding.recipeId, this.#now().toISOString());
+      const result = { ...project, recipeIds: this.projectRecipeIds(credential, project) };
+      database.exec('COMMIT;'); return result;
+    } catch (error) { try { database.exec('ROLLBACK;'); } catch { /* transaction already closed */ } throw error; }
+  }
+  /** Recipes a project may run: its registration's own plus every owner binding, in that order. */
+  public projectRecipeIds(credential: string, project: RegisteredProject): readonly string[] {
+    const adapter = this.authorize(credential);
+    const current = this.readProject(credential, project.projectId);
+    return [...new Set([...current.recipeIds, ...this.boundRecipeIds(adapter.owner, current.projectId)])];
+  }
+  /** What the owner approved, for the app only: the catalog the model reads never carries local paths. */
+  public recipeReview(credential: string, recipeId: string): { readonly recipeId: string; readonly executable: string; readonly executableSha256: string; readonly args: readonly string[]; readonly timeoutMs: number; readonly writeScope: 'project' | 'workspace'; readonly delivery: boolean; readonly dependencies: readonly { readonly path: string; readonly pinned: 'at-approval' | 'each-run'; readonly sha256?: string }[] } {
+    const adapter = this.authorize(credential);
+    const row = this.#store.database.connection.prepare('SELECT recipe FROM gotzji_reviewed_recipes WHERE owner=? AND recipe_id=?').get(adapter.owner, recipeId);
+    if (!row) throw new CoreError('RECIPE_NOT_REGISTERED', 'Choose a recipe from the server catalog', 'recipeId');
+    const recipe = JSON.parse(String(row.recipe)) as ReturnType<typeof reviewedRecipe>;
+    return { recipeId: recipe.recipeId, executable: recipe.executable, executableSha256: recipe.executableHash, args: recipe.args, timeoutMs: recipe.timeoutMs, writeScope: recipe.writeScope ?? 'workspace', delivery: recipe.delivery === true,
+      dependencies: recipe.dependencies.map((item) => { const fixed = item.includes('${projectRoot}') ? undefined : recipe.fixedDependencies.find((entry) => entry.path === path.resolve(item)); return fixed ? { path: item, pinned: 'at-approval' as const, sha256: fixed.hash } : { path: item, pinned: 'each-run' as const }; }) };
+  }
+  /** A delivery command is listed for the model as the owner's to run, so Grace can ask instead of trying (incident I5). */
+  private recipeCatalogText(recipeId: string, recipe: ReviewedCommandRegistration): Pick<CatalogEntry, 'description' | 'controller'> {
+    const name = recipe.displayName ?? recipeId;
+    return recipe.delivery ? { description: `${name} (delivery: ${this.#grace?.mode === 'host-direct' ? 'ChatGPT prepares the exact request; the owner approves it in the gotzji app before ChatGPT submits' : 'the owner runs it from the gotzji app'})`, controller: 'owner' } : { description: name, controller: this.#grace?.mode === 'host-direct' ? 'chatgpt-plugin' : 'grace' };
+  }
+  private boundRecipeIds(owner: string, projectId: string): readonly string[] {
+    return this.#store.database.connection.prepare('SELECT recipe_id FROM gotzji_project_recipes WHERE owner=? AND project_id=? ORDER BY bound_at,recipe_id').all(owner, projectId).map((entry) => String(entry.recipe_id));
+  }
+  public listProjects(credential: string): readonly RegisteredProject[] {
+    return this.listManagedProjects(credential).filter((entry) => entry.archivedAt === null).map(({ archivedAt, ...project }) => { void archivedAt; return project; });
+  }
+  /** App-only project manager view. Immutable registrations stay present after archive. */
+  public listManagedProjects(credential: string): readonly ManagedProject[] {
+    const adapter = this.authorize(credential);
+    return listManagedProjectRows(this.#store.database.connection, adapter.owner);
+  }
+  public selectedProject(credential: string): RegisteredProject | null {
+    const adapter = this.authorize(credential);
+    const row = this.#store.database.connection.prepare('SELECT project_id FROM gotzji_project_selection WHERE owner=?').get(adapter.owner);
+    return row ? this.listProjects(credential).find((entry) => entry.projectId === row.project_id) ?? null : null;
+  }
+  /** Selects existing enrollment only; never enrolls a caller-supplied path or starts work. */
+  public selectProject(credential: string, projectId: string): RegisteredProject {
+    const adapter = this.authorize(credential, true);
+    const database = this.#store.database.connection;
+    database.exec('BEGIN IMMEDIATE;');
+    try {
+      const project = this.readProject(credential, projectId);
+      database.prepare('INSERT INTO gotzji_project_selection VALUES (?,?) ON CONFLICT(owner) DO UPDATE SET project_id=excluded.project_id').run(adapter.owner, projectId);
+      database.exec('COMMIT;'); return project;
+    } catch (error) { try { database.exec('ROLLBACK;'); } catch { /* transaction already closed */ } throw error; }
+  }
+  /** App-only archive/restore. It changes discoverability, never registration, history, memory, routes or files. */
+  public setProjectArchived(credential: string, input: { readonly projectId: string; readonly archived: boolean }): ManagedProject {
+    const adapter = this.authorize(credential, true);
+    if (this.#grace?.recipe !== 'product') throw new CoreError('PRODUCT_PROFILE_REQUIRED');
+    if (!input || Object.keys(input).sort().join(',') !== 'archived,projectId' || typeof input.archived !== 'boolean' || typeof input.projectId !== 'string' || !/^[a-zA-Z0-9_-]{1,64}$/.test(input.projectId)) throw new CoreError('PRODUCT_SCHEMA_INVALID');
+    const database = this.#store.database.connection;
+    database.exec('BEGIN IMMEDIATE;');
+    try {
+      const current = projectLifecycle(database, adapter.owner, input.projectId);
+      if (!current) throw new CoreError('PROJECT_NOT_REGISTERED');
+      if ((current.archivedAt !== null) === input.archived) { database.exec('COMMIT;'); return { ...current.project, archivedAt: current.archivedAt }; }
+      if (input.archived) this.assertProjectIdleForArchive(adapter.owner, input.projectId);
+      const archivedAt = input.archived ? this.#now().toISOString() : null;
+      database.prepare(`
+        INSERT INTO gotzji_project_lifecycle(owner,project_id,archived_at,generation) VALUES (?,?,?,1)
+        ON CONFLICT(owner,project_id) DO UPDATE SET archived_at=excluded.archived_at,generation=gotzji_project_lifecycle.generation+1
+      `).run(adapter.owner, input.projectId, archivedAt);
+      if (input.archived) database.prepare('DELETE FROM gotzji_project_selection WHERE owner=? AND project_id=?').run(adapter.owner, input.projectId);
+      database.exec('COMMIT;');
+      return { ...current.project, archivedAt };
+    } catch (error) { try { database.exec('ROLLBACK;'); } catch { /* transaction already closed */ } throw error; }
+  }
+  private assertProjectIdleForArchive(owner: string, projectId: string): void {
+    const database = this.#store.database.connection;
+    const rows = database.prepare(`
+      SELECT c.*,g.id AS actual_goal_id,g.status AS goal_status,g.goal_key AS actual_goal_key,
+        p.project_id AS indexed_project_id,o.phase AS operation_phase
+      FROM gotzji_claims c
+      LEFT JOIN goals g ON g.id=c.goal_id
+      LEFT JOIN gotzji_product_jobs p ON p.job_id=c.id
+      LEFT JOIN gotzji_operations o ON o.job_id=c.id
+      WHERE c.owner=?
+    `).all(owner);
+    for (const row of rows) {
+      const claim = row as unknown as ClaimRow & { actual_goal_id?: string; goal_status?: string; actual_goal_key?: string; indexed_project_id?: string; operation_phase?: string };
+      let request: RequestInput;
+      try { request = this.#store.input(claim); }
+      catch { throw new CoreError('PROJECT_BUSY', 'An admitted claim has unknown retained state', 'projectId'); }
+      if (request.operation !== 'grace.product-operation') continue;
+      let prepared: PreparedProductOperation;
+      try { prepared = JSON.parse(request.text) as PreparedProductOperation; }
+      catch { throw new CoreError('PROJECT_BUSY', 'An admitted project claim has unknown retained state', 'projectId'); }
+      if (!prepared?.project?.projectId || prepared.project.owner !== owner || (claim.indexed_project_id && claim.indexed_project_id !== prepared.project.projectId)) throw new CoreError('PROJECT_BUSY', 'An admitted project claim has unknown retained state', 'projectId');
+      if (prepared.project.projectId !== projectId) continue;
+      const held = !!database.prepare(`SELECT 1 FROM gotzji_writers WHERE job_id=? UNION ALL SELECT 1 FROM gotzji_resource_claims WHERE job_id=?
+        UNION ALL SELECT 1 FROM gotzji_workers w WHERE w.job_id=? AND NOT EXISTS(
+          SELECT 1 FROM gotzji_worker_history h WHERE h.epoch=w.epoch AND h.job_id=w.job_id AND h.reason IN ('stopped','absent')) LIMIT 1`).get(claim.id, claim.id, claim.id);
+      if (claim.goal_id === null || !claim.actual_goal_id || claim.actual_goal_key !== claim.goal_key || claim.goal_status === 'active' || held || ['started', 'uncertain'].includes(claim.operation_phase ?? '')) throw new CoreError('PROJECT_BUSY', 'Wait for, cancel or settle this project’s admitted work before archiving it', 'projectId');
+    }
+    const ambiguous = database.prepare(`
+      SELECT 1 FROM gotzji_product_jobs p
+      LEFT JOIN gotzji_claims c ON c.id=p.job_id
+      WHERE p.project_id=? AND (c.id IS NULL OR (c.owner=? AND (
+        EXISTS(SELECT 1 FROM gotzji_writers w WHERE w.job_id=p.job_id)
+        OR EXISTS(SELECT 1 FROM gotzji_resource_claims r WHERE r.job_id=p.job_id)
+        OR EXISTS(SELECT 1 FROM gotzji_workers w WHERE w.job_id=p.job_id AND NOT EXISTS(
+          SELECT 1 FROM gotzji_worker_history h WHERE h.epoch=w.epoch AND h.job_id=w.job_id AND h.reason IN ('stopped','absent')))
+      ))) LIMIT 1
+    `).get(projectId, owner);
+    if (ambiguous) throw new CoreError('PROJECT_BUSY', 'The project still has retained execution authority', 'projectId');
+    const orphaned = database.prepare(`
+      SELECT 1 FROM (
+        SELECT job_id FROM gotzji_writers UNION ALL SELECT job_id FROM gotzji_resource_claims UNION ALL SELECT job_id FROM gotzji_workers
+      ) h LEFT JOIN gotzji_claims c ON c.id=h.job_id WHERE c.id IS NULL LIMIT 1
+    `).get();
+    if (orphaned) throw new CoreError('PROJECT_BUSY', 'Retained execution authority has unknown project ownership', 'projectId');
+  }
+  public async projectContext(credential: string, projectId?: string): Promise<{
+    readonly project: RegisteredProject; readonly memory: ProjectMemorySnapshot;
+    readonly instructions: readonly { readonly path: string; readonly content: string; readonly sha256: string }[];
+    readonly jobs: readonly JobView[]; readonly historyTruncated: boolean;
+  }> {
+    const adapter = this.authorize(credential);
+    const selected = projectId === undefined ? this.selectedProject(credential) : undefined;
+    if (projectId === undefined && !selected) throw new CoreError('PROJECT_SELECTION_REQUIRED');
+    const lifecycle = activeProjectLifecycle(this.#store.database.connection, adapter.owner, projectId ?? selected!.projectId);
+    const project = lifecycle.project;
+    const instructions: { path: string; content: string; sha256: string }[] = [];
+    for (const filename of ['AGENTS.md', 'CLAUDE.md']) {
+      try { instructions.push({ path: filename, ...await this.readProjectFile(credential, { projectId: project.projectId, path: filename }) }); }
+      catch (error) { if (!(error instanceof CoreError) || error.code !== 'FILE_NOT_FOUND') throw error; }
+    }
+    const all = this.#store.database.connection.prepare('SELECT c.id FROM gotzji_claims c JOIN gotzji_product_jobs p ON p.job_id=c.id WHERE c.owner=? AND p.project_id=? ORDER BY c.rowid DESC LIMIT 26').all(adapter.owner, project.projectId);
+    const jobs = await Promise.all(all.slice(0, 25).map((row) => this.view(this.#store.claim(String(row.id)))));
+    assertProjectLifecycleCurrent(this.#store.database.connection, adapter.owner, lifecycle);
+    return { project: { ...project, recipeIds: this.projectRecipeIds(credential, project) }, memory: readProjectMemory(this.#store.database.connection, adapter.owner, project.projectId), instructions, jobs, historyTruncated: all.length > 25 };
+  }
+  public saveProjectMemory(credential: string, input: { readonly projectId: string; readonly expectedRevision: number; readonly memory: ProjectMemory }): ProjectMemorySnapshot {
+    const adapter = this.authorize(credential, true);
+    const database = this.#store.database.connection;
+    database.exec('BEGIN IMMEDIATE;');
+    try {
+      this.readProject(credential, input.projectId);
+      const result = writeProjectMemory(database, adapter.owner, input.projectId, input, this.#now().toISOString());
+      database.exec('COMMIT;'); return result;
+    } catch (error) { try { database.exec('ROLLBACK;'); } catch { /* transaction already closed */ } throw error; }
+  }
+  /** App-only enrollment of one host-owned browser session; never expose private session facts through MCP. */
+  public async enrollBrowserSession(credential: string, options: CoreBrowserOptions): Promise<void> {
+    const adapter=this.authorize(credential,true);
+    if(this.#grace?.recipe!=='product')throw new CoreError('PRODUCT_PROFILE_REQUIRED');
+    if(options.testTransportModule)throw new CoreError('BROWSER_TEST_TRANSPORT_STATIC_ONLY');
+    const project=this.listProjects(credential).find((entry)=>entry.projectId===options.session?.projectId);
+    if(!project||project.owner!==adapter.owner||options.session.owner!==adapter.owner||typeof options.verifyOwnedSession!=='function'||!await options.verifyOwnedSession(options.session))throw new CoreError('BROWSER_SESSION_UNVERIFIED');
+    this.#browser={...options,session:structuredClone(options.session),prerequisites:structuredClone(options.prerequisites)};
+  }
+  /** Clear catalog availability only after the host has stopped the exact owned browser session. */
+  public clearBrowserSession(credential:string,sessionId:string):void {
+    const adapter=this.authorize(credential,true);
+    if(!this.#browser||this.#browser.session.owner!==adapter.owner||this.#browser.session.sessionId!==sessionId)throw new CoreError('BROWSER_SESSION_AUTHORITY_DENIED');
+    for(const row of this.#store.database.connection.prepare("SELECT c.*,g.status AS goal_status,o.phase AS operation_phase FROM gotzji_claims c LEFT JOIN goals g ON g.id=c.goal_id LEFT JOIN gotzji_operations o ON o.job_id=c.id WHERE c.owner=?").all(adapter.owner)){
+      const claim=row as unknown as ClaimRow&{goal_status?:string;operation_phase?:string};const input=this.#store.input(claim);if(input.operation!=='grace.product-operation')continue;
+      let prepared:PreparedProductOperation;try{prepared=JSON.parse(input.text) as PreparedProductOperation;}catch{continue;}
+      if(prepared.kind==='browser'&&(claim.goal_status==='active'||claim.operation_phase==='uncertain'||!!this.#store.writer(claim.id)))throw new CoreError('BROWSER_SESSION_IN_USE');
+    }
+    this.#browser=null;
+  }
+  /** Trusted adapter enrollment, absent from ordinary app/MCP work arguments. */
+  public enrollLibraryRoute(credential: string, input: { readonly projectId: string; readonly route: LibraryRouteKind }): void {
+    const adapter = this.authorize(credential, true);
+    const project = this.listProjects(credential).find((entry) => entry.projectId === input.projectId);
+    if (!project) throw new CoreError('PROJECT_NOT_REGISTERED');
+    const route = libraryRoute(adapter.owner, adapter.id, this.authority().authorityId, project, input.route);
+    const previous = this.#store.database.connection.prepare('SELECT route FROM gotzji_library_routes WHERE adapter=? AND project_id=?').get(adapter.id, project.projectId);
+    if (previous && previous.route !== route.route) throw new CoreError('LIBRARY_ROUTE_CONFLICT');
+    this.#store.database.connection.prepare('INSERT OR IGNORE INTO gotzji_library_routes VALUES (?,?,?)').run(adapter.id, project.projectId, route.route);
+  }
+  /** Owner-controlled delivery enrollment. This is not an untrusted model tool. */
+  public authorizeLibraryDelivery(credential: string, binding: TaskBinding, scope: LibraryDeliveryScope): string {
+    const claim = this.bound(credential, binding);
+    const prepared = JSON.parse(this.#store.input(claim).text) as PreparedProductOperation;
+    if (prepared.kind !== 'library' || !['commit','push','deploy','user-delivery'].includes(scope)) throw new CoreError('LIBRARY_DELIVERY_SCOPE_DENIED');
+    const adapter = this.authorize(credential);
+    if (!this.#store.database.connection.prepare('SELECT 1 FROM gotzji_library_routes WHERE adapter=? AND project_id=?').get(adapter.id, prepared.project.projectId)) throw new CoreError('LIBRARY_ROUTE_AUTHORITY_DENIED');
+    const digest = hash(JSON.stringify({ owner: claim.owner, job: claim.id, intent: claim.digest, policy: claim.policy, scope }));
+    this.#store.database.connection.prepare('INSERT OR IGNORE INTO gotzji_library_delivery VALUES (?,?,?)').run(claim.id, scope, digest);
+    return digest;
+  }
+  /** Select an existing Library job through either explicitly enrolled route without adopting unrelated jobs. */
+  public selectLibraryJob(credential: string, projectId: string, jobId: string): TaskBinding {
+    const adapter = this.authorize(credential);
+    const claim = this.#store.claim(jobId);
+    const prepared = JSON.parse(this.#store.input(claim).text) as PreparedProductOperation;
+    if (claim.owner !== adapter.owner || prepared.kind !== 'library' || prepared.project.projectId !== projectId
+      || !this.#store.database.connection.prepare('SELECT 1 FROM gotzji_library_routes WHERE adapter=? AND project_id=?').get(adapter.id, projectId)) throw new CoreError('LIBRARY_ROUTE_AUTHORITY_DENIED');
+    return this.select(credential, jobId);
+  }
+  public async readProjectFile(credential: string, input: ProjectReadInput): Promise<ProjectFileResult> {
+    if (!input || Object.keys(input).sort().join(',') !== 'path,projectId') throw new CoreError('PRODUCT_SCHEMA_INVALID', 'Select a project and a relative file path');
+    const lifecycle = this.readProjectLifecycle(credential, input.projectId);
+    const result = await readProjectFile(lifecycle.project, input.path, this.privateRuntimeRoots());
+    this.assertReadProjectCurrent(credential, lifecycle);
+    return result;
+  }
+  public async listProjectFiles(credential: string, input: ProjectListInput): Promise<ProjectListResult> {
+    if (!input || !Object.hasOwn(input, 'projectId') || Object.keys(input).some((key) => !['projectId', 'path'].includes(key))) throw new CoreError('PRODUCT_SCHEMA_INVALID', 'Select a project and an optional directory');
+    const lifecycle = this.readProjectLifecycle(credential, input.projectId);
+    const result = await listProjectFiles(lifecycle.project, input.path ?? '.', this.privateRuntimeRoots());
+    this.assertReadProjectCurrent(credential, lifecycle);
+    return result;
+  }
+  public async searchProjectFiles(credential: string, input: ProjectSearchInput): Promise<ProjectSearchResult> {
+    if (!input || !Object.hasOwn(input, 'projectId') || !Object.hasOwn(input, 'query') || Object.keys(input).some((key) => !['projectId', 'path', 'query'].includes(key))) throw new CoreError('PRODUCT_SCHEMA_INVALID', 'Select a project, a literal query and an optional directory');
+    const lifecycle = this.readProjectLifecycle(credential, input.projectId);
+    const result = await searchProjectFiles(lifecycle.project, input.path ?? '.', input.query, this.privateRuntimeRoots());
+    this.assertReadProjectCurrent(credential, lifecycle);
+    return result;
+  }
+  public async readProjectGit(credential: string, input: ProjectGitInput): Promise<ProjectGitResult> {
+    if (!input || !['status', 'diff', 'log'].includes(input.view) || !Object.hasOwn(input, 'projectId') || Object.keys(input).some((key) => !(input.view === 'diff' ? ['projectId', 'view', 'path', 'staged'] : ['projectId', 'view']).includes(key)) || input.view === 'diff' && (typeof input.path !== 'string' || input.staged !== undefined && typeof input.staged !== 'boolean')) throw new CoreError('PRODUCT_SCHEMA_INVALID');
+    const lifecycle = this.readProjectLifecycle(credential, input.projectId);
+    let result: ProjectGitResult;
+    try { result = await readProjectGit(lifecycle.project, input, this.privateRuntimeRoots(), this.#root); }
+    catch (error) { if (error instanceof CoreError) throw error; throw new CoreError('GIT_READ_FAILED', 'The selected Git repository could not be read', 'projectId'); }
+    this.assertReadProjectCurrent(credential, lifecycle);
+    return result;
+  }
+  private assertReadProjectCurrent(credential: string, lifecycle: ProjectLifecycleSnapshot): void {
+    const adapter = this.authorize(credential);
+    assertProjectLifecycleCurrent(this.#store.database.connection, adapter.owner, lifecycle);
+  }
+  private readProject(credential: string, projectId: string): RegisteredProject {
+    return this.readProjectLifecycle(credential, projectId).project;
+  }
+  private readProjectLifecycle(credential: string, projectId: string): ProjectLifecycleSnapshot {
+    const adapter = this.authorize(credential);
+    if (typeof projectId !== 'string' || !/^[a-zA-Z0-9_-]{1,64}$/.test(projectId)) throw new CoreError('PRODUCT_SCHEMA_INVALID', 'Select a registered project identifier', 'projectId');
+    if (this.#controlOnly) throw new CoreError('CONTROL_ONLY');
+    if (this.#grace?.recipe !== 'product') throw new CoreError('PRODUCT_PROFILE_REQUIRED');
+    return activeProjectLifecycle(this.#store.database.connection, adapter.owner, projectId);
+  }
+  public catalog(credential: string): readonly CatalogEntry[] {
+    const adapter = this.authorize(credential);
+    const entries = PRODUCT_CATALOG.map((entry) => this.#grace?.recipe === 'product' || entry.state === 'unsupported' ? { ...entry } : { ...entry, state: 'unsupported' as const, reason: 'PRODUCT_PROFILE_REQUIRED' });
+    const recipes = this.#store.database.connection.prepare('SELECT recipe_id,recipe FROM gotzji_reviewed_recipes WHERE owner=? ORDER BY recipe_id').all(adapter.owner).map((row): CatalogEntry => {
+      const recipeId = String(row.recipe_id);
+      const recipe = JSON.parse(String(row.recipe)) as ReviewedCommandRegistration & { readonly builtinId?: string };
+      const current = this.#builtinRecipes.get(adapter.owner);
+      const replacement = current?.get(recipe.builtinId ?? recipeId);
+      const superseded = replacement !== undefined && replacement !== recipeId;
+      return { name: `command.recipe.${recipeId}`, recipeId, state: superseded ? 'unsupported' : 'available', ...(superseded ? { reason: 'BUILTIN_RECIPE_SUPERSEDED' } : {}), ...this.recipeCatalogText(recipeId, recipe) };
+    });
+    const native = PRODUCT_NATIVE_OPERATIONS.map((name): CatalogEntry => ({ name, state: this.nativeAvailable(name) ? 'available' : 'unsupported', description: `Grace-controlled ${name} with original preservation and native receipt verification`, controller: this.#grace?.mode === 'host-direct' ? 'chatgpt-plugin' : 'grace', ...(this.nativeAvailable(name) ? {} : { reason: 'NATIVE_PROVIDER_NOT_QUALIFIED' }) }));
+    const browser = PRODUCT_BROWSER_OPERATIONS.map((name): CatalogEntry => ({ name, state: this.#browser && this.#grace?.recipe === 'product' && (this.#browser.operations ?? PRODUCT_BROWSER_OPERATIONS).includes(name) ? 'available' : 'unsupported', description:`Grace-controlled ${name} in the enrolled owned browser session`,controller:this.#grace?.mode === 'host-direct' ? 'chatgpt-plugin' : 'grace',...(this.#browser && this.#grace?.recipe === 'product' ? {} : {reason:'BROWSER_PROVIDER_NOT_QUALIFIED'}) }));
+    const library: CatalogEntry[] = [];
+    if (this.#library) for (const project of this.listProjects(credential).filter((entry) => entry.kind === 'library')) {
+      const route = this.#store.database.connection.prepare('SELECT route FROM gotzji_library_routes WHERE adapter=? AND project_id=?').get(adapter.id, project.projectId);
+      if (route) for (const workflow of libraryCatalog(this.#grace?.mode)) library.push({ name: 'library.workflow', workflowId: workflow.id, workflowVersion: workflow.version, projectId: project.projectId, state: 'available', description: workflow.title, controller: this.#grace?.mode === 'host-direct' ? 'chatgpt-plugin' : 'grace' });
+    }
+    return [...entries, ...recipes, ...native, ...browser, ...library].map((entry) => this.#grace?.mode === 'host-direct' ? { ...entry, controller: entry.controller === 'grace' ? 'chatgpt-plugin' : entry.controller, description: entry.description.replace(/Legacy Grace-controlled/gu, 'Durable host').replace(/Grace-controlled/gu, 'ChatGPT-requested host').replace(/Grace changes/gu, 'The host changes').replace(/Grace starts/gu, 'The host starts') } : entry);
+  }
+  private nativeAvailable(operation: ProductNativeOperationName): boolean {
+    if (!this.#native || this.#grace?.recipe !== 'product' || !(this.#native.operations ?? PRODUCT_NATIVE_OPERATIONS.filter((name) => !name.startsWith('cad.'))).includes(operation)) return false;
+    try {
+      if (operation.startsWith('cad.')) return !!this.#native.cad && hash(readFileSync(this.#native.cad.scriptPath)) === this.#native.cad.scriptSha256 && hash(readFileSync(this.#native.cad.executable)) === this.#native.cad.executableSha256;
+      return !lstatSync(this.#native.scriptPath).isSymbolicLink() && realpathSync(this.#native.scriptPath) === path.resolve(this.#native.scriptPath) && hash(readFileSync(this.#native.scriptPath)) === this.#native.scriptSha256;
+    } catch { return false; }
+  }
+  public prepareOperation(credential: string, input: BasicProductOperationInput, options?: PrepareOptions): Preparation;
+  public prepareOperation(credential: string, input: ProductNativeInput, options?: PrepareOptions): Promise<Preparation>;
+  public prepareOperation(credential: string, input: ProductBrowserInput, options?: PrepareOptions): Promise<Preparation>;
+  public prepareOperation(credential: string, input: ProductLibraryInput, options?: PrepareOptions): Preparation;
+  public prepareOperation(credential: string, input: ProductOperationInput, options?: PrepareOptions): Preparation | Promise<Preparation>;
+  /** `ownerRun` is set only by the owner's app surface; every other caller is refused delivery commands (incident I5). */
+  public prepareOperation(credential: string, input: ProductOperationInput, options: PrepareOptions = {}): Preparation | Promise<Preparation> {
+    const adapter = this.authorize(credential, true);
+    if (this.#grace?.recipe !== 'product') throw new CoreError('PRODUCT_PROFILE_REQUIRED');
+    const lifecycle = projectLifecycle(this.#store.database.connection, adapter.owner, input?.projectId ?? '');
+    if (!lifecycle) throw new CoreError('PROJECT_NOT_REGISTERED', 'Enroll this project in the app before submitting work', 'projectId');
+    for (const jobId of input.dependsOn ?? []) {
+      const claim = this.#store.claim(jobId);
+      if (claim.owner !== adapter.owner || claim.id === hash(`${adapter.owner}\0${input.requestId}`) || claim.goal_id === null) throw new CoreError('DEPENDENCY_AUTHORITY_DENIED', 'Select an existing owned job other than this request', 'dependsOn');
+    }
+    if (input.operation === 'library.workflow') {
+      if (this.#grace.mode === 'host-direct') assertHostDirectLibraryWorkflow(input.workflowId, input.workflowVersion);
+      if (!this.#store.database.connection.prepare('SELECT 1 FROM gotzji_library_routes WHERE adapter=? AND project_id=?').get(adapter.id, input.projectId)) throw new CoreError('LIBRARY_ROUTE_AUTHORITY_DENIED');
+    }
+    const basic = input as BasicProductOperationInput;
+    const recipe = basic.operation === 'command.run' ? this.#store.database.connection.prepare('SELECT recipe FROM gotzji_reviewed_recipes WHERE owner=? AND recipe_id=?').get(adapter.owner, basic.commandId ?? '') : undefined;
+    const reviewed = recipe ? JSON.parse(String(recipe.recipe)) as ReturnType<typeof reviewedRecipe> : undefined;
+    if (reviewed?.delivery && options.ownerRun !== true && this.#grace.mode !== 'host-direct') throw new CoreError('DELIVERY_OWNER_ONLY', 'A delivery command runs only when the owner starts it in the gotzji app', 'commandId', 'request', 'Ask the owner to run this delivery from the gotzji app');
+    const existing = this.#store.database.connection.prepare('SELECT * FROM gotzji_claims WHERE id=? AND owner=?').get(hash(`${adapter.owner}\0${input.requestId}`), adapter.owner) as unknown as ClaimRow | undefined;
+    if (existing) {
+      const replay = (): Preparation => {
+        const saved = this.#store.input(existing);
+        const known = saved.operation === 'grace.product-operation' ? JSON.parse(saved.text) as PreparedProductOperation : undefined;
+        const canonical = (value: unknown): string => JSON.stringify(value, (_key, item: unknown) => item && typeof item === 'object' && !Array.isArray(item) ? Object.fromEntries(Object.entries(item as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b))) : item);
+        const normalize = (value: ProductOperationInput): unknown => known?.kind === 'native' ? { ...value, path: path.relative(known.project.rootPath, path.resolve(known.project.rootPath, (value as ProductNativeInput).path)), expectedSha256: (value as ProductNativeInput).expectedSha256 ?? known.beforeSha256, ...('outputPath' in value && value.outputPath ? { outputPath: path.relative(known.project.rootPath, path.resolve(known.project.rootPath, value.outputPath)) } : {}) } : value;
+        if (!known || canonical(normalize(known.input)) !== canonical(normalize(input)) || canonical(known.project) !== canonical(lifecycle.project)) throw new CoreError('REQUEST_DIGEST_CONFLICT');
+        const preparation = this.#store.database.connection.prepare('SELECT id,digest FROM gotzji_preparations WHERE owner=? AND adapter=? AND digest=? ORDER BY rowid LIMIT 1').get(adapter.owner, adapter.id, existing.digest);
+        if (preparation) return { preparationId: String(preparation.id), digest: String(preparation.digest) };
+        const id = randomUUID();
+        this.#store.database.connection.prepare('INSERT INTO gotzji_preparations VALUES (?,?,?,?,?,?)').run(id, adapter.id, adapter.owner, existing.digest, existing.input, existing.policy);
+        return { preparationId: id, digest: existing.digest };
+      };
+      return PRODUCT_NATIVE_OPERATIONS.includes(input.operation as ProductNativeOperationName) || PRODUCT_BROWSER_OPERATIONS.includes(input.operation as ProductBrowserOperationName) ? Promise.resolve().then(replay) : replay();
+    }
+    if (lifecycle.archivedAt !== null) throw new CoreError('PROJECT_ARCHIVED', 'Restore this project in the gotzji app before preparing work', 'projectId');
+    if (input.operation === 'library.workflow') {
+      if (this.#grace.mode === 'host-direct') assertHostDirectLibraryWorkflow(input.workflowId, input.workflowVersion);
+      if (!this.#library) throw new CoreError('LIBRARY_EXECUTOR_NOT_REGISTERED');
+      const project = lifecycle.project;
+      const enrolled = this.#store.database.connection.prepare('SELECT route FROM gotzji_library_routes WHERE adapter=? AND project_id=?').get(adapter.id, project.projectId);
+      if (!enrolled) throw new CoreError('LIBRARY_ROUTE_AUTHORITY_DENIED');
+      const route = libraryRoute(adapter.owner, adapter.id, this.authority().authorityId, project, String(enrolled.route) as LibraryRouteKind);
+      const prepared = prepareLibraryOperation(project, input, route, this.#library);
+      return this.createPreparation(credential, { requestId: input.requestId, operation: 'grace.product-operation', text: JSON.stringify(prepared) }, lifecycle);
+    }
+    if (PRODUCT_BROWSER_OPERATIONS.includes(input.operation as ProductBrowserOperationName)) {
+      if (!this.#browser || !(this.#browser.operations ?? PRODUCT_BROWSER_OPERATIONS).includes(input.operation as ProductBrowserOperationName)) throw new CoreError('BROWSER_PROVIDER_NOT_QUALIFIED');
+      const enrollment=this.#browser;
+      return prepareProductBrowserOperation(lifecycle.project,input,enrollment).then((operation)=>{
+        if(this.#browser!==enrollment||this.#browser.session.sessionId!==operation.browser.session.sessionId||this.#browser.manifestSha256!==operation.browser.manifestSha256)throw new CoreError('BROWSER_SESSION_CHANGED');
+        return this.createPreparation(credential,{requestId:input.requestId,operation:'grace.product-operation',text:JSON.stringify(operation)},lifecycle);
+      });
+    }
+    if (PRODUCT_NATIVE_OPERATIONS.includes(input.operation as ProductNativeOperationName)) {
+      if (!this.#native || !this.nativeAvailable(input.operation as ProductNativeOperationName)) throw new CoreError('NATIVE_PROVIDER_NOT_QUALIFIED', 'Use an installed qualified provider with the pinned script', 'operation');
+      return prepareProductNativeOperation(lifecycle.project, input, this.#native).then((operation) => this.createPreparation(credential, { requestId: input.requestId, operation: 'grace.product-operation', text: JSON.stringify(operation) }, lifecycle));
+    }
+    const operation = productOperation(lifecycle.project, basic, reviewed,{privateRuntimeRoots:this.privateRuntimeRoots(),boundRecipeIds:this.boundRecipeIds(adapter.owner,basic.projectId)});
+    const preparation = this.createPreparation(credential, { requestId: input.requestId, operation: 'grace.product-operation', text: JSON.stringify(operation) }, lifecycle);
+    if (reviewed?.delivery) this.#store.database.connection.prepare('INSERT INTO gotzji_delivery_approvals VALUES (?,?,?,?,?,?,?)').run(preparation.preparationId, adapter.owner, adapter.id, preparation.digest, options.ownerRun === true ? 'approved' : 'pending', this.#now().getTime(), this.#now().getTime() + 30 * 60_000);
+    return preparation;
+  }
+  /** Private owner decision over one immutable request; neither review nor approval admits work. */
+  public deliveryApproval(credential: string, preparationId: string): Record<string, unknown> {
+    const adapter = this.authorize(credential);
+    const row = this.#store.database.connection.prepare('SELECT a.*,p.input,p.policy FROM gotzji_delivery_approvals a JOIN gotzji_preparations p ON p.id=a.preparation_id WHERE a.preparation_id=? AND a.owner=? AND p.digest=a.digest AND p.owner=a.owner AND p.adapter=a.adapter').get(preparationId, adapter.owner);
+    if (!row || row.policy !== this.#policy) throw new CoreError('DELIVERY_APPROVAL_DENIED');
+    const request = JSON.parse(String(row.input)) as RequestInput;
+    const operation = JSON.parse(request.text) as ProductOperation;
+    return { preparationId, digest: String(row.digest), decision: Number(row.expires_at) <= this.#now().getTime() ? 'expired' : String(row.decision), expiresAt: new Date(Number(row.expires_at)).toISOString(), project: operation.project, request: operation.input, command: operation.command, projectPolicies: operation.projectPolicies };
+  }
+  public listDeliveryApprovals(credential: string): readonly Record<string, unknown>[] {
+    const adapter = this.authorize(credential);
+    return this.#store.database.connection.prepare(`SELECT a.preparation_id FROM gotzji_delivery_approvals a JOIN gotzji_preparations p ON p.id=a.preparation_id WHERE a.owner=? AND a.decision IN ('pending','approved') AND a.expires_at>? AND p.policy=? AND NOT EXISTS(SELECT 1 FROM gotzji_claims c WHERE c.owner=a.owner AND c.digest=a.digest) ORDER BY a.created_at DESC,a.rowid DESC LIMIT 25`).all(adapter.owner, this.#now().getTime(), this.#policy).map(row => this.deliveryApproval(credential, String(row.preparation_id)));
+  }
+  public decideDeliveryApproval(credential: string, preparationId: string, expectedDigest: string, decision: 'approved' | 'rejected'): Record<string, unknown> {
+    this.authorize(credential, true);
+    const review = this.deliveryApproval(credential, preparationId);
+    if (!['approved', 'rejected'].includes(decision) || review.digest !== expectedDigest || review.decision !== 'pending') throw new CoreError('DELIVERY_APPROVAL_DENIED');
+    const request = review.request as BasicProductOperationInput;
+    if (decision === 'approved') this.assertDeliveryPreparationCurrent(credential, request, review.command, review.projectPolicies);
+    const changed = this.#store.database.connection.prepare("UPDATE gotzji_delivery_approvals SET decision=? WHERE preparation_id=? AND digest=? AND decision='pending' AND expires_at>?").run(decision, preparationId, expectedDigest, this.#now().getTime());
+    if (Number(changed.changes) !== 1) throw new CoreError('DELIVERY_APPROVAL_DENIED');
+    return this.deliveryApproval(credential, preparationId);
+  }
+  private assertDeliveryPreparationCurrent(credential: string, input: BasicProductOperationInput, command: unknown, projectPolicies: unknown): void {
+    const adapter = this.authorize(credential);
+    const project = this.readProject(credential, input.projectId);
+    const row = this.#store.database.connection.prepare('SELECT recipe FROM gotzji_reviewed_recipes WHERE owner=? AND recipe_id=?').get(adapter.owner, input.commandId ?? '');
+    if (!row) throw new CoreError('RECIPE_NOT_REGISTERED');
+    const recipe = JSON.parse(String(row.recipe)) as ReturnType<typeof reviewedRecipe>;
+    if (!recipe.delivery) throw new CoreError('DELIVERY_APPROVAL_DENIED');
+    const current = productOperation(project, input, recipe, { privateRuntimeRoots: this.privateRuntimeRoots(), boundRecipeIds: this.boundRecipeIds(adapter.owner, input.projectId) });
+    if (JSON.stringify(current.command) !== JSON.stringify(command) || JSON.stringify(current.projectPolicies) !== JSON.stringify(projectPolicies)) throw new CoreError('DELIVERY_PREPARATION_CHANGED', 'The command or project instructions changed; prepare and review a new request');
+  }
+  /**
+   * The owner's newest jobs, one page at a time (incident I8: lnwjud's task list took 10.9 s). `before` is the last job
+   * of the previous page; history no longer slows the newest page.
+   */
+  public async list(credential: string, options: { readonly limit?: number; readonly before?: string; readonly operation?: string; readonly projectIds?: readonly string[] } = {}): Promise<readonly JobView[]> {
+    const adapter = this.authorize(credential);
+    const limit = options.limit ?? 100;
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 500) throw new CoreError('INVALID_REQUEST', 'Use a page of 1 to 500 jobs', 'limit', 'request', 'Correct the named field and list again');
+    const database = this.#store.database.connection;
+    const cursor = options.before === undefined ? undefined : database.prepare('SELECT rowid FROM gotzji_claims WHERE id=? AND owner=?').get(options.before, adapter.owner);
+    if (options.before !== undefined && !cursor) throw new CoreError('INVALID_REQUEST', 'Continue from a job in the previous page', 'before', 'request', 'Correct the named field and list again');
+    // Filters are set by trusted callers only (a channel's own jobs); the list schema admits just limit and before.
+    if (options.projectIds?.length === 0) return [];
+    const filters: string[] = []; const values: (string | number)[] = [adapter.owner];
+    if (cursor) { filters.push('c.rowid<?'); values.push(Number(cursor.rowid)); }
+    if (options.operation !== undefined) { filters.push('p.operation=?'); values.push(options.operation); }
+    if (options.projectIds !== undefined) { filters.push(`p.project_id IN (${options.projectIds.map(() => '?').join(',')})`); values.push(...options.projectIds); }
+    const join = options.operation !== undefined || options.projectIds !== undefined ? ' JOIN gotzji_product_jobs p ON p.job_id=c.id' : '';
+    const claims = database.prepare(`SELECT c.* FROM gotzji_claims c${join} WHERE c.owner=? AND c.goal_id IS NOT NULL${filters.map((filter) => ` AND ${filter}`).join('')} ORDER BY c.rowid DESC LIMIT ?`).all(...values, limit) as unknown as ClaimRow[];
+    const positions = this.queuePositions(adapter.owner);
+    return Promise.all(claims.map((claim) => this.view(claim, positions)));
+  }
+  /** Every job that is still active or still holds a writer; bounded by the queue cap and the worker slots. */
+  public async activeJobs(credential: string): Promise<readonly JobView[]> {
+    const adapter = this.authorize(credential);
+    const claims = this.#store.database.connection.prepare("SELECT c.* FROM gotzji_claims c JOIN goals g ON g.id=c.goal_id WHERE c.owner=? AND (g.status='active' OR EXISTS(SELECT 1 FROM gotzji_writers w WHERE w.job_id=c.id)) ORDER BY c.rowid DESC").all(adapter.owner) as unknown as ClaimRow[];
+    const positions = this.queuePositions(adapter.owner);
+    return Promise.all(claims.map((claim) => this.view(claim, positions)));
+  }
+  public async inspectQueue(credential: string): Promise<readonly JobView[]> {
+    const adapter = this.authorize(credential);
+    const queue = this.orderedQueue(adapter.owner); const positions = new Map(queue.map((claim, index) => [claim.id, index + 1]));
+    return Promise.all(queue.map((claim) => this.view(claim, positions)));
+  }
+  /** Queue positions computed once per listing instead of once per job. */
+  private queuePositions(owner: string): ReadonlyMap<string, number> { return new Map(this.orderedQueue(owner).map((claim, index) => [claim.id, index + 1])); }
+  /** The owner's support report (incident I8). App-only: the server refuses every other surface. `host` comes from the product server. */
+  public async supportReport(credential: string, host: Readonly<Record<string, unknown>> = {}): Promise<SupportReport> {
+    const started = performance.now();
+    const adapter = this.authorize(credential);
+    const database = this.#store.database.connection;
+    const tally = (sql: string): Record<string, number> => {
+      const counts: Record<string, number> = {};
+      for (const row of database.prepare(sql).all(adapter.owner)) { const key = reportText(String(row.key ?? 'none')); counts[key] = (counts[key] ?? 0) + Number(row.count); }
+      return counts;
+    };
+    const jobs: SupportReport['jobs'][number][] = [];
+    for (const claim of database.prepare('SELECT * FROM gotzji_claims WHERE owner=? AND goal_id IS NOT NULL ORDER BY rowid DESC LIMIT 200').all(adapter.owner) as unknown as ClaimRow[]) {
+      const view = await this.view(claim);
+      const events = (database.prepare('SELECT event,observed_at FROM gotzji_job_events WHERE job_id=? ORDER BY seq DESC LIMIT 20').all(claim.id)).reverse().map((row) => ({ event: String(row.event), at: String(row.observed_at) }));
+      const phase = this.#store.operation(claim.id)?.phase;
+      jobs.push({ jobId: claim.id, requestIdHash: hash(claim.request_id).slice(0, 12), operation: view.requestedOperation ?? view.operation, status: view.status, events,
+        ...(view.projectId ? { projectId: view.projectId } : {}), ...(view.summary ? { summary: reportText(view.summary) } : {}), ...(view.blockerCode ? { blockerCode: reportText(view.blockerCode) } : {}), ...(view.waitingReason ? { waitingReason: view.waitingReason } : {}),
+        ...(view.blockingResource ? { blockingResource: supportResource(view.blockingResource) } : {}), ...(view.blockingJob ? { blockingJob: view.blockingJob } : {}), ...(phase ? { phase } : {}) });
+    }
+    const queue = (await Promise.all(this.orderedQueue(adapter.owner).map((claim) => this.view(claim)))).map((view) => ({ jobId: view.jobId, ...(view.waitingReason ? { waitingReason: view.waitingReason } : {}), ...(view.blockingJob ? { blockingJob: view.blockingJob } : {}), ...(view.blockingResource ? { blockingResource: supportResource(view.blockingResource) } : {}) }));
+    const holders = database.prepare("SELECT 'writer' AS kind,w.root AS resource,w.job_id,w.epoch FROM gotzji_writers w JOIN gotzji_claims c ON c.id=w.job_id WHERE c.owner=? UNION ALL SELECT 'claim',r.resource_key,r.job_id,r.epoch FROM gotzji_resource_claims r JOIN gotzji_claims c ON c.id=r.job_id WHERE c.owner=?").all(adapter.owner, adapter.owner)
+      .map((row) => ({ kind: String(row.kind) as 'writer' | 'claim', resource: supportResource(String(row.resource)), jobId: String(row.job_id), epoch: String(row.epoch) }));
+    return { schemaVersion: 1, generatedAt: this.#now().toISOString(), policy: this.#policy.slice(0, 12),
+      counts: {
+        jobsByGoalStatus: tally('SELECT g.status AS key,COUNT(*) AS count FROM gotzji_claims c JOIN goals g ON g.id=c.goal_id WHERE c.owner=? GROUP BY g.status'),
+        failuresBySummary: tally("SELECT g.terminal_summary AS key,COUNT(*) AS count FROM gotzji_claims c JOIN goals g ON g.id=c.goal_id WHERE c.owner=? AND g.status='failed' GROUP BY g.terminal_summary"),
+        diagnosticsByCode: tally('SELECT d.code AS key,COUNT(*) AS count FROM gotzji_diagnostics d JOIN gotzji_claims c ON c.id=d.job_id WHERE c.owner=? GROUP BY d.code'),
+      },
+      jobs, holders, queue,
+      providers: { native: PRODUCT_NATIVE_OPERATIONS.map((name) => ({ name, state: this.nativeAvailable(name) ? 'available' as const : 'unsupported' as const })), browserConfigured: this.#browser !== null, libraryConfigured: this.#library !== null },
+      host, reportMs: Math.round(performance.now() - started) };
+  }
+  public async reprioritize(credential: string, input: { readonly jobId: string; readonly priority: number }): Promise<JobView> {
+    const adapter = this.authorize(credential);
+    if (!input || Object.keys(input).sort().join(',') !== 'jobId,priority' || !Number.isInteger(input.priority) || input.priority < 0 || input.priority > 3) throw new CoreError('INVALID_REQUEST', 'Use priority 0 through 3', 'priority');
+    const claim = this.#store.claim(input.jobId);
+    if (claim.owner !== adapter.owner) throw new CoreError('TASK_AUTHORITY_DENIED');
+    return this.serial(claim.id, async () => {
+      if ((await this.snapshot(claim)).status !== 'active' || this.#store.worker(claim.id)) throw new CoreError('JOB_NOT_QUEUED');
+      const updated = this.#store.database.connection.prepare('UPDATE gotzji_queue SET priority=? WHERE job_id=?').run(input.priority, claim.id);
+      if (Number(updated.changes) !== 1) throw new CoreError('JOB_NOT_QUEUED');
+      this.#store.event(claim.id, `priority:${input.priority}`, this.#now().toISOString());
+      return this.view(claim);
+    });
+  }
+  private orderedQueue(owner?: string): ClaimRow[] {
+    return this.#store.database.connection.prepare(`SELECT c.* FROM gotzji_queue q JOIN gotzji_claims c ON c.id=q.job_id JOIN goals g ON g.id=c.goal_id WHERE g.status='active' AND NOT EXISTS(SELECT 1 FROM gotzji_workers w WHERE w.job_id=c.id) ${owner ? 'AND c.owner=?' : ''} ORDER BY MIN(3,q.priority+CAST(MAX(0,?-q.enqueued_at)/30000 AS INTEGER)) DESC,q.enqueue_seq ASC`).all(...(owner ? [owner, this.#now().getTime()] : [this.#now().getTime()])) as unknown as ClaimRow[];
+  }
   public async submit(credential: string, preparationId: string): Promise<JobView> {
     const adapter = this.authorize(credential, true);
     const preparation = this.#store.database.connection.prepare('SELECT * FROM gotzji_preparations WHERE id=?').get(preparationId);
-    if (!preparation || preparation.adapter !== adapter.id || preparation.policy !== this.#policy) throw new CoreError('PREPARATION_DENIED');
+    if (!preparation || preparation.adapter !== adapter.id || !this.#store.acceptsPolicy(String(preparation.policy), this.#policy)) throw new CoreError('PREPARATION_DENIED');
+    if (preparation.policy !== this.#policy) {
+      const oldInput = JSON.parse(String(preparation.input)) as RequestInput;
+      const oldClaim = this.#store.claim(hash(`${adapter.owner}\0${oldInput.requestId}`));
+      if (oldClaim.owner !== adapter.owner || oldClaim.policy !== preparation.policy || oldClaim.digest !== preparation.digest) throw new CoreError('PREPARATION_DENIED');
+      return this.view(oldClaim);
+    }
     const input = this.validateInput(JSON.parse(String(preparation.input)) as RequestInput);
     const id = hash(`${adapter.owner}\0${input.requestId}`);
-    this.#store.database.connection.prepare('INSERT OR IGNORE INTO gotzji_claims VALUES (?,?,?,?,?,?,NULL,?)').run(id, adapter.owner, input.requestId, String(preparation.digest), JSON.stringify(input), `gotzji-${id}`, this.#policy);
+    const database = this.#store.database.connection;
+    database.exec('BEGIN IMMEDIATE;');
+    try {
+      const admitted = !!database.prepare('SELECT 1 FROM gotzji_claims WHERE id=?').get(id);
+      if (input.operation === 'grace.product-operation' && !admitted) this.assertPreparationProjectCurrent(preparationId, adapter.owner, input);
+      if (input.operation === 'grace.product-operation' && !admitted) {
+        const operation = JSON.parse(input.text) as ProductOperation;
+        if (operation.input.operation === 'command.run') {
+          const recipe = database.prepare('SELECT recipe FROM gotzji_reviewed_recipes WHERE owner=? AND recipe_id=?').get(adapter.owner, operation.input.commandId ?? '');
+          if (recipe && (JSON.parse(String(recipe.recipe)) as ReviewedCommandRegistration).delivery) {
+            const approval = database.prepare('SELECT * FROM gotzji_delivery_approvals WHERE preparation_id=? AND owner=? AND adapter=? AND digest=?').get(preparationId, adapter.owner, adapter.id, String(preparation.digest));
+            if (!approval || approval.decision !== 'approved' || Number(approval.expires_at) <= this.#now().getTime()) throw new CoreError('DELIVERY_APPROVAL_REQUIRED', 'Ask the owner to review this exact request in the gotzji app, then submit the same preparation');
+            this.assertDeliveryPreparationCurrent(credential, operation.input, operation.command, operation.projectPolicies);
+          }
+        }
+      }
+      if (input.operation === 'grace.product-operation' && !admitted) {
+        const waiting = database.prepare("SELECT COUNT(*) AS count FROM gotzji_claims c LEFT JOIN goals g ON c.goal_id=g.id WHERE c.owner=? AND json_extract(c.input,'$.operation')='grace.product-operation' AND (g.status='active' OR c.goal_id IS NULL) AND NOT EXISTS(SELECT 1 FROM gotzji_workers w WHERE w.job_id=c.id)").get(adapter.owner);
+        if (Number(waiting?.count) >= 32) throw new CoreError('QUEUE_CAPACITY_REACHED', 'Wait for a queued job to start or cancel a selected job');
+      }
+      database.prepare('INSERT OR IGNORE INTO gotzji_claims VALUES (?,?,?,?,?,?,NULL,?)').run(id, adapter.owner, input.requestId, String(preparation.digest), JSON.stringify(input), `gotzji-${id}`, this.#policy);
+      database.exec('COMMIT;');
+    } catch (error) { database.exec('ROLLBACK;'); throw error; }
     const claim = this.#store.claim(id);
     if (claim.digest !== preparation.digest) throw new CoreError('REQUEST_DIGEST_CONFLICT');
     await this.serial(id, async (): Promise<void> => {
       const authorization = hash(JSON.stringify({owner:claim.owner,intent:claim.digest,boundary:'local',policy:this.#policy,revision:0}));
       this.#store.database.connection.prepare('INSERT OR IGNORE INTO gotzji_authorized_jobs VALUES (?,?,?,?,?,?,?)').run(claim.id,claim.owner,claim.digest,'local',this.#policy,authorization,0);
       await this.ensureGoal(claim);
+      if (input.operation === 'grace.product-operation') {
+        const operation = JSON.parse(input.text) as ProductOperation;
+        this.#store.database.connection.prepare('INSERT OR IGNORE INTO gotzji_product_jobs(job_id,project_id,resource_key,operation,waiting_reason) VALUES (?,?,?,?,NULL)').run(claim.id, operation.project.projectId, operation.project.resourceKey, operation.input.operation);
+        this.#store.database.connection.prepare('INSERT OR IGNORE INTO gotzji_queue SELECT ?,COALESCE(MAX(enqueue_seq),0)+1,?,? FROM gotzji_queue').run(claim.id, operation.input.priority ?? 1, this.#now().getTime());
+        this.#store.event(claim.id, 'accepted', this.#now().toISOString());
+      }
     });
     return this.view(claim);
+  }
+  private assertPreparationProjectCurrent(preparationId: string, owner: string, input: RequestInput): void {
+    let operation: PreparedProductOperation;
+    try { operation = JSON.parse(input.text) as PreparedProductOperation; }
+    catch { throw new CoreError('PREPARATION_DENIED'); }
+    const projectId = operation?.project?.projectId;
+    if (typeof projectId !== 'string') throw new CoreError('PREPARATION_DENIED');
+    const binding = this.#store.database.connection.prepare('SELECT owner,project_id,generation FROM gotzji_preparation_projects WHERE preparation_id=?').get(preparationId);
+    if (binding && (binding.owner !== owner || binding.project_id !== projectId)) throw new CoreError('PREPARATION_DENIED');
+    const current = projectLifecycle(this.#store.database.connection, owner, projectId);
+    const expectedGeneration = binding ? Number(binding.generation) : 0;
+    if (!current || current.archivedAt !== null || current.generation !== expectedGeneration) throw new CoreError('PROJECT_LIFECYCLE_CHANGED', 'Prepare this operation again after restoring the project', 'projectId');
   }
   /** Explicit task selection plus verified enrollment, returning adapter-private authority. */
   public select(credential: string, jobId: string): TaskBinding {
     const adapter = this.authorize(credential);
     const claim = this.#store.claim(jobId);
-    if (claim.owner !== adapter.owner || claim.policy !== this.#policy) throw new CoreError('TASK_AUTHORITY_DENIED');
+    if (claim.owner !== adapter.owner || !this.#store.acceptsPolicy(claim.policy, this.#policy)) throw new CoreError('TASK_AUTHORITY_DENIED');
     const handle = secret();
-    this.#store.database.connection.prepare('INSERT INTO gotzji_bindings VALUES (?,?,?,?)').run(hash(handle), adapter.id, jobId, this.#policy);
+    this.#store.database.connection.prepare('INSERT INTO gotzji_bindings VALUES (?,?,?,?)').run(hash(handle), adapter.id, jobId, claim.policy);
     return { jobId, handle };
   }
   public async get(credential: string, binding: TaskBinding): Promise<JobView> { return this.view(this.bound(credential, binding)); }
@@ -151,24 +813,65 @@ export class ExecutionCore {
   public async readCodeResult(credential: string, binding: TaskBinding): Promise<{sha256:string;content:string}> {
     const claim=this.bound(credential,binding);
     if(this.#store.input(claim).operation!=='grace.code-check'||(await this.view(claim)).status!=='completed') throw new CoreError('RESULT_NOT_VERIFIED');
+    if(this.expired(claim,this.effectRoot(claim.id))) throw new CoreError('RESULT_EXPIRED',RESULT_EXPIRED);
     const filename=path.join(this.effectRoot(claim.id),'result.txt');
     if(lstatSync(filename).isSymbolicLink()) throw new CoreError('EFFECT_ROOT_CHANGED');
     const bytes=readFileSync(filename);
     if(hash(bytes)!==hash(this.#store.input(claim).text)) throw new CoreError('ARTIFACT_CHANGED');
     return {sha256:hash(bytes),content:bytes.toString('utf8')};
   }
-  public logs(credential:string,binding:TaskBinding,cursor=0,limit=4000):{text:string;nextCursor:number} {
+  public async readOperationResult(credential: string, binding: TaskBinding): Promise<Record<string, unknown>> {
+    const claim = this.bound(credential, binding);
+    if (this.#store.input(claim).operation !== 'grace.product-operation' || (await this.view(claim)).status !== 'completed') throw new CoreError('RESULT_NOT_VERIFIED');
+    const receipt = this.#store.operation(claim.id)?.receipt;
+    if (!receipt) throw new CoreError('RESULT_NOT_VERIFIED');
+    const result = JSON.parse(receipt) as Record<string, unknown>;
+    if (this.expired(claim, this.effectRoot(claim.id))) throw new CoreError('RESULT_EXPIRED', RESULT_EXPIRED);
+    const filename = path.join(this.effectRoot(claim.id), 'result.txt');
+    if (lstatSync(filename).isSymbolicLink()) throw new CoreError('EFFECT_ROOT_CHANGED');
+    const bytes = readFileSync(filename);
+    if (hash(bytes) !== result.artifactHash) throw new CoreError('ARTIFACT_CHANGED');
+    const output = JSON.parse(bytes.toString('utf8')) as Record<string, unknown>;
+    const prepared = JSON.parse(this.#store.input(claim).text) as PreparedProductOperation;
+    if (prepared.kind === 'native' && 'outputPath' in prepared.native.input) {
+      const native = output.nativeReceipt as { outputSha256?: string } | undefined;
+      if (!native?.outputSha256 || hash(readFileSync(prepared.native.input.outputPath)) !== native.outputSha256) throw new CoreError('NATIVE_ARTIFACT_CHANGED');
+    }
+    if (output.operation === 'file.write') {
+      const before = path.join(this.effectRoot(claim.id), 'before.bin');
+      if (existsSync(before)) {
+        if (lstatSync(before).isSymbolicLink()) throw new CoreError('ARTIFACT_CHANGED');
+        const snapshot = readFileSync(before);
+        if (hash(snapshot) !== output.beforeSha256) throw new CoreError('ARTIFACT_CHANGED');
+        return { ...result, output, before: { sha256: hash(snapshot), content: snapshot.toString('utf8') } };
+      }
+    }
+    if (prepared.kind === 'native' && prepared.native.input.operation === 'excel.range.read') {
+      return { ...result, output, nativeSelection: { sheet: prepared.native.input.sheet, range: prepared.native.input.range } };
+    }
+    return { ...result, output };
+  }
+  public logs(credential:string,binding:TaskBinding,cursor=0,limit=4000):{text:string;nextCursor:number;expired?:true} {
     const claim=this.bound(credential,binding);const worker=this.#store.worker(claim.id);
     if(!worker||!Number.isSafeInteger(cursor)||cursor<0||!Number.isSafeInteger(limit)||limit<1||limit>16000) throw new CoreError('INVALID_LOG_CURSOR');
-    const filename=path.join(worker.directory,'validation.stdout');
+    if(this.expired(claim,worker.directory)) return {text:'',nextCursor:cursor,expired:true};
+    const filename=path.join(worker.directory,this.#store.input(claim).operation==='grace.product-operation'?'product.stdout':'validation.stdout');
     if(!existsSync(filename)) return {text:'',nextCursor:cursor};
     const info=lstatSync(filename);if(info.isSymbolicLink()||cursor>info.size) throw new CoreError('INVALID_LOG_CURSOR');
-    const fd=openSync(filename,'r');try{const buffer=Buffer.alloc(Math.min(limit,info.size-cursor));const count=readSync(fd,buffer,0,buffer.length,cursor);return {text:buffer.subarray(0,count).toString('utf8'),nextCursor:cursor+count};}finally{closeSync(fd);}
+    const fd=openSync(filename,'r');
+    try {
+      const buffer=Buffer.alloc(Math.min(limit+3,info.size-cursor));
+      const count=readSync(fd,buffer,0,buffer.length,cursor);
+      const goal=this.#store.database.connection.prepare('SELECT status FROM goals WHERE id=?').get(claim.goal_id);
+      const final=!!goal&&['completed','cancelled','failed'].includes(String(goal.status));
+      const page=decodeUtf8LogPage(buffer.subarray(0,count),limit,final);
+      return {text:page.text,nextCursor:cursor+page.byteLength};
+    } finally {closeSync(fd);}
   }
   public async resume(credential: string, binding: TaskBinding): Promise<JobView> {
     const claim = this.bound(credential, binding, true);
     return this.serial(claim.id, async (): Promise<JobView> => {
-      this.assertEffects();
+      this.assertEffects(claim);
       await this.resumeClaim(claim);
       this.#store.clearDiagnostic(claim.id);
       return this.view(claim);
@@ -184,26 +887,81 @@ export class ExecutionCore {
         if (observation === 'unknown') throw new CoreError('WORKER_RECONCILIATION_REQUIRED');
         if (observation === 'running') { await this.reconcile(claim, worker); return this.view(claim); }
         // The process is proven absent; inspect before any new epoch or replay.
+        if (this.isRead(claim)) { await this.finishAbsentRead(claim, worker); return this.view(claim); }
         if (this.verifyEffect(claim)) {
           await this.reacquire(claim, worker);
           await this.complete(claim, this.requireWorker(claim.id));
           return this.view(claim);
         }
         const operation = this.#store.operation(claim.id);
-        if (operation?.phase === 'started' || operation?.phase === 'uncertain') {
+        if (operation?.phase === 'started' || operation?.phase === 'uncertain' || operation?.phase === 'settled') {
           this.markUncertain(claim.id);
           throw new CoreError('EFFECT_RECONCILIATION_REQUIRED');
         }
+        // Archive before deleting: an unrecorded directory makes the next open refuse with an orphan (I8 review M2).
+        this.#store.archiveWorker(worker, 'absent', this.#now().toISOString());
         this.#store.database.connection.prepare('DELETE FROM gotzji_workers WHERE job_id=?').run(claim.id);
         this.releaseWriter(claim.id, worker.epoch);
       }
       return this.launchClaim(claim);
   }
   private async launchClaim(claim: ClaimRow, recovered?: WorkerRow): Promise<JobView> {
+      if (this.#store.input(claim).operation === 'grace.product-operation' && !recovered) {
+        const operation = JSON.parse(this.#store.input(claim).text) as ProductOperation;
+        for (const dependencyId of operation.input.dependsOn ?? []) {
+          const dependency = this.#store.claim(dependencyId);
+          const state = await this.snapshot(dependency);
+          if (state.status !== 'completed') {
+            const waiting = state.status === 'active' ? 'WAITING_FOR_DEPENDENCY' : 'DEPENDENCY_FAILED';
+            this.#store.database.connection.prepare('UPDATE gotzji_product_jobs SET waiting_reason=?,blocking_dependency=? WHERE job_id=?').run(waiting, dependencyId, claim.id);
+            if (waiting === 'DEPENDENCY_FAILED') {
+              const session = `dependency-${randomUUID()}`;
+              const acquired = unwrap(await this.#service.runGoal(this.actor(claim, session), { workspaceId: WORKSPACE, goalKey: claim.goal_key, leaseSeconds: 300 }));
+              if (!acquired.acquired || !acquired.leaseToken) throw new CoreError('LEASE_NOT_ACQUIRED');
+              unwrap(await this.#service.finishGoal(this.actor(claim, session), { goalId: acquired.goalId, leaseToken: acquired.leaseToken, expectedRevision: acquired.revision, status: 'failed', summary: 'A required owned dependency did not complete successfully', evidence: [] }));
+              this.#store.event(claim.id, waiting, this.#now().toISOString());
+            }
+            return this.view(claim);
+          }
+        }
+        const limit = this.#store.database.connection.prepare('SELECT retry_at FROM gotzji_provider_limits WHERE owner=?').get(claim.owner);
+        if (limit && (limit.retry_at === null || Number(limit.retry_at) > this.#now().getTime())) {
+          this.#store.database.connection.prepare('UPDATE gotzji_product_jobs SET waiting_reason=? WHERE job_id=?').run('PROVIDER_LIMIT', claim.id);
+          return this.view(claim);
+        }
+        if (limit) this.#store.database.connection.prepare('DELETE FROM gotzji_provider_limits WHERE owner=?').run(claim.owner);
+        const ahead = this.queueAhead(claim);
+        if (ahead) {
+          this.#store.database.connection.prepare('UPDATE gotzji_product_jobs SET waiting_reason=?,blocking_resource=?,blocking_job=? WHERE job_id=?').run('PRIORITY_WAIT', ahead.key ?? null, ahead.jobId, claim.id);
+          return this.view(claim);
+        }
+      }
       const epoch = randomUUID();
       if (!recovered) {
-        const writer = this.#store.database.connection.prepare('INSERT OR IGNORE INTO gotzji_writers VALUES (?,?,?)').run(this.#root, claim.id, epoch);
-        if (Number(writer.changes) !== 1) throw new CoreError('LIBRARY_WRITER_HELD');
+        const product = this.#store.input(claim).operation === 'grace.product-operation';
+        const database = this.#store.database.connection;
+        database.exec('BEGIN IMMEDIATE;');
+        try {
+          const scope = this.resourceScope(claim);
+          const resources = this.resourceKeys(claim);
+          const occupied = resources.map((key) => this.holders(key)[0]).find((entry) => entry !== undefined);
+          const held = occupied ? { job_id: occupied.jobId } : undefined;
+          const read = this.isRead(claim);
+          const total = Number(database.prepare('SELECT COUNT(*) AS count FROM gotzji_writers').get()?.count);
+          const writes = Number(database.prepare("SELECT COUNT(*) AS count FROM gotzji_writers WHERE root NOT LIKE 'read:%'").get()?.count);
+          if (held || (product && (total >= GRACE_SLOTS || (!read && writes >= WRITE_SLOTS)))) {
+            if (!product) throw new CoreError('LIBRARY_WRITER_HELD');
+            // Name a job of the class whose slots are full: a write cap waits on writes, the shared cap frees fastest with reads.
+            const capacityOwner = database.prepare(`SELECT job_id FROM gotzji_writers WHERE root ${!read && writes >= WRITE_SLOTS ? 'NOT ' : ''}LIKE 'read:%' ORDER BY rowid LIMIT 1`).get() ?? database.prepare('SELECT job_id FROM gotzji_writers ORDER BY rowid LIMIT 1').get();
+            database.prepare('UPDATE gotzji_product_jobs SET waiting_reason=?,blocking_resource=?,blocking_job=? WHERE job_id=?').run(held ? 'RESOURCE_HELD' : 'WORKER_CAPACITY', occupied?.key ?? scope, String(held?.job_id ?? capacityOwner?.job_id ?? ''), claim.id);
+            database.exec('COMMIT;');
+            return this.view(claim);
+          }
+          database.prepare('INSERT INTO gotzji_writers VALUES (?,?,?)').run(scope, claim.id, epoch);
+          for (const resource of resources) database.prepare('INSERT INTO gotzji_resource_claims VALUES (?,?,?)').run(resource, claim.id, epoch);
+          if (product) database.prepare('UPDATE gotzji_product_jobs SET waiting_reason=NULL,blocking_resource=NULL,blocking_job=NULL,blocking_dependency=NULL WHERE job_id=?').run(claim.id);
+          database.exec('COMMIT;');
+        } catch (error) { database.exec('ROLLBACK;'); throw error; }
       }
       try {
       const directory = path.join(this.#root, 'workers', epoch);
@@ -222,7 +980,13 @@ export class ExecutionCore {
       await this.validateWorker(claim, worker);
       this.#store.database.connection.prepare('UPDATE gotzji_workers SET launch_state=? WHERE job_id=?').run('launching', claim.id);
       const authorization = this.#store.database.connection.prepare('SELECT authorization_digest FROM gotzji_authorized_jobs WHERE job_id=?').get(claim.id);
-      await launchWorker(worker, realpathSync(effectRoot), input.operation, input.text, { jobId: claim.id, owner: claim.owner, policy: this.#policy, database: path.join(this.#root,'core.sqlite'), intentRevision: acquired.userIntentRevision, authorizationDigest:String(authorization?.authorization_digest), grace: input.operation.startsWith('grace.') ? this.#grace : null });
+      const projectPolicies = input.operation === 'grace.product-operation' ? (JSON.parse(input.text) as ProductOperation).projectPolicies : {};
+      const profile = this.#grace && input.operation === 'grace.product-operation' ? { ...this.#grace, documents: { ...this.#grace.documents, ...projectPolicies } } : this.#grace;
+      const nativeTestRunner = this.#native?.testRunnerModule ? { path: realpathSync(this.#native.testRunnerModule), sha256: hash(readFileSync(this.#native.testRunnerModule)) } : undefined;
+      const libraryTestRunner = this.#library?.testRunnerModule ? { path: realpathSync(this.#library.testRunnerModule), sha256: hash(readFileSync(this.#library.testRunnerModule)) } : undefined;
+      const browserTestTransport = this.#browser?.testTransportModule ? { path: realpathSync(this.#browser.testTransportModule), sha256: hash(readFileSync(this.#browser.testTransportModule)) } : undefined;
+      const preparedKind = input.operation === 'grace.product-operation' ? (JSON.parse(input.text) as PreparedProductOperation).kind : undefined;
+      await launchWorker(worker, realpathSync(effectRoot), input.operation, input.text, { jobId: claim.id, owner: claim.owner, policy: this.#policy, database: path.join(this.#root,'core.sqlite'), intentRevision: acquired.userIntentRevision, authorizationDigest:String(authorization?.authorization_digest), grace: input.operation.startsWith('grace.') ? profile : null, privateRuntimeRoots:this.privateRuntimeRoots(), ...(preparedKind === 'native' && nativeTestRunner ? { nativeTestRunner } : {}), ...(preparedKind === 'library' && libraryTestRunner ? { libraryTestRunner } : {}), ...(preparedKind === 'browser' && browserTestTransport ? { browserTestTransport } : {}) });
       this.#store.database.connection.prepare('UPDATE gotzji_workers SET launch_state=? WHERE job_id=?').run('ready', claim.id);
       await this.startReserved(claim, worker);
       return this.view(claim);
@@ -240,29 +1004,122 @@ export class ExecutionCore {
       return this.view(claim);
     });
   }
+  /**
+   * App-only owner decision for a blocked project job that holds its project after its work ended: the core marked it
+   * uncertain, its goal ended, or its worker reports finished work. Running work is never settled; Cancel stops it.
+   * Records the decision with the observed bytes before ending an active goal as cancelled, then releases exactly this
+   * job's claims. It never completes or delivers, stops only the job's own worker through the stop proof, and keeps a
+   * completed job's verified receipt. Native jobs additionally require signed native-process absence proof;
+   * browser and Library jobs keep provider reconciliation.
+   */
+  public async settleBlockedJob(credential: string, binding: TaskBinding, decision: SettleDecision): Promise<JobView> {
+    if (decision !== 'effect-present' && decision !== 'no-effect') throw new CoreError('SETTLE_DECISION_INVALID', 'Choose effect-present or no-effect', 'decision');
+    const claim = this.bound(credential, binding);
+    return this.serial(claim.id, async (): Promise<JobView> => {
+      const goal = await this.ensureGoal(claim);
+      const refusal = this.settleRefusal(claim, (await this.view(claim)).status, goal.status === 'active');
+      if (refusal) throw new CoreError(refusal, SETTLE_REFUSALS[refusal], refusal === 'SETTLE_UNSUPPORTED' ? 'operation' : 'jobId');
+      if (goal.status === 'completed' && decision === 'no-effect') throw new CoreError('SETTLE_DECISION_INVALID', 'This job completed with a verified effect', 'decision');
+      const writer = this.#store.writer(claim.id) as WriterRow;
+      const worker = this.#store.worker(claim.id);
+      if (worker && !await stopWorker(worker)) throw new CoreError('WORKER_STOP_REQUIRED', SETTLE_REFUSALS.WORKER_STOP_REQUIRED, 'jobId');
+      const summary = decision === 'effect-present' ? 'OWNER_SETTLED_EFFECT_PRESENT' : 'OWNER_SETTLED_NO_EFFECT';
+      const prepared = JSON.parse(this.#store.input(claim).text) as PreparedProductOperation;
+      if (prepared.kind === 'native' && (!worker || !this.nativeStopProved(claim, worker))) throw new CoreError('WORKER_STOP_REQUIRED', SETTLE_REFUSALS.WORKER_STOP_REQUIRED, 'jobId');
+      let observedSha256: string | null | undefined;
+      if ((prepared.kind === undefined || prepared.kind === 'basic') && prepared.input.operation === 'file.write' && prepared.target) { try { observedSha256 = hash(readFileSync(prepared.target)); } catch { observedSha256 = null; } }
+      const nativeObserved = prepared.kind === 'native' ? {
+        sourceSha256: this.observedFileHash(prepared.target),
+        ...('outputPath' in prepared.native.input ? { outputSha256: this.observedFileHash(prepared.native.input.outputPath) } : {}),
+        stopEvidenceDigest: hash(readFileSync(path.join(this.effectRoot(claim.id), 'native-operation.json'))),
+      } : undefined;
+      const observedAt = this.#now().toISOString();
+      const database = this.#store.database.connection;
+      // The decision is durable before the goal ends, so an interrupted settle leaves evidence and no 'started' phase behind.
+      if (goal.status === 'completed') database.prepare('UPDATE gotzji_operations SET phase=? WHERE job_id=?').run('verified', claim.id);
+      else database.prepare('INSERT INTO gotzji_operations(job_id,digest,phase,receipt) VALUES (?,?,?,?) ON CONFLICT(job_id) DO UPDATE SET phase=excluded.phase,receipt=excluded.receipt')
+        .run(claim.id, this.operationDigest(claim), 'settled', JSON.stringify({ verifier: 'owner-settlement-v1', decision, owner: claim.owner, observedAt, ...(observedSha256 === undefined ? {} : { observedSha256 }), ...(nativeObserved ? { nativeObserved } : {}), previous: this.#store.operation(claim.id)?.receipt ?? null }));
+      this.#store.event(claim.id, summary, observedAt);
+      if (goal.status === 'active') unwrap(await this.#service.cancelGoal(this.actor(claim, 'settle'), { goalId: goal.goalId, expectedRevision: goal.revision, summary, evidence: [] }));
+      this.#store.clearDiagnostic(claim.id);
+      this.releaseWriter(claim.id, writer.epoch);
+      return this.view(claim);
+    });
+  }
+  /** One answer for the job view and the settle action; undefined means the owner may settle. Reads files only. */
+  private settleRefusal(claim: ClaimRow, status: JobView['status'], active: boolean): keyof typeof SETTLE_REFUSALS | undefined {
+    const input = this.#store.input(claim);
+    const prepared = input.operation === 'grace.product-operation' ? JSON.parse(input.text) as PreparedProductOperation : undefined;
+    if (!prepared || (prepared.kind !== undefined && prepared.kind !== 'basic' && prepared.kind !== 'native')) return 'SETTLE_UNSUPPORTED';
+    const writer = this.#store.writer(claim.id);
+    if (!writer || status !== 'blocked') return 'JOB_NOT_SETTLEABLE';
+    const worker = this.#store.worker(claim.id);
+    if (!worker) return prepared.kind !== 'native' && this.unlaunched(writer.epoch) ? undefined : 'WORKER_STOP_REQUIRED';
+    if (worker.epoch !== writer.epoch) return 'WORKER_STOP_REQUIRED';
+    if (prepared.kind === 'native' && !this.nativeStopProved(claim, worker)) return 'WORKER_STOP_REQUIRED';
+    if (!active) return undefined;
+    // An active job's own uncertainty is no evidence: one slow status check marks live work uncertain. Only the worker's
+    // signed record that its work ended counts; a dead worker that never recorded it is released through Cancel.
+    let ended: boolean;
+    try { ended = ['done', 'failed', 'cancelled'].includes(String(signed<{ state: string }>(worker, 'observation.json')?.state)) || !!signed<{ state: string }>(worker, 'stopped.json'); }
+    catch { return 'WORKER_STOP_REQUIRED'; }
+    return ended ? undefined : 'JOB_STILL_RUNNING';
+  }
+  private observedFileHash(filename: string): string | null {
+    try { return hash(readFileSync(filename)); } catch { return null; }
+  }
+  private nativeStopProved(claim: ClaimRow, worker: WorkerRow): boolean {
+    try {
+      const prepared = JSON.parse(this.#store.input(claim).text) as PreparedProductNativeOperation;
+      const filename = path.join(this.effectRoot(claim.id), 'native-operation.json');
+      if (prepared.kind !== 'native' || lstatSync(filename).isSymbolicLink() || realpathSync(filename) !== filename) return false;
+      const envelope = JSON.parse(readFileSync(filename, 'utf8')) as { body: string; mac: string };
+      if (createHmac('sha256', worker.token).update(envelope.body).digest('hex') !== envelope.mac) return false;
+      const state = JSON.parse(envelope.body) as { jobId: string; epoch: string; generation: number; intentDigest: string; scriptSha256: string; resourceKeys: readonly string[]; dispatch?: string; dispatchAttempt?: number; stopEvidence?: { schemaVersion: number; observed: string; identityCount: number; identityDigest: string | null; verifier?: string } };
+      const proof = state.stopEvidence;
+      return state.jobId === claim.id && state.epoch === worker.epoch && state.generation === worker.generation
+        && state.intentDigest === prepared.native.planDigest && state.scriptSha256 === prepared.native.scriptSha256
+        && JSON.stringify(state.resourceKeys) === JSON.stringify(prepared.native.resourceKeys) && proof?.schemaVersion === 1
+        && ((proof.observed === 'absent' && ((proof.identityCount > 0 && typeof proof.identityDigest === 'string' && /^[a-f0-9]{64}$/u.test(proof.identityDigest))
+          || (proof.verifier === 'test-driver' && testProviderProfile(this.#grace) && !!this.#native?.testRunnerModule)))
+          || (state.dispatch === 'pre-dispatch' && state.dispatchAttempt === 0 && proof.observed === 'pre-dispatch' && proof.identityCount === 0
+            && proof.identityDigest === null && proof.verifier === 'host-signed-pre-dispatch-v1'));
+    } catch { return false; }
+  }
   /** Host supervisor tick: no caller credentials, receipt booleans or executables accepted. */
   public async tick(): Promise<void> {
     this.assertAuthority();
-    const claims = this.#store.database.connection.prepare('SELECT * FROM gotzji_claims WHERE goal_id IS NOT NULL').all() as unknown as ClaimRow[];
+    const claims = this.#store.database.connection.prepare("SELECT c.* FROM gotzji_claims c LEFT JOIN goals g ON g.id=c.goal_id WHERE c.goal_id IS NOT NULL AND (g.id IS NULL OR g.goal_key<>c.goal_key OR g.status='active' OR EXISTS(SELECT 1 FROM gotzji_writers w WHERE w.job_id=c.id))").all() as unknown as ClaimRow[];
+    const queue = this.orderedQueue();
+    claims.sort((left, right) => {
+      const a = queue.findIndex((entry) => entry.id === left.id); const b = queue.findIndex((entry) => entry.id === right.id);
+      return (a < 0 ? -1 : a) - (b < 0 ? -1 : b);
+    });
     let failure: unknown;
     for (const claim of claims) {
       try {
         await this.serial(claim.id, async (): Promise<void> => {
           const goal = await this.snapshot(claim);
+          if (claim.policy !== this.#policy && goal.status === 'active') {
+            this.#store.diagnose(claim.id, 'POLICY_RECONCILIATION_REQUIRED', this.#now().toISOString());
+            return;
+          }
           if (goal.status !== 'active') {
             if (this.#store.writer(claim.id)) await this.cleanupTerminal(claim);
           } else {
             const worker = this.#store.worker(claim.id);
-            if (worker) { this.assertEffects(); await this.reconcile(claim, worker); }
+            if (worker) { this.assertEffects(claim); await this.reconcile(claim, worker); }
             else if (this.#store.writer(claim.id)) await this.reconcileUnlaunchedWriter(claim);
+            else if (this.#store.input(claim).operation === 'grace.product-operation') { this.assertEffects(claim); await this.resumeClaim(claim); }
           }
           this.#store.clearDiagnostic(claim.id);
         });
       } catch (error) {
-        this.#store.diagnose(claim.id,error instanceof CoreError ? error.code : 'SUPERVISION_FAILED',this.#now().toISOString());
+        if (!(error instanceof CoreError && error.code === 'LEASE_RENEWAL_CONFLICT')) this.#store.diagnose(claim.id,error instanceof CoreError ? error.code : 'SUPERVISION_FAILED',this.#now().toISOString());
         failure ??= error;
       }
     }
+    try { await this.pruneRetention(); } catch (error) { failure ??= error; }
     if (failure) throw failure;
   }
   public startSupervisor(): void {
@@ -281,25 +1138,63 @@ export class ExecutionCore {
     const meta = this.#store.database.connection.prepare('SELECT version,policy FROM gotzji_meta').get();
     if (meta?.version !== 1 || meta.policy !== this.#policy) throw new CoreError('CORE_VERSION_OR_POLICY_CHANGED');
   }
-  private assertEffects(): void {
+  private assertEffects(claim?: ClaimRow): void {
     this.assertAuthority();
     if (this.#controlOnly) throw new CoreError('CONTROL_ONLY');
-    if (this.#grace) assertGraceProfile(this.#grace);
+    if (this.#grace) this.assertGraceForClaim(claim);
     if (this.#policy !== this.policyFingerprint()) throw new CoreError('CORE_DEPENDENCIES_CHANGED');
   }
-  private policyFingerprint(): string { const source=new URL('../src/core.ts',import.meta.url); return hash(JSON.stringify({ version: 4, root: this.#root, control:hash(readFileSync(existsSync(source)?source:new URL(import.meta.url))), worker: workerFingerprint(), grace: this.#grace, deliveryBoundary:'local', recipes: ['fixture.write','fixture.hold',...(this.#grace ? ['grace.read-save-check','grace.code-check'] : [])], curation: 'explicit-only' })); }
+  private assertGraceForClaim(claim?: ClaimRow): void {
+    if (!this.#grace) return;
+    if (!claim || this.#store.input(claim).operation !== 'grace.product-operation') { assertGraceProfile(this.#grace); return; }
+    const prepared = JSON.parse(this.#store.input(claim).text) as PreparedProductOperation;
+    const worker = this.#store.worker(claim.id);
+    if (prepared.kind !== 'library' || !worker || this.expired(claim, this.effectRoot(claim.id))) { assertGraceProfile(this.#grace); return; }
+    const evolution = verifiedLibraryNavigationEvolution(prepared, this.#store.database.connection, claim.id, worker, this.effectRoot(claim.id));
+    if (!evolution) { assertGraceProfile(this.#grace); return; }
+    const entries = profileDependencies(this.#grace);
+    for (const entry of entries) {
+      const expected = evolution.has(path.resolve(entry.path)) ? evolution.get(path.resolve(entry.path)) : entry.hash;
+      if (expected === null) { if (existsSync(entry.path)) throw new CoreError('GRACE_DEPENDENCIES_CHANGED'); continue; }
+      if (!existsSync(entry.path) || lstatSync(entry.path).isSymbolicLink() || realpathSync(entry.path) !== entry.path || hash(readFileSync(entry.path)) !== expected) throw new CoreError('GRACE_DEPENDENCIES_CHANGED');
+    }
+  }
+  private policyFingerprint(): string {
+    return hash(JSON.stringify(this.policyFingerprintComponents()));
+  }
+  private policyFingerprintComponents(): Record<string, unknown> {
+    const source = (name: string): URL => { const authored = new URL(`../src/${name}.ts`, import.meta.url); return existsSync(authored) ? authored : new URL(`./${name}.js`, import.meta.url); };
+    const libraryContracts = ['product-library','library-workflow-contract','library-workflow-adapter','library-workflow-registry'].map((name) => hash(readFileSync(source(name))));
+    return { version: 8, root: this.#root,privateRuntimeRoots:this.#privateRuntimeRoots, control:hash(readFileSync(source('core'))), lifecycleContract:hash(readFileSync(source('project-lifecycle'))), readContract:hash(readFileSync(source('product-file-reads'))), gitReadContract:hash(readFileSync(source('product-git-reads'))), gitReadDiagnosticContract:hash(readFileSync(source('git-read-diagnostics'))), gitReadPolicyContract:hash(readFileSync(source('git-read-policy'))), snapshotContract:hash(readFileSync(new URL('./project-file-snapshot.mjs',import.meta.url))), logContract:hash(readFileSync(source('utf8-log-page'))), productContract:hash(readFileSync(source('product-projects'))), ledger:hash(readFileSync(source('store'))), nativeContract:hash(readFileSync(source('product-native'))), browserContract:hash(readFileSync(source('product-browser'))), libraryContracts, finalMemoContract:hash(readFileSync(new URL('./product-library-final-memo.mjs',import.meta.url))),
+      nativeOptions:this.#native, nativeTestRunnerHash:this.#native?.testRunnerModule?hash(readFileSync(this.#native.testRunnerModule)):null,
+      libraryOptions:this.#library?{pythonExecutable:this.#library.pythonExecutable,pythonSha256:this.#library.pythonSha256}:null, libraryTestRunnerHash:this.#library?.testRunnerModule?hash(readFileSync(this.#library.testRunnerModule)):null,
+      browserRuntimeEnrollment:'private-pinned-session',browserTestTransportHash:this.#browser?.testTransportModule?hash(readFileSync(this.#browser.testTransportModule)):null,
+      worker: workerFingerprint(), grace: this.#grace ? { ...this.#grace, documents: Object.fromEntries(Object.entries(this.#grace.documents).map(([name, entry]) => [name, { path: entry.path, hash: `prepared-document:${name}` }])) } : null, deliveryBoundary:'local', recipes: ['fixture.write','fixture.hold',...(this.#grace ? ['grace.read-save-check','grace.code-check'] : [])], curation: 'explicit-only' };
+  }
   private authorize(credential: string, effects = false): AdapterRow { if (effects) this.assertEffects(); else this.assertAuthority(); return this.#store.adapter(credential, this.#policy); }
   private bound(credential: string, binding: TaskBinding, effects = false): ClaimRow {
-    const adapter = this.authorize(credential,effects);
-    const row = this.#store.database.connection.prepare('SELECT * FROM gotzji_bindings WHERE handle_hash=? AND adapter=? AND job_id=? AND policy=?').get(hash(binding.handle), adapter.id, binding.jobId, this.#policy);
+    const adapter = this.authorize(credential,false);
     const claim = this.#store.claim(binding.jobId);
-    if (!row || claim.owner !== adapter.owner) throw new CoreError('TASK_AUTHORITY_DENIED');
+    const row = this.#store.database.connection.prepare('SELECT * FROM gotzji_bindings WHERE handle_hash=? AND adapter=? AND job_id=? AND policy=?').get(hash(binding.handle), adapter.id, binding.jobId, claim.policy);
+    if (!row || claim.owner !== adapter.owner || !this.#store.acceptsPolicy(claim.policy, this.#policy)) throw new CoreError('TASK_AUTHORITY_DENIED');
+    if (effects && claim.policy !== this.#policy) throw new CoreError('POLICY_RECONCILIATION_REQUIRED', 'Revalidate this unchanged job intent/project/effect under the new trusted runtime before resuming');
+    if (effects) this.assertEffects(claim);
     return claim;
   }
   private validateInput(input: RequestInput): RequestInput {
-    if (!input || Object.keys(input).sort().join(',') !== 'operation,requestId,text' || !/^[a-zA-Z0-9_-]{1,100}$/.test(input.requestId) || !['fixture.write', 'fixture.hold','grace.read-save-check','grace.code-check'].includes(input.operation) || typeof input.text !== 'string' || Buffer.byteLength(input.text) > 65536) throw new CoreError('INVALID_REQUEST');
+    if (!input || Object.keys(input).sort().join(',') !== 'operation,requestId,text' || !/^[a-zA-Z0-9_-]{1,100}$/.test(input.requestId) || !['fixture.write', 'fixture.hold','grace.read-save-check','grace.code-check','grace.product-operation'].includes(input.operation) || typeof input.text !== 'string' || Buffer.byteLength(input.text) > (input.operation === 'grace.product-operation' ? 100000 : 65536)) throw new CoreError('INVALID_REQUEST');
     if (input.operation === 'grace.read-save-check' && (!this.#grace || hash(input.text) !== this.#grace.sourceHash)) throw new CoreError('GRACE_PREPARATION_DENIED');
     if (input.operation === 'grace.code-check' && (this.#grace?.recipe !== 'code-check' || hash(input.text) !== this.#grace.expectedHash)) throw new CoreError('GRACE_PREPARATION_DENIED');
+    if (this.#grace?.recipe === 'product' && input.operation !== 'grace.product-operation') throw new CoreError('QUALIFICATION_NOT_AVAILABLE');
+    if (input.operation === 'grace.product-operation') {
+      if (this.#grace?.recipe !== 'product') throw new CoreError('PRODUCT_PROFILE_REQUIRED');
+      let operation: PreparedProductOperation;
+      try { operation = JSON.parse(input.text) as PreparedProductOperation; } catch { throw new CoreError('INVALID_REQUEST', 'Invalid operation preparation', 'arguments'); }
+      const project = this.#store.database.connection.prepare('SELECT registration FROM gotzji_projects WHERE owner=? AND project_id=?').get(operation.project?.owner ?? '', operation.project?.projectId ?? '');
+      if (!project || String(project.registration) !== JSON.stringify(operation.project) || operation.input?.requestId !== input.requestId) throw new CoreError('PRODUCT_PREPARATION_DENIED');
+      if (operation.kind === 'library' && this.#grace.mode === 'host-direct') assertHostDirectLibraryWorkflow(operation.library.ast.workflowId, operation.library.ast.workflowVersion);
+      if(operation.kind==='browser'&&(!this.#browser||this.#browser.session.sessionId!==operation.browser.session.sessionId||this.#browser.manifestSha256!==operation.browser.manifestSha256||JSON.stringify(this.#browser.session)!==JSON.stringify(operation.browser.session)))throw new CoreError('BROWSER_SESSION_CHANGED');
+    }
     return { requestId: input.requestId, operation: input.operation, text: input.text };
   }
   private actor(claim: ClaimRow, session: string): FileActor { return { clientId: claim.owner, clientName: 'Gotzji execution core', sessionId: session }; }
@@ -307,14 +1202,16 @@ export class ExecutionCore {
   private async ensureGoal(claim: ClaimRow): Promise<GoalSnapshot> {
     const existing = await this.#goals.getByKey(WORKSPACE, claim.goal_key);
     if (!existing) {
-      const result = unwrap(await this.#service.runGoal(this.actor(claim, `preparing-${claim.id}`), { workspaceId: WORKSPACE, goalKey: claim.goal_key, objective: 'Qualify governed execution', plan: { steps: [{ id: 'effect', title: 'Execute and independently verify the fixed qualification recipe' }] }, ...(this.#store.input(claim).operation==='grace.code-check'?{engineering:{schemaVersion:1 as const,primaryTaskKind:'bugfix' as const,riskTier:'low' as const,policyDigest:this.#policy,deliveryScope:'local' as const,gates:[{id:'focused_validation',title:'Actual registered command',applicability:'required' as const,status:'pending' as const,reason:'Host observed recipe verification',basedOnUserIntentRevision:0}]}}:{}), leaseSeconds: 300 }));
+      const input = this.#store.input(claim);
+      const product = input.operation === 'grace.product-operation' ? JSON.parse(input.text) as ProductOperation : null;
+      const result = unwrap(await this.#service.runGoal(this.actor(claim, `preparing-${claim.id}`), { workspaceId: WORKSPACE, goalKey: claim.goal_key, objective: product ? `${this.#grace?.mode === 'host-direct' ? 'ChatGPT-requested host' : 'Grace-controlled'} ${product.input.operation} in ${product.project.displayName}` : 'Qualify governed execution', plan: { steps: [{ id: 'effect', title: product ? 'Execute the approved project operation and verify its observed result' : 'Execute and independently verify the fixed qualification recipe' }] }, ...(input.operation==='grace.code-check'?{engineering:{schemaVersion:1 as const,primaryTaskKind:'bugfix' as const,riskTier:'low' as const,policyDigest:this.#policy,deliveryScope:'local' as const,gates:[{id:'focused_validation',title:'Actual registered command',applicability:'required' as const,status:'pending' as const,reason:'Host observed recipe verification',basedOnUserIntentRevision:0}]}}:{}), leaseSeconds: 300 }));
       if (result.acquired && result.leaseToken) unwrap(await this.#service.checkpointGoal(this.actor(claim, `preparing-${claim.id}`), { goalId: result.goalId, leaseToken: result.leaseToken, expectedRevision: result.revision, currentPhase: 'queued', summary: 'Durable request accepted; execution not started', stepUpdates: [], nextAction: 'Acquire controlled worker', blockers: [], evidence: [], releaseLease: true }));
     }
     const goal = await this.snapshot(claim);
     this.#store.database.connection.prepare('UPDATE gotzji_claims SET goal_id=? WHERE id=? AND (goal_id IS NULL OR goal_id=?)').run(goal.goalId, claim.id, goal.goalId);
     return goal;
   }
-  private async view(claim: ClaimRow): Promise<JobView> {
+  private async view(claim: ClaimRow, positions?: ReadonlyMap<string, number>): Promise<JobView> {
     this.assertAuthority();
     const goal = await this.snapshot(claim);
     const operation = this.#store.operation(claim.id);
@@ -326,11 +1223,100 @@ export class ExecutionCore {
     const worker = this.#store.worker(claim.id);
     const expired = goal.status === 'active' && worker && (!goal.leaseExpiresAt || Date.parse(goal.leaseExpiresAt) <= this.#now().getTime());
     if (diagnostic || expired) status = 'blocked';
-    const run=worker?this.codeRun(claim,worker):undefined;
-    const result: JobView = { jobId: claim.id, status, revision: goal.revision, operation: this.#store.input(claim).operation, evidenceDigest: operation?.receipt ? hash(operation.receipt) : null, curation: 'explicit-only', deliveryBoundary:'local', ...(run?{progress:{runId:run.runId,state:run.state,elapsedMs:run.elapsedMs,checks:run.checks,lastProgressAt:run.lastProgressAt}}:{}), ...(diagnostic ? {blockerCode:String(diagnostic.code)} : expired ? {blockerCode:'LEASE_RECOVERY_REQUIRED'} : {}) };
-    return result;
+    const run=worker && claim.policy === this.#policy?this.codeRun(claim,worker):undefined;
+    const preparedKind = worker && this.#store.input(claim).operation === 'grace.product-operation' ? (JSON.parse(this.#store.input(claim).text) as PreparedProductOperation).kind : undefined;
+    const nativeProgress = worker && this.#store.input(claim).operation === 'grace.product-operation' ? signed<{ jobId: string; runId: string; state: string; elapsedMs: number; checks: number; lastProgressAt: string }>(worker, preparedKind === 'library' ? 'library-progress.json' : preparedKind === 'browser' ? 'browser-progress.json' : 'native-progress.json') : undefined;
+    const product = this.#store.database.connection.prepare('SELECT * FROM gotzji_product_jobs WHERE job_id=?').get(claim.id);
+    const providerLimit = product && goal.status === 'active' ? this.#store.database.connection.prepare('SELECT retry_at FROM gotzji_provider_limits WHERE owner=?').get(claim.owner) : undefined;
+    const waitingForProvider = providerLimit && (providerLimit.retry_at === null || Number(providerLimit.retry_at) > this.#now().getTime());
+    if (waitingForProvider) status = 'blocked';
+    const progress = run ?? nativeProgress;
+    const result: JobView = { jobId: claim.id, status, revision: goal.revision, operation: this.#store.input(claim).operation, evidenceDigest: operation?.receipt ? hash(operation.receipt) : null, curation: 'explicit-only', deliveryBoundary:'local', ...(product ? { projectId: String(product.project_id), requestedOperation: String(product.operation) as ProductOperationInput['operation'], ...(product.waiting_reason ? { waitingReason: String(product.waiting_reason) } : {}) } : {}), ...(progress?{progress:{runId:progress.runId,state:progress.state,elapsedMs:progress.elapsedMs,checks:progress.checks,lastProgressAt:progress.lastProgressAt}}:{}), ...(diagnostic ? {blockerCode:String(diagnostic.code)} : expired ? {blockerCode:'LEASE_RECOVERY_REQUIRED'} : {}) };
+    const queued = product ? this.#store.database.connection.prepare('SELECT priority FROM gotzji_queue WHERE job_id=?').get(claim.id) : undefined;
+    const position = product && status === 'queued' ? (positions ? positions.get(claim.id) ?? 0 : this.orderedQueue(claim.owner).findIndex((entry) => entry.id === claim.id) + 1) : 0;
+    const projected: JobView = { ...result, requestId: claim.request_id, ...(goal.terminalSummary ? { summary: goal.terminalSummary } : {}), ...(waitingForProvider ? { status: 'blocked', blockerCode: 'GRACE_ACCOUNT_LIMIT', waitingReason: 'PROVIDER_LIMIT', ...(providerLimit.retry_at === null ? {} : { retryAt: new Date(Number(providerLimit.retry_at)).toISOString() }) } : {}), ...(claim.policy !== this.#policy && goal.status === 'active' ? { status: 'blocked', blockerCode: 'POLICY_RECONCILIATION_REQUIRED' } : {}), ...(queued ? { priority: Number(queued.priority), ...(position ? { queuePosition: position } : {}) } : {}), ...(product?.blocking_resource ? { blockingResource: String(product.blocking_resource) } : {}), ...(product?.blocking_job ? { blockingJob: String(product.blocking_job) } : {}), ...(product?.blocking_dependency ? { blockingDependency: String(product.blocking_dependency) } : {}) };
+    return projected.status === 'blocked' && !this.settleRefusal(claim, 'blocked', goal.status === 'active') ? { ...projected, settleDecisions: goal.status === 'completed' ? ['effect-present'] : ['effect-present', 'no-effect'] } : projected;
   }
   private effectRoot(jobId: string): string { return path.join(this.#root, 'effects', jobId); }
+  /** A basic project read is version-pinned, so it claims only its own scope and never a project. */
+  private isRead(claim: ClaimRow): boolean {
+    const input = this.#store.input(claim);
+    if (input.operation !== 'grace.product-operation') return false;
+    const prepared = JSON.parse(input.text) as PreparedProductOperation;
+    return (prepared.kind === undefined || prepared.kind === 'basic') && prepared.input.operation === 'file.read';
+  }
+  private resourceScope(claim: ClaimRow): string {
+    if (this.isRead(claim)) return `read:${claim.id}`;
+    const product = this.#store.database.connection.prepare('SELECT resource_key FROM gotzji_product_jobs WHERE job_id=?').get(claim.id);
+    if (!product) return this.#root;
+    const folder = this.writtenFolder(claim);
+    return folder ? folderClaim(String(product.resource_key), folder) : `project:${String(product.resource_key)}`;
+  }
+  /** The folder a basic file write or a project-scoped command writes in (incident I3); other jobs hold their whole workspace. */
+  private writtenFolder(claim: ClaimRow): string | undefined {
+    const prepared = JSON.parse(this.#store.input(claim).text) as PreparedProductOperation;
+    if (prepared.kind !== undefined && prepared.kind !== 'basic') return undefined;
+    if (prepared.input.operation === 'file.write' && prepared.target) return path.dirname(prepared.target);
+    return prepared.input.operation === 'command.run' && prepared.command?.writeScope === 'project' ? prepared.project.rootPath : undefined;
+  }
+  /** The jobs holding `key` or a claim colliding with it (claimsOverlap): a whole workspace and the folders in it exclude each other. */
+  private holders(key: string): readonly { readonly key: string; readonly jobId: string }[] {
+    const database = this.#store.database.connection;
+    const exact = database.prepare('SELECT job_id FROM gotzji_resource_claims WHERE resource_key=?').get(key) ?? database.prepare('SELECT job_id FROM gotzji_writers WHERE root=?').get(key);
+    const held = exact ? [{ key, jobId: String(exact.job_id) }] : [];
+    const group = /^(?:project|folder):([^:]+)/u.exec(key)?.[1];
+    if (!group) return held;
+    const folders = `folder:${group}:`;
+    return [...held, ...database.prepare('SELECT resource_key,job_id FROM gotzji_resource_claims WHERE resource_key=? OR substr(resource_key,1,?)=?').all(`project:${group}`, folders.length, folders)
+      .filter((entry) => String(entry.resource_key) !== key && claimsOverlap(key, String(entry.resource_key))).map((entry) => ({ key: String(entry.resource_key), jobId: String(entry.job_id) }))];
+  }
+  /** A holder that is still working. One with a diagnostic, an uncertain effect, an ended goal or an expired lease waits for the owner or for recovery. */
+  private progressing(jobId: string): boolean {
+    const database = this.#store.database.connection;
+    if (database.prepare('SELECT 1 FROM gotzji_diagnostics WHERE job_id=?').get(jobId) || database.prepare("SELECT 1 FROM gotzji_operations WHERE job_id=? AND phase='uncertain'").get(jobId)) return false;
+    const goal = database.prepare('SELECT g.status,g.lease_expires_at FROM gotzji_claims c JOIN goals g ON g.id=c.goal_id WHERE c.id=?').get(jobId);
+    return goal?.status === 'active' && !(goal.lease_expires_at && Date.parse(String(goal.lease_expires_at)) <= this.#now().getTime());
+  }
+  private privateRuntimeRoots(): readonly string[] { return [...new Set([...this.#privateRuntimeRoots,...(this.#browser?[path.dirname(this.#browser.manifestPath),this.#browser.session.profilePath]:[])])]; }
+  private resourceKeys(claim: ClaimRow): readonly string[] {
+    const input = this.#store.input(claim);
+    if (input.operation === 'grace.product-operation') {
+      const prepared = JSON.parse(input.text) as PreparedProductOperation;
+      if (prepared.kind === 'native') return prepared.native.resourceKeys;
+      if (prepared.kind === 'library') return prepared.library.resources;
+      if (prepared.kind === 'browser') return prepared.browser.resourceKeys;
+    }
+    return [this.resourceScope(claim)];
+  }
+  /** Why a queued job cannot start: a held resource, or 'other' for its policy, a provider limit, a diagnostic or an unfinished dependency. */
+  private queueBlock(claim: ClaimRow): 'resource' | 'other' | undefined {
+    if (claim.policy !== this.#policy) return 'other';
+    const limit = this.#store.database.connection.prepare('SELECT retry_at FROM gotzji_provider_limits WHERE owner=?').get(claim.owner);
+    if (limit && (limit.retry_at === null || Number(limit.retry_at) > this.#now().getTime())) return 'other';
+    if (this.#store.database.connection.prepare('SELECT 1 FROM gotzji_diagnostics WHERE job_id=?').get(claim.id)) return 'other';
+    const prepared = JSON.parse(this.#store.input(claim).text) as ProductOperation;
+    if (!(prepared.input.dependsOn ?? []).every((id) => this.#store.database.connection.prepare('SELECT g.status FROM gotzji_claims c JOIN goals g ON g.id=c.goal_id WHERE c.id=?').get(id)?.status === 'completed')) return 'other';
+    return this.resourceKeys(claim).some((resource) => this.holders(resource).length > 0) ? 'resource' : undefined;
+  }
+  /**
+   * The earlier job of the same class this one lets go first: the first ready one, or an earlier write waiting for a
+   * held resource this one would also take, so folder jobs never overtake and starve a whole-workspace job (I3 review M1).
+   */
+  private queueAhead(claim: ClaimRow): { readonly jobId: string; readonly key?: string } | undefined {
+    const reserved: { readonly key: string; readonly jobId: string }[] = [];
+    for (const candidate of this.orderedQueue()) {
+      if (this.isRead(candidate) !== this.isRead(claim)) continue;
+      const keys = this.resourceKeys(candidate);
+      const reservation = reserved.find((entry) => keys.some((key) => claimsOverlap(key, entry.key)));
+      if (candidate.id === claim.id) return reservation;
+      const block = this.queueBlock(candidate);
+      if (!block && !reservation) return { jobId: candidate.id };
+      // Reserve only keys that are held, and only behind holders that are still working: a stalled holder waits for the
+      // owner, and reserving behind it would freeze every folder of its workspace (I3 implementation review M1).
+      if (block === 'resource') for (const key of keys) { const owners = this.holders(key); if (owners.length && owners.every((owner) => this.progressing(owner.jobId))) reserved.push({ key, jobId: candidate.id }); }
+    }
+    return undefined;
+  }
   private authorization(claim:ClaimRow,intentRevision?:number):string {
     const row=this.#store.database.connection.prepare('SELECT * FROM gotzji_authorized_jobs WHERE job_id=?').get(claim.id);
     const digest=hash(JSON.stringify({owner:claim.owner,intent:claim.digest,boundary:'local',policy:this.#policy,revision:0}));
@@ -359,10 +1345,11 @@ export class ExecutionCore {
   private operationDigest(claim: ClaimRow): string { return hash(JSON.stringify({ job: claim.id, intent: claim.digest, policy: this.#policy, recipe: this.#store.input(claim) })); }
   private requireWorker(jobId: string): WorkerRow { const worker = this.#store.worker(jobId); if (!worker) throw new CoreError('WORKER_NOT_FOUND'); return worker; }
   private async validateWorker(claim: ClaimRow, worker: WorkerRow): Promise<void> {
-    this.assertEffects();
+    this.assertEffects(claim);
     const current = this.requireWorker(claim.id);
-    const writer = this.#store.database.connection.prepare('SELECT * FROM gotzji_writers WHERE root=?').get(this.#root);
+    const writer = this.#store.database.connection.prepare('SELECT * FROM gotzji_writers WHERE root=?').get(this.resourceScope(claim));
     if (current.epoch !== worker.epoch || writer?.job_id !== claim.id || writer.epoch !== worker.epoch) throw new CoreError('WORKER_FENCE_INVALID');
+    for (const resource of this.resourceKeys(claim)) if (!this.#store.database.connection.prepare('SELECT 1 FROM gotzji_resource_claims WHERE resource_key=? AND job_id=? AND epoch=?').get(resource, claim.id, worker.epoch)) throw new CoreError('WORKER_FENCE_INVALID');
     const goal = unwrap(await this.#service.validateGoalLease(this.actor(claim, worker.session), { goalId: (await this.snapshot(claim)).goalId, leaseToken: worker.lease }));
     if (goal.leaseGeneration !== worker.generation) throw new CoreError('WORKER_FENCE_INVALID');
     this.authorization(claim,goal.userIntentRevision);
@@ -392,21 +1379,108 @@ export class ExecutionCore {
     if (!existsSync(filename)) return false;
     if (realpathSync(this.effectRoot(claim.id)) !== this.effectRoot(claim.id) || lstatSync(filename).isSymbolicLink()) { this.markUncertain(claim.id); throw new CoreError('EFFECT_ROOT_CHANGED'); }
     const effect = readFileSync(filename);
+    if (input.operation === 'grace.product-operation') {
+      const prepared = JSON.parse(input.text) as PreparedProductOperation;
+      const result = JSON.parse(effect.toString('utf8')) as Record<string, unknown>;
+      if (result.state !== 'completed' || result.operation !== prepared.input.operation) return false;
+      if (prepared.kind === 'native') {
+        const filename = path.join(this.effectRoot(claim.id), 'native-operation.json');
+        if (lstatSync(filename).isSymbolicLink()) throw new CoreError('NATIVE_EVIDENCE_INVALID');
+        const envelope = JSON.parse(readFileSync(filename, 'utf8')) as { body: string; mac: string };
+        const current = this.requireWorker(claim.id);
+        if (createHmac('sha256', current.token).update(envelope.body).digest('hex') !== envelope.mac) throw new CoreError('NATIVE_EVIDENCE_INVALID');
+        const state = JSON.parse(envelope.body) as { state: string; outcome: string; jobId: string; epoch: string; intentDigest: string; receipt: Record<string, unknown> };
+        const receipt = result.nativeReceipt as { sourceSha256?: string; outputSha256?: string; originalPreserved?: boolean; savedAndReopened?: boolean; unrelatedPreserved?: boolean; verified?: boolean } | undefined;
+        if (state.state !== 'completed' || state.outcome !== 'verified' || state.jobId !== claim.id || state.epoch !== current.epoch || state.intentDigest !== prepared.native.planDigest || JSON.stringify(state.receipt) !== effect.toString('utf8') || result.jobId !== claim.id || result.epoch !== current.epoch || result.intentDigest !== prepared.native.planDigest || result.scriptSha256 !== prepared.native.scriptSha256 || JSON.stringify(result.resourceKeys) !== JSON.stringify(prepared.native.resourceKeys) || receipt?.sourceSha256 !== prepared.beforeSha256 || !receipt.originalPreserved || !receipt.verified || hash(readFileSync(prepared.target)) !== prepared.beforeSha256) throw new CoreError('NATIVE_EVIDENCE_INVALID');
+        if ('outputPath' in prepared.native.input && (!receipt.savedAndReopened || !receipt.unrelatedPreserved || !receipt.outputSha256 || hash(readFileSync(prepared.native.input.outputPath)) !== receipt.outputSha256)) throw new CoreError('NATIVE_ARTIFACT_CHANGED');
+      } else if (prepared.kind === 'library') {
+        const current = this.requireWorker(claim.id);
+        const filename = path.join(this.effectRoot(claim.id), 'library-operation.json');
+        if (!existsSync(filename) || lstatSync(filename).isSymbolicLink()) throw new CoreError('LIBRARY_EVIDENCE_INVALID');
+        const envelope = JSON.parse(readFileSync(filename, 'utf8')) as { body: string; mac: string };
+        if (createHmac('sha256', current.token).update(envelope.body).digest('hex') !== envelope.mac) throw new CoreError('LIBRARY_EVIDENCE_INVALID');
+        const state = JSON.parse(envelope.body) as { state:string; outcome:string; jobId:string; epoch:string; intentDigest:string; resourceKeys:readonly string[]; receipt:Record<string,unknown> };
+        if (state.state !== 'completed' || state.outcome !== 'verified' || state.jobId !== claim.id || state.epoch !== current.epoch || state.intentDigest !== prepared.library.digest
+          || JSON.stringify(state.resourceKeys) !== JSON.stringify(prepared.library.resources) || JSON.stringify(state.receipt) !== effect.toString('utf8')
+          || result.projectId !== prepared.project.projectId || result.workflowId !== prepared.library.ast.workflowId || result.workflowVersion !== prepared.library.ast.workflowVersion
+          || result.intentDigest !== prepared.library.digest || result.sourceDigest !== prepared.library.sourceScope.digest || JSON.stringify(result.resourceKeys) !== JSON.stringify(prepared.library.resources)) throw new CoreError('LIBRARY_RECEIPT_INVALID');
+        const steps = result.steps as readonly { stepId?:string; operation?:string; status?:string }[] | undefined;
+        if (!Array.isArray(steps) || steps.length !== prepared.library.ast.nodes.length) throw new CoreError('LIBRARY_RECEIPT_INVALID');
+        for (const step of prepared.library.ast.nodes) {
+          const verified = this.#store.database.connection.prepare('SELECT phase,receipt FROM gotzji_recipe_operations WHERE job_id=? AND operation_id=?').get(claim.id, `library-step:${step.id}`);
+          if (!verified || verified.phase !== 'verified' || typeof verified.receipt !== 'string') throw new CoreError('LIBRARY_RECEIPT_INVALID');
+          const stored = JSON.parse(String(verified.receipt)) as { receipt?: { stepId?:string; operation?:string; status?:string } };
+          const reported = steps.find((entry) => entry.stepId === step.id);
+          if (!reported || reported.operation !== step.operation || reported.status !== 'completed' || JSON.stringify(stored.receipt) !== JSON.stringify(reported)) throw new CoreError('LIBRARY_RECEIPT_INVALID');
+        }
+      } else if (prepared.kind === 'browser') {
+        const current=this.requireWorker(claim.id);const evidenceFile=path.join(this.effectRoot(claim.id),'browser-operation.json');
+        if(!existsSync(evidenceFile)||lstatSync(evidenceFile).isSymbolicLink())throw new CoreError('BROWSER_EVIDENCE_INVALID');
+        const envelope=JSON.parse(readFileSync(evidenceFile,'utf8')) as {body:string;mac:string};
+        if(createHmac('sha256',current.token).update(envelope.body).digest('hex')!==envelope.mac)throw new CoreError('BROWSER_EVIDENCE_INVALID');
+        const state=JSON.parse(envelope.body) as {state:string;outcome:string;jobId:string;epoch:string;generation:number;intentDigest:string;resourceKeys:readonly string[];receipt:Record<string,unknown>};
+        const browserReceipt=result.browserReceipt as {verified?:boolean;operationDigest?:string;initialBinding?:Record<string,string>;binding?:Record<string,string>;resourceKeys?:readonly string[];releaseResources?:boolean;steps?:readonly {operation?:string;after?:{tag?:string;text?:string;identity?:string}}[]}|undefined;
+        const plannedSteps=prepared.browser.input.operation==='browser.workflow'?prepared.browser.input.steps:[prepared.browser.input];
+        const navigations=plannedSteps.filter((entry)=>entry.operation==='browser.navigate') as readonly {operation:'browser.navigate';url:string}[];const lastNavigation=navigations.at(-1);
+        const stableBindingKeys=['browserId','contextId','profileId','tabId','providerTabId'];
+        if(state.state!=='completed'||state.outcome!=='verified'||state.jobId!==claim.id||state.epoch!==current.epoch||state.generation!==current.generation||state.intentDigest!==prepared.browser.planDigest
+          ||JSON.stringify(state.resourceKeys)!==JSON.stringify(prepared.browser.resourceKeys)||JSON.stringify(state.receipt)!==effect.toString('utf8')||result.jobId!==claim.id||result.epoch!==current.epoch
+          ||result.intentDigest!==prepared.browser.planDigest||result.projectId!==prepared.project.projectId||result.operation!==prepared.input.operation||result.sessionId!==prepared.input.sessionId||result.tabId!==prepared.input.tabId
+          ||result.manifestSha256!==prepared.browser.manifestSha256||JSON.stringify(result.resourceKeys)!==JSON.stringify(prepared.browser.resourceKeys)||browserReceipt?.verified!==true
+          ||browserReceipt.operationDigest!==prepared.browser.planDigest||JSON.stringify(browserReceipt.initialBinding)!==JSON.stringify(prepared.browser.input.binding)
+          ||JSON.stringify(browserReceipt.resourceKeys)!==JSON.stringify(prepared.browser.adapterResourceKeys)||browserReceipt.releaseResources!==true)throw new CoreError('BROWSER_RECEIPT_INVALID');
+        if(!browserReceipt.binding||stableBindingKeys.some((key)=>browserReceipt.binding?.[key]!==prepared.browser.input.binding[key as keyof typeof prepared.browser.input.binding]))throw new CoreError('BROWSER_RECEIPT_INVALID');
+        if(lastNavigation){const navigationIndex=plannedSteps.map((entry)=>entry.operation).lastIndexOf('browser.navigate');const lastStep=browserReceipt.steps?.[navigationIndex];if(browserReceipt.binding.url!==lastNavigation.url||!browserReceipt.binding.documentId||browserReceipt.binding.documentId===prepared.browser.input.binding.documentId||lastStep?.operation!=='browser.navigate'||lastStep.after?.tag!=='DOCUMENT'||lastStep.after.text!==lastNavigation.url||lastStep.after.identity!==browserReceipt.binding.documentId)throw new CoreError('BROWSER_RECEIPT_INVALID');}
+        else if(JSON.stringify(browserReceipt.binding)!==JSON.stringify(prepared.browser.input.binding))throw new CoreError('BROWSER_RECEIPT_INVALID');
+      } else if (prepared.input.operation === 'command.run') {
+        const run = signed<Record<string, unknown>>(this.requireWorker(claim.id), 'product-run.json');
+        if (!run || JSON.stringify(run) !== effect.toString('utf8') || run.jobId !== claim.id || run.epoch !== this.requireWorker(claim.id).epoch || run.exitCode !== 0 || run.commandId !== prepared.command?.commandId || run.commandFingerprint !== hash(JSON.stringify(prepared.command))) throw new CoreError('COMMAND_RECEIPT_INVALID');
+      } else {
+        if (result.projectId !== prepared.project.projectId || result.path !== prepared.input.path || result.sha256 !== (prepared.afterSha256 ?? prepared.beforeSha256)) throw new CoreError('FILE_RECEIPT_INVALID');
+        if (prepared.input.operation === 'file.write' && (!prepared.target || !existsSync(prepared.target) || realpathSync(prepared.target) !== prepared.target || hash(readFileSync(prepared.target)) !== prepared.afterSha256)) throw new CoreError('ARTIFACT_CHANGED');
+        if (prepared.input.operation === 'file.read' && (typeof result.content !== 'string' || hash(result.content) !== prepared.beforeSha256)) throw new CoreError('FILE_RECEIPT_INVALID');
+      }
+      if (requireGraceCompletion) this.verifyControllerExecution(claim);
+      const receipt = JSON.stringify({ recipe: input.operation, recipeDigest: operation.digest, artifactHash: hash(effect), bytes: effect.byteLength, verifier: 'host-product-receipt-v1', operation: prepared.input.operation, projectId: prepared.project.projectId });
+      this.#store.database.connection.prepare('UPDATE gotzji_operations SET phase=?,receipt=? WHERE job_id=?').run('verified', receipt, claim.id);
+      return true;
+    }
     if (hash(effect) !== hash(input.text)) {
       this.#store.database.connection.prepare('UPDATE gotzji_operations SET phase=? WHERE job_id=?').run('uncertain', claim.id);
       throw new CoreError('EFFECT_RECONCILIATION_REQUIRED');
     }
-    if (input.operation.startsWith('grace.') && requireGraceCompletion) this.verifyGraceExecution(claim);
+    if (input.operation.startsWith('grace.') && requireGraceCompletion) this.verifyControllerExecution(claim);
     const receipt = JSON.stringify({ recipe: input.operation, recipeDigest: operation.digest, artifactHash: hash(effect), bytes: effect.byteLength, verifier: 'host-file-sha256-v1' });
     this.#store.database.connection.prepare('UPDATE gotzji_operations SET phase=?,receipt=? WHERE job_id=?').run('verified', receipt, claim.id);
     return true;
   }
-  private verifyGraceExecution(claim: ClaimRow): void {
+  private verifyHostDirectExecution(claim: ClaimRow): void {
+    const worker = this.requireWorker(claim.id);
+    const runtime = signed<{ schemaVersion: number; executor: string; mode: string; jobId: string; owner: string; session: string; generation: number; intentRevision: number; policy: string; textDigest: string; leaseDigest: string; authorizationDigest: string; brokerReceipts: { operationId: string; digest: string; receiptHash: string }[] }>(worker, 'controller-runtime.json');
+    const config = JSON.parse(readFileSync(path.join(worker.directory, 'config.json'), 'utf8')) as { intentRevision: number; grace?: { mode?: string; executable?: string; testDriver?: string } };
+    const input = this.#store.input(claim);
+    const prepared = JSON.parse(input.text) as PreparedProductOperation;
+    const ids = [...Object.keys({ ...this.#grace?.documents, ...prepared.projectPolicies }).map((name) => `policy:${name}`), 'execute_operation', 'operation_status'];
+    if (input.operation !== 'grace.product-operation' || !runtime || runtime.schemaVersion !== 1 || runtime.executor !== 'host-direct' || runtime.mode !== 'host-direct'
+      || config.grace?.mode !== 'host-direct' || config.grace.executable || config.grace.testDriver || runtime.jobId !== claim.id || runtime.owner !== claim.owner
+      || runtime.session !== worker.session || runtime.generation !== worker.generation || runtime.policy !== claim.policy || runtime.textDigest !== hash(input.text)
+      || runtime.leaseDigest !== hash(worker.lease) || runtime.intentRevision !== config.intentRevision || runtime.authorizationDigest !== this.authorization(claim, runtime.intentRevision)
+      || !Array.isArray(runtime.brokerReceipts) || JSON.stringify(runtime.brokerReceipts.map((entry) => entry.operationId)) !== JSON.stringify(ids)
+      || existsSync(path.join(worker.directory, 'claude-events.jsonl')) || existsSync(path.join(worker.directory, 'grace-runtime.json'))) throw new CoreError('CONTROLLER_RUNTIME_EVIDENCE_REQUIRED');
+    for (const receipt of runtime.brokerReceipts) {
+      const row = this.#store.database.connection.prepare('SELECT digest,phase,receipt FROM gotzji_recipe_operations WHERE job_id=? AND operation_id=?').get(claim.id, receipt.operationId);
+      if (!row || row.phase !== 'verified' || row.digest !== receipt.digest || typeof row.receipt !== 'string' || hash(row.receipt) !== receipt.receiptHash) throw new CoreError('CONTROLLER_BROKER_EVIDENCE_REQUIRED');
+    }
+  }
+  private verifyControllerExecution(claim: ClaimRow): void {
+    if (this.#grace?.mode === 'host-direct') { this.verifyHostDirectExecution(claim); return; }
     const worker = this.requireWorker(claim.id);
     const runtime = signed<{ mode: string; exitCode: number; eventsHash: string; apiKeySource: string; model: string }>(worker, 'grace-runtime.json');
     if (!runtime || runtime.mode !== this.#grace?.mode || runtime.exitCode !== 0 || runtime.apiKeySource !== 'none' || runtime.eventsHash !== hash(readFileSync(path.join(worker.directory,'claude-events.jsonl')))) throw new CoreError('GRACE_RUNTIME_EVIDENCE_REQUIRED');
     const code=this.#store.input(claim).operation==='grace.code-check';
-    for (const id of [...Object.keys(this.#grace?.documents??{}).map((name)=>'policy:'+name),'read_source',...(code?['check_before','apply_change','start_validation','validation_status']:['save_result','check_result'])]) {
+    const product=this.#store.input(claim).operation==='grace.product-operation';
+    const policies = product ? { ...this.#grace?.documents, ...(JSON.parse(this.#store.input(claim).text) as ProductOperation).projectPolicies } : this.#grace?.documents ?? {};
+    for (const id of [...Object.keys(policies).map((name)=>'policy:'+name),...(product?['execute_operation','operation_status']:['read_source',...(code?['check_before','apply_change','start_validation','validation_status']:['save_result','check_result'])])]) {
       const row = this.#store.database.connection.prepare('SELECT * FROM gotzji_recipe_operations WHERE job_id=? AND operation_id=?').get(claim.id,id);
       if (!row || row.phase !== 'verified' || typeof row.receipt !== 'string') throw new CoreError('GRACE_OPERATION_EVIDENCE_REQUIRED');
       if (id === 'check_result') {
@@ -432,25 +1506,79 @@ export class ExecutionCore {
   }
   private async reconcile(claim: ClaimRow, worker: WorkerRow): Promise<void> {
     const observed = await observeWorker(worker);
-    if (observed === 'unknown') { this.markUncertain(claim.id); throw new CoreError('WORKER_RECONCILIATION_REQUIRED'); }
-    if (observed === 'absent') {
-      if (!this.verifyEffect(claim)) { this.markUncertain(claim.id); throw new CoreError('EFFECT_RECONCILIATION_REQUIRED'); }
-      await this.reacquire(claim, worker);
-      await this.complete(claim, this.requireWorker(claim.id));
-      return;
-    }
+    if (observed === 'unknown') { if (this.recentlyRenewed(worker)) return; this.markUncertain(claim.id); throw new CoreError('WORKER_RECONCILIATION_REQUIRED'); }
+    if (observed === 'absent') { await this.finishAbsent(claim, worker); return; }
     const goal = await this.snapshot(claim);
     if (!goal.leaseExpiresAt || !Number.isFinite(Date.parse(goal.leaseExpiresAt)) || Date.parse(goal.leaseExpiresAt) <= this.#now().getTime()) {
       await this.recoverExpired(claim, worker); return;
     }
-    const observation = await callWorker(worker, 'status');
+    const observation = await callWorker(worker, 'status').catch((error: unknown) => { if (this.recentlyRenewed(worker)) return undefined; throw error; });
+    if (!observation) return;
     if (observation.state === 'ready') {
       if (this.#store.operation(claim.id)?.phase === 'reserved') await this.startReserved(claim, worker);
       else throw new CoreError('EFFECT_RECONCILIATION_REQUIRED');
     } else if (observation.state === 'done') {
+      if (this.isRead(claim)) {
+        const code = this.readFailure(claim);
+        if (code) await this.failNoEffect(claim, worker, { code, evidence: hash(code) }); else await this.complete(claim, worker);
+        return;
+      }
       if (this.verifyEffect(claim)) await this.complete(claim, worker);
       else {this.markUncertain(claim.id);throw new CoreError('EFFECT_RECONCILIATION_REQUIRED');}
     } else if (observation.state === 'failed' || observation.state === 'cancelled') {
+      if (this.#store.input(claim).operation === 'grace.product-operation') {
+        const native = signed<{ state: string; outcome?: string; code?: string }>(worker, 'native-progress.json');
+        if (native?.state === 'uncertain') { this.markUncertain(claim.id); throw new CoreError(native.code ?? 'NATIVE_EFFECT_RECONCILIATION_REQUIRED', 'Inspect the selected native document and owned application before releasing resources', 'operation', 'native'); }
+        if (native?.state === 'failed') {
+          if (native.outcome !== 'none') { this.markUncertain(claim.id); throw new CoreError('NATIVE_EFFECT_RECONCILIATION_REQUIRED'); }
+          if (!await stopWorker(worker)) throw new CoreError('NATIVE_TERMINATION_UNCONFIRMED');
+          this.assertNativeSourceAndOutput(claim, true);
+          const current = await this.snapshot(claim);
+          unwrap(await this.#service.finishGoal(this.actor(claim, worker.session), { goalId: current.goalId, leaseToken: worker.lease, expectedRevision: current.revision, status: 'failed', summary: native.code ?? 'NATIVE_PROVIDER_FAILED', evidence: [{ kind: 'hash', value: hash(JSON.stringify(native)) }] }));
+          this.#store.database.connection.prepare('UPDATE gotzji_operations SET phase=?,receipt=? WHERE job_id=?').run('verified', JSON.stringify({ verifier: 'host-native-no-effect-failure-v1', failure: native.code ?? 'NATIVE_PROVIDER_FAILED' }), claim.id);
+          this.releaseWriter(claim.id, worker.epoch); return;
+        }
+        const prepared = JSON.parse(this.#store.input(claim).text) as PreparedProductOperation;
+        const library = prepared.kind === 'library' ? signed<{ state:string; code?:string }>(worker, 'library-progress.json') : undefined;
+        if (library?.state === 'uncertain') { this.markUncertain(claim.id); throw new CoreError(library.code ?? 'LIBRARY_EFFECT_RECONCILIATION_REQUIRED'); }
+        if (library?.state === 'failed' && library.code === 'LIBRARY_FACTY_BLOCKED' && existsSync(path.join(this.effectRoot(claim.id),'result.txt'))) {
+          if (!await stopWorker(worker)) throw new CoreError('CLEANUP_RECONCILIATION_REQUIRED');
+          const current = await this.snapshot(claim);
+          unwrap(await this.#service.finishGoal(this.actor(claim, worker.session), { goalId: current.goalId, leaseToken: worker.lease, expectedRevision: current.revision, status: 'failed', summary: 'LIBRARY_FACTY_BLOCKED', evidence: [{ kind:'hash', value:hash(readFileSync(path.join(this.effectRoot(claim.id),'result.txt'))) }] }));
+          this.#store.database.connection.prepare('UPDATE gotzji_operations SET phase=?,receipt=? WHERE job_id=?').run('verified',JSON.stringify({verifier:'host-library-block-v1',failure:'LIBRARY_FACTY_BLOCKED'}),claim.id);
+          this.releaseWriter(claim.id,worker.epoch);return;
+        }
+        const browser = prepared.kind === 'browser' ? signed<{ state:string; code?:string; outcome?:string }>(worker, 'browser-progress.json') : undefined;
+        if (browser?.state === 'uncertain' || browser?.outcome === 'unknown') { this.markUncertain(claim.id); throw new CoreError(browser.code ?? 'BROWSER_EFFECT_RECONCILIATION_REQUIRED'); }
+        if (browser?.state === 'failed' && browser.outcome === 'none') {
+          if (!await stopWorker(worker)) throw new CoreError('CLEANUP_RECONCILIATION_REQUIRED');
+          const current=await this.snapshot(claim);const code=browser.code??'BROWSER_PROVIDER_FAILED';
+          unwrap(await this.#service.finishGoal(this.actor(claim,worker.session),{goalId:current.goalId,leaseToken:worker.lease,expectedRevision:current.revision,status:'failed',summary:code,evidence:[{kind:'hash',value:hash(JSON.stringify(browser))}]}));
+          this.#store.database.connection.prepare('UPDATE gotzji_operations SET phase=?,receipt=? WHERE job_id=?').run('verified',JSON.stringify({verifier:'host-browser-no-effect-failure-v1',failure:code}),claim.id);
+          this.releaseWriter(claim.id,worker.epoch);return;
+        }
+        const limit = signed<{ code: string; retryAt: string | null; jobId: string; eventsHash: string; apiKeySource: string; toolUseCount: number }>(worker, 'grace-runtime-failure.json');
+        if (limit?.code === 'GRACE_ACCOUNT_LIMIT') {
+          await this.waitForProvider(claim, worker, limit);
+          return;
+        }
+        const run = signed<Record<string, unknown>>(worker, 'product-run.json');
+        if (run && ['failed','cancelled'].includes(String(run.state)) && run.jobId === claim.id && run.epoch === worker.epoch) {
+          if (!await stopWorker(worker)) throw new CoreError('CLEANUP_RECONCILIATION_REQUIRED');
+          const current = await this.snapshot(claim);
+          unwrap(await this.#service.finishGoal(this.actor(claim, worker.session), { goalId: current.goalId, leaseToken: worker.lease, expectedRevision: current.revision, status: 'failed', summary: String(run.reason ?? 'COMMAND_FAILED'), evidence: [{ kind: 'hash', value: hash(JSON.stringify(run)) }] }));
+          this.#store.event(claim.id, String(run.reason ?? 'COMMAND_FAILED'), this.#now().toISOString());
+          this.#store.database.connection.prepare('UPDATE gotzji_operations SET phase=?,receipt=? WHERE job_id=?').run('verified', JSON.stringify({ verifier: 'host-command-failure-v1', commandReceiptHash: hash(JSON.stringify(run)), failureCode: String(run.reason ?? 'COMMAND_FAILED') }), claim.id);
+          this.releaseWriter(claim.id, worker.epoch);
+          return;
+        }
+        const incident = signed<{ code: string; field?: string }>(worker, 'broker-error.json');
+        // Only basic jobs can prove they changed nothing; native, Library and browser workers stay for the owner to inspect.
+        if (incident && this.isBasic(claim)) { await this.failNoEffect(claim, worker, { code: incident.code, evidence: hash(JSON.stringify(incident)), ...(incident.field ? { field: incident.field } : {}) }); return; }
+        if (incident) { this.markUncertain(claim.id); throw new CoreError(incident.code, 'Inspect the selected operation before retrying', incident.field); }
+        if (this.isRead(claim)) { await this.failNoEffect(claim, worker, { code: 'READ_FAILED', evidence: hash('READ_FAILED') }); return; }
+        if (this.isBasic(claim)) { await this.failNoEffect(claim, worker, { code: 'OPERATION_FAILED_BEFORE_EFFECT', evidence: hash('OPERATION_FAILED_BEFORE_EFFECT'), uncertain: 'EFFECT_RECONCILIATION_REQUIRED' }); return; }
+      }
       this.markUncertain(claim.id);
       throw new CoreError('EFFECT_RECONCILIATION_REQUIRED');
     } else if (this.#now().getTime() - worker.last_renewed >= 30000) {
@@ -458,12 +1586,90 @@ export class ExecutionCore {
       await this.checkpoint(claim, worker, 'running');
     }
   }
+  /** The failure code when a read's result cannot be verified; undefined when it can. */
+  private readFailure(claim: ClaimRow): string | undefined {
+    try { return this.verifyEffect(claim) ? undefined : 'READ_RESULT_MISSING'; }
+    catch (error) { return error instanceof CoreError ? error.code : 'READ_RESULT_INVALID'; }
+  }
+  /** A read whose worker is proven gone completes from its verified result or ends failed; it never keeps its slot. */
+  private async finishAbsentRead(claim: ClaimRow, worker: WorkerRow): Promise<void> {
+    const code = this.readFailure(claim);
+    await this.reacquire(claim, worker);
+    const current = this.requireWorker(claim.id);
+    if (code) await this.failNoEffect(claim, current, { code, evidence: hash(code) }); else await this.complete(claim, current);
+  }
+  /** A job whose worker is proven gone completes from its verified effect, ends failed if it provably changed nothing, or waits for the owner. */
+  private async finishAbsent(claim: ClaimRow, worker: WorkerRow): Promise<void> {
+    if (this.isRead(claim)) { await this.finishAbsentRead(claim, worker); return; }
+    let verified = false; let failure: unknown;
+    try { verified = this.verifyEffect(claim); } catch (error) { failure = error; }
+    if (verified || this.noEffect(claim, worker)) {
+      await this.reacquire(claim, worker);
+      const current = this.requireWorker(claim.id);
+      if (verified) await this.complete(claim, current); else await this.failNoEffect(claim, current, { code: 'WORKER_ENDED_BEFORE_EFFECT', evidence: hash('WORKER_ENDED_BEFORE_EFFECT') });
+      return;
+    }
+    if (failure) throw failure;
+    this.markUncertain(claim.id); throw new CoreError('EFFECT_RECONCILIATION_REQUIRED');
+  }
+  /** End a failed job that changed nothing and free its claim: a read always (I2), another basic job when noEffect proves it (I1b); otherwise it waits for the owner. */
+  private async failNoEffect(claim: ClaimRow, worker: WorkerRow, failure: { readonly code: string; readonly evidence: string; readonly field?: string; readonly uncertain?: string }): Promise<void> {
+    if (!await stopWorker(worker)) throw new CoreError('CLEANUP_RECONCILIATION_REQUIRED');
+    // Proved after the stop, so nothing can start between the proof and the release (incident I1b).
+    const read = this.isRead(claim);
+    if (!read && !this.noEffect(claim, worker)) { this.markUncertain(claim.id); throw new CoreError(failure.uncertain ?? failure.code, 'Inspect the selected operation before retrying', failure.field); }
+    const current = await this.snapshot(claim);
+    unwrap(await this.#service.finishGoal(this.actor(claim, worker.session), { goalId: current.goalId, leaseToken: worker.lease, expectedRevision: current.revision, status: 'failed', summary: failure.code, evidence: [{ kind: 'hash', value: failure.evidence }] }));
+    this.#store.event(claim.id, failure.code, this.#now().toISOString());
+    this.#store.database.connection.prepare('UPDATE gotzji_operations SET phase=?,receipt=? WHERE job_id=?').run('verified', JSON.stringify({ verifier: read ? 'host-read-no-effect-failure-v1' : 'host-no-effect-failure-v1', failure: failure.code }), claim.id);
+    this.releaseWriter(claim.id, worker.epoch);
+  }
+  /**
+   * Whether a basic job provably changed nothing (incident I1b). A command's runner records its run before it spawns,
+   * so no run record means it never started. A file write left its target at the prepared before-state with no
+   * temporary file of this epoch beside it. Anything else is not provable and stays with the owner.
+   */
+  private noEffect(claim: ClaimRow, worker: WorkerRow): boolean {
+    if (!this.isBasic(claim)) return false;
+    const prepared = JSON.parse(this.#store.input(claim).text) as ProductOperation;
+    try {
+      if (prepared.input.operation === 'command.run') return !existsSync(path.join(worker.directory, 'product-run.json'));
+      if (prepared.input.operation !== 'file.write' || !prepared.target || existsSync(`${prepared.target}.gotzji-${worker.epoch}`)) return false;
+      if (!existsSync(prepared.target)) return prepared.beforeSha256 === null;
+      return !lstatSync(prepared.target).isSymbolicLink() && hash(readFileSync(prepared.target)) === prepared.beforeSha256;
+    } catch { return false; }
+  }
+  private isBasic(claim: ClaimRow): boolean {
+    const input = this.#store.input(claim);
+    if (input.operation !== 'grace.product-operation') return false;
+    const prepared = JSON.parse(input.text) as PreparedProductOperation;
+    return prepared.kind === undefined || prepared.kind === 'basic';
+  }
   private async reacquire(claim: ClaimRow, worker: WorkerRow): Promise<void> {
     if (await observeWorker(worker) !== 'absent') throw new CoreError('WORKER_RECONCILIATION_REQUIRED');
     const session = `reconciler-${randomUUID()}`;
     const acquired = unwrap(await this.#service.runGoal(this.actor(claim, session), { workspaceId: WORKSPACE, goalKey: claim.goal_key, leaseSeconds: 300 }));
     if (!acquired.acquired || !acquired.leaseToken) throw new CoreError('LEASE_NOT_ACQUIRED');
     this.#store.database.connection.prepare('UPDATE gotzji_workers SET session=?,lease=?,generation=? WHERE job_id=? AND epoch=?').run(session, acquired.leaseToken, acquired.leaseGeneration, claim.id, worker.epoch);
+  }
+  private async waitForProvider(claim: ClaimRow, worker: WorkerRow, receipt: { retryAt: string | null; jobId: string; eventsHash: string; apiKeySource: string; toolUseCount: number }): Promise<void> {
+    const eventsFile = path.join(worker.directory, 'claude-events.jsonl');
+    const events = readFileSync(eventsFile);
+    const observed = events.toString('utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line) as { type: string; message?: { content?: { type: string }[] } });
+    if (receipt.jobId !== claim.id || receipt.apiKeySource !== 'none' || receipt.eventsHash !== hash(events) || receipt.toolUseCount !== 0 || observed.some((event) => event.type === 'assistant' && event.message?.content?.some((entry) => entry.type === 'tool_use')) || this.#store.database.connection.prepare('SELECT 1 FROM gotzji_recipe_operations WHERE job_id=? AND operation_id=?').get(claim.id, 'execute_operation') || existsSync(path.join(this.effectRoot(claim.id), 'result.txt')) || existsSync(path.join(worker.directory, 'product-run.json'))) throw new CoreError('EFFECT_RECONCILIATION_REQUIRED');
+    if (!await stopWorker(worker)) throw new CoreError('CLEANUP_RECONCILIATION_REQUIRED');
+    const goal = await this.snapshot(claim);
+    const retryAt = receipt.retryAt === null ? null : Date.parse(receipt.retryAt);
+    if (retryAt !== null && !Number.isFinite(retryAt)) throw new CoreError('GRACE_LIMIT_RECEIPT_INVALID');
+    unwrap(await this.#service.checkpointGoal(this.actor(claim, worker.session), { goalId: goal.goalId, leaseToken: worker.lease, expectedRevision: goal.revision, currentPhase: 'waiting-provider', summary: 'Subscribed Grace provider reported an account limit before any tool effect', stepUpdates: [], nextAction: receipt.retryAt ? `Retry the same owned job after ${receipt.retryAt}` : 'Resolve the reported account limit', blockers: ['GRACE_ACCOUNT_LIMIT'], evidence: [{ kind: 'hash', value: hash(JSON.stringify(receipt)) }], trackedTasks: [], releaseLease: true }));
+    this.#store.database.connection.prepare('INSERT INTO gotzji_provider_limits VALUES (?,?,?,?) ON CONFLICT(owner) DO UPDATE SET job_id=excluded.job_id,retry_at=excluded.retry_at,receipt=excluded.receipt').run(claim.owner, claim.id, retryAt, JSON.stringify(receipt));
+    this.#store.archiveWorker(worker, 'stopped', this.#now().toISOString());
+    this.#store.database.connection.prepare('DELETE FROM gotzji_workers WHERE job_id=? AND epoch=?').run(claim.id, worker.epoch);
+    this.#store.database.connection.prepare('DELETE FROM gotzji_recipe_operations WHERE job_id=?').run(claim.id);
+    this.#store.database.connection.prepare('UPDATE gotzji_operations SET phase=?,receipt=NULL WHERE job_id=?').run('reserved', claim.id);
+    this.#store.database.connection.prepare('UPDATE gotzji_product_jobs SET waiting_reason=? WHERE job_id=?').run('PROVIDER_LIMIT', claim.id);
+    this.releaseWriter(claim.id, worker.epoch);
+    this.#store.event(claim.id, 'GRACE_ACCOUNT_LIMIT', this.#now().toISOString());
   }
   private async complete(claim: ClaimRow, worker: WorkerRow): Promise<void> {
     await this.validateWorker(claim, worker);
@@ -485,15 +1691,44 @@ export class ExecutionCore {
     if (this.unlaunched(worker.epoch)) { await this.compensateUnlaunched(claim,worker.epoch); return; }
     if (!await stopWorker(worker)) throw new CoreError('CLEANUP_RECONCILIATION_REQUIRED');
     const input = this.#store.input(claim);
-    if (input.operation !== 'fixture.hold' && existsSync(path.join(this.effectRoot(claim.id), 'result.txt'))) this.verifyEffect(claim, false);
+    if (input.operation === 'grace.product-operation') {
+      const prepared = JSON.parse(input.text) as PreparedProductOperation;
+      if (prepared.kind === 'native') {
+        const progress = signed<{ state: string; outcome?: string; code?: string }>(worker, 'native-progress.json');
+        if (progress && !(progress.state === 'completed' && progress.outcome === 'verified') && !(progress.state === 'failed' && progress.outcome === 'none')) {
+          this.assertNativeSourceAndOutput(claim, false);
+          this.markUncertain(claim.id);
+          throw new CoreError(this.nativeStopProved(claim, worker) ? 'NATIVE_EFFECT_RECONCILIATION_REQUIRED' : 'NATIVE_TERMINATION_UNCONFIRMED', 'Inspect the selected native effect before releasing document and UI resources', 'operation', 'native');
+        }
+        if (progress?.outcome === 'verified') {
+          if (!this.verifyEffect(claim, false)) throw new CoreError('NATIVE_EFFECT_RECONCILIATION_REQUIRED');
+        } else this.assertNativeSourceAndOutput(claim, true);
+      } else if (prepared.kind !== 'library' && prepared.kind !== 'browser' && prepared.input.operation === 'file.write') {
+        const safeCreate=prepared.beforeSha256===null&&!!prepared.target&&(!existsSync(prepared.target)||(realpathSync(prepared.target)===prepared.target&&!lstatSync(prepared.target).isSymbolicLink()&&hash(readFileSync(prepared.target))===prepared.afterSha256));
+        const safeExisting=prepared.beforeSha256!==null&&!!prepared.target&&existsSync(prepared.target)&&realpathSync(prepared.target)===prepared.target&&!lstatSync(prepared.target).isSymbolicLink()&&[prepared.beforeSha256,prepared.afterSha256].includes(hash(readFileSync(prepared.target)));
+        if (!safeCreate&&!safeExisting) {
+          this.markUncertain(claim.id); throw new CoreError('EFFECT_RECONCILIATION_REQUIRED', 'The selected file no longer matches the approved before/after bytes', 'path');
+        }
+      }
+    }
+    if (input.operation !== 'fixture.hold' && input.operation !== 'grace.product-operation' && existsSync(path.join(this.effectRoot(claim.id), 'result.txt'))) this.verifyEffect(claim, false);
     this.releaseWriter(claim.id, worker.epoch);
+  }
+  private assertNativeSourceAndOutput(claim: ClaimRow, noEffect: boolean): void {
+    const prepared = JSON.parse(this.#store.input(claim).text) as PreparedProductNativeOperation;
+    if (realpathSync(prepared.target) !== prepared.target || lstatSync(prepared.target).isSymbolicLink() || hash(readFileSync(prepared.target)) !== prepared.beforeSha256) throw new CoreError('NATIVE_ORIGINAL_CHANGED');
+    if (noEffect && 'outputPath' in prepared.native.input) {
+      try { lstatSync(prepared.native.input.outputPath); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return; throw error; }
+      throw new CoreError('NATIVE_EFFECT_RECONCILIATION_REQUIRED');
+    }
   }
   private unlaunched(epoch: string): boolean {
     const directory = path.join(this.#root,'workers',epoch);
     if (existsSync(directory) && realpathSync(directory) !== directory) return false;
     for (const name of ['config.json','ready.json','observation.json']) {
       try { lstatSync(path.join(directory,name)); return false; }
-      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return false; }
+      catch (error) { if (!['ENOENT','ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) return false; }
     }
     // The only launch adapter writes config before spawn; mutations are held
     // under the job guard, so absent durable launch files prove no dispatch.
@@ -526,6 +1761,7 @@ export class ExecutionCore {
     try {
       const changed = database.prepare('UPDATE gotzji_writers SET epoch=? WHERE job_id=? AND epoch=?').run(epoch,claim.id,worker.epoch);
       if (Number(changed.changes) !== 1) throw new CoreError('WORKER_FENCE_INVALID');
+      database.prepare('UPDATE gotzji_resource_claims SET epoch=? WHERE job_id=? AND epoch=?').run(epoch, claim.id, worker.epoch);
       database.prepare('DELETE FROM gotzji_workers WHERE job_id=? AND epoch=?').run(claim.id,worker.epoch);
       database.prepare('UPDATE gotzji_operations SET phase=?,receipt=NULL WHERE job_id=?').run('reserved',claim.id);
       database.prepare('DELETE FROM gotzji_recipe_operations WHERE job_id=?').run(claim.id);
@@ -533,24 +1769,32 @@ export class ExecutionCore {
     } catch (error) { database.exec('ROLLBACK;'); throw error; }
   }
   private async recoverExpired(claim: ClaimRow, worker: WorkerRow): Promise<void> {
-    this.assertEffects();
-    this.#store.diagnose(claim.id,'LEASE_RECOVERY_REQUIRED',this.#now().toISOString());
+    this.assertEffects(claim);
     const config = JSON.parse(readFileSync(path.join(worker.directory,'config.json'),'utf8')) as {intentRevision:number};
     const goal = await this.snapshot(claim);
     if (goal.userIntentRevision !== config.intentRevision) throw new CoreError('INTENT_RECONCILIATION_REQUIRED');
     this.authorization(claim,goal.userIntentRevision);
     const input = this.#store.input(claim);
+    const prepared = input.operation === 'grace.product-operation' ? JSON.parse(input.text) as PreparedProductOperation : undefined;
+    if (prepared && (prepared.kind === undefined || prepared.kind === 'basic') && prepared.input.operation === 'command.run') {
+      await this.renewLiveCommand(claim, worker, prepared);
+      await this.reconcile(claim, worker);
+      this.#store.clearDiagnostic(claim.id);
+      return;
+    }
+    this.#store.diagnose(claim.id,'LEASE_RECOVERY_REQUIRED',this.#now().toISOString());
     const codeRunBefore=input.operation==='grace.code-check'?this.codeRun(claim,worker):undefined;
     if (!await stopWorker(worker)) throw new CoreError('CLEANUP_RECONCILIATION_REQUIRED');
+    if (this.isRead(claim)) { await this.finishAbsentRead(claim, worker); this.#store.clearDiagnostic(claim.id); return; }
     const operation = this.#store.operation(claim.id);
     if (!operation || operation.digest !== this.operationDigest(claim) || operation.phase === 'revoked' || operation.phase === 'uncertain') throw new CoreError('EFFECT_RECONCILIATION_REQUIRED');
     const filename = path.join(this.effectRoot(claim.id),'result.txt');
     let complete = false;
     if (existsSync(filename)) {
-      this.verifyEffect(claim,false); // Unknown bytes keep the held writer.
-      if (input.operation === 'fixture.write') complete = true;
-      else if (input.operation === 'grace.read-save-check' || input.operation === 'grace.code-check') {
-        try { this.verifyGraceExecution(claim); complete = true; }
+      const verified = this.verifyEffect(claim,false); // Unknown bytes keep the held writer.
+      if (input.operation === 'fixture.write') complete = verified;
+      else if (input.operation === 'grace.read-save-check' || input.operation === 'grace.code-check' || input.operation === 'grace.product-operation') {
+        try { this.verifyControllerExecution(claim); complete = verified; }
         catch (error) {
           if (input.operation==='grace.code-check') {
             if(codeRunBefore?.state==='failed') throw new CoreError('VALIDATION_FAILED');
@@ -561,7 +1805,8 @@ export class ExecutionCore {
         }
       }
     }
-    if (!['fixture.hold','fixture.write','grace.read-save-check','grace.code-check'].includes(input.operation)) throw new CoreError('EFFECT_RECONCILIATION_REQUIRED');
+    if (input.operation === 'grace.product-operation' && !complete) throw new CoreError('EFFECT_RECONCILIATION_REQUIRED');
+    if (!['fixture.hold','fixture.write','grace.read-save-check','grace.code-check','grace.product-operation'].includes(input.operation)) throw new CoreError('EFFECT_RECONCILIATION_REQUIRED');
     // Only these reviewed recipes have a proved bounded effect set. The
     // snapshot save is exclusive/idempotent; its verifier is read-only.
     this.#store.archiveWorker(worker,'stopped',this.#now().toISOString());
@@ -571,7 +1816,129 @@ export class ExecutionCore {
     else await this.launchClaim(claim,recovered);
     this.#store.clearDiagnostic(claim.id);
   }
-  private releaseWriter(jobId: string, epoch: string): void { this.#store.database.connection.prepare('DELETE FROM gotzji_writers WHERE job_id=? AND epoch=?').run(jobId, epoch); }
+  /** A responsive worker alone is insufficient: only the exact live, within-budget reviewed command can keep its lease. */
+  private async renewLiveCommand(claim: ClaimRow, worker: WorkerRow, prepared: ProductOperation): Promise<void> {
+    const goal = await this.#goals.getById((await this.snapshot(claim)).goalId);
+    const configFile = path.join(worker.directory, 'config.json');
+    if (lstatSync(configFile).isSymbolicLink() || realpathSync(configFile) !== configFile) throw new CoreError('LEASE_WORKER_RECONCILIATION_REQUIRED');
+    const config = JSON.parse(readFileSync(configFile, 'utf8')) as Record<string, unknown>;
+    const operation = this.#store.operation(claim.id);
+    const writer = this.#store.writer(claim.id);
+    const expectedKeys = [...this.resourceKeys(claim)].sort();
+    const rows = this.#store.database.connection.prepare('SELECT resource_key,epoch FROM gotzji_resource_claims WHERE job_id=?').all(claim.id);
+    if (goal && (goal.status !== 'active' || goal.leaseGeneration !== worker.generation || goal.leaseOwnerSessionId !== worker.session || goal.leaseTokenHash !== hash(worker.lease))) throw new CoreError('LEASE_RENEWAL_CONFLICT');
+    if (!goal || !goal.leaseExpiresAt || goal.status !== 'active' || goal.leaseGeneration !== worker.generation
+      || goal.leaseOwnerSessionId !== worker.session || goal.leaseTokenHash !== hash(worker.lease)
+      || config.owner !== claim.owner || config.jobId !== claim.id || config.epoch !== worker.epoch || config.generation !== worker.generation
+      || config.session !== worker.session || config.token !== worker.token || config.lease !== worker.lease || config.policy !== this.#policy
+      || config.operation !== 'grace.product-operation' || config.text !== this.#store.input(claim).text
+      || config.intentRevision !== goal.userIntentRevision || config.authorizationDigest !== this.authorization(claim, goal.userIntentRevision)
+      || config.database !== path.join(this.#root, 'core.sqlite') || config.effectRoot !== this.effectRoot(claim.id)
+      || writer?.epoch !== worker.epoch || writer.root !== this.resourceScope(claim) || operation?.phase !== 'started' || operation.digest !== this.operationDigest(claim)
+      || rows.some((row) => row.epoch !== worker.epoch) || JSON.stringify(rows.map((row) => String(row.resource_key)).sort()) !== JSON.stringify(expectedKeys)) {
+      throw new CoreError('LEASE_WORKER_RECONCILIATION_REQUIRED');
+    }
+    const status = await callWorker(worker, 'status');
+    const ready = signed<{ pid: number; identity?: ProcessIdentity }>(worker, 'ready.json');
+    const run = signed<{ state: string; jobId: string; epoch: string; commandFingerprint: string; childPid?: number; childIdentity?: ProcessIdentity; startedAt?: string; timeoutMs?: number }>(worker, 'product-run.json');
+    if (status.state !== 'running' || !ready?.identity || status.pid !== ready.pid || run?.state !== 'running'
+      || run.jobId !== claim.id || run.epoch !== worker.epoch || !prepared.command || run.commandFingerprint !== hash(JSON.stringify(prepared.command))
+      || !Number.isSafeInteger(run.childPid) || !run.childIdentity || !status.descendants.includes(run.childPid!)
+      || !sameProcessIdentity(run.childIdentity, status.identities?.[run.childPid!]) || status.closedDescendants?.includes(run.childPid!)) {
+      throw new CoreError('LEASE_WORKER_RECONCILIATION_REQUIRED');
+    }
+    const started = Date.parse(run.startedAt ?? '');
+    const timeoutMs = prepared.command.timeoutMs;
+    if (typeof timeoutMs !== 'number' || !Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || !Number.isFinite(started)
+      || run.timeoutMs !== timeoutMs || started > this.#now().getTime() || this.#now().getTime() >= started + timeoutMs) throw new CoreError('COMMAND_DEADLINE_EXPIRED');
+    const identities = await processIdentities([ready.pid, run.childPid!]);
+    const commandExecutable = process.platform === 'win32' ? prepared.command.executable.toLowerCase() : prepared.command.executable;
+    if (!sameProcessIdentity(ready.identity, identities[ready.pid]) || !sameProcessIdentity(run.childIdentity, identities[run.childPid!])
+      || run.childIdentity.executable !== commandExecutable) throw new CoreError('LEASE_WORKER_RECONCILIATION_REQUIRED');
+    this.assertEffects(claim);
+    if (this.#now().getTime() >= started + timeoutMs) throw new CoreError('COMMAND_DEADLINE_EXPIRED');
+    // A lost CAS is stale authority. Never stop or rebind the other winner's worker from this path.
+    try {
+      await this.#goals.renewExpiredOwnedLease({ goalId: goal.id, ownerClientId: claim.owner, ownerSessionId: worker.session,
+        leaseTokenHash: hash(worker.lease), expectedRevision: goal.revision, expectedUserIntentRevision: goal.userIntentRevision,
+        expectedGeneration: worker.generation, expectedActivitySeq: goal.leaseActivitySeq, expectedHeartbeat: goal.leaseHeartbeatAt,
+        expectedExpiry: goal.leaseExpiresAt, now: this.#now().toISOString() });
+    } catch { throw new CoreError('LEASE_RENEWAL_CONFLICT'); }
+    await this.validateWorker(claim, worker);
+    await this.checkpoint(claim, worker, 'running');
+    this.#store.event(claim.id, 'LIVE_COMMAND_LEASE_RENEWED', this.#now().toISOString());
+  }
+  private releaseWriter(jobId: string, epoch: string): void {
+    const database = this.#store.database.connection; database.exec('BEGIN IMMEDIATE;');
+    try { database.prepare('DELETE FROM gotzji_resource_claims WHERE job_id=? AND epoch=?').run(jobId, epoch); database.prepare('DELETE FROM gotzji_writers WHERE job_id=? AND epoch=?').run(jobId, epoch); this.retireWorker(jobId, epoch); database.exec('COMMIT;'); }
+    catch (error) { database.exec('ROLLBACK;'); throw error; }
+  }
+  /**
+   * Record that a finished job's worker is stopped (`stopped.json`) or proven gone (incident I8). Every terminal path
+   * releases its writer only after that proof, so the upgrade fence and retention need not wait for a `stopped.json`
+   * a crashed or rebooted worker can never write. The row itself stays for its readers.
+   */
+  private retireWorker(jobId: string, epoch: string): void {
+    const database = this.#store.database.connection;
+    const worker = database.prepare('SELECT * FROM gotzji_workers WHERE job_id=? AND epoch=?').get(jobId, epoch) as unknown as WorkerRow | undefined;
+    if (!worker || database.prepare("SELECT 1 FROM gotzji_claims c JOIN goals g ON g.id=c.goal_id WHERE c.id=? AND g.status='active'").get(jobId)) return;
+    this.#store.archiveWorker(worker, this.stoppedProof(worker) ? 'stopped' : 'absent', this.#now().toISOString());
+  }
+  /** A verified stopped.json; damaged evidence counts as none, so retirement never strands a writer or stops the host starting. */
+  private stoppedProof(worker: WorkerRow): boolean {
+    try { const stopped = signed<{ epoch: string; state: string }>(worker, 'stopped.json'); return stopped?.epoch === worker.epoch && stopped.state === 'cancelled'; }
+    catch { return false; }
+  }
+  /** Retire workers of jobs that finished before retirement was recorded, so the next upgrade is not refused for them. */
+  private async retireFinishedWorkers(): Promise<void> {
+    const workers = this.#store.database.connection.prepare("SELECT w.* FROM gotzji_workers w JOIN gotzji_claims c ON c.id=w.job_id JOIN goals g ON g.id=c.goal_id WHERE g.status<>'active' AND NOT EXISTS(SELECT 1 FROM gotzji_writers x WHERE x.job_id=w.job_id) AND NOT EXISTS(SELECT 1 FROM gotzji_worker_history h WHERE h.epoch=w.epoch)").all() as unknown as WorkerRow[];
+    for (const worker of workers) {
+      const reason = this.stoppedProof(worker) ? 'stopped' : await observeWorker(worker) === 'absent' ? 'absent' : undefined;
+      if (reason) this.#store.archiveWorker(worker, reason, this.#now().toISOString());
+    }
+  }
+  /**
+   * Retention (incident I8). A finished job's worker and effect folders are removed 30 days after its last worker
+   * retired, and oldest first while all job folders hold more than the cap. A job qualifies only when every worker it
+   * had is retired and it holds no writer or claim. A folder that cannot be removed now is retried by a later pass and
+   * not counted against younger jobs.
+   */
+  private async pruneRetention(): Promise<void> {
+    const now = this.#now().getTime();
+    if (now - this.#prunedAt < RETENTION_INTERVAL_MS) return;
+    this.#prunedAt = now;
+    const database = this.#store.database.connection;
+    const jobs = database.prepare(`SELECT c.id, MAX(h.observed_at) AS retired_at FROM gotzji_claims c JOIN goals g ON g.id=c.goal_id JOIN gotzji_worker_history h ON h.job_id=c.id
+      WHERE g.status IN ('completed','failed','cancelled') AND NOT EXISTS(SELECT 1 FROM gotzji_writers x WHERE x.job_id=c.id) AND NOT EXISTS(SELECT 1 FROM gotzji_resource_claims r WHERE r.job_id=c.id)
+        AND NOT EXISTS(SELECT 1 FROM gotzji_workers w WHERE w.job_id=c.id AND NOT EXISTS(SELECT 1 FROM gotzji_worker_history y WHERE y.epoch=w.epoch))
+      GROUP BY c.id ORDER BY retired_at`).all() as unknown as { id: string; retired_at: string }[];
+    const workers = path.join(this.#root, 'workers'); const effects = path.join(this.#root, 'effects');
+    let total = await treeBytes(workers) + await treeBytes(effects);
+    for (const job of jobs) {
+      if (now - Date.parse(job.retired_at) < RETENTION_MS && total <= this.#retentionBytes) break;
+      const epochs = database.prepare('SELECT epoch FROM gotzji_worker_history WHERE job_id=? UNION SELECT epoch FROM gotzji_workers WHERE job_id=?').all(job.id, job.id).map((row) => String(row.epoch));
+      // Only direct children of the store's own folders, never a name that resolves elsewhere.
+      const folders = [...epochs.map((epoch) => path.join(workers, epoch)), this.effectRoot(job.id)].filter((folder) => [workers, effects].includes(path.dirname(folder)) && existsSync(folder));
+      if (folders.length === 0) continue;
+      let removed = true;
+      for (const folder of folders) {
+        try {
+          // A folder replaced by a link (or a file) is left for inspection, never followed.
+          const info = await lstat(folder);
+          if (!info.isDirectory()) { if (info.isFile()) total -= info.size; removed = false; continue; }
+          total -= await treeBytes(folder);
+          await rm(folder, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+        } catch { removed = false; }
+      }
+      const event = removed ? 'RETENTION_PRUNED' : 'RETENTION_PRUNE_FAILED';
+      if (!database.prepare('SELECT 1 FROM gotzji_job_events WHERE job_id=? AND event=?').get(job.id, event)) this.#store.event(job.id, event, this.#now().toISOString());
+    }
+  }
+  /** Retention removed, or began removing, this job's folders (incident I8). */
+  private expired(claim: ClaimRow, folder: string): boolean {
+    return !existsSync(folder) || !!this.#store.database.connection.prepare("SELECT 1 FROM gotzji_job_events WHERE job_id=? AND event IN ('RETENTION_PRUNED','RETENTION_PRUNE_FAILED')").get(claim.id);
+  }
+  private recentlyRenewed(worker: WorkerRow): boolean { return this.#now().getTime() - worker.last_renewed < UNOBSERVED_GRACE_MS; }
   private markUncertain(jobId: string): void { this.#store.database.connection.prepare('UPDATE gotzji_operations SET phase=? WHERE job_id=?').run('uncertain', jobId); }
   private async serial<T>(jobId: string, action: () => Promise<T>): Promise<T> {
     const key = `${this.#root}\0${jobId}`;

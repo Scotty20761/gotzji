@@ -99,6 +99,14 @@ export function inspectMutationOperation(
       return read('structured read-only operation');
     case 'tool_batch':
       return read('batch dispatcher applies mutation policy independently to every child call');
+    case 'recipe_run':
+      return read('recipe dispatcher applies mutation policy independently to every child call');
+    case 'debug_attach':
+      return value.dryRun === true ? read('DAP attach dry run validates without connecting') : execute('DAP attach establishes an owned adapter channel and may change debuggee execution');
+    case 'debug_step':
+      return value.dryRun === true || value.action === 'status' || value.action === 'events'
+        ? read('DAP owned-session observation or dry run sends no control frame')
+        : opaque('DAP control or evaluation may execute debuggee code or disconnect its owned adapter');
     case 'automation_status':
     case 'automation_events':
       return read('owner- and workspace-scoped durable automation read');
@@ -112,6 +120,10 @@ export function inspectMutationOperation(
       return opaque('automation_finalize terminates the root Goal and may stop in-flight requests or tracked tasks');
     case 'workspace_register':
       return boundedWrite('workspace_register adds a validated project registration without changing project files');
+    case 'workspace_index':
+    case 'workspace_index_watch':
+    case 'workspace_index_stop':
+      return boundedWrite(`${toolName} changes persisted workspace indexing or watcher state`);
     case 'write_file':
       return value.overwriteExisting === true
         ? replace('write_file explicitly replaces existing file content')
@@ -389,7 +401,8 @@ function inspectSemanticOffice(toolName: string, value: Readonly<Record<string, 
 function inspectOffice(value: Readonly<Record<string, unknown>>): MutationPolicyDecision {
   if (value.dry_run === true) return read('Office dry run');
   const action = normalized(value.action ?? 'read');
-  if (['read', 'read_text', 'sheets', 'inspect', 'list', 'list_folders', 'list_messages'].includes(action)) return read(`Office ${action} action`);
+  if (OFFICE_READ_ACTIONS.has(action) || ['read', 'sheets', 'list'].includes(action)) return read(`Office ${action} action`);
+  if (OFFICE_DESTRUCTIVE_ACTIONS.has(action)) return deletion(`Office ${action} can remove Office data`);
   if (['write', 'replace', 'save_as', 'merge'].includes(action)) return replace(`Office ${action} can replace document data`);
   return opaque(`Office ${action} is not provably read-only`);
 }
@@ -405,6 +418,7 @@ function inspectPowerPoint(value: Readonly<Record<string, unknown>>): MutationPo
 function inspectAudio(value: Readonly<Record<string, unknown>>): MutationPolicyDecision {
   if (value.dry_run === true) return read('audio dry run');
   const action = normalized(value.action);
+  if (action === 'status') return read('owned audio resource status');
   if (action === 'record') return opaque('microphone capture is privacy-sensitive and creates or replaces a workspace media target');
   if (action === 'play' || action === 'stop') return execute(`audio ${action} changes local playback state`);
   return opaque('unknown audio action is not provably safe');

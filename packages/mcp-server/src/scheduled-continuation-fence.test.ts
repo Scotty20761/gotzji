@@ -221,7 +221,7 @@ describe('scheduled continuation mutation fence', () => {
       workspaceId: 'workspace-1',
       path: 'src/file.ts',
       content: 'x',
-      goalLease: { goalId: 'goal-1', leaseToken: 'stale-token', leaseGeneration: 1 },
+      goalLease: { goalId: 'goal-1', leaseToken: 'stale-token', leaseGeneration: 2 },
     });
 
     expect(response.isError).toBe(true);

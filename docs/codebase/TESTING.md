@@ -69,7 +69,7 @@ Engineering Harness changes are validated at the authority boundaries they affec
 - `packages/mcp-server/src/server-instructions.test.ts` — enabled-path guidance routes substantive coding work through Engineering preparation/start while preserving explicit scheduler opt-out.
 - `apps/desktop/tests/engineering-harness-settings.test.ts` — Default Off, coding-project activation, and read-only durable-task status projection.
 - `apps/desktop/tests/engineering-harness-ui.test.ts` — Thai/English Settings rendering and truthful non-green pending/running gate states.
-- Existing Direct STDIO, Desktop persistence, durable-goal, permission, Full Bypass and release tests remain regression coverage; Engineering Harness must not bypass those authorities.
+- Existing source-compatibility Direct STDIO, Desktop persistence, durable-goal, permission, Full Bypass and release tests remain regression coverage; Direct STDIO coverage does not imply a packaged gotzji route, and Engineering Harness must not bypass those authorities.
 
 Before a 5.7.0 delivery commit, run the focused suites above, affected package typechecks/builds, `git diff --check`, then the repository release verifier. A version bump must use `corepack pnpm@10.15.0 run set-version 5.7.0` followed immediately by `corepack pnpm@10.15.0 test:version`.
 

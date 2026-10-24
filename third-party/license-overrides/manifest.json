@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "packages": [
+    {
+      "name": "lazy-val",
+      "version": "1.0.5",
+      "license": "MIT",
+      "fileName": "lazy-val-1.0.5-MIT.txt",
+      "sha256": "3426c66561527885860c701d0e1d93c1e88fe45c8c7c988144e8035c2679785d",
+      "evidenceKind": "publisher-metadata-and-standard-license",
+      "source": "https://registry.npmjs.org/lazy-val/1.0.5",
+      "sourceCommit": "b69ad4119f1b19bdab13c61ee2fcc88d46b89071"
+    },
+    {
+      "name": "tr46",
+      "version": "0.0.3",
+      "license": "MIT",
+      "fileName": "tr46-0.0.3-MIT.txt",
+      "sha256": "9f105fbd7c8a3d63df958a072048f5e2d6385de002e8349a3a98af2fcee6cc96",
+      "evidenceKind": "publisher-metadata-and-standard-license",
+      "source": "https://registry.npmjs.org/tr46/0.0.3",
+      "sourceCommit": "a8009f9ce80ff5dbe71dd71e203afe4e4c878d28"
+    },
+    {
+      "name": "undici-types",
+      "version": "5.26.5",
+      "license": "MIT",
+      "fileName": "undici-types-5.26.5-MIT.txt",
+      "sha256": "a6db8096b2707bc0102d256917d4d33f298ba36d8c3f25de067a2b5bb379db27",
+      "evidenceKind": "upstream-commit-license",
+      "source": "https://raw.githubusercontent.com/nodejs/undici/9197790ae0d015b40b75fd0c5cdb7420704b5272/LICENSE",
+      "sourceCommit": "9197790ae0d015b40b75fd0c5cdb7420704b5272"
+    },
+    {
+      "name": "undici-types",
+      "version": "7.18.2",
+      "license": "MIT",
+      "fileName": "undici-types-7.18.2-MIT.txt",
+      "sha256": "a6db8096b2707bc0102d256917d4d33f298ba36d8c3f25de067a2b5bb379db27",
+      "evidenceKind": "upstream-commit-license",
+      "source": "https://raw.githubusercontent.com/nodejs/undici/7e5cb2d7468633b48679627061d696a0bb45f651/LICENSE",
+      "sourceCommit": "7e5cb2d7468633b48679627061d696a0bb45f651"
+    }
+  ]
+}

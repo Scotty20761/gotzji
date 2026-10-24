@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createPlatformCapabilitySet } from './platform-capability-set.js';
 import { LinuxSchedulerCapabilityBackend } from './linux-scheduler-backend.js';
+import type { NativeHostProcessBridge } from './native-host-protocol.js';
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -93,6 +94,16 @@ describe('platform capability composition', () => {
       dataPath: 'C:\\lnwjud-data',
       workspaceRootsProvider: async () => ['C:\\project'],
     })).toThrow('integrity-bound bridge configuration');
+  });
+
+  it.each([{ action: 'status', session_id: 'foreign-portal' }, { action: 'status', parameters: { session_id: 'foreign-portal' } },
+    { action: 'capture_display', session_id: 'foreign-portal' }])('never substitutes Electron for an owned portal operation %j', async (input) => {
+    const fallback = { execute: vi.fn(async () => ({ ok: true as const, value: { available: true, ready: true } })) };
+    const execute = vi.fn(async () => ({ ok: false as const, error: { code: 'PERMISSION_DENIED' as const, message: 'Foreign portal', recoverable: false } }));
+    const runtime = createPlatformCapabilitySet({ platform: 'linux', dataPath: '/tmp/lnwjud-fixture', workspaceRootsProvider: async () => [],
+      nativeHost: { execute } as unknown as NativeHostProcessBridge, shared: { vision: fallback } });
+    await expect(runtime.service.execute('vision', input)).resolves.toMatchObject({ ok: false, error: { code: 'PERMISSION_DENIED' } });
+    expect(fallback.execute).not.toHaveBeenCalled();
   });
 
   it('fails closed for an unsupported host instead of constructing Linux adapters', async () => {

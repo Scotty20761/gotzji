@@ -123,6 +123,37 @@ describe('FileService writes', () => {
     await expect(readFile(path.join(workspace.rootPath, 'src', 'file.txt'), 'utf8')).resolves.toBe('after');
   });
 
+  it('permits exactly one create_new between independent Full-profile client sessions', async () => {
+    const workspace = await createWorkspace();
+    const target = path.join(workspace.rootPath, 'src', 'competing.md');
+    const first = new FileService(repository(workspace), undefined, undefined, { profile: permissionProfiles.full });
+    const second = new FileService(repository(workspace), undefined, undefined, { profile: permissionProfiles.full });
+    const [one, two] = await Promise.all([
+      first.writeFile({ ...actor, clientId: 'independent-a' }, workspace.id, {
+        path: target, content: 'from-A', mode: 'create_new',
+      }),
+      second.writeFile({ ...actor, clientId: 'independent-b' }, workspace.id, {
+        path: target, content: 'from-B', mode: 'create_new',
+      }),
+    ]);
+    const successes = [one, two].filter((value) => value.ok);
+    expect(successes).toHaveLength(1);
+    expect([one, two].find((value) => !value.ok)).toMatchObject({ ok: false, error: { code: 'CONFLICT' } });
+    await expect(readFile(target, 'utf8')).resolves.toBe(one.ok ? 'from-A' : 'from-B');
+  });
+
+  it('refuses explicit no-replace under Full without changing existing bytes', async () => {
+    const workspace = await createWorkspace();
+    const target = path.join(workspace.rootPath, 'src', 'file.txt');
+    await writeFile(target, 'original', 'utf8');
+    const service = new FileService(repository(workspace), undefined, undefined, { profile: permissionProfiles.full });
+    for (const options of [{ overwriteExisting: false }, { mode: 'create_new' as const }]) {
+      const result = await service.writeFile(actor, workspace.id, { path: target, content: 'new', ...options });
+      expect(result).toMatchObject({ ok: false, error: { code: 'CONFLICT' } });
+      await expect(readFile(target, 'utf8')).resolves.toBe('original');
+    }
+  });
+
   it('captures a checkpoint before atomically overwriting an existing file', async () => {
     const workspace = await createWorkspace();
     const checkpoints = checkpointService();

@@ -86,9 +86,9 @@ export function engineeringGoalMetadata(
 
 export function classifyEngineeringTaskKind(objective: string): EngineeringTaskKind {
   const value = objective.trim().toLowerCase();
-  if (/(\brelease\b|\bpublish\b|\btag\b|ปล่อยเวอร์ชัน|รีลีส)/i.test(affirmativeDeliveryText(value))) return 'release';
+  if (hasDeliveryAction(value, 'release')) return 'release';
   if (/(\bincident\b|\boutage\b|production down|service down|เหตุขัดข้อง|ระบบล่ม)/i.test(value)) return 'incident';
-  if (/(\breview\b|code review|audit diff|ตรวจโค้ด|รีวิวโค้ด)/i.test(value)) return 'review';
+  if (/(\breview\b|code review|\baudit\b|ตรวจ(?:สอบ|โค้ด)|รีวิวโค้ด)/i.test(value) && !hasRequestedCodeMutation(value)) return 'review';
   if (/(\bdocs?\b|readme|typo|copy change|documentation|เอกสาร|คำผิด)/i.test(value)) return 'docs';
   if (/(css[- ]only|style[- ]only|icon[- ]only|spacing[- ]only|harmless rename|ระยะห่าง|ไอคอน)/i.test(value)) return 'maintenance';
   if (/(\brefactor\b|restructure|rename architecture|รีแฟคเตอร์|ปรับโครงสร้าง)/i.test(value)) return 'refactor';
@@ -104,7 +104,7 @@ export function classifyEngineeringRisk(
 ): { readonly tier: EngineeringRiskTier; readonly reasons: readonly string[] } {
   const value = objective.trim().toLowerCase();
   const reasons: string[] = [];
-  if (taskKind === 'release' || /(production deploy|data migration|destructive|drop table|credential boundary|deploy production|ขึ้น production)/i.test(value)) {
+  if (taskKind === 'release' || hasRequestedProductionDeploy(value) || /(\bdata migration\b|\bdestructive\b|\bdrop table\b|\bcredential boundary\b)/i.test(value)) {
     reasons.push('Release, production, destructive data, or credential-boundary work requires recovery/provenance evidence.');
     return { tier: 'critical', reasons };
   }
@@ -124,22 +124,209 @@ export function classifyEngineeringRisk(
   return { tier: 'medium', reasons };
 }
 
+function hasRequestedProductionDeploy(value: string): boolean {
+  return hasAffirmativeMatch(value, /\bdeploy\s+(?:(?:to|into)\s+)?(?:the\s+)?prod(?:uction)?\b/i, 'deploy')
+    || hasAffirmativeMatch(value, /\broll\s+out\s+(?:(?:to|into)\s+)?(?:the\s+)?prod(?:uction)?\b/i, 'deploy')
+    || hasAffirmativeProductionDeployment(value)
+    || hasAffirmativeMatch(value, /ขึ้น\s+(?:prod|production)\b/i, 'deploy');
+}
+
+function hasAffirmativeProductionDeployment(value: string): boolean {
+  const patterns = [
+    /\bproduction\s+(?:deployments?|deploy)\b/i,
+    /\bdeployments?\s+(?:to|into)\s+(?:the\s+)?production\b/i,
+  ] as const;
+  for (const pattern of patterns) {
+    for (const match of value.matchAll(globalMatcher(pattern))) {
+      const index = match.index ?? 0;
+      if (isNegatedAction(value, index)) continue;
+      if (isThaiDeploymentReview(value, index)) continue;
+      if (hasNegatedProductionDeployment(value.slice(index + match[0].length))) continue;
+      const scope = actionScopeBefore(value, index);
+      const followingScope = actionScopeAfter(value, index, match[0].length);
+      const [deploymentClause = ''] = followingScope.split(';');
+      const readOnlyTopic = /\b(?:review|audit|inspect|examine|check|read|document|list|compare|existing|previous|prior|historical|old|current|history|report|summary|overview)\b/i;
+      const explicitAction = /\b(?:perform|execute|start|schedule|trigger|initiate|deploy|roll\s+out|publish|ship)\b/i;
+      if ((readOnlyTopic.test(scope) || readOnlyTopic.test(deploymentClause))
+        && !explicitAction.test(scope)) continue;
+      return true;
+    }
+  }
+  return false;
+}
+
 export function inferDeliveryScope(objective: string): EngineeringDeliveryScope {
-  const value = affirmativeDeliveryText(objective.trim().toLowerCase());
-  if (/(\bdeploy\b|ขึ้น prod|ขึ้น production)/i.test(value)) return 'deploy';
-  if (/(\brelease\b|\bpublish\b|\btag\b|รีลีส|ปล่อยเวอร์ชัน)/i.test(value)) return 'release';
-  if (/(\bmerge\b|รวม pr)/i.test(value)) return 'merge';
-  if (/(\bpull request\b|\bpr\b)/i.test(value)) return 'pull_request';
-  if (/(\bpush\b|ส่งขึ้น git)/i.test(value)) return 'push';
-  if (/(\bcommit\b|คอมมิต)/i.test(value)) return 'commit';
+  const value = objective.trim().toLowerCase();
+  if (hasRequestedProductionDeploy(value)) return 'deploy';
+  if (hasDeliveryAction(value, 'deploy')) return 'deploy';
+  if (hasDeliveryAction(value, 'release')) return 'release';
+  if (hasDeliveryAction(value, 'merge')) return 'merge';
+  if (hasDeliveryAction(value, 'pull_request')) return 'pull_request';
+  if (hasDeliveryAction(value, 'push')) return 'push';
+  if (hasDeliveryAction(value, 'commit')) return 'commit';
   return 'local';
 }
 
-function affirmativeDeliveryText(value: string): string {
-  // Delivery words inside a prohibition are not authorization. Treat the
-  // remainder of that clause conservatively until the next sentence or
-  // semicolon. Commas often separate one prohibited delivery list.
-  return value.replace(/(?:\b(?:do not|don't|dont|never|without|no)\b|ไม่ต้อง|ห้าม|อย่า)[^;.\n!?]*/gi, ' ');
+type DeliveryAction = 'deploy' | 'release' | 'merge' | 'pull_request' | 'push' | 'commit';
+
+const DELIVERY_ACTION_PATTERNS: Readonly<Record<DeliveryAction, readonly RegExp[]>> = {
+  deploy: [/\bdeploy\b|\broll\s+out\b|ขึ้น\s+(?:prod|production)\b/i],
+  release: [
+    /\brelease\b/i,
+    /\bpublish\s+(?:(?:a|the|new)\s+)?(?:release|version|build|artifact|v?\d+(?:\.\d+)*)\b/i,
+    /\btag\s+(?:(?:a|the|new)\s+)?(?:release|version|v?\d+(?:\.\d+)*)\b/i,
+    /\bship\s+(?:(?:the|a)\s+)?(?:app|build|release|version)\b/i,
+    /(?:ปล่อย|เผยแพร่)\s*(?:เวอร์ชัน|รุ่น)/i,
+    /\b(?:release|รีลีส)\s*(?:version|เวอร์ชัน|รุ่น|v?\d+(?:\.\d+)*)/i,
+  ],
+  merge: [/\bmerge\b|รวม\s+pr/i],
+  pull_request: [/\bpull request\b|\bpr\b/i],
+  push: [/\bpush\b|ส่งขึ้น\s+git/i],
+  commit: [/\bcommit\b|คอมมิต/i],
+};
+
+const CODE_MUTATION_PATTERNS = [
+  /\b(?:fix|repair|patch|implement|add|edit|modify|remove|delete|refactor|restructure|rewrite)\b/i,
+  /(?:แก้(?:ไข)?|เพิ่ม|ปรับปรุง|เปลี่ยน|ลบ|สร้าง)/i,
+] as const;
+
+function hasRequestedCodeMutation(value: string): boolean {
+  return CODE_MUTATION_PATTERNS.some((pattern) => hasAffirmativeMatch(value, pattern));
+}
+
+function hasDeliveryAction(value: string, action: DeliveryAction): boolean {
+  return DELIVERY_ACTION_PATTERNS[action].some((pattern) => {
+    const globalPattern = globalMatcher(pattern);
+    for (const match of value.matchAll(globalPattern)) {
+      const index = match.index ?? 0;
+      if (action === 'release' && !isReleaseVerbUse(value, index, match[0])) continue;
+      const followingScope = value.slice(index + match[0].length);
+      if (action === 'deploy') {
+        if (isThaiDeploymentReview(value, index)) continue;
+        const targets = getDeploymentTargets(followingScope) ?? [];
+        if ((targets.length === 0 ? ['production'] : targets)
+          .every((target) => hasNegatedDeploymentForTarget(followingScope, target))) continue;
+      }
+      if (!isNegatedAction(value, index)) return true;
+    }
+    return false;
+  });
+}
+
+function hasAffirmativeMatch(value: string, pattern: RegExp, action?: DeliveryAction): boolean {
+  const globalPattern = globalMatcher(pattern);
+  for (const match of value.matchAll(globalPattern)) {
+    if (action === 'deploy' && isThaiDeploymentReview(value, match.index ?? 0)) continue;
+    if (action === 'deploy' && hasNegatedProductionDeployment(value.slice((match.index ?? 0) + match[0].length))) continue;
+    if (!isNegatedAction(value, match.index ?? 0)) return true;
+  }
+  return false;
+}
+
+function globalMatcher(pattern: RegExp): RegExp {
+  return new RegExp(pattern.source, pattern.global ? pattern.flags : `${pattern.flags}g`);
+}
+
+function isReleaseVerbUse(value: string, index: number, matchedText: string): boolean {
+  if (/^(?:ปล่อย|เผยแพร่|รีลีส|publish|tag|ship)\b/i.test(matchedText)) return true;
+  const before = value.slice(Math.max(0, index - 80), index);
+  const after = value.slice(index + matchedText.length);
+  const actionScope = actionScopeBefore(value, index);
+  const explicitDeliveryBefore = /\b(?:prepare|create|build|generate|publish|tag|ship|cut)\b/i.test(actionScope);
+  if (/\b(?:review|audit|inspect|examine|check|summari[sz]e|historical|previous|prior|past|last|old|existing|current|yesterday)\b/i.test(actionScope)
+    && !explicitDeliveryBefore) return false;
+  if (/(?:\b(?:the|a|an|of|from|about|historical|previous|prior|past|last|old|existing|yesterday)\s*|\b(?:last|previous|prior|past)\s+\w+(?:['’]s)?\s*|\b(?:yesterday|today|tomorrow)(?:['’]s)?\s*)$/i.test(before)) return false;
+  if (/^\s+(?:from|of|for|notes?|pipeline|process|workflow|history|yesterday|last|branch|candidate)\b/i.test(after)) return false;
+  return true;
+}
+
+function actionScopeBefore(value: string, index: number): string {
+  const before = value.slice(0, index);
+  let sentencePeriod = -1;
+  for (const match of before.matchAll(/(?<!\d)\.(?!\d)/g)) sentencePeriod = match.index ?? sentencePeriod;
+  const boundary = Math.max(
+    before.lastIndexOf(';'),
+    before.lastIndexOf('\n'),
+    before.lastIndexOf('\r'),
+    sentencePeriod,
+    before.lastIndexOf('!'),
+    before.lastIndexOf('?'),
+  );
+  let scope = before.slice(boundary + 1);
+  const contrast = /\b(?:but|however|then|instead|except)\b|(?:แต่|แล้ว|จากนั้น)/gi;
+  let lastContrast = -1;
+  for (const match of scope.matchAll(contrast)) lastContrast = (match.index ?? 0) + match[0].length;
+  if (lastContrast >= 0) scope = scope.slice(lastContrast);
+  return scope;
+}
+
+function actionScopeAfter(value: string, index: number, matchedLength: number): string {
+  const after = value.slice(index + matchedLength);
+  let boundary = after.length;
+  for (const delimiter of ['!', '?']) {
+    const position = after.indexOf(delimiter);
+    if (position >= 0 && position < boundary) boundary = position;
+  }
+  for (const match of after.matchAll(/(?<!\d)\.(?!\d)/g)) {
+    const period = match.index ?? after.length;
+    if (period < boundary) boundary = period;
+  }
+  return after.slice(0, boundary);
+}
+
+function hasNegatedProductionDeployment(scope: string): boolean {
+  return hasNegatedDeploymentForTarget(scope, 'production');
+}
+
+function hasNegatedDeploymentForTarget(scope: string, target: string): boolean {
+  const denials = /\b(?:do\s+not|don't|dont|never|without|not|no)\s+(?:deploy|roll\s+out)\b|(?:ไม่ต้อง|ห้าม|อย่า|ไม่)\s*(?:deploy|roll\s+out|ขึ้น)\b/gi;
+  for (const denial of scope.matchAll(denials)) {
+    const deniedTarget = scope.slice((denial.index ?? 0) + denial[0].length);
+    const deniedTargets = getDeploymentTargets(deniedTarget);
+    if (deniedTargets === undefined) continue;
+    if (deniedTargets.length > 0 && !deniedTargets.includes(target)) continue;
+    return true;
+  }
+  return false;
+}
+
+function getDeploymentTargets(scope: string): readonly string[] | undefined {
+  const environment = '(prod(?:uction)?|staging|stage|dev|development|test|testing|qa|preview)';
+  const firstTarget = new RegExp(`^\\s+(?:(?:to|into)\\s+)?(?:both\\s+)?(?:the\\s+)?${environment}\\b`, 'i').exec(scope);
+  if (firstTarget === null) return [];
+
+  const targets = [firstTarget[1]!.toLowerCase()];
+  let remaining = scope.slice(firstTarget[0].length);
+  const targetEnd = /^(?:\s*$|\s*(?:[,;.!?:]|and\/or\b|and\b|or\b|&)|\s+(?:after|before|once|when|if|during|with|for|on)\b)/i;
+  const ambiguousTargetEnd = /^(?:\s*$|\s*(?:[,;.!?:]|and\/or\b|and\b|or\b|&))/i;
+  if (/^(?:stage|test|testing)$/.test(targets[0]!) && !ambiguousTargetEnd.test(remaining)) return undefined;
+  const nextTarget = new RegExp(`^\\s*(?:,|and/or|and|or|&)\\s*(?:the\\s+)?${environment}\\b`, 'i');
+  while (true) {
+    const match = nextTarget.exec(remaining);
+    if (match === null) break;
+    const nextRemainder = remaining.slice(match[0].length);
+    const targetName = match[1]!.toLowerCase();
+    const ambiguousTarget = targetName === 'stage' || targetName === 'test' || targetName === 'testing';
+    if (!(ambiguousTarget ? ambiguousTargetEnd : targetEnd).test(nextRemainder)) break;
+    targets.push(targetName);
+    remaining = nextRemainder;
+  }
+  return targets.map((target) => {
+    if (target === 'prod') return 'production';
+    if (target === 'stage') return 'staging';
+    if (target === 'dev') return 'development';
+    if (target === 'testing') return 'test';
+    return target;
+  });
+}
+
+function isThaiDeploymentReview(value: string, index: number): boolean {
+  return /(?:ตรวจสอบ|ตรวจโค้ด|รีวิว)(?:การ)?\s*$/i.test(actionScopeBefore(value, index));
+}
+
+function isNegatedAction(value: string, index: number): boolean {
+  const scope = actionScopeBefore(value, index);
+  return /\b(?:do\s+not|don't|dont|never|without|no|not)\b|(?:ยัง)?ไม่ต้อง|ไม่|ห้าม|อย่า/i.test(scope);
 }
 
 function workflowFor(taskKind: EngineeringTaskKind, riskTier: EngineeringRiskTier): readonly EngineeringWorkflowStep[] {

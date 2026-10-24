@@ -56,7 +56,7 @@ export class PowerShellWindowsCapabilityBridge implements WindowsCapabilityBridg
     if (!integrity.ok) return err(integrity.error);
     let serialized: string;
     try {
-      serialized = JSON.stringify(request);
+      serialized = JSON.stringify(request).replace(/[\u0080-\uffff]/g, (character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, '0')}`);
     } catch {
       return err(appError('INVALID_INPUT', 'Windows bridge input could not be serialized'));
     }

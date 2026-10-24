@@ -10,7 +10,13 @@ import {
   FileService,
   EngineeringPreparationService,
   GitService,
+  RepositoryImportService,
   GoalContinuationService,
+  WorkflowTemplateService,
+  WorkflowStartService,
+  CallHistoryService,
+  TaskResultService,
+  ResourceSnapshotService,
   GoalRequestCancellationService,
   GoalTaskCancellationService,
   GoalMutationFenceService,
@@ -29,6 +35,9 @@ import {
 import { AuditService, decodeActivityTargetReference } from '@lnwjud/audit';
 import {
   createPlatformCapabilitySet,
+  SharedManagedWriterAdmission,
+  SqliteWorkspaceWriterLease,
+  SecureRepositoryImportRuntime,
   type LocalCapabilityService,
   type PlatformWindowsCapabilityOptions,
   type ShellCapabilityBackend,
@@ -41,7 +50,7 @@ import {
   createLocalExtensionsService,
   type ExtensionsService,
 } from '@lnwjud/extensions';
-import { ActivityTracker, RuntimeEngineeringEvidenceVerifier, createEngineeringArtifactVerifier, createEngineeringSourceStateProvider, RuntimeGoalManagedTaskStateReader, SharedActivitySnapshotLease, composeActivitySinks, createFileActivitySink, currentSharedActivityOwner, mcpActivityLogPath, type ActivitySink, type ActivitySinkEvent, type McpApplicationServices, type WorkspaceScope } from '@lnwjud/mcp-server';
+import { DapSessionService, OfficeDataWorkflowService, ActivityTracker, RuntimeEngineeringEvidenceVerifier, createEngineeringArtifactVerifier, createEngineeringSourceStateProvider, RuntimeGoalManagedTaskStateReader, SharedActivitySnapshotLease, composeActivitySinks, createFileActivitySink, currentSharedActivityOwner, mcpActivityLogPath, type ActivitySink, type ActivitySinkEvent, type McpApplicationServices, type WorkspaceScope } from '@lnwjud/mcp-server';
 import { permissionProfiles, type PermissionProfile, type PermissionProfileName } from '@lnwjud/permissions';
 import {
   AesGcmCheckpointCipher,
@@ -146,7 +155,11 @@ export function createStdioMcpRuntime(
     globalSettingsProvider: (): EngineeringHarnessSettings => parseEngineeringHarnessSettings(settingsRepository.get(USER_SETTING_KEYS.engineeringHarnessSettings)).settings,
     workspaceOverrideProvider: (workspaceId): EngineeringHarnessWorkspaceOverride | undefined => parseEngineeringHarnessWorkspaceOverrides(settingsRepository.get(USER_SETTING_KEYS.engineeringHarnessWorkspaceOverrides))[workspaceId],
   });
+  const writerAdmission = new SharedManagedWriterAdmission(path.join(dataPath, 'background-tasks'));
+  const workspaceWriterLease = new SqliteWorkspaceWriterLease(path.join(dataPath, 'workspace-writer-leases.sqlite'), Date.now, writerAdmission);
   const processService = new ProcessService(workspaceRepository, {
+    writerAdmission,
+    nativeContainmentRoot: path.join(dataPath, 'native-managed-processes'),
     projectService,
     profileProvider,
     defaultTimeoutMsProvider: (): number => parseIntegerSetting(settingsRepository.get(USER_SETTING_KEYS.processTimeoutMs), DEFAULT_PROCESS_TIMEOUT_MS, 1_000, 4 * 60 * 60_000),
@@ -159,6 +172,7 @@ export function createStdioMcpRuntime(
   });
   const pathGuard = new WorkspacePathGuard(new SecretPolicy(), { unrestricted: effectiveUnrestricted, trustedWorkspaceAccess: !strictRoots });
   const fileService = new FileService(workspaceRepository, pathGuard, undefined, {
+    writerAdmission,
     checkpointService,
     profileProvider,
     unrestricted: effectiveUnrestricted,
@@ -168,7 +182,7 @@ export function createStdioMcpRuntime(
     recoverableDelete: (): boolean => destructivePolicyProvider().recoverableDelete,
     recoveryTrashRoot: path.join(dataPath, 'recovery-trash'),
   });
-  const gitService = new GitService(workspaceRepository);
+  const gitService = new GitService(workspaceRepository, undefined, undefined, { writerAdmission, nativeContainmentRoot: path.join(dataPath, 'native-managed-git') });
   const workspaceQuery = new WorkspaceQueryService(workspaceRepository, pathGuard);
   const extensions = createLocalExtensionsService({
     settingsJson: settingsRepository.get(EXTENSIONS_SETTINGS_KEY),
@@ -246,6 +260,8 @@ export function createStdioMcpRuntime(
         ...(event.workspaceId === undefined ? {} : { workspaceId: event.workspaceId }),
         ...(event.sessionId === undefined ? {} : { sessionId: event.sessionId }),
         toolName: event.toolName,
+        ...(event.goalId === undefined ? {} : { goalId: event.goalId }),
+        ...(event.goalId === undefined || event.mutationReceipt === undefined ? {} : { mutationReceipt: event.mutationReceipt }),
         callId: event.callId,
         phase: event.phase,
         ...(event.targetSummary === undefined ? {} : { targetSummary: event.targetSummary }),
@@ -261,6 +277,7 @@ export function createStdioMcpRuntime(
       });
     },
   });
+  const debugSessions = new DapSessionService();
   const services: McpApplicationServices = {
     platform: process.platform,
     runtimeStatePath: path.join(dataPath, 'upgrade-runtime.json'),
@@ -272,8 +289,10 @@ export function createStdioMcpRuntime(
       lspCommands: parseStringRecordSetting(settingsRepository.get(USER_SETTING_KEYS.lspCommands)),
     }),
     capabilities: capabilityRuntime.service,
+    debugSessions,
     extensions,
     workspaceInfo: new WorkspaceInfoService(workspaceRepository, workspaceService, effectiveUnrestricted),
+    workspaceWriterLease,
     workspaceQuery,
     projectSnapshot: new ProjectSnapshotService(workspaceRepository, {
       projectService,
@@ -286,12 +305,19 @@ export function createStdioMcpRuntime(
     file: fileService,
     checkpoint: checkpointService,
     goals: goalService,
+    callHistory: new CallHistoryService(workspaceRepository, auditRepository),
+    taskResults: new TaskResultService(goalService, auditRepository, workspaceRepository),
+    resourceSnapshot: new ResourceSnapshotService(workspaceRepository, goalService),
+    officeDataWorkflow: new OfficeDataWorkflowService(async (id) => (await workspaceRepository.get(id))?.realRootPath ?? null),
+    workflowTemplates: new WorkflowTemplateService(workspaceRepository),
+    workflowStart: new WorkflowStartService(new WorkflowTemplateService(workspaceRepository), goalService),
     goalRequestCancellation: requestCancellation,
     scheduledContinuations: scheduledContinuationService,
     goalMutationFence,
     search: new SearchService(workspaceRepository),
     workspaceIndex,
     git: gitService,
+    repositoryImport: new RepositoryImportService(workspaceRepository, new SecureRepositoryImportRuntime(dataPath)),
     process: processService,
     codex: codexService,
     agentSwarm: agentSwarmService,
@@ -323,6 +349,7 @@ export function createStdioMcpRuntime(
     engineeringHarnessSettingsProvider: () => parseEngineeringHarnessSettings(settingsRepository.get(USER_SETTING_KEYS.engineeringHarnessSettings)),
     toolAvailabilityService,
     close: async (): Promise<void> => {
+      debugSessions.close();
       stopToolAvailabilityWatch();
       await (await sharedActivityLease)?.close();
       await extensions.close().catch(() => undefined);
