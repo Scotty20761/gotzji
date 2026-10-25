@@ -8,7 +8,61 @@ const BASE_POLICY: readonly LibraryPolicySource[] = [
 ];
 const step = (value: LibraryWorkflowStep): LibraryWorkflowStep => value;
 
+const PORTFOLIO_SOURCES: readonly LibraryPolicySource[] = [
+  ...BASE_POLICY,
+  { id: 'portfolio-intake-contract', relativePath: '.claude/skills/portfolio-screenshot-intake/SKILL.md' },
+  { id: 'portfolio-snapshot', relativePath: 'data/broker_snapshot.csv' },
+  { id: 'portfolio-fills', relativePath: 'inputs/sources/portfolio_manual_additions.csv' },
+  { id: 'portfolio-refresh', relativePath: 'scripts/pf_daily_refresh.py' },
+  { id: 'portfolio-build', relativePath: 'scripts/pf_build.py' },
+  { id: 'portfolio-reconcile', relativePath: 'scripts/pf_reconcile.py' },
+  { id: 'portfolio-deploy', relativePath: 'scripts/deploy_private_portfolio.py' },
+  { id: 'portfolio-private-audit', relativePath: 'scripts/audit_portfolio_private.py' },
+];
+
 export const LIBRARY_WORKFLOW_REGISTRY: readonly LibraryWorkflowDefinition[] = [
+  {
+    id: 'library.portfolio-build', version: 1,
+    title: 'Portfolio broker snapshot: build and reconcile without deploying',
+    privacy: 'private', allowedParameters: [], requiredParameters: [], sources: PORTFOLIO_SOURCES,
+    steps: [
+      step({ id: 'build', operation: 'library.portfolio.build', effect: 'write',
+        dependsOn: [], cancellation: 'stop-owned', actor: 'grace',
+        requiredObligations: ['privacy-boundary', 'source-build-live-separation'] }),
+      step({ id: 'verify', operation: 'library.portfolio.verify-build', effect: 'read',
+        dependsOn: ['build'], cancellation: 'none', actor: 'grace',
+        requiredObligations: ['privacy-boundary', 'source-build-live-separation'] }),
+    ],
+  },
+  {
+    id: 'library.portfolio-private-deploy', version: 1,
+    title: 'Portfolio private Cloudflare release (explicit owner delivery approval)',
+    privacy: 'private', allowedParameters: [], requiredParameters: [], sources: PORTFOLIO_SOURCES,
+    steps: [
+      step({ id: 'build', operation: 'library.portfolio.build', effect: 'write',
+        dependsOn: [], cancellation: 'stop-owned', actor: 'grace',
+        requiredObligations: ['privacy-boundary', 'source-build-live-separation'] }),
+      step({ id: 'verify', operation: 'library.portfolio.verify-build', effect: 'read',
+        dependsOn: ['build'], cancellation: 'none', actor: 'grace',
+        requiredObligations: ['privacy-boundary', 'source-build-live-separation'] }),
+      step({ id: 'deploy', operation: 'library.portfolio.private-deploy', effect: 'delivery',
+        deliveryScope: 'deploy', dependsOn: ['verify'], cancellation: 'stop-owned', actor: 'grace',
+        requiredObligations: ['privacy-boundary', 'source-build-live-separation', 'live-verification'] }),
+      step({ id: 'verify-live', operation: 'library.portfolio.verify-production', effect: 'read',
+        dependsOn: ['deploy'], cancellation: 'none', actor: 'grace',
+        requiredObligations: ['privacy-boundary', 'source-build-live-separation', 'live-verification'] }),
+    ],
+  },
+  {
+    id: 'library.portfolio-production-verify', version: 1,
+    title: 'Verify private Portfolio release and Cloudflare Access without deploying',
+    privacy: 'private', allowedParameters: [], requiredParameters: [], sources: PORTFOLIO_SOURCES,
+    steps: [
+      step({ id: 'verify-live', operation: 'library.portfolio.verify-production', effect: 'read',
+        dependsOn: [], cancellation: 'none', actor: 'grace',
+        requiredObligations: ['privacy-boundary', 'source-build-live-separation', 'live-verification'] }),
+    ],
+  },
   {
     id: 'library.read', version: 1, title: 'Read selected Library Markdown/code with canonical pre-work', privacy: 'project-policy',
     allowedParameters: ['paths'], requiredParameters: ['paths'], sources: BASE_POLICY,

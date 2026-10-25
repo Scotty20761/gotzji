@@ -39,11 +39,12 @@ export function libraryRoute(owner: string, adapterId: string, authorityId: stri
   if (project.kind !== 'library' || !['gotzji-library','lnwjud-library'].includes(route)) throw new CoreError('LIBRARY_ROUTE_AUTHORITY_DENIED');
   return { route, adapterId, ownerId: owner, authorityId, projectId: project.projectId, catalogId: route === 'gotzji-library' ? 'gotzji.library.v1' : 'lnwjud.library.v1' };
 }
-export const RUNNABLE_LIBRARY_WORKFLOWS = new Set(['library.read:1','library.code-qa:2','library.weekly-reading:2','library.memo-review:1','library.final-memo:2']);
+export const RUNNABLE_LIBRARY_WORKFLOWS = new Set(['library.read:1','library.code-qa:2','library.weekly-reading:2','library.memo-review:1','library.final-memo:2','library.portfolio-build:1','library.portfolio-private-deploy:1','library.portfolio-production-verify:1']);
 export function prepareLibraryOperation(project: RegisteredProject, input: ProductLibraryInput, route: LibraryRouteAuthority, options: TrustedLibraryOptions): PreparedLibraryOperation {
   if (!input || Object.keys(input).some((key) => !['operation','requestId','projectId','workflowId','workflowVersion','parameters','priority','dependsOn'].includes(key)) || input.operation !== 'library.workflow') throw new CoreError('LIBRARY_INPUT_INVALID');
   if (!RUNNABLE_LIBRARY_WORKFLOWS.has(`${input.workflowId}:${input.workflowVersion}`)) throw new CoreError('LIBRARY_EXECUTOR_NOT_REGISTERED');
   if (input.priority !== undefined && (!Number.isInteger(input.priority) || input.priority < 0 || input.priority > 3)) throw new CoreError('LIBRARY_INPUT_INVALID', undefined, 'priority');
+  if (input.workflowId.startsWith('library.portfolio-') && (project.kind !== 'library' || project.projectId !== 'investment-library' || Object.keys(input.parameters).length !== 0)) throw new CoreError('PORTFOLIO_LIBRARY_SCOPE_DENIED', 'Portfolio workflows require the enrolled Investment Library and no custom command arguments', 'projectId');
   const adapter = new LibraryWorkflowAdapter(async () => { throw new Error('PREPARATION_NEVER_GRANTS_EXECUTION'); });
   const prepared = adapter.prepare(project.rootPath, route, { requestId: input.requestId, projectId: input.projectId, workflowId: input.workflowId, workflowVersion: input.workflowVersion, parameters: input.parameters });
   let selected: string[] = [];
@@ -79,7 +80,7 @@ export function prepareLibraryOperation(project: RegisteredProject, input: Produ
     library: { ...prepared, ...(spokePolicies ? { spokePolicies } : {}), resources: [`project:${project.resourceKey}`, `library-vault:${project.resourceKey}`, ...(prepared.ast.nodes.some((entry) => entry.actor !== 'grace') ? ['global:library-roster-writer'] : [])], selectedSources, python,
       ...(finalMemo ? { finalMemo: finalMemo.metadata } : {}) } };
 }
-export const HOST_DIRECT_LIBRARY_WORKFLOWS = new Set(['library.read:1','library.code-qa:2']);
+export const HOST_DIRECT_LIBRARY_WORKFLOWS = new Set(['library.read:1','library.code-qa:2','library.portfolio-build:1','library.portfolio-private-deploy:1','library.portfolio-production-verify:1']);
 export function assertHostDirectLibraryWorkflow(id: string, version: number): void {
   if (!HOST_DIRECT_LIBRARY_WORKFLOWS.has(`${id}:${version}`)) throw new CoreError('CHATGPT_ORCHESTRATION_REQUIRED', 'This workflow requires reasoning and audit continuation from the ChatGPT conversation', 'workflowId', 'controller', 'Use supported typed host operations from ChatGPT; analytical workflow continuation is not yet implemented');
 }

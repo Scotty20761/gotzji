@@ -25,7 +25,7 @@ const operationId = (stepId) => `library-step:${stepId}`;
 
 export function assertPreparedLibraryAuthorization(config) {
   const prepared = JSON.parse(config.text);
-  if (config.grace?.mode === 'host-direct' && (!['library.read:1','library.code-qa:2'].includes(`${prepared?.library?.ast?.workflowId}:${prepared?.library?.ast?.workflowVersion}`) || prepared.library.ast.nodes.some(step => step.actor !== 'grace' || step.operation === 'library.weekly-reading.synthesize'))) throw typed('CHATGPT_ORCHESTRATION_REQUIRED','none');
+  if (config.grace?.mode === 'host-direct' && (!['library.read:1','library.code-qa:2','library.portfolio-build:1','library.portfolio-private-deploy:1','library.portfolio-production-verify:1'].includes(`${prepared?.library?.ast?.workflowId}:${prepared?.library?.ast?.workflowVersion}`) || prepared.library.ast.nodes.some(step => step.actor !== 'grace' || step.operation === 'library.weekly-reading.synthesize'))) throw typed('CHATGPT_ORCHESTRATION_REQUIRED','none');
   if (prepared?.kind !== 'library' || !config.libraryAuthorization || !config.grace) throw typed('LIBRARY_PREPARATION_REQUIRED','none');
   const { body, mac } = config.libraryAuthorization;
   if (typeof body !== 'string' || typeof mac !== 'string' || !equal(createHmac('sha256',config.token).update(body).digest('hex'),mac)) throw typed('LIBRARY_BINDING_INVALID','none');
@@ -224,8 +224,128 @@ function persistStepArtifact(config,step,value){const content=JSON.stringify(val
 function finalReceipt(config,prepared,receipts,state,lastOutput){return{operation:'library.workflow',projectId:prepared.project.projectId,workflowId:prepared.library.ast.workflowId,workflowVersion:prepared.library.ast.workflowVersion,route:prepared.library.route.route,state,jobId:config.jobId,epoch:config.epoch,intentDigest:prepared.library.digest,sourceDigest:prepared.library.sourceScope.digest,resourceKeys:prepared.library.resources,steps:receipts,lastOutputDigest:digestLibraryValue(lastOutput??null)};}
 function nextStep(prepared,receipts){const done=new Set(receipts.map((r)=>r.stepId));return prepared.library.ast.nodes.find((step)=>!done.has(step.id));}
 
+const PORTFOLIO_ORIGIN = 'https://portfolio-dashboard.gotin-love-chompoo.workers.dev';
+const PORTFOLIO_STATE = 'data/build/portfolio-state.json';
+const PORTFOLIO_RECEIPT = 'data/cache/private-deploy-result.json';
+const PORTFOLIO_BUNDLED = 'private-dist/site/inputs/Dashboards/Portfolio/data/portfolio-state.json';
+function portfolioFile(prepared, relative) {
+  if (prepared.project.projectId !== 'investment-library' || prepared.project.kind !== 'library'
+    || !prepared.library.ast.workflowId.startsWith('library.portfolio-')) throw typed('PORTFOLIO_LIBRARY_SCOPE_DENIED','none');
+  return path.join(prepared.project.rootPath, ...relative.split('/'));
+}
+function portfolioJson(prepared, relative) {
+  const file = portfolioFile(prepared, relative);
+  if (!existsSync(file) || lstatSync(file).isSymbolicLink() || realpathSync(file) !== file)
+    throw typed('PORTFOLIO_EVIDENCE_MISSING','none');
+  let data;
+  try { data = JSON.parse(readFileSync(file, 'utf8')); } catch { throw typed('PORTFOLIO_EVIDENCE_INVALID','none'); }
+  if (!data || typeof data !== 'object' || Array.isArray(data)) throw typed('PORTFOLIO_EVIDENCE_INVALID','none');
+  return data;
+}
+export function portfolioAuthority(prepared) {
+  const file = portfolioFile(prepared, 'data/broker_snapshot.csv');
+  const lines = readFileSync(file, 'utf8').trim().split(/\r?\n/u);
+  if (lines[0] !== 'as_of_date,source,ticker,shares,avg_cost,total_cost,market_value,last_price,status')
+    throw typed('PORTFOLIO_SNAPSHOT_FORMAT_INVALID','none');
+  const rows = lines.slice(1).map(line => line.split(','));
+  const dates = new Set(rows.map(row => row[0]));
+  const tickers = new Set(rows.map(row => row[2]));
+  if (rows.length < 1 || dates.size !== 1 || !/^\d{4}-\d{2}-\d{2}$/u.test([...dates][0] ?? '') || tickers.size !== rows.length
+      || rows.some(row => row.length !== 9 || row[8] !== 'open' || !Number.isFinite(Number(row[3])) || Number(row[3]) <= 0 || !Number.isFinite(Number(row[5])) || Number(row[5]) < 0))
+    throw typed('PORTFOLIO_SNAPSHOT_INCOMPLETE','none');
+  return { asOf: [...dates][0], positions: rows.length };
+}
+export function verifyPortfolioBuild(prepared) {
+  const authority = portfolioAuthority(prepared);
+  const state = portfolioJson(prepared, PORTFOLIO_STATE);
+  const reconciliation = state.reconciliation ?? {};
+  const open = reconciliation.open_positions ?? {};
+  if (state.as_of !== authority.asOf || open.expected !== authority.positions
+    || open.computed !== authority.positions || open.status !== 'pass'
+    || (reconciliation.phantom_open_positions ?? []).length !== 0)
+    throw typed('PORTFOLIO_RECONCILIATION_NOT_PROVEN','none');
+  // In addition to count parity, compare the engine's claimed independent broker
+  // targets against CURRENT snapshot rows. Same-date edits must not reuse stale proof.
+  const snap = new Map(readFileSync(portfolioFile(prepared,'data/broker_snapshot.csv'),'utf8')
+    .trim().split(/\r?\n/u).slice(1).map(line => {
+      const row = line.split(',');
+      return [row[2], { shares: Number(row[3]), totalCost: Number(row[5]) }];
+    }));
+  const rows = reconciliation.positions;
+  if (!Array.isArray(rows) || rows.length !== authority.positions)
+    throw typed('PORTFOLIO_RECONCILIATION_NOT_PROVEN','none');
+  const observed = new Set();
+  for (const row of rows) {
+    const broker = snap.get(row.ticker);
+    const tolerance = Number(row.share_tolerance);
+    if (observed.has(row.ticker)) throw typed('PORTFOLIO_RECONCILIATION_NOT_PROVEN','none');
+    observed.add(row.ticker);
+    if (!broker || !Number.isFinite(broker.shares) || !Number.isFinite(broker.totalCost) || !Number.isFinite(tolerance) || tolerance < 0
+      || !Number.isFinite(Number(row.expected_shares)) || !Number.isFinite(Number(row.expected_cost))
+      || !Number.isFinite(Number(row.share_delta))
+      || Math.abs(Number(row.expected_shares) - broker.shares) > 0.000001
+      || Math.abs(Number(row.expected_cost) - broker.totalCost) > 0.01
+      || Math.abs(Number(row.share_delta)) > tolerance
+      || (row.ticker !== 'NFLX' && row.status !== 'pass'))
+      throw typed('PORTFOLIO_RECONCILIATION_NOT_PROVEN','none');
+  }
+  return { asOf: authority.asOf, openPositions: authority.positions, build: 'verified',
+    pricing: 'market_overlay_not_broker_authority' };
+}
+export function verifyPortfolioBundleIntegrity(prepared) {
+  const state = portfolioJson(prepared, PORTFOLIO_STATE);
+  const bundled = portfolioJson(prepared, PORTFOLIO_BUNDLED);
+  if (state.as_of !== bundled.as_of ||
+      digest(readFileSync(portfolioFile(prepared, PORTFOLIO_STATE))) !== digest(readFileSync(portfolioFile(prepared, PORTFOLIO_BUNDLED))))
+    throw typed('PORTFOLIO_RELEASE_BUNDLE_DRIFT','none');
+  return { asOf: state.as_of };
+}
+async function verifyPortfolioProduction(config, prepared, signal) {
+  const state = verifyPortfolioBuild(prepared);
+  const receipt = portfolioJson(prepared, PORTFOLIO_RECEIPT);
+  verifyPortfolioBundleIntegrity(prepared);
+  const steps = new Map((receipt.steps ?? []).map(item => [item.step, item.status]));
+  if (receipt.status !== 'pass' || receipt.exit_code !== 0 || receipt.uploaded !== true
+    || receipt.origin !== PORTFOLIO_ORIGIN
+    || ['audit-pre-upload','access-pre-upload','upload','verify-live-access','verify-manifest'].some(k => steps.get(k) !== 'pass'))
+    throw typed('PORTFOLIO_RELEASE_RECEIPT_NOT_PROVEN','none');
+  const audit = await runCommand(prepared.library.python.path, [
+    portfolioFile(prepared, 'scripts/audit_portfolio_private.py'), '--check','--json',
+    '--live-origin', PORTFOLIO_ORIGIN
+  ], prepared.project.rootPath, signal);
+  let report;
+  try { report = JSON.parse(audit.stdout); } catch { throw typed('PORTFOLIO_ACCESS_AUDIT_INVALID','none'); }
+  if (report.status !== 'pass' || !report.live)
+    throw typed('PORTFOLIO_ACCESS_CHALLENGE_NOT_PROVEN','none');
+  return { ...state, cloudflareAccess: 'challenged', privateRelease: 'receipt_verified',
+    livePrivateHoldings: 'authenticated_owner_verification_required' };
+}
+
 async function executeBuiltIn(config,prepared,step,completed,signal){
   const selected=prepared.library.selectedSources;
+  if(step.operation==='library.portfolio.build'){
+    portfolioAuthority(prepared);
+    await runCommand(prepared.library.python.path,
+      [portfolioFile(prepared,'scripts/pf_daily_refresh.py'),'--build-only'],
+      prepared.project.rootPath,signal);
+    return { ...verifyPortfolioBuild(prepared), deployment: 'not_requested' };
+  }
+  if(step.operation==='library.portfolio.verify-build') return verifyPortfolioBuild(prepared);
+  if(step.operation==='library.portfolio.private-deploy'){
+    // Owner delivery authority was verified by waitForDeliveryAuthority before this step.
+    verifyPortfolioBuild(prepared);
+    try {
+      await runCommand(prepared.library.python.path,
+        [portfolioFile(prepared,'scripts/pf_daily_refresh.py'),'--force'],
+        prepared.project.rootPath,signal);
+    } catch {
+      // Exit status alone cannot distinguish an upload from an uncertain post-upload failure.
+      throw typed('PORTFOLIO_DEPLOY_EFFECT_REQUIRES_INSPECTION','unknown');
+    }
+    return { deployment: 'canonical_private_refresh_completed', ...verifyPortfolioBuild(prepared) };
+  }
+  if(step.operation==='library.portfolio.verify-production')
+    return verifyPortfolioProduction(config,prepared,signal);
   if(step.operation==='library.memo.preflight'&&prepared.library.ast.workflowId==='library.final-memo'&&prepared.library.ast.workflowVersion===2) return {...finalMemoPreflight(prepared),files:selected.map((entry)=>({path:path.relative(prepared.project.rootPath,entry.path),sha256:entry.hash}))};
   if(step.operation==='library.source.read'||step.operation==='library.code.inspect'||step.operation==='library.memo.preflight') return {files:selected.map((entry)=>({path:path.relative(prepared.project.rootPath,entry.path),sha256:entry.hash,content:readFileSync(entry.path,'utf8')}))};
   if(step.operation==='library.code.apply'){
