@@ -19,7 +19,7 @@ const expectedState = {
     }],
   },
 };
-function fixture() {
+function fixture(): { root: string; prepared: { project: { projectId: string; kind: string; rootPath: string }; library: { ast: { workflowId: string; workflowVersion: number } } } } {
   const root = mkdtempSync(path.join(tmpdir(), 'gotzji-portfolio-gates-'));
   roots.push(root);
   mkdirSync(path.join(root, 'data', 'build'), { recursive: true });
