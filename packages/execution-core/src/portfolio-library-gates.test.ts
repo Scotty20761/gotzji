@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { portfolioAuthority, verifyPortfolioBuild, verifyPortfolioBundleIntegrity } from './product-library-broker.mjs';
@@ -20,7 +20,7 @@ const expectedState = {
   },
 };
 function fixture(): { root: string; prepared: { project: { projectId: string; kind: string; rootPath: string }; library: { ast: { workflowId: string; workflowVersion: number } } } } {
-  const root = mkdtempSync(path.join(tmpdir(), 'gotzji-portfolio-gates-'));
+  const root = realpathSync(mkdtempSync(path.join(tmpdir(), 'gotzji-portfolio-gates-')));
   roots.push(root);
   mkdirSync(path.join(root, 'data', 'build'), { recursive: true });
   writeFileSync(path.join(root, 'data', 'broker_snapshot.csv'), [header, row, ''].join('\n'));
