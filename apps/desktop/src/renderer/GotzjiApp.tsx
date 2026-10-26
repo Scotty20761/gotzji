@@ -36,6 +36,9 @@ const labels: Record<Page, string> = { home: 'หน้าแรก', projects: 
 /** Product controls address explicit canonical IDs, never the inherited provider API. */
 export function GotzjiApp({ requestPort }: { readonly requestPort?: (method: GotzjiMethod, input: Record<string, unknown>) => Promise<unknown> } = {}): ReactElement {
   const worklogTabsId = useId();
+  const historyFilterId = useId();
+  const [historySearch, setHistorySearch] = useState('');
+  const [historyStatus, setHistoryStatus] = useState('all');
   const [worklogTab, setWorklogTab] = useState<'history' | 'queue'>('history');
   const [queueState, setQueueState] = useState<'loading' | 'ready' | 'error'>('loading');
   const workflowProjectSelectId = useId();
@@ -196,6 +199,12 @@ export function GotzjiApp({ requestPort }: { readonly requestPort?: (method: Got
   const simpleResult = record(selectedJob) && typeof selectedJob.projectId === 'string' ? operationResult(result, { jobId, projectId: selectedJob.projectId }) : undefined;
   const boundRecipeIds = Array.isArray(selectedProject?.recipeIds) ? selectedProject.recipeIds as string[] : [];
   const projectCommands = projectCommandOptions(boundRecipeIds, catalog);
+  const projectNames = new Map(projects.map(project => [String(project.projectId), String(project.displayName)]));
+  const historyQuery = historySearch.trim().toLocaleLowerCase();
+  const matchingHistory = jobs.filter(job => {
+    const text = [job.jobId, job.projectId, projectNames.get(String(job.projectId)), job.requestedOperation, job.operation, job.summary, statusLabel(job.status)].join(' ').toLocaleLowerCase();
+    return (historyStatus === 'all' || job.status === historyStatus) && text.includes(historyQuery);
+  });
 
   return <div className="gotzji-app"><div className="gotzji-titlebar">gotzji</div>
     <aside><div className="gotzji-brand"><img src={gracePortrait} alt="Grace ผู้ช่วยส่วนตัว" /><div><h1>gotzji</h1><p>สั่งงานผ่านปลั๊กอิน ChatGPT</p></div></div><nav>{(Object.keys(labels) as Page[]).map((name) =>
@@ -270,7 +279,11 @@ export function GotzjiApp({ requestPort }: { readonly requestPort?: (method: Got
       }}>
         {(['history', 'queue'] as const).map((tab) => <button key={tab} id={`${worklogTabsId}-${tab}`} role="tab" aria-selected={worklogTab === tab} aria-controls={`${worklogTabsId}-panel`} tabIndex={worklogTab === tab ? 0 : -1} onClick={() => setWorklogTab(tab)}>{tab === 'history' ? 'รายการงาน' : 'คิวงาน'}</button>)}
       </div><section role="tabpanel" id={`${worklogTabsId}-panel`} aria-labelledby={`${worklogTabsId}-${worklogTab}`} tabIndex={0}>
-        {worklogTab === 'history' ? <><h3>เลือกงาน</h3><JobList jobs={jobs} disabled={busy} select={setJobId} />
+        {worklogTab === 'history' ? <><h3>เลือกงาน</h3><div role="region" aria-label="ค้นหาและกรองประวัติงาน">
+          <label htmlFor={`${historyFilterId}-search`}>ค้นหาประวัติงาน<input id={`${historyFilterId}-search`} type="search" value={historySearch} onChange={event => setHistorySearch(event.target.value)} placeholder="โครงการ รหัสงาน หรือเครื่องมือ" /></label>
+          <label htmlFor={`${historyFilterId}-status`}>สถานะงานที่แสดง</label><select id={`${historyFilterId}-status`} value={historyStatus} onChange={event => setHistoryStatus(event.target.value)}><option value="all">ทุกสถานะ</option>{['queued', 'running', 'verifying', 'blocked', 'completed', 'cancelled', 'failed'].map(status => <option key={status} value={status}>{statusLabel(status)}</option>)}</select>
+          {!jobsLoaded ? <p>{host?.state === 'unavailable' ? 'ระบบในเครื่องยังไม่พร้อม อ่านประวัติใหม่เมื่อเชื่อมต่อได้' : 'กำลังอ่านประวัติงาน…'}</p> : <><p aria-live="polite">แสดง {matchingHistory.length} จาก {jobs.length} งานที่อ่านได้</p>{jobs.length > 0 && matchingHistory.length === 0 ? <p>ไม่พบงานที่ตรงกับตัวกรองในข้อมูลที่อ่านได้</p> : <JobList jobs={matchingHistory} projectNames={projectNames} disabled={busy} select={setJobId} />}</>}
+        </div>
           <label>รหัสงาน<input disabled={busy} value={jobId} onChange={(event) => setJobId(event.target.value)} placeholder="เลือกรายการหรือวางรหัสงาน" /></label></>
           : <><h3>งานที่กำลังรอ</h3>{queueState === 'loading' ? <p role="status">กำลังอ่านคิวงาน…</p> : queueState === 'error' ? <p role="alert">ยังอ่านคิวไม่ได้ ระบบจะตรวจใหม่เมื่อเชื่อมต่อได้</p> : <JobList jobs={queue} disabled={busy} select={setJobId} />}</>}
       </section>
@@ -315,9 +328,9 @@ export function GotzjiApp({ requestPort }: { readonly requestPort?: (method: Got
     </main>
   </div>;
 }
-function JobList({ jobs, select, disabled }: { readonly jobs: readonly Row[]; readonly select: (jobId: string) => void; readonly disabled: boolean }): ReactElement {
+function JobList({ jobs, select, disabled, projectNames = new Map() }: { readonly jobs: readonly Row[]; readonly select: (jobId: string) => void; readonly disabled: boolean; readonly projectNames?: ReadonlyMap<string, string> }): ReactElement {
   return <div className="gotzji-job-list">{jobs.length === 0 ? <p>ยังไม่มีงาน</p> : jobs.map((job) => <button disabled={disabled} key={String(job.jobId)} onClick={() => select(String(job.jobId))}>
-    <strong>{String(job.requestedOperation ?? job.operation ?? 'งาน')}</strong><span>{statusLabel(job.status)} · {String(job.projectId ?? '')}</span><small>{String(job.jobId)}</small></button>)}</div>;
+    <strong>{String(job.requestedOperation ?? job.operation ?? 'งาน')}</strong><span>{statusLabel(job.status)} · {projectNames.get(String(job.projectId)) ?? String(job.projectId ?? '')}</span><small>{String(job.jobId)}</small></button>)}</div>;
 }
 function JobStatus({ value }: { readonly value: unknown }): ReactElement {
   if (!record(value)) return <p>กำลังอ่านสถานะ…</p>;

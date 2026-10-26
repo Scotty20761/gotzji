@@ -1212,6 +1212,45 @@ test('gotzji whole-app browser prompts survive navigation without creating model
   expect(await page.evaluate(async () => window.gotzji.request({ method: 'listJobs', input: {} }))).toEqual([]);
 });
 
+test('gotzji Work Log filters retained jobs without changing the selected result or duplicating work', async ({ gotzji }) => {
+  const { page } = gotzji;
+  const a = await gotzji.temporaryProject('gotzji-files-panel-e2e-'); const b = await gotzji.temporaryProject('gotzji-files-panel-e2e-');
+  await writeFile(path.join(a, 'result.txt'), 'History A retained result'); await writeFile(path.join(b, 'result.txt'), 'History B retained result');
+  const ids = await page.evaluate(async ({ a, b }) => {
+    const request = Reflect.get(window, 'ownedTestRequest'); const ids: string[] = [];
+    for (const [projectId, displayName, rootPath] of [['__proto__', 'รายงาน ก', a], ['history-b', 'รายงาน ข', b]]) {
+      await request({ method: 'registerProject', input: { projectId, displayName, rootPath } });
+      const prepared = await request({ method: 'prepareOperation', input: { requestId: projectId, projectId, operation: 'file.read', path: 'result.txt' } });
+      const job = await request({ method: 'submit', input: { preparationId: prepared.preparationId } }); ids.push(job.jobId);
+    }
+    return ids;
+  }, { a, b });
+  for (const jobId of ids) await expect.poll(() => page.evaluate(async jobId => (await window.gotzji.request({ method: 'status', input: { jobId } }) as { status: string }).status, jobId)).toBe('completed');
+  await page.getByRole('button', { name: 'รีเฟรช', exact: true }).click();
+  await page.getByRole('navigation').getByRole('button', { name: 'ประวัติงาน', exact: true }).click();
+  await page.getByLabel('รหัสงาน', { exact: true }).fill(ids[0]!);
+  await page.getByRole('button', { name: 'ดูผลลัพธ์', exact: true }).click();
+  await expect(page.getByText('History A retained result', { exact: true })).toBeVisible();
+  const history = page.getByRole('region', { name: 'ค้นหาและกรองประวัติงาน', exact: true });
+  await history.getByLabel('ค้นหาประวัติงาน', { exact: true }).fill('รายงาน ข');
+  await expect(history.getByRole('button')).toHaveCount(1);
+  await expect(history).toContainText(ids[1]!);
+  await expect(page.getByText('History A retained result', { exact: true })).toBeVisible();
+  await history.getByLabel('สถานะงานที่แสดง', { exact: true }).selectOption('failed');
+  await expect(history.getByText('ไม่พบงานที่ตรงกับตัวกรองในข้อมูลที่อ่านได้', { exact: true })).toBeVisible();
+  await history.getByLabel('ค้นหาประวัติงาน', { exact: true }).fill(ids[1]!.toUpperCase());
+  await page.getByRole('navigation').getByRole('button', { name: 'หน้าแรก', exact: true }).click();
+  await page.getByRole('navigation').getByRole('button', { name: 'ประวัติงาน', exact: true }).click();
+  await expect(history.getByLabel('ค้นหาประวัติงาน', { exact: true })).toHaveValue(ids[1]!.toUpperCase());
+  await history.getByLabel('สถานะงานที่แสดง', { exact: true }).selectOption('completed');
+  await history.getByRole('button').click();
+  await expect(page.getByRole('heading', { name: `งาน ${ids[1]}`, exact: true })).toBeVisible();
+  await expect(page.getByText('History A retained result', { exact: true })).toHaveCount(0);
+  await page.getByRole('button', { name: 'ดูผลลัพธ์', exact: true }).click();
+  await expect(page.getByText('History B retained result', { exact: true })).toBeVisible();
+  expect(await page.evaluate(() => window.gotzji.request({ method: 'listJobs', input: {} }))).toHaveLength(2);
+});
+
 test('gotzji Doctor reads the canonical report and opens the same completed job without new work', async ({ gotzji }) => {
   const { page } = gotzji;
   await page.getByRole('navigation').getByRole('button', { name: 'ตรวจระบบ', exact: true }).click();
