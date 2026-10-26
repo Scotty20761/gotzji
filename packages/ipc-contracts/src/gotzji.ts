@@ -8,6 +8,7 @@ export const gotzjiIpcChannels = {
   startupStatus: 'gotzji:startup-status',
   setStartup: 'gotzji:set-startup',
   exportSupportReport: 'gotzji:export-support-report',
+  exportJobLogs: 'gotzji:export-job-logs',
 } as const;
 
 export const gotzjiMethods = [
@@ -47,4 +48,6 @@ export interface GotzjiApi {
   setStartup(enabled: boolean): Promise<{ available: boolean; enabled: boolean; mode: 'inspect-and-resume'; reason?: string }>;
   /** Saves the owner's support report where the owner chooses; nothing is uploaded. */
   exportSupportReport(): Promise<{ readonly exported: boolean; readonly cancelled: boolean }>;
+  /** Saves up to the first 64 KiB of one canonical job's retained logs to an owner-selected file. */
+  exportJobLogs(jobId: string): Promise<{ readonly exported: boolean; readonly cancelled: boolean }>;
 }

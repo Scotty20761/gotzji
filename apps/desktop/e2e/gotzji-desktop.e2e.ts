@@ -765,6 +765,33 @@ test('gotzji live logs page the same command and selected cancellation preserves
   expect(await readFile(path.join(rootA, 'started.txt'), 'utf8')).toBe('one');
   expect(await readFile(path.join(rootB, 'started.txt'), 'utf8')).toBe('one');
   expect(await page.evaluate(async () => (await Reflect.get(window, 'ownedTestRequest')({ method: 'listJobs', input: {} }) as unknown[]).length)).toBe(2);
+  const savedLog = path.join(rootB, 'exported-job.txt');
+  await gotzji.app.evaluate(({ dialog }, filename) => {
+    Reflect.set(globalThis, '__gotzjiOriginalSaveDialog', dialog.showSaveDialog);
+    dialog.showSaveDialog = async (...args: unknown[]): Promise<{ canceled: boolean; filePath: string }> => {
+      const options = args.at(-1) as { title: string; defaultPath: string };
+      Reflect.set(globalThis, '__gotzjiLogSaveOptions', options);
+      return { canceled: false, filePath: filename };
+    };
+  }, savedLog);
+  try {
+    const finalViewer = page.getByRole('region', { name: 'ข้อความบันทึกของงานที่เลือก', exact: true });
+    await finalViewer.getByRole('button', { name: 'บันทึกข้อความงานลงไฟล์', exact: true }).click();
+    await expect(finalViewer.getByText('บันทึกช่วงต้นของงานแล้ว', { exact: true })).toBeVisible();
+    const exported = await readFile(savedLog, 'utf8');
+    expect(exported).toContain('PAGE_FIRST'); expect(exported).toContain('PAGE_END'); expect(exported).toContain('ภาษาไทย🌟'.repeat(500));
+    expect(exported).toContain('FINISHED_ONCE'); expect(exported).not.toContain('\uFFFD');
+    expect(Buffer.byteLength(exported, 'utf8')).toBeLessThanOrEqual(65536);
+    const options = await gotzji.app.evaluate(() => Reflect.get(globalThis, '__gotzjiLogSaveOptions'));
+    expect(options).toMatchObject({ title: 'บันทึกข้อความของงาน gotzji', defaultPath: `gotzji-job-${ids[1]!.slice(0, 12)}.txt` });
+    await gotzji.app.evaluate(({ dialog }, filename) => { dialog.showSaveDialog = async (): Promise<{ canceled: boolean; filePath: string }> => ({ canceled: true, filePath: filename }); }, savedLog);
+    await finalViewer.getByRole('button', { name: 'บันทึกข้อความงานลงไฟล์', exact: true }).click();
+    await expect(finalViewer.getByText('ยกเลิกการบันทึก', { exact: true })).toBeVisible();
+    expect(await readFile(savedLog, 'utf8')).toBe(exported);
+    expect(await page.evaluate(() => window.gotzji.request({ method: 'listJobs', input: {} }))).toHaveLength(2);
+  } finally {
+    await gotzji.app.evaluate(({ dialog }) => { dialog.showSaveDialog = Reflect.get(globalThis, '__gotzjiOriginalSaveDialog'); });
+  }
 });
 
 test('gotzji owned fixture proves cleanup while its command is still running', async ({ gotzji }, testInfo) => {

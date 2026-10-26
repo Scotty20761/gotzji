@@ -184,6 +184,39 @@ describe('gotzji desktop governed boundary', () => {
     expect(calls).toEqual([{ method: 'supportReport', input: {} }]);
   });
 
+  it('exports only bounded canonical logs for the exact job through a trusted owner-selected save', async () => {
+    const calls: { method: string; input: Record<string, unknown> }[] = []; let mode: 'normal' | 'expired' | 'oversized' | 'full' = 'normal';
+    const endpoint = await serve(async (request, response) => {
+      let text = ''; for await (const chunk of request) text += String(chunk);
+      const call = JSON.parse(text) as { method: string; input: Record<string, unknown> }; calls.push(call);
+      const cursor = Number(call.input.cursor);
+      response.end(JSON.stringify({ ok: true, value: mode === 'expired' ? { text: '', nextCursor: cursor, expired: true }
+        : mode === 'oversized' ? { text: 'x'.repeat(8193), nextCursor: cursor + 8193 }
+          : mode === 'full' ? { text: 'x'.repeat(8192), nextCursor: cursor + 8192 }
+            : { text: cursor === 0 ? 'retained first page\n' : '', nextCursor: cursor === 0 ? 20 : cursor } }));
+    });
+    const client = new GotzjiHostClient(async () => ({ endpoint, token: 'secret', ownerId: 'owner' }));
+    const handlers = new Map<string, (event: { trusted: boolean }, payload?: unknown) => Promise<unknown>>(); const saved: { jobId: string; content: string }[] = [];
+    registerGotzjiIpcHandlers({ handle: (channel, handler) => { handlers.set(channel, handler); } }, client, event => { if (!event.trusted) throw new Error('UNTRUSTED_RENDERER'); },
+      undefined, undefined, undefined, undefined, { save: async (jobId, content) => { saved.push({ jobId, content }); return { exported: true, cancelled: false }; } });
+    const exportLogs = handlers.get(gotzjiIpcChannels.exportJobLogs)!; const jobId = 'a'.repeat(64);
+    await expect(exportLogs({ trusted: true }, { jobId })).resolves.toEqual({ exported: true, cancelled: false });
+    expect(saved).toEqual([{ jobId, content: 'retained first page\n' }]);
+    expect(calls).toEqual([{ method: 'logs', input: { jobId, cursor: 0, limit: 8192 } }, { method: 'logs', input: { jobId, cursor: 20, limit: 8192 } }]);
+    await expect(exportLogs({ trusted: false }, { jobId })).rejects.toThrow('UNTRUSTED_RENDERER');
+    for (const payload of [null, {}, { jobId: '../foreign' }, { jobId, path: 'outside.txt' }, { jobId, text: 'renderer substitute' }, { jobId, cursor: 0 }]) await expect(exportLogs({ trusted: true }, payload)).rejects.toThrow('INVALID_GOTZJI_REQUEST');
+    expect(calls).toHaveLength(2); mode = 'expired';
+    await expect(exportLogs({ trusted: true }, { jobId })).rejects.toThrow('RESULT_EXPIRED');
+    expect(saved).toHaveLength(1);
+    mode = 'oversized';
+    await expect(exportLogs({ trusted: true }, { jobId })).rejects.toThrow('LOG_RESPONSE_INVALID');
+    expect(saved).toHaveLength(1);
+    calls.length = 0; mode = 'full';
+    await expect(exportLogs({ trusted: true }, { jobId })).resolves.toEqual({ exported: true, cancelled: false });
+    expect(calls).toHaveLength(8); expect(saved[1]).toEqual({ jobId, content: 'x'.repeat(65536) });
+    expect(calls.every(call => call.method === 'logs' && call.input.jobId === jobId)).toBe(true);
+  });
+
   it('preserves control-only health and sends the selected build identity privately', async () => {
     let build: string | string[] | undefined;
     const endpoint = await serve(async (request, response) => {

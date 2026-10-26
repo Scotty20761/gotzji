@@ -2865,6 +2865,14 @@ function bootstrapGotzjiDesktop(): void {
         if (selected.filePaths.length !== 1 || !path.isAbsolute(selected.filePaths[0]!)) throw new Error('PROJECT_FOLDER_SELECTION_INVALID');
         return { cancelled: false, path: selected.filePaths[0]! };
       },
+    }, {
+      save: async (jobId, content): Promise<{ exported: boolean; cancelled: boolean }> => {
+        const options = { title: gotzjiNativeMessages.jobLogsTitle, defaultPath: `gotzji-job-${jobId.slice(0, 12)}.txt`, filters: [{ name: 'Text', extensions: ['txt'] }] };
+        const result = mainWindow ? await dialog.showSaveDialog(mainWindow, options) : await dialog.showSaveDialog(options);
+        if (result.canceled || !result.filePath) return { exported: false, cancelled: true };
+        await writeFile(result.filePath, content, 'utf8');
+        return { exported: true, cancelled: false };
+      },
     });
     configureDesktopSessionDiagnostics(dataPath);
     createDesktopWindow();

@@ -1841,6 +1841,11 @@ const gotzjiApi: GotzjiApi = {
     if (!isRecord(value) || typeof value.exported !== 'boolean' || typeof value.cancelled !== 'boolean') throw new Error('Invalid gotzji support report response');
     return { exported: value.exported, cancelled: value.cancelled };
   },
+  exportJobLogs: async (jobId) => {
+    const value: unknown = await invoke(gotzjiIpcChannels.exportJobLogs, { jobId });
+    if (!isRecord(value) || typeof value.exported !== 'boolean' || typeof value.cancelled !== 'boolean' || value.exported === value.cancelled) throw new Error('Invalid gotzji log export response');
+    return { exported: value.exported, cancelled: value.cancelled };
+  },
 };
 if (gotzjiProductEnabled) contextBridge.exposeInMainWorld('gotzji', gotzjiApi);
 function parseGotzjiStartup(value: unknown): { available: boolean; enabled: boolean; mode: 'inspect-and-resume'; reason?: string } {
