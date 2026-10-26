@@ -298,9 +298,38 @@ test('gotzji entry, project search and file edit return canonical results', asyn
     const firstJobHeading = await page.getByRole('heading', { name: /^งาน [a-f0-9]{64}$/ }).textContent();
     const firstJobId = firstJobHeading?.match(/[a-f0-9]{64}/u)?.[0];
     expect(firstJobId).toBeTruthy();
+    await expect(page.getByRole('heading', { name: 'บันทึกไฟล์แล้ว', exact: true })).toBeVisible();
+    await expect(page.getByText('มีสำเนาต้นฉบับในหลักฐานของงานนี้', { exact: true })).toBeVisible();
+    await page.getByRole('region', { name: 'ผลลัพธ์ไฟล์', exact: true }).evaluate(element => element.scrollIntoView({ block: 'center' }));
+    await page.screenshot({ path: path.join(desktopRoot, '..', '..', '.local-artifacts', 'windows-ui-file-result.png') });
+    await page.getByText('รายละเอียดการตรวจยืนยัน', { exact: true }).click();
     await expect(page.locator('pre:visible')).toContainText('"path": "welcome.txt"');
     await expect(page.locator('pre:visible')).toContainText('1eb5f5d070d4535515a4636073d6d716a4f031b51a75255866e2723b37d6e443');
 
+});
+
+test('gotzji same-job file result shows readable content and survives reselecting after reload', async ({ gotzji }) => {
+  const { page } = gotzji; const root = await gotzji.temporaryProject('gotzji-files-panel-e2e-');
+  await writeFile(path.join(root, 'result.txt'), '<script>ข้อความจากไฟล์</script>\n', 'utf8');
+  const jobId = await page.evaluate(async rootPath => {
+    await window.gotzji.request({ method: 'registerProject', input: { projectId: 'read-result', displayName: 'โครงการผลอ่านไฟล์', rootPath } });
+    const prepared = await Reflect.get(window, 'ownedTestRequest')({ method: 'prepareOperation', input: { requestId: crypto.randomUUID(), projectId: 'read-result', operation: 'file.read', path: 'result.txt' } });
+    const job = await Reflect.get(window, 'ownedTestRequest')({ method: 'submit', input: { preparationId: prepared.preparationId } });
+    return job.jobId as string;
+  }, root);
+  await expect.poll(async () => page.evaluate(async id => (await window.gotzji.request({ method: 'status', input: { jobId: id } }) as { status: string }).status, jobId)).toBe('completed');
+  for (const reload of [false, true]) {
+    if (reload) await page.reload();
+    await page.getByRole('button', { name: 'ประวัติงาน', exact: true }).click();
+    await page.getByLabel('รหัสงาน', { exact: true }).fill(jobId);
+    await page.getByRole('button', { name: 'ดูผลลัพธ์', exact: true }).click();
+    const readable = page.getByRole('region', { name: 'ผลลัพธ์ไฟล์', exact: true });
+    await expect(readable.getByRole('heading', { name: 'อ่านไฟล์แล้ว', exact: true })).toBeVisible();
+    await expect(readable.getByLabel('เนื้อหาไฟล์ที่อ่านได้', { exact: true })).toHaveText('<script>ข้อความจากไฟล์</script>\n');
+    await expect(readable.locator('script')).toHaveCount(0);
+  }
+  expect(await page.evaluate(() => window.gotzji.request({ method: 'listJobs', input: {} }))).toHaveLength(1);
+  expect(await readFile(path.join(root, 'result.txt'), 'utf8')).toBe('<script>ข้อความจากไฟล์</script>\n');
 });
 
 test('gotzji live Tools search prepares a selected operation without starting work', async ({ gotzji }) => {
@@ -482,6 +511,8 @@ test('gotzji new file retries one real admission after a lost acknowledgement', 
     expect(Array.isArray(createdJobs)).toBe(true);
     expect((createdJobs as { jobId: string; projectId?: string }[]).filter((job) => job.projectId === 'files-panel')).toHaveLength(1);
     await page.getByRole('button', { name: 'ดูผลลัพธ์', exact: true }).click();
+    await expect(page.getByRole('heading', { name: 'สร้างไฟล์ใหม่แล้ว', exact: true })).toBeVisible();
+    await page.getByText('รายละเอียดการตรวจยืนยัน', { exact: true }).click();
     await expect(page.locator('pre:visible')).toContainText('"path": "new-file.txt"');
     await expect(page.locator('pre:visible')).toContainText('"state": "completed"');
 
@@ -723,7 +754,13 @@ test('gotzji live logs page the same command and selected cancellation preserves
   const finished = page.locator('section').filter({ has: page.getByRole('heading', { name: `งาน ${ids[1]}`, exact: true }) });
   await expect(finished.getByText('เสร็จแล้ว', { exact: true })).toBeVisible({ timeout: testInfo.timeout });
   await page.getByRole('button', { name: 'ดูผลลัพธ์', exact: true }).click();
+  await expect(finished.getByRole('heading', { name: 'คำสั่งจบแล้ว', exact: true })).toBeVisible();
+  await finished.getByText('รายละเอียดการตรวจยืนยัน', { exact: true }).click();
   await expect(finished.locator('pre:visible')).toContainText('"exitCode": 0');
+  await finished.getByRole('button', { name: 'อ่านบันทึกของงานนี้', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'บันทึกสด', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: `งาน ${ids[1]}`, exact: true })).toBeVisible();
+  await expect(page.getByRole('region', { name: 'ข้อความบันทึกของงานที่เลือก', exact: true }).getByLabel('บันทึกของงาน', { exact: true })).toContainText('PAGE_FIRST');
   expect(await readFile(path.join(rootA, 'started.txt'), 'utf8')).toBe('one');
   expect(await readFile(path.join(rootB, 'started.txt'), 'utf8')).toBe('one');
   expect(await page.evaluate(async () => (await Reflect.get(window, 'ownedTestRequest')({ method: 'listJobs', input: {} }) as unknown[]).length)).toBe(2);
@@ -779,6 +816,8 @@ test('gotzji guided project command prepares without effects and starts one revi
   expect(await readFile(path.join(root, 'started.txt'), 'utf8')).toBe('one');
   expect(await readFile(path.join(root, 'verified.txt'), 'utf8')).toBe('Verified by the reviewed command');
   await page.getByRole('button', { name: 'ดูผลลัพธ์', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'คำสั่งจบแล้ว', exact: true })).toBeVisible();
+  await page.getByText('รายละเอียดการตรวจยืนยัน', { exact: true }).click();
   await expect(page.locator('pre:visible')).toContainText('"exitCode": 0');
   expect(await page.evaluate(async () => (await Reflect.get(window, 'ownedTestRequest')({ method: 'listJobs', input: {} }) as unknown[]).length)).toBe(1);
 });
