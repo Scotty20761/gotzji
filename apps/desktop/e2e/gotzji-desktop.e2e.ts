@@ -292,7 +292,7 @@ test('gotzji entry, project search and file edit return canonical results', asyn
     await page.getByRole('button', { name: 'ประวัติงาน', exact: true }).click();
     await page.getByLabel('รหัสงาน', { exact: true }).fill(job.jobId);
     await expect(page.getByRole('heading', { name: /^งาน [a-f0-9]{64}$/ })).toBeVisible();
-    await expect(page.getByText('เสร็จแล้ว', { exact: true })).toBeVisible({ timeout: testInfo.timeout });
+    await expect(page.locator('section').filter({ has: page.getByRole('heading', { name: `งาน ${job.jobId}`, exact: true }) }).getByText('เสร็จแล้ว', { exact: true })).toBeVisible({ timeout: testInfo.timeout });
     expect(await readFile(path.join(projectFilesRoot, 'welcome.txt'), 'utf8')).toBe('Final verified sample\n');
     await page.getByRole('button', { name: 'ดูผลลัพธ์', exact: true }).click();
 
@@ -506,7 +506,7 @@ test('gotzji new file retries one real admission after a lost acknowledgement', 
     await page.getByRole('button', { name: 'ประวัติงาน', exact: true }).click();
     await page.getByRole('button').filter({ has: page.getByText(acceptedJobId!, { exact: true }) }).click();
     await expect(page.getByRole('heading', { name: `งาน ${acceptedJobId}`, exact: true })).toBeVisible();
-    await expect(page.getByText('เสร็จแล้ว', { exact: true })).toBeVisible({ timeout: testInfo.timeout });
+    await expect(page.locator('section').filter({ has: page.getByRole('heading', { name: `งาน ${acceptedJobId}`, exact: true }) }).getByText('เสร็จแล้ว', { exact: true })).toBeVisible({ timeout: testInfo.timeout });
     expect(await readFile(path.join(projectFilesRoot, 'new-file.txt'), 'utf8')).toBe('Created exactly once\n');
     const createdJobs = await page.evaluate(async () => Reflect.get(window, 'ownedTestRequest')({ method: 'listJobs', input: {} }));
     expect(Array.isArray(createdJobs)).toBe(true);
@@ -840,7 +840,7 @@ test('gotzji guided project command prepares without effects and starts one revi
   await page.getByLabel('รหัสงาน', { exact: true }).fill(job.jobId);
   const heading = page.getByRole('heading', { name: /^งาน [a-f0-9]{64}$/u });
   await expect(heading).toBeVisible();
-  await expect(page.getByText('เสร็จแล้ว', { exact: true })).toBeVisible({ timeout: testInfo.timeout });
+  await expect(page.locator('section').filter({ has: page.getByRole('heading', { name: `งาน ${job.jobId}`, exact: true }) }).getByText('เสร็จแล้ว', { exact: true })).toBeVisible({ timeout: testInfo.timeout });
   expect(await readFile(path.join(root, 'started.txt'), 'utf8')).toBe('one');
   expect(await readFile(path.join(root, 'verified.txt'), 'utf8')).toBe('Verified by the reviewed command');
   await page.getByRole('button', { name: 'ดูผลลัพธ์', exact: true }).click();
@@ -1402,7 +1402,7 @@ test.describe('actual Windows Excel qualification', () => {
     await page.getByRole('button', { name: 'ประวัติงาน', exact: true }).click();
     await page.getByLabel('รหัสงาน', { exact: true }).fill(admitted.jobId);
     await expect(page.getByRole('heading', { name: `งาน ${admitted.jobId}`, exact: true })).toBeVisible();
-    await expect(page.getByText('เสร็จแล้ว', { exact: true })).toBeVisible({ timeout: testInfo.timeout });
+    await expect(page.locator('section').filter({ has: page.getByRole('heading', { name: `งาน ${admitted.jobId}`, exact: true }) }).getByText('เสร็จแล้ว', { exact: true })).toBeVisible({ timeout: testInfo.timeout });
     await page.getByRole('button', { name: 'ดูผลลัพธ์', exact: true }).click();
     const table = page.getByRole('region', { name: 'รายชื่อแผ่นงาน Excel', exact: true });
     await expect(table).toContainText('พบ 2 แผ่นงาน · แสดง 2 แผ่นงาน');
@@ -1444,7 +1444,7 @@ test.describe('actual Windows Excel qualification', () => {
       nativeJobId = rangeJob.jobId; nativeJobIds.add(rangeJob.jobId);
       await page.getByLabel('รหัสงาน', { exact: true }).fill(rangeJob.jobId);
       await expect(page.getByRole('heading', { name: `งาน ${rangeJob.jobId}`, exact: true })).toBeVisible();
-      await expect(page.getByText('เสร็จแล้ว', { exact: true })).toBeVisible({ timeout: testInfo.timeout });
+      await expect(page.locator('section').filter({ has: page.getByRole('heading', { name: `งาน ${rangeJob.jobId}`, exact: true }) }).getByText('เสร็จแล้ว', { exact: true })).toBeVisible({ timeout: testInfo.timeout });
       await page.getByRole('button', { name: 'ดูผลลัพธ์', exact: true }).click();
       const rangeTable = page.getByRole('region', { name: 'ผลการอ่านช่วงเซลล์ Excel', exact: true });
       await expect(rangeTable).toBeVisible();
@@ -1624,7 +1624,7 @@ test.describe('actual Windows Chrome qualification', () => {
     await page.getByRole('button', { name: 'ประวัติงาน', exact: true }).click();
     await page.getByLabel('รหัสงาน', { exact: true }).fill(admitted.jobId);
     const heading = page.getByRole('heading', { name: /^งาน [a-f0-9]{64}$/u }); await expect(heading).toBeVisible();
-    await expect(page.getByText('เสร็จแล้ว', { exact: true })).toBeVisible({ timeout: testInfo.timeout });
+    await expect(page.locator('section').filter({ has: page.getByRole('heading', { name: `งาน ${admitted.jobId}`, exact: true }) }).getByText('เสร็จแล้ว', { exact: true })).toBeVisible({ timeout: testInfo.timeout });
     const jobId = (await heading.textContent())!.replace('งาน ', '');
     await page.getByRole('button', { name: 'ดูผลลัพธ์', exact: true }).click();
     const readable = page.getByRole('region', { name: 'ผลการอ่านหน้าเว็บ', exact: true });
