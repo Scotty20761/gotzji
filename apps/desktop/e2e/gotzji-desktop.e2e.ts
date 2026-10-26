@@ -350,9 +350,20 @@ test('gotzji live Tools search prepares a selected operation without starting wo
   await expect(page.getByRole('heading', { name: 'เตรียมคำสั่งของโครงการ', exact: true })).toBeVisible();
   await expect(page.locator('select').filter({ has: page.locator('option[value="file.read"]') })).toHaveValue('file.read');
   await page.getByLabel('ไฟล์ในโครงการ', { exact: true }).fill('example.txt');
+  // The system clipboard belongs to earlier cases until the renderer's asynchronous write completes.
+  const previousClipboard = 'previous case clipboard must not satisfy this request';
+  await gotzji.app.evaluate(({ clipboard }, value) => clipboard.writeText(value), previousClipboard);
+  await page.evaluate(() => {
+    const write = navigator.clipboard.writeText.bind(navigator.clipboard);
+    const held = new Promise<void>(resolve => { Reflect.set(window, 'releaseToolsClipboard', resolve); });
+    Object.defineProperty(navigator.clipboard, 'writeText', { configurable: true, value: async (text: string): Promise<void> => { await held; await write(text); } });
+  });
   await page.getByRole('button', { name: 'คัดลอกคำสั่งสำหรับ ChatGPT', exact: true }).click();
-  const clipboard = await gotzji.app.evaluate(async ({ clipboard }) => clipboard.readText());
-  expect(clipboard).toContain('"projectId": "tools-search"');
+  const readClipboard = (): Promise<string> => gotzji.app.evaluate(({ clipboard }) => clipboard.readText());
+  try { expect(await readClipboard()).toBe(previousClipboard); }
+  finally { await page.evaluate(() => { Reflect.get(window, 'releaseToolsClipboard')(); }); }
+  await expect.poll(readClipboard).toContain('"projectId": "tools-search"');
+  const clipboard = await gotzji.app.evaluate(({ clipboard }) => clipboard.readText());
   expect(clipboard).toContain('"operation": "file.read"');
   expect(clipboard).toContain('"path": "example.txt"');
   await tools.getByLabel('ค้นหาเครื่องมือ', { exact: true }).fill('');
