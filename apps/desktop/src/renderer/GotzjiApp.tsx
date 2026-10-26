@@ -5,6 +5,7 @@ import gracePortrait from './assets/grace.webp';
 import { GotzjiProjectFiles } from './GotzjiProjectFiles.js';
 import { GotzjiGitPanel } from './GotzjiGitPanel.js';
 import { GotzjiToolReference } from './GotzjiToolReference.js';
+import { GotzjiToolsPanel } from './GotzjiToolsPanel.js';
 import { GotzjiWorkflowPrompts } from './GotzjiWorkflowPrompts.js';
 import { GotzjiJobLogs } from './GotzjiJobLogs.js';
 import { GotzjiProjectCommands } from './GotzjiProjectCommands.js';
@@ -15,6 +16,7 @@ import { GotzjiConnectionPanel } from './GotzjiConnectionPanel.js';
 import { GotzjiStartupPanel } from './GotzjiStartupPanel.js';
 import { GotzjiBrowserPanel } from './GotzjiBrowserPanel.js';
 import { browserReadResult } from './gotzji-browser-result.js';
+import { browserReadBinding, browserSessionProjection } from './gotzji-browser-session.js';
 import { GotzjiLibraryChannelPanel } from './GotzjiLibraryChannelPanel.js';
 import { statusLabel } from './gotzji-job-status.js';
 import { GotzjiProjectContext } from './GotzjiProjectContext.js';
@@ -54,6 +56,9 @@ export function GotzjiApp({ requestPort }: { readonly requestPort?: (method: Got
   const [projectKind, setProjectKind] = useState<'project' | 'library'>('project');
   const [selectedRecipes, setSelectedRecipes] = useState<readonly string[]>([]);
   const [operation, setOperation] = useState('file.read');
+  const [toolPreparationOpen, setToolPreparationOpen] = useState(false);
+  const toolPreparationRef = useRef<HTMLElement>(null);
+  const projectFilesRef = useRef<HTMLDivElement>(null);
   const [target, setTarget] = useState('');
   const [content, setContent] = useState('');
   const [expectedSha256, setExpectedSha256] = useState('');
@@ -74,8 +79,10 @@ export function GotzjiApp({ requestPort }: { readonly requestPort?: (method: Got
   const refreshGeneration = useRef(0);
   const resultGeneration = useRef(0);
   const resultSelection = useRef('');
+  const preparationProject = useRef(projectId);
 
   const request = useCallback((method: GotzjiMethod, input: Record<string, unknown> = {}): Promise<unknown> => requestPort ? requestPort(method, input) : window.gotzji.request({ method, input }), [requestPort]);
+  useLayoutEffect(() => { preparationProject.current = projectId; }, [projectId]);
   useLayoutEffect(() => {
     resultSelection.current = jobId; resultGeneration.current += 1; setResultView(null);
     return (): void => { resultSelection.current = ''; resultGeneration.current += 1; };
@@ -157,12 +164,13 @@ export function GotzjiApp({ requestPort }: { readonly requestPort?: (method: Got
     const stableId = requestId ?? crypto.randomUUID();
     setRequestId(stableId);
     const workflow = catalog.find((entry) => entry.name === 'library.workflow' && entry.projectId === projectId && `library:${entry.workflowId}:${entry.workflowVersion}` === operation);
-    const selectedBrowser = catalog.find((entry) => entry.name === operation && record(entry.browserSession) && entry.browserSession.projectId === projectId)?.browserSession;
+    const selectedBrowser = operation.startsWith('browser.') ? browserReadBinding(browserSessionProjection(await request('browserSession', { projectId }), projectId), projectId) : null;
+    if (preparationProject.current !== projectId) throw new Error('โครงการเปลี่ยนแล้ว เลือกเครื่องมือและเตรียมคำขอใหม่');
     const input: Record<string, unknown> = { requestId: stableId, projectId, operation: workflow ? 'library.workflow' : operation, priority: Number(priority) };
     if (workflow) { input.workflowId = workflow.workflowId; input.workflowVersion = workflow.workflowVersion; const parameters: unknown = JSON.parse(workflowParameters); if (!record(parameters)) throw new Error('LIBRARY_PARAMETERS_INVALID'); input.parameters = parameters; }
     else if (operation.startsWith('browser.')) {
-      if (!record(selectedBrowser)) throw new Error('BROWSER_SESSION_REQUIRED');
-      for (const key of ['sessionId', 'tabId', 'expectedUrl', 'expectedDocumentId']) input[key] = selectedBrowser[key];
+      if (!selectedBrowser) throw new Error('ยังยืนยันหน้าปัจจุบันไม่ได้ เปิดเบราว์เซอร์ของโครงการแล้วตรวจหน้าปัจจุบันก่อนเตรียมคำขอ');
+      Object.assign(input, selectedBrowser);
       if (operation === 'browser.workflow') input.steps = JSON.parse(browserValues.steps);
       else if (operation === 'browser.navigate') input.url = browserValues.url;
       else { input.selector = browserValues.selector; if (operation === 'browser.type') input.text = browserValues.text; if (operation === 'browser.click') { input.postSelector = browserValues.postSelector; input.expectedPostText = browserValues.expectedPostText; } }
@@ -226,11 +234,16 @@ export function GotzjiApp({ requestPort }: { readonly requestPort?: (method: Got
           <button disabled={busy || !recipeBinding.projectId || !recipeBinding.recipeId} onClick={() => void act(async () => { await request('bindProjectRecipe', recipeBinding); await refresh(); })}>เพิ่มคำสั่งให้โครงการ</button></section></>}
       {selectedProject && <GotzjiProjectCommands chatgptOnly key={`${JSON.stringify(selectedProject)}:${JSON.stringify(projectCommands)}`} visible={page === 'tools'} projectId={projectId} projectName={String(selectedProject.displayName)} commands={projectCommands} disabled={busy || host?.state !== 'ready'} request={request} onSettings={() => setPage('projects')} onJob={(id) => { setJobId(id); setPage((current) => current === 'tools' ? 'worklog' : current); void refresh(); }} />}
       {selectedProject && <GotzjiBrowserPanel chatgptOnly key={projectId} visible={page === 'tools'} projectId={projectId} projectName={String(selectedProject.displayName)} disabled={busy || host?.state !== 'ready'} request={request} onChanged={refresh} onJob={(id) => { setJobId(id); setPage((current) => current === 'tools' ? 'worklog' : current); void refresh(); }} />}
-      {page === 'tools' && <>{projectId ? <GotzjiProjectFiles chatgptOnly key={projectId} projectId={projectId} request={request} disabled={busy || host?.state !== 'ready'} onJob={(id) => { setJobId(id); setPage('worklog'); void refresh(); }} /> : <section><h3>เลือกโครงการก่อนเริ่มงาน</h3><p>เปิดโครงการที่ต้องการเพื่อดูไฟล์และเครื่องมือที่ใช้ได้</p><button onClick={() => setPage('projects')}>เลือกโครงการ</button></section>}<section><h3>เครื่องมือ</h3><table><thead><tr><th>เครื่องมือ</th><th>สถานะ</th><th>รายละเอียด</th></tr></thead><tbody>{catalog.map((item) =>
-        <tr key={`${item.name}:${item.projectId ?? ''}:${item.workflowId ?? ''}:${item.workflowVersion ?? ''}`}><td>{String(item.workflowId ?? item.name)}</td><td>{item.state === 'available' ? 'พร้อมใช้งาน' : 'ยังไม่พร้อม'}</td><td>{String(item.reason ?? item.description ?? '')}</td></tr>)}</tbody></table></section>
+      {page === 'tools' && <><GotzjiToolsPanel catalog={catalog.filter(item => item.projectId === undefined || item.projectId === projectId)} projectName={selectedProject ? String(selectedProject.displayName) : null} boundRecipeIds={boundRecipeIds} canBindRecipes={selectedProject?.kind !== 'library'} disabled={busy || host?.state !== 'ready'} onProject={item => { if (typeof item?.recipeId === 'string') setRecipeBinding({ projectId: selectedProject?.kind === 'library' ? '' : projectId, recipeId: item.recipeId }); setPage('projects'); }} onSettings={() => setPage('settings')} onPrepare={item => {
+        if (['file.read.direct', 'file.list', 'file.search'].includes(String(item.name))) { projectFilesRef.current?.focus(); projectFilesRef.current?.scrollIntoView({ block: 'start' }); return; }
+        setOperation(item.name === 'library.workflow' ? `library:${item.workflowId}:${item.workflowVersion}` : typeof item.recipeId === 'string' ? 'command.run' : String(item.name));
+        setTarget(typeof item.recipeId === 'string' && boundRecipeIds.includes(item.recipeId) ? item.recipeId : '');
+        setPreparationId(null); setRequestId(null); setToolPreparationOpen(true);
+        requestAnimationFrame(() => { toolPreparationRef.current?.focus(); toolPreparationRef.current?.scrollIntoView({ block: 'start' }); });
+      }} />{projectId && <div ref={projectFilesRef} tabIndex={-1}><GotzjiProjectFiles chatgptOnly key={projectId} projectId={projectId} request={request} disabled={busy || host?.state !== 'ready'} onJob={(id) => { setJobId(id); setPage('worklog'); void refresh(); }} /></div>}
         <GotzjiToolReference />
         {selectedProject?.kind === 'library' && <GotzjiLibraryChannelPanel projectId={projectId} disabled={host?.state !== 'ready'} />}
-        <details className="gotzji-advanced" open={operation === 'excel.range.read' && sheetsResult !== undefined}><summary>เครื่องมือขั้นสูง</summary><section><h3>เตรียมคำสั่งของโครงการ</h3><label>โครงการ<select disabled={busy} value={projectId} onChange={(event) => { const id = event.target.value; if (id) void act(async () => { await request('selectProject', { projectId: id }); setProjectId(id); }); }}><option value="">เลือกโครงการ</option>
+        <details className="gotzji-advanced" open={toolPreparationOpen || operation === 'excel.range.read' && sheetsResult !== undefined} onToggle={event => setToolPreparationOpen(event.currentTarget.open)}><summary>เครื่องมือขั้นสูง</summary><section ref={toolPreparationRef} tabIndex={-1}><h3>เตรียมคำสั่งของโครงการ</h3><label>โครงการ<select disabled={busy} value={projectId} onChange={(event) => { const id = event.target.value; if (id) void act(async () => { await request('selectProject', { projectId: id }); setProjectId(id); }); }}><option value="">เลือกโครงการ</option>
           {projects.map((project) => <option key={String(project.projectId)} value={String(project.projectId)}>{String(project.displayName)}</option>)}</select></label>
           <label htmlFor={operationSelectId}>เครื่องมือ</label><select id={operationSelectId} disabled={busy} value={operation} onChange={(event) => setOperation(event.target.value)}>{available.map((item) => <option key={String(item.name)} value={String(item.name)}>{String(item.name)}</option>)}{workflows.map((item) => <option key={`${item.workflowId}:${item.workflowVersion}`} value={`library:${item.workflowId}:${item.workflowVersion}`}>{String(item.workflowId)} · {String(item.description)}</option>)}</select>
           {!operation.startsWith('browser.') && !operation.startsWith('library:') && <label>{operation === 'command.run' ? 'คำสั่งที่ตรวจไว้แล้ว' : 'ไฟล์ในโครงการ'}{operation === 'command.run'

@@ -303,6 +303,127 @@ test('gotzji entry, project search and file edit return canonical results', asyn
 
 });
 
+test('gotzji live Tools search prepares a selected operation without starting work', async ({ gotzji }) => {
+  const { page } = gotzji;
+  const root = await gotzji.temporaryProject('gotzji-files-panel-e2e-');
+  await page.evaluate(async rootPath => window.gotzji.request({ method: 'registerProject', input: { projectId: 'tools-search', displayName: 'โครงการค้นหาเครื่องมือ', rootPath } }), root);
+  await page.getByRole('button', { name: 'รีเฟรช', exact: true }).click();
+  await page.getByRole('button', { name: 'โครงการ', exact: true }).click();
+  await page.getByRole('button', { name: /^โครงการค้นหาเครื่องมือ ·/ }).click();
+  const tools = page.getByRole('region', { name: 'เครื่องมือของเครื่องนี้', exact: true });
+  await expect(tools).toBeVisible();
+  await tools.getByLabel('ค้นหาเครื่องมือ', { exact: true }).fill('อ่านไฟล์');
+  await expect(tools.getByText('file.read', { exact: true })).toBeVisible();
+  await expect(tools.getByRole('row').filter({ hasText: 'file.write' })).toHaveCount(0);
+  await tools.getByLabel('ค้นหาเครื่องมือ', { exact: true }).fill('FILE.READ');
+  await tools.getByRole('button', { name: 'เตรียมคำสั่ง', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'เตรียมคำสั่งของโครงการ', exact: true })).toBeVisible();
+  await expect(page.locator('select').filter({ has: page.locator('option[value="file.read"]') })).toHaveValue('file.read');
+  await page.getByLabel('ไฟล์ในโครงการ', { exact: true }).fill('example.txt');
+  await page.getByRole('button', { name: 'คัดลอกคำสั่งสำหรับ ChatGPT', exact: true }).click();
+  const clipboard = await gotzji.app.evaluate(async ({ clipboard }) => clipboard.readText());
+  expect(clipboard).toContain('"projectId": "tools-search"');
+  expect(clipboard).toContain('"operation": "file.read"');
+  expect(clipboard).toContain('"path": "example.txt"');
+  await tools.getByLabel('ค้นหาเครื่องมือ', { exact: true }).fill('');
+  await tools.evaluate(element => element.scrollIntoView({ block: 'start' }));
+  await page.screenshot({ path: path.join(desktopRoot, '..', '..', '.local-artifacts', 'windows-ui-c1-live-tools.png') });
+  await tools.getByLabel('ประเภทเครื่องมือ', { exact: true }).selectOption('excel');
+  await expect(tools.getByText('file.read', { exact: true })).toHaveCount(0);
+  await tools.getByLabel('ความพร้อม', { exact: true }).selectOption('unavailable');
+  const unavailable = tools.getByRole('row').filter({ has: page.getByText('excel', { exact: true }) });
+  await expect(unavailable).toContainText('ยังเชื่อมและตรวจไม่ครบ');
+  await unavailable.getByRole('button', { name: 'ตรวจตั้งค่าเครื่องมือ', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'ตั้งค่า', exact: true })).toBeVisible();
+  expect(await page.evaluate(() => window.gotzji.request({ method: 'listJobs', input: {} }))).toEqual([]);
+});
+
+test('gotzji Tools filters retain full workflow identity and explain unavailable providers', async ({ gotzji }) => {
+  const { page } = gotzji; const fixturePath = gotzji.rendererFixturePath();
+  await build({ stdin: { resolveDir: path.join(desktopRoot, 'src', 'renderer'), sourcefile: 'tools-fixture.tsx', loader: 'tsx', contents: `
+    import { useState } from 'react'; import { createRoot } from 'react-dom/client';
+    import { GotzjiToolsPanel } from './GotzjiToolsPanel.tsx';
+    document.getElementById('root').hidden=true;
+    const root=document.createElement('div');root.id='tools-proof';document.body.append(root);
+    const workflow={name:'library.workflow',projectId:'library-a',workflowId:'report',workflowVersion:'2',state:'available',description:'รายงานภาษาไทย'};
+    const catalog=[workflow,{...workflow,workflowVersion:'3'},
+      {name:'command.recipe.unbound',recipeId:'unbound',state:'available',description:'Unbound recipe'},
+      {name:'excel.range.read',state:'unsupported',reason:'NATIVE_PROVIDER_NOT_QUALIFIED',description:'Native Excel'},
+      {name:'external.example',state:'future-state',reason:'NEW_REASON',description:'<script>unsafe</script>'}];
+    function Proof(){const [selected,setSelected]=useState(true);const [disabled,setDisabled]=useState(false);const [entries,setEntries]=useState(catalog);const [library,setLibrary]=useState(false);return <>
+      <button onClick={()=>setLibrary(!library)}>Toggle Library</button>
+      <button onClick={()=>setSelected(!selected)}>Toggle project</button><button onClick={()=>setDisabled(!disabled)}>Toggle host</button><button onClick={()=>setEntries([])}>Empty catalog</button>
+      <GotzjiToolsPanel catalog={entries} projectName={selected?'Project A':null} canBindRecipes={!library} disabled={disabled} onPrepare={row=>root.dataset.prepared=JSON.stringify(row)} onProject={()=>root.dataset.action='project'} onSettings={()=>root.dataset.action='settings'}/></>;}
+    createRoot(root).render(<Proof/>);
+  ` }, bundle: true, format: 'iife', platform: 'browser', jsx: 'automatic', outfile: fixturePath, define: { 'process.env.NODE_ENV': '"production"' } });
+  await page.addScriptTag({ url: pathToFileURL(fixturePath).href });
+  const proof = page.locator('#tools-proof');
+  const search = proof.getByLabel('ค้นหาเครื่องมือ', { exact: true });
+  await search.fill('unbound');
+  await expect(proof.getByText('คำสั่งนี้ยังไม่ผูกกับโครงการที่เลือก', { exact: true })).toBeVisible();
+  await proof.getByRole('button', { name: 'ผูกคำสั่งกับโครงการ', exact: true }).click();
+  await expect(proof).toHaveAttribute('data-action', 'project');
+  await proof.getByRole('button', { name: 'Toggle Library', exact: true }).click();
+  await expect(proof.getByText('คำสั่งแบบนี้ใช้กับโครงการทั่วไป สำหรับ Library ให้เลือกเวิร์กโฟลว์ของโครงการ', { exact: true })).toBeVisible();
+  await expect(proof.getByRole('button', { name: 'ผูกคำสั่งกับโครงการ', exact: true })).toHaveCount(0);
+  await expect(proof.getByRole('button', { name: 'เลือกโครงการทั่วไป', exact: true })).toBeVisible();
+  await search.fill('รายงานภาษาไทย');
+  await expect(proof.getByRole('button', { name: 'เตรียมคำสั่ง', exact: true })).toHaveCount(2);
+  await proof.getByRole('button', { name: 'เตรียมคำสั่ง', exact: true }).nth(1).click();
+  await expect(proof).toHaveAttribute('data-prepared', JSON.stringify({ name: 'library.workflow', projectId: 'library-a', workflowId: 'report', workflowVersion: '3', state: 'available', description: 'รายงานภาษาไทย' }));
+  await proof.getByRole('button', { name: 'Toggle host', exact: true }).click();
+  await expect(proof.getByRole('button', { name: 'เตรียมคำสั่ง', exact: true }).first()).toBeDisabled();
+  await proof.getByRole('button', { name: 'Toggle host', exact: true }).click();
+  await proof.getByRole('button', { name: 'Toggle project', exact: true }).click();
+  await expect(proof.getByRole('button', { name: 'เตรียมคำสั่ง', exact: true }).first()).toBeDisabled();
+  await proof.getByRole('button', { name: 'เลือกโครงการ', exact: true }).click();
+  await expect(proof).toHaveAttribute('data-action', 'project');
+  await search.fill('');
+  await proof.getByLabel('ประเภทเครื่องมือ', { exact: true }).selectOption('excel');
+  await proof.getByLabel('ความพร้อม', { exact: true }).selectOption('unavailable');
+  await expect(proof.getByText('ยังไม่มีตัวเชื่อมโปรแกรมที่ผ่านการตรวจสำหรับเครื่องมือนี้ ตรวจการติดตั้งและตัวเชื่อมในตั้งค่า', { exact: true })).toBeVisible();
+  await proof.getByRole('button', { name: 'ตรวจตั้งค่าเครื่องมือ', exact: true }).click();
+  await expect(proof).toHaveAttribute('data-action', 'settings');
+  await search.fill('no-such-tool');
+  await expect(proof.getByText('ไม่พบเครื่องมือที่ตรงกับตัวกรอง ลองเปลี่ยนคำค้นหรือเลือกทุกประเภท', { exact: true })).toBeVisible();
+  await search.fill(''); await proof.getByLabel('ประเภทเครื่องมือ', { exact: true }).selectOption('other');
+  await proof.getByText('รายละเอียดจากระบบ', { exact: true }).click();
+  await expect(proof.getByText('<script>unsafe</script>', { exact: true })).toBeVisible();
+  await expect(proof.locator('script')).toHaveCount(0);
+  await proof.getByRole('button', { name: 'Empty catalog', exact: true }).click();
+  await expect(proof.getByText('ยังไม่มีรายการจากระบบ ลองรีเฟรชหรือตรวจการเชื่อมต่อ', { exact: true })).toBeVisible();
+  expect(await page.evaluate(() => window.gotzji.request({ method: 'listJobs', input: {} }))).toEqual([]);
+});
+
+test('gotzji Tools browser preparation reads the current project session before copying', async ({ gotzji }) => {
+  const { page } = gotzji; const root = await gotzji.temporaryProject('gotzji-files-panel-e2e-');
+  await page.evaluate(async rootPath => window.gotzji.request({ method: 'registerProject', input: { projectId: 'tools-browser', displayName: 'Tools browser fixture', rootPath } }), root);
+  const fixturePath = gotzji.rendererFixturePath();
+  await build({ stdin: { resolveDir: path.join(desktopRoot, 'src', 'renderer'), sourcefile: 'tools-browser-fixture.tsx', loader: 'tsx', contents: `
+    import { createRoot } from 'react-dom/client'; import { GotzjiApp } from './GotzjiApp.tsx';
+    document.getElementById('root').hidden=true;const root=document.createElement('div');root.id='tools-browser-proof';document.body.append(root);
+    const calls=[];Reflect.set(root,'calls',calls);
+    const request=async(method,input)=>{calls.push(method);
+      if(method==='listCatalog')return [{name:'browser.read',state:'available',description:'Read current page'}];
+      if(method==='browserSession')return {state:'ready',projectId:'tools-browser',sessionId:'session-current',tabId:'tab-current',expectedUrl:'https://example.org/',expectedDocumentId:'document-current',allowedOrigins:['https://example.org']};
+      if(method==='prepareOperation'||method==='submit')throw new Error('Desktop started work');
+      return window.gotzji.request({method,input});};
+    createRoot(root,{identifierPrefix:'tools-browser-'}).render(<GotzjiApp requestPort={request}/>);
+  ` }, bundle: true, format: 'iife', platform: 'browser', jsx: 'automatic', loader: { '.css': 'empty', '.webp': 'dataurl' }, outfile: fixturePath, define: { 'process.env.NODE_ENV': '"production"' } });
+  await page.addScriptTag({ url: pathToFileURL(fixturePath).href });
+  const appView = page.locator('#tools-browser-proof');
+  await appView.getByRole('button', { name: 'โครงการ', exact: true }).click();
+  await appView.getByRole('button', { name: /^Tools browser fixture ·/ }).click();
+  await appView.getByRole('region', { name: 'เครื่องมือของเครื่องนี้', exact: true }).getByRole('button', { name: 'เตรียมคำสั่ง', exact: true }).click();
+  await appView.getByRole('button', { name: 'คัดลอกคำสั่งสำหรับ ChatGPT', exact: true }).click();
+  await expect(appView.getByText('คัดลอกแล้ว วางข้อความใน ChatGPT เพื่อเริ่มงาน', { exact: true })).toBeVisible();
+  const clipboard = await gotzji.app.evaluate(async ({ clipboard }) => clipboard.readText());
+  expect(clipboard).toContain('"operation": "browser.read"'); expect(clipboard).toContain('"sessionId": "session-current"');
+  expect(clipboard).toContain('"projectId": "tools-browser"'); expect(clipboard).toContain('"expectedDocumentId": "document-current"');
+  const calls = await page.evaluate(() => Reflect.get(document.getElementById('tools-browser-proof')!, 'calls')) as string[];
+  expect(calls).not.toContain('prepareOperation'); expect(calls).not.toContain('submit');
+});
+
 test('gotzji new file retries one real admission after a lost acknowledgement', async ({ gotzji }, testInfo) => {
     const { page } = gotzji;
     const projectFilesRoot = await gotzji.temporaryProject('gotzji-files-panel-e2e-');

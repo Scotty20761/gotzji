@@ -76,6 +76,14 @@
 .gotzji-workflow-review textarea { width:100%; box-sizing:border-box; }
 
 .gotzji-tabs { display:flex; gap:8px; border-bottom:1px solid #283440; padding-bottom:12px; }
+.gotzji-tool-filters { display:grid; grid-template-columns:minmax(180px,2fr) repeat(2,minmax(140px,1fr)); gap:16px; }
+.gotzji-tool-table { overflow:auto; max-height:620px; }
+.gotzji-tool-table th { position:sticky; top:0; background:var(--gz-surface); }
+.gotzji-tool-table td { vertical-align:top; overflow-wrap:anywhere; }
+.gotzji-tool-table td p { margin:6px 0; max-width:65ch; font-size:14px; color:var(--gz-muted); }
+.gotzji-tool-table small { color:var(--gz-muted); }
+.gotzji-tools-panel input,.gotzji-tools-panel select { min-width:0; width:100%; box-sizing:border-box; }
+@media(max-width:900px) { .gotzji-tool-filters { grid-template-columns:1fr; gap:0; } }
 .gotzji-tabs button[aria-selected=true] { color:#b7e4dc; background:#17302f; border-color:var(--gz-grace); }
 .gotzji-app [role=tabpanel]:focus-visible { outline:2px solid var(--gz-attention); outline-offset:3px; }
 
