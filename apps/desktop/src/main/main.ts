@@ -2857,6 +2857,14 @@ function bootstrapGotzjiDesktop(): void {
         await writeFile(result.filePath, content, 'utf8');
         return { exported: true, cancelled: false };
       },
+    }, {
+      pick: async () => {
+        const options = { title: gotzjiNativeMessages.projectFolderTitle, properties: ['openDirectory'] as Array<'openDirectory'> };
+        const selected = mainWindow ? await dialog.showOpenDialog(mainWindow, options) : await dialog.showOpenDialog(options);
+        if (selected.canceled) return { cancelled: true };
+        if (selected.filePaths.length !== 1 || !path.isAbsolute(selected.filePaths[0]!)) throw new Error('PROJECT_FOLDER_SELECTION_INVALID');
+        return { cancelled: false, path: selected.filePaths[0]! };
+      },
     });
     configureDesktopSessionDiagnostics(dataPath);
     createDesktopWindow();

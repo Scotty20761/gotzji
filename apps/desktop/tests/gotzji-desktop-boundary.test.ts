@@ -13,6 +13,21 @@ afterEach(async () => {
 });
 
 describe('gotzji desktop governed boundary', () => {
+  it('chooses a local project directory only for a trusted no-input desktop request', async () => {
+    const client = new GotzjiHostClient(async () => null);
+    const handlers = new Map<string, (event: { trusted: boolean }, payload?: unknown) => Promise<unknown>>();
+    const pick = vi.fn().mockResolvedValueOnce({ cancelled: true }).mockResolvedValueOnce({ cancelled: false, path: 'C:\\Owned Project' });
+    registerGotzjiIpcHandlers({ handle: (channel, handler) => { handlers.set(channel, handler); } }, client,
+      event => { if (!event.trusted) throw new Error('UNTRUSTED_RENDERER'); }, undefined, undefined, undefined, { pick });
+    const choose = handlers.get('gotzji:pick-project-folder')!;
+    await expect(choose({ trusted: false })).rejects.toThrow('UNTRUSTED_RENDERER');
+    await expect(choose({ trusted: true }, { path: 'C:\\other', properties: ['openFile'] })).rejects.toThrow('INVALID_GOTZJI_REQUEST');
+    expect(pick).not.toHaveBeenCalled();
+    await expect(choose({ trusted: true })).resolves.toEqual({ cancelled: true });
+    await expect(choose({ trusted: true })).resolves.toEqual({ cancelled: false, path: 'C:\\Owned Project' });
+    expect(pick).toHaveBeenCalledTimes(2);
+  });
+
   it('accepts only explicit project archive state and keeps management inputs free of caller authority', () => {
     expect(parseGotzjiRequest({ method: 'listManagedProjects', input: {} })).toEqual({ method: 'listManagedProjects', input: {} });
     for (const archived of [true, false]) {

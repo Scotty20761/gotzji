@@ -1811,6 +1811,13 @@ const api: LnwjudApi = {
 
 contextBridge.exposeInMainWorld('lnwjud', api);
 const gotzjiApi: GotzjiApi = {
+  pickProjectFolder: async () => {
+    const value: unknown = await invoke(gotzjiIpcChannels.pickProjectFolder);
+    if (!isRecord(value)) throw new Error('Invalid gotzji folder selection');
+    if (value.cancelled === true && Object.keys(value).length === 1) return { cancelled: true };
+    if (value.cancelled === false && typeof value.path === 'string' && value.path.trim() && Object.keys(value).length === 2) return { cancelled: false, path: value.path };
+    throw new Error('Invalid gotzji folder selection');
+  },
   hostStatus: async () => {
     const value: unknown = await invoke(gotzjiIpcChannels.hostStatus);
     if (!isRecord(value) || value.product !== 'gotzji' || (value.state !== 'ready' && value.state !== 'control-only' && value.state !== 'unavailable')

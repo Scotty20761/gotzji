@@ -74,3 +74,10 @@
 .gotzji-workflow-review dt { color:var(--gz-muted); font-size:14px; }
 .gotzji-workflow-review dd { margin:0 0 12px; overflow-wrap:anywhere; }
 .gotzji-workflow-review textarea { width:100%; box-sizing:border-box; }
+
+.gotzji-tabs { display:flex; gap:8px; border-bottom:1px solid #283440; padding-bottom:12px; }
+.gotzji-tabs button[aria-selected=true] { color:#b7e4dc; background:#17302f; border-color:var(--gz-grace); }
+.gotzji-app [role=tabpanel]:focus-visible { outline:2px solid var(--gz-attention); outline-offset:3px; }
+
+.gotzji-project-instructions { margin-bottom:24px; }
+.gotzji-app .gotzji-project-instructions pre { font-size:14px; line-height:1.75; max-height:280px; }

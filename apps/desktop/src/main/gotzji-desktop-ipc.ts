@@ -1,4 +1,4 @@
-import { gotzjiIpcChannels } from '@lnwjud/ipc-contracts';
+import { gotzjiIpcChannels, type GotzjiProjectFolderSelection } from '@lnwjud/ipc-contracts';
 import type { GotzjiHostClient } from './gotzji-host-client.js';
 import type { GotzjiStartupStatus } from './gotzji-startup.js';
 
@@ -12,7 +12,14 @@ export function registerGotzjiIpcHandlers<Event>(
   connectionSetup?: { readonly defaults: () => { tunnelId?: string; organizationId?: string }; readonly open: (page: 'tunnels' | 'keys' | 'connectors') => Promise<void> },
   startup?: { readonly status: () => GotzjiStartupStatus; readonly setEnabled: (enabled: boolean) => GotzjiStartupStatus },
   supportReport?: { readonly save: (content: string) => Promise<{ readonly exported: boolean; readonly cancelled: boolean }> },
+  projectFolder?: { readonly pick: () => Promise<GotzjiProjectFolderSelection> },
 ): void {
+  registrar.handle(gotzjiIpcChannels.pickProjectFolder, async (event, payload) => {
+    assertTrusted(event);
+    if (payload !== undefined && payload !== null) throw new Error('INVALID_GOTZJI_REQUEST');
+    if (!projectFolder) throw new Error('PROJECT_FOLDER_PICKER_UNAVAILABLE');
+    return projectFolder.pick();
+  });
   registrar.handle(gotzjiIpcChannels.hostStatus, async (event, payload) => {
     assertTrusted(event);
     if (payload !== undefined && payload !== null) throw new Error('INVALID_GOTZJI_REQUEST');

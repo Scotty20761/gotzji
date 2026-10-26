@@ -662,6 +662,154 @@ test('gotzji guided project command prepares without effects and starts one revi
   expect(await page.evaluate(async () => (await Reflect.get(window, 'ownedTestRequest')({ method: 'listJobs', input: {} }) as unknown[]).length)).toBe(1);
 });
 
+test('gotzji Windows navigation follows lnwjud and retains the selected project and queue', async ({ gotzji }) => {
+  const { page } = gotzji;
+  const root = await gotzji.temporaryProject('gotzji-files-panel-e2e-');
+  await page.evaluate(async rootPath => {
+    await window.gotzji.request({ method: 'registerProject', input: { projectId: 'windows-navigation', displayName: 'โครงการเมนู Windows', rootPath } });
+    await window.gotzji.request({ method: 'selectProject', input: { projectId: 'windows-navigation' } });
+  }, root);
+  await page.getByRole('button', { name: 'รีเฟรช', exact: true }).click();
+  const navigation = page.getByRole('navigation');
+  await expect(navigation.getByRole('button')).toHaveText(['หน้าแรก', 'โครงการ', 'เวิร์กโฟลว์', 'เครื่องมือ', 'Git', 'ประวัติงาน', 'บันทึกสด', 'ตั้งค่า', 'ตรวจระบบ']);
+  await page.getByRole('button', { name: 'เปิดคิวงาน', exact: true }).click();
+  await expect(page.getByRole('tab', { name: 'คิวงาน', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByRole('heading', { name: 'งานที่กำลังรอ', exact: true })).toBeVisible();
+  await page.getByRole('tab', { name: 'รายการงาน', exact: true }).click();
+  await expect(page.getByLabel('รหัสงาน', { exact: true })).toBeVisible();
+  for (const name of ['เวิร์กโฟลว์', 'บันทึกสด', 'โครงการ', 'หน้าแรก']) await navigation.getByRole('button', { name, exact: true }).click();
+  await expect(page.getByText('โครงการที่เลือก: โครงการเมนู Windows', { exact: true })).toBeVisible();
+  await page.reload();
+  await expect(page.getByText('โครงการที่เลือก: โครงการเมนู Windows', { exact: true })).toBeVisible();
+  expect(await page.evaluate(async () => window.gotzji.request({ method: 'listJobs', input: {} }))).toEqual([]);
+});
+
+test('gotzji Windows folder selection opens current project instructions and canonical history', async ({ gotzji }) => {
+  const { page, app } = gotzji;
+  const root = await gotzji.temporaryProject('gotzji-files-panel-e2e-');
+  await writeFile(path.join(root, 'AGENTS.md'), 'กติกาปัจจุบันของโครงการ Windows\n');
+  await writeFile(path.join(root, 'CLAUDE.md'), 'คำแนะนำเพิ่มเติมของโครงการ Windows\n');
+  await page.getByRole('button', { name: 'โครงการ', exact: true }).click();
+  const rootInput = page.getByLabel('โฟลเดอร์โครงการ', { exact: true });
+  await rootInput.fill(path.join(root, 'previous-selection'));
+  await app.evaluate(({ dialog }) => {
+    Reflect.set(globalThis, '__gotzjiOriginalOpenDialog', dialog.showOpenDialog);
+    dialog.showOpenDialog = async (): Promise<{ canceled: boolean; filePaths: string[] }> => ({ canceled: true, filePaths: [] });
+  });
+  try {
+    await page.getByRole('button', { name: 'เลือกโฟลเดอร์โครงการ', exact: true }).click();
+    await expect(rootInput).toHaveValue(path.join(root, 'previous-selection'));
+    expect(await page.evaluate(async () => window.gotzji.request({ method: 'listProjects', input: {} }))).toEqual([]);
+    await app.evaluate(({ dialog, BrowserWindow }, selectedRoot) => {
+      dialog.showOpenDialog = async (...args: unknown[]): Promise<{ canceled: boolean; filePaths: string[] }> => {
+        Reflect.set(globalThis, '__gotzjiFolderDialogCall', { ownedWindow: args[0] === BrowserWindow.getAllWindows()[0], options: args.at(-1) });
+        return { canceled: false, filePaths: [selectedRoot] };
+      };
+    }, root);
+    await page.getByRole('button', { name: 'เลือกโฟลเดอร์โครงการ', exact: true }).click();
+    await expect(rootInput).toHaveValue(root);
+    expect(await app.evaluate(() => Reflect.get(globalThis, '__gotzjiFolderDialogCall'))).toEqual({ ownedWindow: true, options: { title: 'เลือกโฟลเดอร์โครงการ', properties: ['openDirectory'] } });
+    expect(await page.evaluate(async () => window.gotzji.request({ method: 'listProjects', input: {} }))).toEqual([]);
+  } finally {
+    await app.evaluate(({ dialog }) => { dialog.showOpenDialog = Reflect.get(globalThis, '__gotzjiOriginalOpenDialog'); });
+  }
+  await page.getByLabel('รหัสโครงการ', { exact: true }).fill('windows-folder');
+  await page.getByLabel('ชื่อโครงการ', { exact: true }).fill('โครงการเลือกด้วย Windows');
+  await page.getByRole('button', { name: 'ลงทะเบียน', exact: true }).click();
+  await expect(page.getByText('โครงการที่เลือก: โครงการเลือกด้วย Windows', { exact: true })).toBeVisible();
+  const context = page.getByRole('region', { name: 'บริบทโครงการ', exact: true });
+  await expect(context.getByRole('heading', { name: 'กติกาโครงการปัจจุบัน', exact: true })).toBeVisible();
+  await context.getByText('AGENTS.md', { exact: true }).click();
+  await expect(context.locator('pre').first()).toContainText('กติกาปัจจุบันของโครงการ Windows');
+  await context.getByText('CLAUDE.md', { exact: true }).click();
+  await expect(context.locator('pre').nth(1)).toContainText('คำแนะนำเพิ่มเติมของโครงการ Windows');
+  expect(await page.evaluate(async () => window.gotzji.request({ method: 'listJobs', input: {} }))).toEqual([]);
+  const job = await page.evaluate(async () => {
+    const prepared = await Reflect.get(window, 'ownedTestRequest')({ method: 'prepareOperation', input: { requestId: 'windows-context-history', projectId: 'windows-folder', operation: 'file.read', path: 'AGENTS.md' } });
+    return Reflect.get(window, 'ownedTestRequest')({ method: 'submit', input: { preparationId: prepared.preparationId } });
+  });
+  await expect.poll(async () => page.evaluate(async jobId => (await window.gotzji.request({ method: 'status', input: { jobId } }) as { status: string }).status, job.jobId), { timeout: 15_000 }).toBe('completed');
+  await context.getByRole('button', { name: 'อ่านบริบทล่าสุด', exact: true }).click();
+  await expect(context.getByText('อ่านไฟล์โครงการ', { exact: true })).toBeVisible();
+  await context.getByRole('button', { name: `เปิดงาน ${job.jobId}`, exact: true }).click();
+  await expect(page.getByRole('heading', { name: `งาน ${job.jobId}`, exact: true })).toBeVisible();
+  await page.getByRole('tab', { name: 'คิวงาน', exact: true }).click();
+  await page.getByRole('tab', { name: 'รายการงาน', exact: true }).focus();
+  await page.keyboard.press('ArrowRight');
+  await expect(page.getByRole('tab', { name: 'คิวงาน', exact: true })).toBeFocused();
+  await page.keyboard.press('Home');
+  await expect(page.getByRole('tab', { name: 'รายการงาน', exact: true })).toBeFocused();
+  await expect(page.getByLabel('รหัสงาน', { exact: true })).toHaveValue(job.jobId);
+  await page.screenshot({ path: path.join(desktopRoot, '..', '..', '.local-artifacts', 'windows-ui-c1-worklog.png') });
+  await page.reload();
+  await page.getByRole('button', { name: 'โครงการ', exact: true }).click();
+  await expect(page.getByText('โครงการที่เลือก: โครงการเลือกด้วย Windows', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: `เปิดงาน ${job.jobId}`, exact: true })).toBeVisible();
+  expect((await page.evaluate(async () => window.gotzji.request({ method: 'listJobs', input: {} })) as unknown[]).length).toBe(1);
+  await page.screenshot({ path: path.join(desktopRoot, '..', '..', '.local-artifacts', 'windows-ui-c1-project.png') });
+});
+
+test('gotzji manual navigation wins when a project selection reply arrives late', async ({ gotzji }) => {
+  const { page } = gotzji; const root = await gotzji.temporaryProject('gotzji-files-panel-e2e-');
+  await page.evaluate(async rootPath => window.gotzji.request({ method: 'registerProject', input: { projectId: 'late-selection', displayName: 'โครงการตอบกลับช้า', rootPath } }), root);
+  const fixturePath = gotzji.rendererFixturePath();
+  await build({ stdin: { resolveDir: path.join(desktopRoot, 'src', 'renderer'), sourcefile: 'project-navigation-fixture.tsx', loader: 'tsx', contents: `
+    import { createRoot } from 'react-dom/client'; import { GotzjiApp } from './GotzjiApp.tsx';
+    document.getElementById('root').hidden=true; const root=document.createElement('div');root.id='late-selection-proof';document.body.append(root);
+    const request=async(method,input)=>{
+      if(method==='selectProject')return new Promise(resolve=>{Reflect.set(root,'release',async()=>{resolve(await window.gotzji.request({method,input}));});});
+      if(method==='prepareOperation'||method==='submit')throw new Error('Desktop started work');
+      return window.gotzji.request({method,input});
+    };
+    createRoot(root,{identifierPrefix:'late-selection-'}).render(<GotzjiApp requestPort={request}/>);
+  ` }, bundle: true, format: 'iife', platform: 'browser', jsx: 'automatic', loader: { '.css': 'empty', '.webp': 'dataurl' }, outfile: fixturePath, define: { 'process.env.NODE_ENV': '"production"' } });
+  await page.addScriptTag({ url: pathToFileURL(fixturePath).href });
+  const appView = page.locator('#late-selection-proof');
+  await appView.getByRole('button', { name: 'โครงการ', exact: true }).click();
+  await appView.getByRole('button', { name: /^โครงการตอบกลับช้า ·/u }).click();
+  await appView.getByRole('navigation').getByRole('button', { name: 'Git', exact: true }).click();
+  await expect(appView.getByRole('heading', { name: 'Git', exact: true })).toBeVisible();
+  await page.evaluate(async () => Reflect.get(document.getElementById('late-selection-proof')!, 'release')());
+  await expect(appView.getByText('โครงการที่เลือก: โครงการตอบกลับช้า', { exact: true })).toBeVisible();
+  await expect(appView.getByRole('heading', { name: 'Git', exact: true })).toBeVisible();
+  await expect(appView.getByRole('button', { name: 'อ่านสถานะ Git', exact: true })).toBeEnabled();
+  expect(await page.evaluate(async () => window.gotzji.request({ method: 'listJobs', input: {} }))).toEqual([]);
+});
+
+test('gotzji project context rejects late and wrong-project replies and labels bounded history', async ({ gotzji }) => {
+  const { page } = gotzji; const fixturePath = gotzji.rendererFixturePath();
+  await build({ stdin: { resolveDir: path.join(desktopRoot, 'src', 'renderer'), sourcefile: 'project-context-fixture.tsx', loader: 'tsx', contents: `
+    import { useState } from 'react'; import { createRoot } from 'react-dom/client';
+    import { GotzjiProjectContext } from './GotzjiProjectContext.tsx';
+    document.getElementById('root').hidden=true;
+    const root=document.createElement('div');root.id='context-proof';document.body.append(root);
+    let oldReply; let freshReads=0;
+    const response=projectId=>({project:{projectId},instructions:[],memory:{summary:projectId+' notes',decisions:[],openQuestions:[],resultPaths:[]},jobs:[{jobId:'existing-job',status:'completed',requestedOperation:'file.read'}],historyTruncated:true});
+    const request=async(method,input)=>{
+      if(method!=='projectContext')throw new Error('Unexpected work request');
+      if(input.projectId==='old')return new Promise(resolve=>{oldReply=resolve;});
+      freshReads++; return response(freshReads===1?'fresh':'wrong');
+    };
+    function Proof(){const [id,setId]=useState('old');return <><button onClick={()=>setId('fresh')}>Switch project</button><button onClick={()=>oldReply(response('old'))}>Finish old reply</button><GotzjiProjectContext projectId={id} request={request} onJob={jobId=>root.dataset.job=jobId}/></>;}
+    createRoot(root).render(<Proof/>);
+  ` }, bundle: true, format: 'iife', platform: 'browser', jsx: 'automatic', outfile: fixturePath, define: { 'process.env.NODE_ENV': '"production"' } });
+  await page.addScriptTag({ url: pathToFileURL(fixturePath).href });
+  const proof = page.locator('#context-proof');
+  await expect(proof.getByText('กำลังอ่านบริบท…', { exact: true })).toBeVisible();
+  await proof.getByRole('button', { name: 'Switch project', exact: true }).click();
+  await expect(proof.getByText('fresh notes', { exact: true })).toBeVisible();
+  await expect(proof.getByText('แสดงเฉพาะ 25 งานล่าสุดของโครงการนี้', { exact: true })).toBeVisible();
+  await proof.getByRole('button', { name: 'Finish old reply', exact: true }).click();
+  await expect(proof.getByText('fresh notes', { exact: true })).toBeVisible();
+  await expect(proof.getByText('old notes', { exact: true })).toHaveCount(0);
+  await proof.getByRole('button', { name: 'เปิดงาน existing-job', exact: true }).click();
+  await expect(proof).toHaveAttribute('data-job', 'existing-job');
+  await proof.getByRole('button', { name: 'อ่านบริบทล่าสุด', exact: true }).click();
+  await expect(proof.getByRole('alert')).toContainText('ยังอ่านบริบทไม่ได้');
+  await expect(proof.getByText('wrong notes', { exact: true })).toHaveCount(0);
+  expect(await page.evaluate(async () => window.gotzji.request({ method: 'listJobs', input: {} }))).toEqual([]);
+});
+
 test('gotzji project selection survives page reload and Desktop cannot start new work', async ({ gotzji }) => {
   const { page } = gotzji;
   const root = await gotzji.temporaryProject('gotzji-files-panel-e2e-');
@@ -867,7 +1015,7 @@ test('gotzji whole-app browser prompts survive navigation without creating model
   await appView.getByRole('button', { name: 'โครงการ', exact: true }).click();
   await appView.getByRole('button', { name: /^Browser navigation fixture ·/ }).click();
   await panel.getByRole('button', { name: 'คัดลอกงานอ่านหน้าเว็บสำหรับ ChatGPT', exact: true }).click();
-  await appView.getByRole('button', { name: 'ภาพรวม', exact: true }).click(); await expect(panel).toBeHidden();
+  await appView.getByRole('button', { name: 'หน้าแรก', exact: true }).click(); await expect(panel).toBeHidden();
   await appView.getByRole('button', { name: 'เครื่องมือ', exact: true }).click();
   await expect(panel.getByRole('button', { name: 'คัดลอกงานอ่านหน้าเว็บสำหรับ ChatGPT', exact: true })).toBeVisible();
   await expect(panel.getByRole('button', { name: 'เริ่มอ่านหน้านี้', exact: true })).toHaveCount(0);

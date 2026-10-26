@@ -1,6 +1,7 @@
 /** Secrets and adapter binding handles deliberately do not cross the preload boundary. */
 export const gotzjiIpcChannels = {
   hostStatus: 'gotzji:host-status',
+  pickProjectFolder: 'gotzji:pick-project-folder',
   request: 'gotzji:request',
   connectionSetupDefaults: 'gotzji:connection-setup-defaults',
   openConnectionSetup: 'gotzji:open-connection-setup',
@@ -34,7 +35,10 @@ export interface GotzjiRequest {
   readonly method: GotzjiMethod;
   readonly input: Readonly<Record<string, unknown>>;
 }
+export type GotzjiProjectFolderSelection = { readonly cancelled: true } | { readonly cancelled: false; readonly path: string };
 export interface GotzjiApi {
+  /** Local directory selection only; enrollment requires an explicit registerProject request. */
+  pickProjectFolder(): Promise<GotzjiProjectFolderSelection>;
   hostStatus(): Promise<GotzjiHostStatus>;
   request(request: GotzjiRequest): Promise<unknown>;
   connectionSetupDefaults(): Promise<{ tunnelId?: string; organizationId?: string }>;

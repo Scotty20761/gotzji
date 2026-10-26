@@ -53,6 +53,7 @@ export interface NativeMessages {
 }
 
 export const gotzjiNativeMessages = {
+  projectFolderTitle: 'เลือกโฟลเดอร์โครงการ',
   trayOpen: 'เปิด gotzji',
   trayQuit: 'ออกจากแอป gotzji',
   manualUpdate: 'อัปเดตด้วยไฟล์ gotzji รุ่นที่ตรวจแล้ว',
