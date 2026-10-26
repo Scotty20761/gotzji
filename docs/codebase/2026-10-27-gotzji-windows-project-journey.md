@@ -1,5 +1,15 @@
 # Windows navigation and selected project journey
 
+## Successor 3cd984d94c72 — Desktop rebuild and finally-fixture repair
+
+The ONE source-keyed desktop release from fbd1d4517387 resumed the accepted all-phase scope. Desktop build returned0, then the receiver emitted the matching ACK and continued. Built main now contains canonical Office pin b87493f120b722ca27c22442cfaaefc11ed34955b91bdd0ae29152c476e6522c; source/dist mismatch is resolved. The Vite large-chunk warning remains informational. No installed profile or Office process was changed.
+
+Exact CI observer36552 is terminal; PR40392472002 and push40392464394 both failed at3dffd0be. Connected job logs121816747940/121816748641/121816723770 all identify the same deterministic regression: the finally-only AST fixture runs under StrictMode without initializing the new identityDocument variable. Production initializes that variable at provider startup; the isolated fixture bypasses startup. Root reproduced the original error locally before editing, exit1. This is distinct from the historical mutex/startup/EBUSY causes.
+
+The fixture now initializes the absent identity document and exercises the actual parsed cleanup block with successful and throwing temporary-document Close(false) paths. Original close/count/remaining/Quit/no-owned-PID/event-order/sanitized-journal assertions remain. Complete adapter tests18/18 and complete capabilities suite532pass/2explicit skips across49files return0. Capabilities typecheck, scoped ESLint and diff check return0. Logs are ignored .local-artifacts/ci-finally-red-20261027.log, ci-finally-green-20261027.log, capabilities-full-20261027.log and the bounded hosted excerpt ci-3dffd0be-finally-failure.json. New hosted GREEN is unproven until an exact new-head run completes.
+
+Read-only CIM recheck still finds WINWORD43208 with the exact original birth/executable. No other process was adopted or stopped. Word native qualification remains blocked; root requested a concrete resource cleanup decision while continuing independent work. Standards review covers the committed Word delta plus this fixture correction:0hard violations/0actionable smells. Spec review and later native acceptance remain separately recorded.
+
 Status2026-10-27: implemented on dev; full Desktop unit suite and the six applicable Electron journeys pass. Complete Electron verification remains RED on two other cases. No package, installed app, actual ChatGPT account or release qualification is claimed.
 
 ## Delivered behavior

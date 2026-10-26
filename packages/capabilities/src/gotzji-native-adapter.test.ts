@@ -121,10 +121,15 @@ describe('gotzji native admission and verification', () => {
       function Release-Com($Value){[GotzjiNativeEvidenceJournal]::Events.Add('release.'+$Value.Kind)}
       $processEvidence=[pscustomobject]@{jobId='job';effectRoot=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${root}'))}
       $script:ownedPid=123; $provider='excel'; $results=@()
-      foreach($scenario in @('close-throws','count-throws','remaining','quit-throws','success','no-owned-pid')){
+      foreach($scenario in @('close-throws','count-throws','remaining','quit-throws','success','identity-close','identity-close-throws','no-owned-pid')){
         [GotzjiNativeEvidenceJournal]::Events.Clear()
         [GotzjiNativeEvidenceJournal]::Line=''
         $script:ownedPid=if($scenario -eq 'no-owned-pid'){0}else{123}
+        $identityDocument=$null
+        if($scenario -in @('identity-close','identity-close-throws')){
+          $identityDocument=[pscustomobject]@{Kind='identity';Throws=($scenario -eq 'identity-close-throws')}
+          $identityDocument|Add-Member ScriptMethod Close {param($saveChanges) [GotzjiNativeEvidenceJournal]::Events.Add('identity.close.'+$saveChanges);if($this.Throws){throw 'PRIVATE-IDENTITY-DETAIL'}}
+        }
         $document=[pscustomobject]@{Kind='document';Throws=($scenario -eq 'close-throws');SaveChanges=$null}
         $document|Add-Member ScriptMethod Close {param($saveChanges) [GotzjiNativeEvidenceJournal]::Events.Add('document.close');$this.SaveChanges=$saveChanges;if($this.Throws){throw 'PRIVATE-CLOSE-DETAIL'}}
         $books=[pscustomobject]@{Throws=($scenario -eq 'count-throws');Remaining=if($scenario -eq 'remaining'){1}else{0}}
@@ -146,12 +151,14 @@ describe('gotzji native admission and verification', () => {
       { scenario: 'remaining', closed: true, closeError: false, remaining: 1, quitRequested: false, quitError: false },
       { scenario: 'quit-throws', closed: true, closeError: false, remaining: 0, quitRequested: false, quitError: true },
       { scenario: 'success', closed: true, closeError: false, remaining: 0, quitRequested: true, quitError: false },
+      { scenario: 'identity-close', closed: true, closeError: false, remaining: 0, quitRequested: true, quitError: false },
+      { scenario: 'identity-close-throws', closed: true, closeError: true, remaining: 0, quitRequested: true, quitError: false },
     ];
     expect(results).toHaveLength(expected.length + 1);
     for (const [index, { scenario, ...flags }] of expected.entries()) {
       const result = results[index]!;
       expect(result).toMatchObject({ scenario, saveChanges: false, journalPath: path.join(f.root, 'native-cleanup-diagnostic.jsonl'), effectRoot: f.root });
-      expect(result.events).toEqual(['document.close', 'release.document', 'workbooks.count', ...(['count-throws', 'remaining'].includes(scenario) ? [] : ['application.quit']), 'release.application', 'journal.append']);
+      expect(result.events).toEqual([...(scenario.startsWith('identity-close') ? ['identity.close.False', 'release.identity'] : []), 'document.close', 'release.document', 'workbooks.count', ...(['count-throws', 'remaining'].includes(scenario) ? [] : ['application.quit']), 'release.application', 'journal.append']);
       expect(JSON.parse(result.line)).toEqual({ schemaVersion: 1, jobId: 'job', pid: 123, ...flags });
       expect(result.line).not.toMatch(/PRIVATE-|DETAIL|exception|token|evidenceKey/u);
     }
