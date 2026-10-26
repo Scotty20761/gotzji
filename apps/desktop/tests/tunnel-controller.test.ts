@@ -1279,24 +1279,30 @@ describe('TunnelController lifecycle', () => {
     const dataPath = await mkdtemp(path.join(os.tmpdir(), 'lnwjud-tunnel-secret-failure-'));
     temporaryRoots.push(dataPath);
     isolateTunnelProfile(dataPath);
-    const profileDir = resolveTunnelProfileDirectory();
+    // This lifecycle case must reach the injected secret failure without OS helper startup.
+    vi.stubEnv('PATH', dataPath);
+    const platform = 'linux';
+    const profileDir = resolveTunnelProfileDirectory(process.env, os.homedir(), platform);
     await (await import('node:fs/promises')).mkdir(profileDir, { recursive: true });
     const clientPath = path.join(dataPath, 'tunnel-client.exe');
     await writeFile(clientPath, 'fixture', 'utf8');
     await writeFile(path.join(profileDir, 'lnwjud.yaml'), 'mcp:\n  command: fixture\n', 'utf8');
     await writeFile(path.join(profileDir, 'lnwjud.runtime.secret'), 'encrypted-fixture', 'utf8');
     const currentOwner: TunnelLockOwner = { pid: 8888, processStartedAt: timestamp(1), acquiredAt: timestamp(2) };
+    const decryptSecret = vi.fn(async (): Promise<string> => { throw new Error('secret decrypt failed'); });
     const controller = new TunnelController({
+      platform,
       getClientPath: (): string => clientPath,
       setClientPath: (): void => undefined,
       getDataPath: (): string => dataPath,
       currentLockOwner: async (): Promise<TunnelLockOwner> => currentOwner,
       inspectLockProcess: async (): Promise<ProcessProbeResult> => ({ state: 'gone' }),
       isExternalTunnelRunning: async (): Promise<boolean> => false,
-      decryptSecret: async (): Promise<string> => { throw new Error('secret decrypt failed'); },
+      decryptSecret,
     });
 
     await expect(controller.start()).resolves.toMatchObject({ state: 'error', message: 'secret decrypt failed' });
+    expect(decryptSecret).toHaveBeenCalledOnce();
     expect(await readTunnelLock(profileDir)).toBeNull();
     expect(controllerInternals(controller).tunnelLock).toBeNull();
   });

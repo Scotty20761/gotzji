@@ -77,3 +77,13 @@ Original public Electron/native repro now passes, exit0 in51.2s, with the actual
 
 ### Follow-up
 Image continues broader C4 provider/object qualification under issue10. Retain prior RED archives and receipts; do not turn the later GREEN into a claim that old uncertain jobs were safely replayed. The transient E2E ready-timeout/EBUSY/Git-budget investigations remain separate and unresolved.
+
+## Hosted Windows CI fixture correction — validated source packet
+
+Summary: exact0f53df90 push run40385345726 failed in job121792018599, Desktop Test Shard (Windows,2/2). The secret-decryption release case expected 'secret decrypt failed' but received 'Timed out waiting for the lnwjud tunnel lock critical section'. The exact failed-job excerpt is retained in ignored .local-artifacts/ci-0f53df90-job-121792018599-failure.json. No blind CI rerun was used.
+
+Root cause at the test seam: this case injects a fake owner PID, fake executable and failing secret reader, yet implicitly selected the host Windows mutex helper before reaching the injected failure. Native helper acquisition failure masked the behavior the case intended to prove. A deterministic RED with PATH confined to an empty owned fixture returned 'spawn powershell.exe ENOENT' before decryption. The actual cause of the hosted helper startup delay remains UNKNOWN; this correction does not claim to repair native startup.
+
+Fix: the case explicitly selects the existing portable lock platform and computes the matching profile directory. It retains the empty-PATH condition, asserts decryption is called exactly once, and still verifies the real ownership file and in-memory handle are cleared. Production mutex code/deadlines remain unchanged. Existing Windows native mutex and TypeScript/PowerShell publisher tests remain separate.
+
+Validation: focused original regression GREEN1/1, then complete tunnel-controller/tunnel-lock/session-resilience acceptance94/94 on this Windows host, exit0. Typecheck, scoped ESLint and diff check return0. Independent Standards/Spec reviewers found0material issues and explicitly scoped this to the fixture dependency correction. New hosted CI is not yet confirmed. Old33507856 is pushSUCCESS/PRcancelled;0f53df90 is pushFAILURE/PRcancelled, with terminal watcher receipts. Neither is relabelled all-green.
