@@ -9,7 +9,7 @@ import { GotzjiCadSessionAdapter } from '@lnwjud/capabilities/gotzji-cad-session
 import { nativeFileDigest, planGotzjiNativeOperation } from '@lnwjud/capabilities/gotzji-native-contract';
 import { assertPreparedNativeAuthorization, productNativeResources } from './product-native.js';
 import { replaceFileSync } from './product-security.mjs';
-import { processIdentities, sameProcessIdentity } from './process-identity.mjs';
+import { processIdentities, processIdentityDiagnostics, sameProcessIdentity } from './process-identity.mjs';
 
 const active = new Map();
 const digest = (value) => createHash('sha256').update(value).digest('hex');
@@ -123,11 +123,12 @@ async function inspectPreparedNativeStop(config, prepared, binding, providerStat
       { reason: 'signed-pre-dispatch', identityCount: 0, identityDigest: null, verifier: 'host-signed-pre-dispatch-v1' });
     return stopResult('unknown', effectEvidence, { reason: safeEvidenceReason(error), identityCount: 0, identityDigest: null });
   }
-  let state = 'unknown';
+  let state = 'unknown'; let identityDiagnostics = {};
   for (let attempt = 0; attempt < 50; attempt++) {
     let observed;
     try { observed = await processIdentities(journal.identities.map((identity) => identity.pid)); }
     catch { observed = Object.fromEntries(journal.identities.map((identity) => [identity.pid, 'unknown'])); }
+    identityDiagnostics = processIdentityDiagnostics(observed);
     state = 'absent';
     for (const identity of journal.identities) {
       const current = observed[identity.pid];
@@ -140,7 +141,8 @@ async function inspectPreparedNativeStop(config, prepared, binding, providerStat
   // Read file effects only after the exact process observation. A provider that writes while its process is being
   // waited out must never receive a stale no-effect receipt.
   const effectEvidence = inspectNativeEffect(prepared);
-  return stopResult(state, effectEvidence, { identityCount: journal.identities.length, identityDigest: journal.digest });
+  return stopResult(state, effectEvidence, { identityCount: journal.identities.length, identityDigest: journal.digest,
+    ...(Object.keys(identityDiagnostics).length ? { identityDiagnostics } : {}) });
 }
 function readNativeIdentityJournal(binding) {
   const filename = binding.journalPath;

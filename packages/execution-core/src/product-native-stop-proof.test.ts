@@ -7,10 +7,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { existsSync } from 'node:fs';
 import { performance } from 'node:perf_hooks';
 import * as processIdentityObserver from './process-identity.mjs';
+import { GotzjiNativeAdapter } from '@lnwjud/capabilities/gotzji-native-adapter';
 import { GotzjiNativeError } from '@lnwjud/capabilities/gotzji-native-contract';
 import { prepareProductNativeOperation, signPreparedNativeOperation, type AuthorizedNativeWorkerConfig, type NativeWorkerBinding } from './product-native.js';
 import { executePreparedNativeOperation, readPreparedNativeState, reconcilePreparedNativeStop } from './product-native-broker.mjs';
-import { processIdentities, sameProcessIdentity, type ProcessIdentity } from './process-identity.mjs';
+import { createWindowsProcessIdentityReader, processIdentities, sameProcessIdentity, type ProcessIdentity, type WindowsPowerShellSession } from './process-identity.mjs';
 import type { RegisteredProject } from './types.js';
 
 const digest = (value: string | Buffer): string => createHash('sha256').update(value).digest('hex');
@@ -80,6 +81,51 @@ async function stop(owned: OwnedChild): Promise<void> {
 }
 
 describe('native process stop evidence', () => {
+  it('persists only the final correlated identity failure while keeping stop proof unknown', async () => {
+    const f = await fixture();
+    await journal(f, [{ birth: 'owned-fixture-birth', executable: process.execPath }], [101]);
+    let calls = 0;
+    const session = { identity: async () => { calls += 1; throw Object.assign(new Error('private provider text'), { code: calls < 3 ? 'EACCES' : 'POWERSHELL_SESSION_TIMEOUT' }); } } as unknown as WindowsPowerShellSession;
+    const read = createWindowsProcessIdentityReader({ currentPid: 999, exists: () => true, session });
+    vi.spyOn(processIdentityObserver, 'processIdentities').mockImplementation(read);
+    const result = await reconcilePreparedNativeStop(f.config);
+    expect(calls).toBe(3);
+    expect(result).toMatchObject({ outcome: 'unknown', stopEvidence: { observed: 'unknown', identityCount: 1,
+      identityDiagnostics: { 101: 'PROBE_POWERSHELL_SESSION_TIMEOUT' } }, effectEvidence: { source: 'unchanged', output: 'absent' } });
+    expect(readPreparedNativeState(f.config)).toMatchObject({ state: 'uncertain', outcome: 'unknown', stopEvidence: result.stopEvidence });
+    expect(JSON.stringify(readPreparedNativeState(f.config))).not.toContain('private provider text');
+  });
+  it('drops prior diagnostic codes when a fresh observation proves absence', async () => {
+    const f = await fixture();
+    await journal(f, [{ birth: 'owned-fixture-birth', executable: process.execPath }], [101]);
+    let unavailable = true;
+    const session = { identity: async () => {
+      if (unavailable) throw Object.assign(new Error('private session failure'), { code: 'EACCES' });
+      return { 101: null };
+    } } as unknown as WindowsPowerShellSession;
+    const read = createWindowsProcessIdentityReader({ currentPid: 999, exists: () => true, session });
+    vi.spyOn(processIdentityObserver, 'processIdentities').mockImplementation(read);
+    const earlier = await reconcilePreparedNativeStop(f.config);
+    expect(earlier.stopEvidence).toMatchObject({ observed: 'unknown', identityDiagnostics: { 101: 'PROBE_EACCES' } });
+    unavailable = false;
+    const latest = await reconcilePreparedNativeStop(f.config);
+    expect(latest).toMatchObject({ outcome: 'none', stopEvidence: { observed: 'absent' } });
+    expect(latest.stopEvidence).not.toHaveProperty('identityDiagnostics');
+    expect(readPreparedNativeState(f.config)).toMatchObject({ state: 'not-started', stopEvidence: latest.stopEvidence });
+    expect(earlier.stopEvidence.identityDiagnostics).toEqual({ 101: 'PROBE_EACCES' });
+  });
+  it('retains correlated stop diagnostics on the provider error path without changing its error or outcome', async () => {
+    const f = await fixture();
+    await journal(f, [{ birth: 'owned-fixture-birth', executable: process.execPath }], [101]);
+    const session = { identity: async () => { throw Object.assign(new Error('private session failure'), { code: 'EPIPE' }); } } as unknown as WindowsPowerShellSession;
+    const read = createWindowsProcessIdentityReader({ currentPid: 999, exists: () => true, session });
+    vi.spyOn(processIdentityObserver, 'processIdentities').mockImplementation(read);
+    vi.spyOn(GotzjiNativeAdapter.prototype, 'execute').mockRejectedValue(new GotzjiNativeError('SYNTHETIC_PROVIDER_STOPPED', undefined, 'unknown'));
+    await expect(executePreparedNativeOperation(f.config, undefined, { verifyLiveAuthority: () => true })).rejects.toMatchObject({
+      code: 'SYNTHETIC_PROVIDER_STOPPED', outcome: 'unknown', stopEvidence: { observed: 'unknown', identityDiagnostics: { 101: 'PROBE_EPIPE' } } });
+    expect(readPreparedNativeState(f.config)).toMatchObject({ state: 'uncertain', code: 'SYNTHETIC_PROVIDER_STOPPED', outcome: 'unknown',
+      stopEvidence: { observed: 'unknown', identityDiagnostics: { 101: 'PROBE_EPIPE' } } });
+  });
   it('signs a recoverable pre-dispatch no-launch proof when adapter admission refuses before the runner', async () => {
     const f = await fixture(); await writeFile(f.prepared.native.scriptPath, 'changed before adapter admission');
     await expect(executePreparedNativeOperation(f.config, undefined, { verifyLiveAuthority: () => true })).rejects.toMatchObject({ code: 'NATIVE_PROVIDER_CHANGED', outcome: 'none' });
