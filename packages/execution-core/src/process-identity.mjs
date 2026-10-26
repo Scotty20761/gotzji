@@ -8,6 +8,15 @@ const exec = promisify(execFile);
 export const WINDOWS_IDENTITY_STARTUP_MS = 20_000;
 export const PROCESS_IDENTITY_REQUEST_MS = 5_000;
 let windowsProbeFailureReported = false;
+const identityDiagnostics = new WeakMap();
+/** Observational codes belong to this exact result object and never change its identity proof. */
+export function processIdentityDiagnostics(observation) { return { ...identityDiagnostics.get(observation) }; }
+function retainIdentityDiagnostics(observation, details) {
+  if (!observation || typeof observation !== 'object' || !details || typeof details !== 'object' || Array.isArray(details)) return;
+  const selected = Object.entries(details).slice(0, 64).filter(([pid, code]) => /^[1-9]\d{0,9}$/u.test(pid) && Object.hasOwn(observation, pid) && observation[pid] === 'unknown'
+    && typeof code === 'string' && code.length <= 80 && /^(?:(?:OPEN_PROCESS|PROCESS_TIMES|PROCESS_IMAGE|PROCESS_IMAGE_EMPTY|WAIT_BEFORE|WAIT_AFTER|EXCEPTION)_\d{1,10}|PROBE_(?:POWERSHELL_SESSION_[A-Z_]+|ENOENT|EACCES|EPERM|EPIPE|ETIMEDOUT|KILLED|INVALID_RESPONSE))$/u.test(code));
+  if (selected.length) identityDiagnostics.set(observation, Object.freeze(Object.fromEntries(selected)));
+}
 const windowsReader = createWindowsProcessIdentityReader({ onFailure: ({ code, elapsedMs }) => {
   if (!windowsProbeFailureReported) {
     windowsProbeFailureReported = true;
@@ -86,19 +95,24 @@ export function createWindowsProcessIdentityReader(options = {}) {
             const proven = value && typeof value === 'object' && typeof value.birth === 'string' && value.birth && typeof value.executable === 'string' && value.executable;
             return [pid, value === null ? null : proven ? { birth: value.birth, executable: value.executable } : 'unknown'];
           }));
+          retainIdentityDiagnostics(observed, processIdentityDiagnostics(parsed));
           if (observed[currentPid] && typeof observed[currentPid] === 'object') currentIdentity = observed[currentPid];
           return observed;
         } catch (error) {
           const code = /^[A-Z_]{1,40}$/u.test(error?.code ?? '') ? error.code : error?.killed ? 'KILLED' : 'INVALID_RESPONSE';
           try { options.onFailure?.({ code, elapsedMs: Math.round(performance.now() - started) }); }
           catch { /* Observational diagnostics cannot turn an unknown proof into a rejected query. */ }
-          return Object.fromEntries(requested.map((pid) => [pid, 'unknown']));
+          const observed = Object.fromEntries(requested.map((pid) => [pid, 'unknown']));
+          retainIdentityDiagnostics(observed, Object.fromEntries(requested.map(pid => [pid, `PROBE_${code}`])));
+          return observed;
         }
       })();
       pending.set(key, query);
       void query.then(() => { pending.delete(key); }, () => { pending.delete(key); });
     }
-    return { ...retained, ...await query };
+    const observed = await query; const result = { ...retained, ...observed };
+    retainIdentityDiagnostics(result, processIdentityDiagnostics(observed));
+    return result;
   };
 }
 
@@ -111,34 +125,38 @@ using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Text;
 public static class GotzjiProcessIdentityNative {
+  public static readonly Hashtable Diagnostics = new Hashtable();
   [DllImport("kernel32.dll", SetLastError=true)] static extern IntPtr OpenProcess(uint access, bool inherit, int pid);
   [DllImport("kernel32.dll", SetLastError=true)] static extern uint WaitForSingleObject(IntPtr process, uint milliseconds);
   [DllImport("kernel32.dll", SetLastError=true)] static extern bool GetProcessTimes(IntPtr process, out long created, out long exited, out long kernel, out long user);
   [DllImport("kernel32.dll", EntryPoint="QueryFullProcessImageNameW", ExactSpelling=true, CharSet=CharSet.Unicode, SetLastError=true)] static extern bool QueryFullProcessImageName(IntPtr process, uint flags, StringBuilder name, ref uint size);
   [DllImport("kernel32.dll", SetLastError=true)] static extern bool CloseHandle(IntPtr handle);
-  static object FailedQuery(IntPtr process) { return WaitForSingleObject(process, 0) == 0 ? null : (object)"unknown"; }
+  static object Unknown(int pid, string stage, long code) { Diagnostics[pid.ToString(CultureInfo.InvariantCulture)] = stage + "_" + code.ToString(CultureInfo.InvariantCulture); return "unknown"; }
+  static object FailedQuery(IntPtr process, int pid, string stage, long code) { return WaitForSingleObject(process, 0) == 0 ? null : Unknown(pid, stage, code); }
   public static object Read(int pid) {
+    Diagnostics.Remove(pid.ToString(CultureInfo.InvariantCulture));
     IntPtr process = OpenProcess(0x1000 | 0x00100000, false, pid);
-    if (process == IntPtr.Zero) return pid > 0 && Marshal.GetLastWin32Error() == 87 ? null : (object)"unknown";
+    if (process == IntPtr.Zero) { int code = Marshal.GetLastWin32Error(); return pid > 0 && code == 87 ? null : Unknown(pid, "OPEN_PROCESS", code); }
     try {
       uint before = WaitForSingleObject(process, 0);
       if (before == 0) return null;
-      if (before != 258) return "unknown";
+      if (before != 258) return Unknown(pid, "WAIT_BEFORE", before);
       long created, exited, kernel, user;
-      if (!GetProcessTimes(process, out created, out exited, out kernel, out user)) return FailedQuery(process);
+      if (!GetProcessTimes(process, out created, out exited, out kernel, out user)) return FailedQuery(process, pid, "PROCESS_TIMES", Marshal.GetLastWin32Error());
       uint length = 32768; StringBuilder image = new StringBuilder((int)length);
-      if (!QueryFullProcessImageName(process, 0, image, ref length)) return FailedQuery(process);
+      if (!QueryFullProcessImageName(process, 0, image, ref length)) return FailedQuery(process, pid, "PROCESS_IMAGE", Marshal.GetLastWin32Error());
       uint after = WaitForSingleObject(process, 0);
       if (after == 0) return null;
-      if (after != 258 || length == 0) return "unknown";
+      if (after != 258) return Unknown(pid, "WAIT_AFTER", after);
+      if (length == 0) return Unknown(pid, "PROCESS_IMAGE_EMPTY", 0);
       return new Hashtable { { "birth", DateTime.FromFileTimeUtc(created).Ticks.ToString(CultureInfo.InvariantCulture) }, { "executable", image.ToString().ToLowerInvariant() } };
-    } catch { return FailedQuery(process); }
+    } catch { return FailedQuery(process, pid, "EXCEPTION", 0); }
     finally { CloseHandle(process); }
   }
 }
 '@`;
 function identityLoop(source) {
-  return `$r=@{};foreach($v in @(${source})){try{$r[[string]$v]=[GotzjiProcessIdentityNative]::Read([int]$v)}catch{$r[[string]$v]='unknown'}}`;
+  return `$r=@{};[GotzjiProcessIdentityNative]::Diagnostics.Clear();foreach($v in @(${source})){try{$r[[string]$v]=[GotzjiProcessIdentityNative]::Read([int]$v)}catch{$r[[string]$v]='unknown'}}`;
 }
 // One owned PowerShell per role and program answers fixed requests over its own pipes, so a proof or a protected
 // write no longer pays a cold PowerShell start. It receives data only, never script text, and it ends on stdin EOF,
@@ -147,7 +165,7 @@ function identityLoop(source) {
 const SESSION_PREAMBLE = ["$null='gotzji-powershell-session'", "$ErrorActionPreference='Stop'", '[Console]::InputEncoding=[Text.UTF8Encoding]::new($false)', '[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)'];
 const SESSION_SCRIPTS = {
   identity: [...SESSION_PREAMBLE, `${WINDOWS_IDENTITY_HELPER}\n`,
-    `while($null -ne ($line=[Console]::In.ReadLine())){$id=$null;try{$q=$line|ConvertFrom-Json;$id=[int64]$q.id;${identityLoop('$q.pids')};$o=@{id=$id;ok=$true;result=$r}}catch{$o=@{id=$id;ok=$false}};[Console]::Out.WriteLine(($o|ConvertTo-Json -Compress -Depth 5));[Console]::Out.Flush()}`].join(';'),
+    `while($null -ne ($line=[Console]::In.ReadLine())){$id=$null;try{$q=$line|ConvertFrom-Json;$id=[int64]$q.id;${identityLoop('$q.pids')};$o=@{id=$id;ok=$true;result=$r;diagnostics=[GotzjiProcessIdentityNative]::Diagnostics.Clone()}}catch{$o=@{id=$id;ok=$false}};[Console]::Out.WriteLine(($o|ConvertTo-Json -Compress -Depth 5));[Console]::Out.Flush()}`].join(';'),
   // Secrets never pass through a cmdlet, where module logging could record them: tab-separated requests, and
   // replies assembled by concatenation ([char]34 is a double quote). A failed System.Security load ends the session.
   dpapi: [...SESSION_PREAMBLE, 'Add-Type -AssemblyName System.Security', '$scope=[Security.Cryptography.DataProtectionScope]::CurrentUser', '$d=[char]34',
@@ -211,7 +229,7 @@ export function createWindowsPowerShellSession(options) {
         const entry = waiting.get(reply?.id);
         if (!entry) { stop('POWERSHELL_SESSION_INVALID_RESPONSE'); return; }
         waiting.delete(reply.id); clearTimeout(entry.timer); answered = true;
-        if (reply.ok === true) entry.resolve(reply.result); else entry.reject(failure('POWERSHELL_SESSION_DENIED'));
+        if (reply.ok === true) { if (role === 'identity') retainIdentityDiagnostics(reply.result, reply.diagnostics); entry.resolve(reply.result); } else entry.reject(failure('POWERSHELL_SESSION_DENIED'));
       }
       if (!waiting.size) release();
     });

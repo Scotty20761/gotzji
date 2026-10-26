@@ -5,7 +5,7 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { PassThrough } from 'node:stream';
 import { promisify } from 'node:util';
-import { createWindowsPowerShellSession, createWindowsProcessIdentityReader, windowsPowerShellSession, type ProcessIdentity, type WindowsPowerShellSession, type WindowsProcessIdentityExecutor } from './process-identity.mjs';
+import { createWindowsPowerShellSession, createWindowsProcessIdentityReader, windowsPowerShellSession, processIdentityDiagnostics, type ProcessIdentity, type WindowsPowerShellSession, type WindowsProcessIdentityExecutor } from './process-identity.mjs';
 
 const identity = (birth: string): ProcessIdentity => ({ birth, executable: 'c:\\node.exe' });
 const paths = { programFiles: 'C:\\Program Files', systemRoot: 'C:\\Windows', currentPid: 100 };
@@ -110,11 +110,13 @@ describe.each(windowsPrograms)('actual Windows identity script: %s', (program) =
       if (failure === 'time') script = script.replace('!GetProcessTimes(process, out created, out exited, out kernel, out user)', '!(GetProcessTimes(process, out created, out exited, out kernel, out user) && false)');
       else if (failure === 'image') script = script.replace('!QueryFullProcessImageName(process, 0, image, ref length)', '!(QueryFullProcessImageName(process, 0, image, ref length) && false)');
       else script = script.replace(`uint ${failure === 'pre-wait' ? 'before' : 'after'} = WaitForSingleObject(process, 0);`, `uint ${failure === 'pre-wait' ? 'before' : 'after'} = 0xffffffff;`);
-      script = script.replace('$r|ConvertTo-Json -Compress -Depth 3', '@{result=$r;opened=[GotzjiProcessIdentityNative]::Opened;closed=[GotzjiProcessIdentityNative]::Closed;wait=[GotzjiProcessIdentityNative]::FailureWait}|ConvertTo-Json -Compress -Depth 3');
+      script = script.replace('$r|ConvertTo-Json -Compress -Depth 3', '@{result=$r;diagnostics=[GotzjiProcessIdentityNative]::Diagnostics;opened=[GotzjiProcessIdentityNative]::Opened;closed=[GotzjiProcessIdentityNative]::Closed;wait=[GotzjiProcessIdentityNative]::FailureWait}|ConvertTo-Json -Compress -Depth 3');
       let running!: ReturnType<typeof exec>;
       own(() => { running = exec(program, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], { windowsHide: true, timeout: 5000, maxBuffer: 65536 }); return running.child; });
       const result: unknown = JSON.parse((await running).stdout.toString().trim());
       expect(result).toMatchObject({ result: { [pid]: 'unknown' }, opened: 1, closed: 1 });
+      const reason = { time: /^PROCESS_TIMES_\d+$/u, image: /^PROCESS_IMAGE_\d+$/u, 'pre-wait': /^WAIT_BEFORE_4294967295$/u, 'post-wait': /^WAIT_AFTER_4294967295$/u }[failure];
+      expect(result).toMatchObject({ diagnostics: { [pid]: expect.stringMatching(reason) } });
       if (failure === 'time' || failure === 'image') expect(result).toMatchObject({ wait: 258 });
       console.info(JSON.stringify({ resource: 'native-diagnostic-handle', program, failure, pid, result }));
     }, 14_000);
@@ -211,6 +213,23 @@ function fakePowerShell(answer: (request: Request, line: string) => Reply): { sp
 const ok = (request: { id: number }): Reply => ({ id: request.id, ok: true, result: { 101: identity('first') } });
 
 describe('owned Windows PowerShell session', () => {
+  it('binds bounded unknown diagnostics to the same reply without changing identity values', async () => {
+    let code = 'OPEN_PROCESS_5';
+    const fake = fakePowerShell(request => ({ id: request.id, ok: true, result: { 101: 'unknown', 102: null }, diagnostics: { 101: code, 102: 'STALE_5', 999: 'FOREIGN_5' } }));
+    const session = createWindowsPowerShellSession({ program: 'pwsh.exe', spawn: fake.spawn });
+    const read = createWindowsProcessIdentityReader({ ...paths, exists: () => true, session });
+    try {
+      const first = await read([101, 102]);
+      expect(first).toEqual({ 101: 'unknown', 102: null });
+      expect(processIdentityDiagnostics(first)).toEqual({ 101: 'OPEN_PROCESS_5' });
+      code = 'WAIT_AFTER_4294967295'; const second = await read([101, 102]);
+      expect(processIdentityDiagnostics(second)).toEqual({ 101: 'WAIT_AFTER_4294967295' });
+      expect(processIdentityDiagnostics(first)).toEqual({ 101: 'OPEN_PROCESS_5' });
+      expect(JSON.stringify(first)).toBe('{"101":"unknown","102":null}');
+      code = 'PRIVATE path/token'; const unsafe = await read([101, 102]);
+      expect(processIdentityDiagnostics(unsafe)).toEqual({});
+    } finally { session.close(); }
+  });
   it('serves each role from one started process and sends DPAPI payloads as tab-separated data, never JSON', async () => {
     const lines: string[] = [];
     const identityFake = fakePowerShell((request) => ok(request));

@@ -1,5 +1,17 @@
 # Windows navigation and selected project journey
 
+## Mandatory completed-tool checkpoint — root 3cd984d94c72
+
+Native context crossing500318>=500000 arrived after the diagnostic-correlation test/tool returned. Engineering stopped at that completed-tool boundary. All remaining accepted phases stay ACTIVE for ONE installed-skill transfer, with no extra owner Resume, Goal, schedule or roadmap.
+
+The final diagnostic-only source delta is WIP in packages/execution-core/src/process-identity.mjs, process-identity.d.mts and process-identity.test.ts. Actual owned-handle diagnostic tests were RED for missing codes, then8/8GREEN across Windows PowerShell/PowerShell7, preserving unknown/null/identity behavior, handle-close checks and original deadlines. A correlated-session regression was RED for the missing helper, thenGREEN1/1: bounded allowlisted codes stay attached to the exact observation object through a WeakMap, foreign/absent IDs and unsafe text are excluded, old observation codes do not change after a later reply, and serialized identity maps stay unchanged. It adds no stop decision or retry/deadline change.
+
+This WIP is NOT fully reviewed/qualified. The native broker has NOT yet read processIdentityDiagnostics or persisted these codes into stopEvidence. Error-branch correlation coverage and the full identity/stop-proof suites remain; no new Office run follows this partial delta. Core worker copies and Desktop bundles still reflect pre-diagnostic bytes: rebuild only after finishing and verifying the packet. Ignored checkpoint patch: .local-artifacts/identity-diagnostic-3cd984-checkpoint.patch. Preserve partial code and completed RED/GREEN logs rather than calling the Excel issue fixed.
+
+Final e1274474 CI observer recovery is terminal: push40399745005SUCCESS, PR40399753116FAILURE. Exact PR job121842579853 was read through the connector; failure is release stage test:e2e, with downstream aggregate failure121855821669. Bounded log excerpt is .local-artifacts/ci-e1274474-pr-job-121842579853.json. Its detailed cause has NOT been diagnosed; do not infer it from a different SHA or rerun CI blindly. All observer sessions18735/17252 are terminal; no CI watcher or foreground validator/test is left running by this root. Retained native resources remain explicitly unverified rather than claiming global process absence.
+
+Root's current full local Desktop checkpoint is968pass/2skip before the diagnostic WIP; preceding complete Electron is24pass/4explicit-native-skips, with later history/navigation4/4 separately qualified. PowerPoint current-pin native1PASS and Excel actual-read/unknown-write RED remain distinct. WINWORD43208 is untouched, with the concrete cleanup question unanswered. The next receiver can first run the narrow full process-identity suite at this preserved source (a meaningful test action), ACK and continue the diagnostic packet; then recheck resource/current state and continue all independent phases.
+
 ## Current-pin native verification and retained uncertainty
 
 PowerPoint qualification at the current canonical Office pin b87493f120b722ca27c22442cfaaefc11ed34955b91bdd0ae29152c476e6522c passes1/1 in24.9s: actual read/edit-newcopy, save/reopen, independent XML/media/source checks, preparation replay and owned-PID absence. Word43208 remains untouched pending the concrete owner cleanup decision.
