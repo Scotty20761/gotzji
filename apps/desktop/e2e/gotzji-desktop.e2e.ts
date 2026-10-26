@@ -1251,6 +1251,10 @@ test.describe('actual Windows Excel qualification', () => {
           await writeFile(path.join(desktopRoot, '..', '..', '.local-artifacts', `c4-excel-native-${nativeJobId}.json`), JSON.stringify({ jobId: nativeJobId, ...job,
             cleanup: cleanup.trim().split(/\r?\n/u).map((line) => JSON.parse(line) as unknown),
             native: { state: native.state, outcome: native.outcome, code: native.code, field: native.field, stopEvidence: native.stopEvidence, effectEvidence: native.effectEvidence } }, null, 2));
+          for (const [selected, label] of [[source, 'source'], [path.join(root, 'edited-copy.xlsx'), 'output']] as const) {
+            try { await writeFile(path.join(desktopRoot, '..', '..', '.local-artifacts', `c4-excel-${nativeJobId}-${label}.xlsx`), await readFile(selected)); }
+            catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+          }
         }
       } finally { await proveExcelAbsent(); }
     });
@@ -1334,6 +1338,31 @@ test.describe('actual Windows Excel qualification', () => {
     expect(reopened.getWorksheet('Summary')!.getCell('A1').value).toBe('Original summary');
     expect(Buffer.from(reopened.getImage(0).buffer!)).toEqual(imageBytes);
     await proveExcelAbsent();
+    const outputName = 'edited-copy.xlsx';
+    const editPreparation = await page.evaluate(async input => Reflect.get(window, 'ownedTestRequest')({ method: 'prepareOperation', input }),
+      { projectId, requestId: 'excel-write-owned-copy', operation: 'excel.range.write', path: filename, expectedSha256: sourceSha256, sheet: sheetName, range: 'A1', values: [['แก้ข้อความในสำเนา']], outputPath: outputName });
+    const edited = await page.evaluate(async preparationId => Reflect.get(window, 'ownedTestRequest')({ method: 'submit', input: { preparationId } }), editPreparation.preparationId);
+    nativeJobId = edited.jobId; nativeJobIds.add(edited.jobId);
+    let editStatus = 'queued';
+    await expect.poll(async () => { editStatus = await page.evaluate(async jobId => (await Reflect.get(window, 'ownedTestRequest')({ method: 'status', input: { jobId } })).status, edited.jobId); return editStatus; }, { timeout: 45000 }).not.toMatch(/^(queued|running)$/u);
+    expect(editStatus).toBe('completed');
+    const editResult = await page.evaluate(async jobId => Reflect.get(window, 'ownedTestRequest')({ method: 'result', input: { jobId } }), edited.jobId);
+    const outputBytes = await readFile(path.join(root, outputName));
+    expect(editResult).toMatchObject({ operation: 'excel.range.write', output: { jobId: edited.jobId, nativeReceipt: {
+      operation: 'excel.range.write', sourceSha256, outputSha256: createHash('sha256').update(outputBytes).digest('hex'),
+      verified: true, originalPreserved: true, unrelatedPreserved: true, savedAndReopened: true,
+    } } });
+    const outputBook = new ExcelJS.Workbook(); await outputBook.xlsx.readFile(path.join(root, outputName));
+    expect(outputBook.getWorksheet(sheetName)!.getCell('A1').value).toBe('แก้ข้อความในสำเนา');
+    expect(outputBook.getWorksheet(sheetName)!.getCell('C2').value).toEqual({ formula: 'SUM(A2:B2)', result: 5 });
+    expect(outputBook.getWorksheet('Summary')!.getCell('A1').value).toBe('Original summary');
+    expect(Buffer.from(outputBook.getImage(0).buffer!)).toEqual(imageBytes);
+    expect(await readFile(source)).toEqual(original); await proveExcelAbsent();
+    expect((await page.evaluate(async preparationId => Reflect.get(window, 'ownedTestRequest')({ method: 'submit', input: { preparationId } }), editPreparation.preparationId)).jobId).toBe(edited.jobId);
+    await page.getByLabel('รหัสงาน', { exact: true }).fill(edited.jobId);
+    await page.getByRole('button', { name: 'ดูผลลัพธ์', exact: true }).click();
+    await expect(page.getByRole('region', { name: 'รายละเอียดผลลัพธ์', exact: true })).toBeVisible();
+    await testInfo.attach('actual-excel-write-receipt', { body: JSON.stringify(editResult, null, 2), contentType: 'application/json' });
     await testInfo.attach('actual-excel-receipt', { body: JSON.stringify({ jobId: admitted.jobId, sourceSha256, result }, null, 2), contentType: 'application/json' });
     await testInfo.attach('actual-excel-range-receipts', { body: JSON.stringify({ sourceSha256, results: rangeResults }, null, 2), contentType: 'application/json' });
   });

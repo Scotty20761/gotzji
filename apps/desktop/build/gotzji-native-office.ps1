@@ -27,6 +27,8 @@ function Media-Snapshot([string]$File) {
   try {
     $items=@()
     foreach ($entry in $archive.Entries) {
+      # ZIP directory records carry no media payload; Office may omit them on save.
+      if ($entry.FullName.EndsWith('/')) { continue }
       if ($entry.FullName -notmatch '^(xl|word|ppt)/media/' -and $entry.FullName -notmatch 'vbaProject\.bin$') { continue }
       $stream=$entry.Open(); $algorithm=[Security.Cryptography.SHA256]::Create()
       try { $digest=[BitConverter]::ToString($algorithm.ComputeHash($stream)).Replace('-','').ToLowerInvariant(); $items += [ordered]@{ hash=$digest; length=$entry.Length } }

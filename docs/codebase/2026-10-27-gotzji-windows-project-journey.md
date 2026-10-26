@@ -57,3 +57,23 @@ The public projection tests were RED before each implemented slice: missing modu
 Complete 24-case Electron run returned exit 1:20 passed/2 failed/2 native skips. Both failures occurred before the case body at host PRODUCT_HOST_NOT_READY / ready-timeout (empty stderr, no endpoint), not at a result or Tools assertion. Roots gotzji-desktop-e2e-evUe0w and gotzji-desktop-e2e-yoRylc were retained because process absence was not established by the fixture; no cleanup condition/deadline was weakened. A later read-only process census found no host command line for either exact root (only the probe itself matched). This does not establish the historical startup cause. The 10,020-object Git journey completed this time in 26,341ms; this is non-reproduction of the old budget failure, not a causal performance repair.
 
 Standards review:0 hard violations/0 heuristics. Spec review and its final error/fallback delta read-back:0 material findings. Both are independent read-only collaborators; root owns all edits and tests. A generated file-result screenshot was inspected; the final full-run screenshot scrolls the result into view. Current actual native Excel/Chrome qualification is a separate explicit owned-fixture command; record its terminal outcome separately. The previous full Desktop959/2skip receipt belongs to the Tools milestone; it is not relabelled as a full965-case result after these six tests were added.
+
+## Post-mortem — ZIP directory records falsely blocked native Excel edits
+
+### Summary
+The accepted C4 Excel write qualification changed one cell in a new workbook copy but blocked with NATIVE_MEDIA_PRESERVATION_FAILED. Media-Snapshot counted an empty ZIP directory as a media payload. Skipping directory records fixes the false alarm while retaining all real payload checks. Owner: Image; tracker: existing issue10/C4; fix: current dev diff above0f53df90.
+
+### Symptom and root cause
+Two actual governed writes ended blocked/uncertain with source unchanged, output present and owned Excel absent. In apps/desktop/build/gotzji-native-office.ps1, Media-Snapshot selected every entry under xl/media/, including xl/media/ itself. ExcelJS emitted that zero-byte directory entry; Excel SaveAs omitted it. The source census therefore contained an empty-directory hash plus one image while the output census contained only the identical image. Comparing these sorted arrays raised the preservation error after save/reopen. Source and output image1.png both contain70bytes and hash9519e7335a2d5ee89d788be7ba1b748a34f6d0ec60ce75a30e87f0ecd863db96. The PNG did not change.
+
+### Fix
+Media-Snapshot now skips only ZIP entry names ending '/'. It still hashes/counts zero-byte files, media files and the macro payloads recognized by the existing extension guard. Original hash, unrelated data/structure, native ownership, save/reopen and current output-hash checks remain unchanged. PRODUCT_PROVIDER_SHA256.office is updated to the actual shipped script057a38cd742bbc46ce2133b58eb50177711c89767e9fc6c48d0d7afe1f98372d; no profile, version or installed runtime was changed.
+
+### How it was found and why it slipped through
+The first actual write reached the preservation error. A second fresh owned fixture captured source/output archives before cleanup and failed at the same code. ZIP member/hash/size comparison falsified image re-encoding and isolated container-directory membership. Independent Spec review read the diagnostic ZIP pair and confirmed it. Earlier actual Excel checks exercised read/discovery only; default CI skips explicit native qualification. Those paths did not exercise Excel's save-time ZIP rewrite.
+
+### Validation and limits
+Original public Electron/native repro now passes, exit0 in51.2s, with the actual shipped default provider after a full Desktop rebuild. Independent ExcelJS read-back verifies the new A1 value, preserved SUM(A2:B2) formula/result5, unchanged other worksheet, exact image bytes, unchanged source bytes, current output SHA, native save/reopen receipt and same preparation replay ID. Owned Excel absence is checked after every job. Core product-host tests15/15 and Desktop build pass0; scoped lint/diff checks are recorded separately. Standards and Spec reviews report0hard/material findings. This qualifies this current Windows Excel fixture, not every workbook, macro format, Word/PowerPoint/CAD route, installed app or actual ChatGPT caller.
+
+### Follow-up
+Image continues broader C4 provider/object qualification under issue10. Retain prior RED archives and receipts; do not turn the later GREEN into a claim that old uncertain jobs were safely replayed. The transient E2E ready-timeout/EBUSY/Git-budget investigations remain separate and unresolved.
