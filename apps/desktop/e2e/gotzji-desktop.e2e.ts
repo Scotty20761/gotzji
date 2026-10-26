@@ -20,6 +20,7 @@ import { assertChromeRootsPreserved, independentChromeRoots, ownedChromeProcesse
 import { readProductConfiguration, testOnlyProductSecretProtector } from '../../../packages/execution-core/src/product-host.js';
 import { startGotzjiOwnedBrowser, type GotzjiOwnedBrowserDriver } from '../../../packages/capabilities/src/gotzji-browser-provider-session.js';
 import { ownedRootRemovalEvidence } from './owned-fixture-cleanup.js';
+import { proveOfficeProcessesAbsent, readOfficePackage } from './native-office-fixture.js';
 
 const desktopRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const mainEntry = path.join(desktopRoot, 'dist', 'main', 'main.js');
@@ -1368,6 +1369,77 @@ test.describe('actual Windows Excel qualification', () => {
   });
 });
 
+test.describe('actual Windows document qualification', () => {
+  test.skip(process.platform !== 'win32' || process.env.GOTZJI_NATIVE_OFFICE_QUALIFICATION !== '1', 'Explicit owned Word/PowerPoint qualification, separate from renderer CI');
+  for (const provider of [
+    { id: 'word', process: 'WINWORD', executable: 'winword.exe', progId: 'Word.Application', extension: 'docx', xml: 'word/document.xml', media: 'word/media/', selection: { paragraph: 1 } },
+    { id: 'powerpoint', process: 'POWERPNT', executable: 'powerpnt.exe', progId: 'PowerPoint.Application', extension: 'pptx', xml: 'ppt/slides/slide1.xml', media: 'ppt/media/', selection: { slide: 1, shape: 'SelectedText' } },
+  ] as const) test(`gotzji ${provider.id} reads and edits an owned copy with source, media and unrelated text preserved`, async ({ gotzji }, testInfo) => {
+    test.setTimeout(120000);
+    const { page, dataRoot } = gotzji;
+    const powershell = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+    const preflight = await promisify(execFile)(powershell, ['-NoProfile', '-NonInteractive', '-Command', `
+      $ErrorActionPreference='Stop'
+      [ordered]@{registered=(Test-Path -LiteralPath 'Registry::HKEY_CLASSES_ROOT\\${provider.progId}');existing=@(Get-CimInstance Win32_Process -Filter "Name='${provider.executable}'" | ForEach-Object {$_.ProcessId})} | ConvertTo-Json -Compress
+    `], { windowsHide: true, timeout: 15000 });
+    const prerequisites = JSON.parse(preflight.stdout) as { registered: boolean; existing: number[] };
+    expect(prerequisites.registered, `${provider.id} registration is required; preflight creates no COM object`).toBe(true);
+    expect(prerequisites.existing, 'Preserve every existing owner Office session').toEqual([]);
+    const root = await gotzji.temporaryProject('gotzji-files-panel-e2e-');
+    const filename = `source.${provider.extension}`; const outputName = `changed.${provider.extension}`; const projectId = `native-${provider.id}`;
+    const original = await readFile(path.join(desktopRoot, 'e2e', 'fixtures', 'native-office', filename));
+    await writeFile(path.join(root, filename), original);
+    const sourceSha256 = createHash('sha256').update(original).digest('hex');
+    const before = await readOfficePackage(powershell, path.join(root, filename), provider.xml, provider.media);
+    expect(before.xml).toContain('SELECTED_BEFORE'); expect(before.xml).toContain('UNRELATED_KEEP'); expect(before.media).toHaveLength(1);
+    const jobs: string[] = [];
+    gotzji.beforeClose(async () => {
+      for (const jobId of jobs) {
+        const status = await page.evaluate(async jobId => Reflect.get(window, 'ownedTestRequest')({ method: 'status', input: { jobId } }), jobId);
+        const nativeEnvelope = JSON.parse(await readFile(path.join(dataRoot, 'runtime', 'effects', jobId, 'native-operation.json'), 'utf8')) as { body: string };
+        const native = JSON.parse(nativeEnvelope.body) as Record<string, unknown>;
+        await writeFile(path.join(desktopRoot, '..', '..', '.local-artifacts', `c4-${provider.id}-${jobId}.json`), JSON.stringify({ jobId, status, state: native.state, outcome: native.outcome, code: native.code, field: native.field, stopEvidence: native.stopEvidence, effectEvidence: native.effectEvidence }, null, 2));
+      }
+      for (const [name, label] of [[filename, 'source'], [outputName, 'output']] as const) {
+        try { await writeFile(path.join(desktopRoot, '..', '..', '.local-artifacts', `c4-${provider.id}-${jobs.at(-1) ?? 'pre-admission'}-${label}.${provider.extension}`), await readFile(path.join(root, name))); }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+      }
+      await proveOfficeProcessesAbsent(dataRoot, jobs, provider.executable);
+    });
+    await page.evaluate(async input => window.gotzji.request({ method: 'registerProject', input }), { projectId, displayName: `Native ${provider.id} fixture`, rootPath: root });
+    const results: unknown[] = [];
+    for (const write of [false, true]) {
+      const operation = provider.id === 'word' ? `word.paragraph.${write ? 'write' : 'read'}` : `powerpoint.shape.${write ? 'write' : 'read'}`;
+      const preparation = await page.evaluate(async input => Reflect.get(window, 'ownedTestRequest')({ method: 'prepareOperation', input }),
+        { requestId: `${provider.id}-${write ? 'write' : 'read'}`, projectId, operation, path: filename, expectedSha256: sourceSha256, ...provider.selection, ...(write ? { text: 'SELECTED_AFTER', outputPath: outputName } : {}) });
+      const admitted = await page.evaluate(async preparationId => Reflect.get(window, 'ownedTestRequest')({ method: 'submit', input: { preparationId } }), preparation.preparationId);
+      jobs.push(admitted.jobId);
+      let state = 'queued';
+      await expect.poll(async () => { state = await page.evaluate(async jobId => (await Reflect.get(window, 'ownedTestRequest')({ method: 'status', input: { jobId } })).status, admitted.jobId); return state; }, { timeout: 45000 }).not.toMatch(/^(queued|running)$/u);
+      expect(state).toBe('completed');
+      const result = await page.evaluate(async jobId => Reflect.get(window, 'ownedTestRequest')({ method: 'result', input: { jobId } }), admitted.jobId);
+      expect(result).toMatchObject({ operation, projectId, output: { jobId: admitted.jobId, operation, state: 'completed', nativeReceipt: { provider: provider.id, verified: true, originalPreserved: true, unrelatedPreserved: true, savedAndReopened: write, sourceSha256 } } });
+      expect(String(result.output.nativeReceipt.after.selected.text).trim()).toBe(write ? 'SELECTED_AFTER' : 'SELECTED_BEFORE');
+      expect(await readFile(path.join(root, filename))).toEqual(original);
+      await proveOfficeProcessesAbsent(dataRoot, jobs, provider.executable);
+      expect((await page.evaluate(async preparationId => Reflect.get(window, 'ownedTestRequest')({ method: 'submit', input: { preparationId } }), preparation.preparationId)).jobId).toBe(admitted.jobId);
+      results.push(result);
+      await page.getByRole('button', { name: 'ประวัติงาน', exact: true }).click();
+      await page.getByLabel('รหัสงาน', { exact: true }).fill(admitted.jobId);
+      await page.getByRole('button', { name: 'ดูผลลัพธ์', exact: true }).click();
+      const details = page.getByRole('region', { name: 'รายละเอียดผลลัพธ์', exact: true });
+      await details.getByText('รายละเอียดการตรวจยืนยัน', { exact: true }).click();
+      await expect(details.locator('pre')).toContainText(write ? 'SELECTED_AFTER' : 'SELECTED_BEFORE');
+    }
+    const after = await readOfficePackage(powershell, path.join(root, outputName), provider.xml, provider.media);
+    expect(after.xml).toContain('SELECTED_AFTER'); expect(after.xml).toContain('UNRELATED_KEEP'); expect(after.media).toEqual(before.media);
+    if (provider.id === 'word') expect(after.xml).toContain('TABLE_KEEP');
+    const outputSha256 = createHash('sha256').update(await readFile(path.join(root, outputName))).digest('hex');
+    expect(results[1]).toMatchObject({ output: { nativeReceipt: { outputSha256 } } });
+    expect(await page.evaluate(() => window.gotzji.request({ method: 'listJobs', input: {} }))).toHaveLength(2);
+    await testInfo.attach(`actual-${provider.id}-receipts`, { body: JSON.stringify(results, null, 2), contentType: 'application/json' });
+  });
+});
 test.describe('actual Windows Chrome qualification', () => {
   test.skip(process.platform !== 'win32' || process.env.GOTZJI_NATIVE_BROWSER_QUALIFICATION !== '1', 'Explicit owned Chrome/network qualification; renderer CI is separate evidence');
   test('gotzji browser native read preserves independent Chrome and closes its own profiles', async ({ gotzji }, testInfo) => {

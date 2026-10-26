@@ -10,6 +10,7 @@ $script:ownedPid = 0
 $script:stage = 'validate'
 $application = $null
 $document = $null
+$identityDocument = $null
 $startupBlankNames=@()
 $provider = ([string]$request.operation).Split('.')[0]
 $providerMap = @{
@@ -204,15 +205,28 @@ public static class GotzjiNativePid { [DllImport("user32.dll")] public static ex
 '@ | Out-Null
   $script:stage='start'
   $application=New-Object -ComObject $spec.progId
-  $script:ownedPid=[int][GotzjiNativePid]::For([long]$application.Hwnd)
+  if ($provider -eq 'word') {
+    # Word exposes Hwnd on a document Window, not on Application.
+    # Obtain identity from our hidden blank document before opening the project file.
+    $application.Visible=$false; $application.DisplayAlerts=0; $application.AutomationSecurity=3
+    if ($application.Documents.Count -ne 0) { Fail 'NATIVE_SESSION_IN_USE' }
+    $identityDocument=$application.Documents.Add([Type]::Missing,$false,0,$false)
+    if ($identityDocument.Windows.Count -ne 1) { Fail 'NATIVE_SESSION_IDENTITY_UNVERIFIED' }
+    $windowHandle=[long]$identityDocument.Windows.Item(1).Hwnd
+  } else { $windowHandle=[long]$application.Hwnd }
+  $script:ownedPid=[int][GotzjiNativePid]::For($windowHandle)
   $ownedProcess=Get-Process -Id $script:ownedPid -ErrorAction Stop
   if ($script:ownedPid -lt 1 -or $ownedProcess.ProcessName -ne $spec.process -or $existingProviderPids -contains $script:ownedPid) { $script:ownedPid=0; Fail 'NATIVE_SESSION_IDENTITY_UNVERIFIED' }
   $ownedBirth=$ownedProcess.StartTime.ToUniversalTime().Ticks.ToString([Globalization.CultureInfo]::InvariantCulture)
   $ownedExecutable=[IO.Path]::GetFullPath([string]$ownedProcess.Path)
   Write-ProcessIdentity $script:ownedPid $ownedBirth $ownedExecutable 'office'
+  if ($null -ne $identityDocument) {
+    $identityDocument.Close($false); Release-Com $identityDocument; $identityDocument=$null
+    if ($application.Documents.Count -ne 0) { Fail 'NATIVE_SESSION_IN_USE' }
+  }
   $version=[string]$application.Version
   if ($provider -eq 'excel') { $application.Visible=$false; $application.DisplayAlerts=$false; $application.AutomationSecurity=3; if ($application.Workbooks.Count -ne 0) { Fail 'NATIVE_SESSION_IN_USE' }; $document=$application.Workbooks.Open($source,0,$true); if ($request.operation -eq 'excel.sheets.inspect') { if (-not $document.ReadOnly) { Fail 'NATIVE_READ_ONLY_REQUIRED' }; $before=Excel-SheetsSnapshot $document } else { $before=Excel-Snapshot $document ([string]$request.sheet) ([string]$request.range) } }
-  elseif ($provider -eq 'word') { $application.Visible=$false; $application.DisplayAlerts=0; $application.AutomationSecurity=3; if ($application.Documents.Count -ne 0) { Fail 'NATIVE_SESSION_IN_USE' }; $document=$application.Documents.Open($source,$false,$true); $before=Word-Snapshot $document ([int]$request.paragraph) }
+  elseif ($provider -eq 'word') { $application.Visible=$false; $application.DisplayAlerts=0; $application.AutomationSecurity=3; if ($application.Documents.Count -ne 0) { Fail 'NATIVE_SESSION_IN_USE' }; $document=$application.Documents.Open($source,$false,$true); if ($document.Windows.Count -ne 1 -or [int][GotzjiNativePid]::For([long]$document.Windows.Item(1).Hwnd) -ne $script:ownedPid) { Fail 'NATIVE_SESSION_IDENTITY_UNVERIFIED' }; $before=Word-Snapshot $document ([int]$request.paragraph) }
   elseif ($provider -eq 'powerpoint') { $application.AutomationSecurity=3; if ($application.Presentations.Count -ne 0) { Fail 'NATIVE_SESSION_IN_USE' }; $document=$application.Presentations.Open($source,$true,$false,$false); $before=PowerPoint-Snapshot $document ([int]$request.slide) ([string]$request.shape) }
   else { $application.Visible=$false; foreach ($startupDocument in $application.Documents) { if ($startupDocument.ModelSpace.Count -eq 0 -and $startupDocument.PaperSpace.Count -eq 0 -and $startupDocument.Saved) { $startupBlankNames += [string]$startupDocument.Name } }; $document=$application.Documents.Open($source,$true); $before=Cad-Snapshot $document ([string]$request.handle) }
   $after=$before
@@ -258,6 +272,7 @@ public static class GotzjiNativePid { [DllImport("user32.dll")] public static ex
   [Console]::Write((As-Json ([ordered]@{ ok=$false; error=[ordered]@{ code=$code; field=$script:stage; outcome=if ($script:effectStarted -or ($null -ne $application -and $script:ownedPid -eq 0)) { 'unknown' } else { 'none' } } })))
 } finally {
   $cleanup=[ordered]@{ schemaVersion=1; jobId=[string]$processEvidence.jobId; pid=$script:ownedPid; closed=$false; closeError=$false; remaining=-1; quitRequested=$false; quitError=$false }
+  if ($null -ne $identityDocument) { try { $identityDocument.Close($false) } catch { $cleanup.closeError=$true }; Release-Com $identityDocument; $identityDocument=$null }
   if ($null -ne $document) { try { if ($provider -eq 'powerpoint') { $document.Close() } else { $document.Close($false) }; $cleanup.closed=$true } catch { $cleanup.closeError=$true }; Release-Com $document }
   if ($null -ne $application) {
     if ($provider -eq 'cad' -and $script:ownedPid -gt 0) { foreach ($blankDocument in @($application.Documents)) { try { if ($startupBlankNames -contains [string]$blankDocument.Name -and $blankDocument.ModelSpace.Count -eq 0 -and $blankDocument.PaperSpace.Count -eq 0 -and $blankDocument.Saved) { $blankDocument.Close($false) } } catch {} } }
