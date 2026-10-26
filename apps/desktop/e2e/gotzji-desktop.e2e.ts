@@ -1185,6 +1185,75 @@ test('gotzji whole-app browser prompts survive navigation without creating model
   expect(await page.evaluate(async () => window.gotzji.request({ method: 'listJobs', input: {} }))).toEqual([]);
 });
 
+test('gotzji Doctor reads the canonical report and opens the same completed job without new work', async ({ gotzji }) => {
+  const { page } = gotzji;
+  await page.getByRole('navigation').getByRole('button', { name: 'ตรวจระบบ', exact: true }).click();
+  const doctor = page.getByRole('region', { name: 'ข้อมูลตรวจระบบ', exact: true });
+  await expect(doctor.getByRole('tab')).toHaveText(['ภาพรวม', 'การเรียกเครื่องมือ', 'ผลงาน', 'ทรัพยากร']);
+  await expect(doctor.getByText('อ่านข้อมูลล่าสุดแล้ว', { exact: true })).toBeVisible();
+  await doctor.getByRole('tab', { name: 'ภาพรวม', exact: true }).focus();
+  await page.keyboard.press('End');
+  await expect(doctor.getByRole('tab', { name: 'ทรัพยากร', exact: true })).toBeFocused();
+  await expect(doctor.getByText('ไม่มีงานถือทรัพยากรในข้อมูลที่อ่านได้', { exact: true })).toBeVisible();
+  await doctor.getByRole('tab', { name: 'ผลงาน', exact: true }).click();
+  await expect(doctor.getByText('ยังไม่มีงานที่เสร็จในข้อมูลที่อ่านได้', { exact: true })).toBeVisible();
+  expect(await page.evaluate(() => window.gotzji.request({ method: 'listJobs', input: {} }))).toEqual([]);
+  const root = await gotzji.temporaryProject('gotzji-files-panel-e2e-');
+  await writeFile(path.join(root, 'proof.txt'), 'Doctor retained result');
+  const job = await page.evaluate(async (rootPath) => {
+    const request = Reflect.get(window, 'ownedTestRequest');
+    await request({ method: 'registerProject', input: { projectId: 'doctor-proof', displayName: 'โครงการตรวจระบบ', rootPath } });
+    const prepared = await request({ method: 'prepareOperation', input: { requestId: 'doctor-read-once', projectId: 'doctor-proof', operation: 'file.read', path: 'proof.txt' } });
+    return request({ method: 'submit', input: { preparationId: prepared.preparationId } }) as Promise<{ jobId: string }>;
+  }, root);
+  await expect.poll(() => page.evaluate(async jobId => (await window.gotzji.request({ method: 'status', input: { jobId } }) as { status: string }).status, job.jobId)).toBe('completed');
+  await doctor.getByRole('button', { name: 'อ่านข้อมูลตรวจระบบล่าสุด', exact: true }).click();
+  await expect(doctor.getByRole('button', { name: `เปิดงาน ${job.jobId}`, exact: true })).toBeVisible();
+  await page.screenshot({ path: path.join(desktopRoot, '..', '..', '.local-artifacts', 'windows-ui-doctor-results.png') });
+  await doctor.getByRole('button', { name: `เปิดงาน ${job.jobId}`, exact: true }).click();
+  await expect(page.getByRole('heading', { name: `งาน ${job.jobId}`, exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'ดูผลลัพธ์', exact: true }).click();
+  await expect(page.getByText('Doctor retained result', { exact: true })).toBeVisible();
+  const jobs = await page.evaluate(() => window.gotzji.request({ method: 'listJobs', input: {} }));
+  expect(jobs).toMatchObject([{ jobId: job.jobId, status: 'completed' }]);
+  expect(jobs).toHaveLength(1);
+});
+
+test('gotzji Doctor discards late reports and explains denied reads and occupied resources', async ({ gotzji }) => {
+  const { page } = gotzji; const fixturePath = gotzji.rendererFixturePath();
+  await build({ stdin: { resolveDir: path.join(desktopRoot, 'src', 'renderer'), sourcefile: 'doctor-fixture.tsx', loader: 'tsx', contents: `
+    import { useState } from 'react'; import { createRoot } from 'react-dom/client';
+    import { GotzjiDoctorPanel } from './GotzjiDoctorPanel.tsx';
+    document.getElementById('root').hidden=true;
+    const root=document.createElement('div');root.id='doctor-proof';document.body.append(root);
+    const id='a'.repeat(64); const holder='b'.repeat(64); let reads=0; let oldReply; const calls=[];
+    const report={schemaVersion:1,generatedAt:'2026-10-27T00:00:00Z',jobs:[{jobId:id,status:'blocked',operation:'file.write',blockerCode:'RESOURCE_HELD'}],holders:[{jobId:holder,kind:'writer',resource:'folder:123456789abc'}]};
+    const request=async(method,input)=>{calls.push({method,input});if(method!=='supportReport'||Object.keys(input).length)throw new Error('Unexpected authority');reads++;if(reads===1)return new Promise(resolve=>{oldReply=resolve});if(reads===2)throw new Error('PRIVATE-FAILURE-DETAIL');return report;};
+    function Proof(){const [disabled,setDisabled]=useState(false);return <><button onClick={()=>setDisabled(current=>!current)}>Toggle availability</button><button onClick={()=>oldReply({...report,jobs:[{jobId:id,status:'completed',operation:'file.read'}]})}>Finish old report</button><GotzjiDoctorPanel disabled={disabled} request={request} onJob={jobId=>root.dataset.job=jobId}/></>}
+    Reflect.set(root,'calls',calls);createRoot(root).render(<Proof/>);
+  ` }, bundle: true, format: 'iife', platform: 'browser', jsx: 'automatic', outfile: fixturePath, define: { 'process.env.NODE_ENV': '"production"' } });
+  await page.addScriptTag({ url: pathToFileURL(fixturePath).href });
+  const proof = page.locator('#doctor-proof'); const panel = proof.getByRole('region', { name: 'ข้อมูลตรวจระบบ', exact: true });
+  await expect(panel.getByText('กำลังอ่านข้อมูลตรวจระบบ…', { exact: true })).toBeVisible();
+  await proof.getByRole('button', { name: 'Toggle availability', exact: true }).click();
+  await proof.getByRole('button', { name: 'Finish old report', exact: true }).click();
+  await expect(panel.getByText('รอระบบในเครื่องพร้อมก่อนอ่านข้อมูล', { exact: true })).toBeVisible();
+  await expect(panel.getByText('อ่านข้อมูลล่าสุดแล้ว', { exact: true })).toHaveCount(0);
+  await proof.getByRole('button', { name: 'Toggle availability', exact: true }).click();
+  await expect(panel.getByRole('alert')).toContainText('ยังอ่านข้อมูลตรวจระบบไม่ได้');
+  await expect(proof).not.toContainText('PRIVATE-FAILURE-DETAIL');
+  await panel.getByRole('button', { name: 'อ่านข้อมูลตรวจระบบล่าสุด', exact: true }).click();
+  await expect(panel.getByText('รออีกงานปล่อยทรัพยากร เปิดงานที่เกี่ยวข้องเพื่อตรวจสถานะ', { exact: true })).toBeVisible();
+  await panel.getByRole('tab', { name: 'ผลงาน', exact: true }).click();
+  await expect(panel.getByText('ยังไม่มีงานที่เสร็จในข้อมูลที่อ่านได้', { exact: true })).toBeVisible();
+  await panel.getByRole('tab', { name: 'ทรัพยากร', exact: true }).click();
+  await expect(panel.getByText('งานนี้ถือสิทธิ์เขียนโครงการ', { exact: true })).toBeVisible();
+  await panel.getByRole('button', { name: `เปิดงาน ${'b'.repeat(64)}`, exact: true }).click();
+  await expect(proof).toHaveAttribute('data-job', 'b'.repeat(64));
+  expect(await page.evaluate(() => Reflect.get(document.getElementById('doctor-proof')!, 'calls'))).toEqual(Array.from({ length: 3 }, () => ({ method: 'supportReport', input: {} })));
+  expect(await page.evaluate(() => window.gotzji.request({ method: 'listJobs', input: {} }))).toEqual([]);
+});
+
 test.describe('actual Windows Excel qualification', () => {
   test.skip(process.platform !== 'win32' || process.env.GOTZJI_NATIVE_EXCEL_QUALIFICATION !== '1', 'Explicit owned Excel qualification; synthetic and renderer checks are separate evidence');
   test('gotzji Excel worksheet discovery preserves the workbook, prepares a first cell and reads absolute/reversed ranges', async ({ gotzji }, testInfo) => {

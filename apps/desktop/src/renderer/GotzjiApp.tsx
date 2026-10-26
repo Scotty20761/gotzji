@@ -26,6 +26,7 @@ import { GotzjiProjectManager, type ManagedProject } from './GotzjiProjectManage
 import { GotzjiExcelSheetsResult, excelSheetsResult } from './GotzjiExcelSheetsResult.js';
 import { GotzjiExcelRangeResult, excelRangeResult } from './GotzjiExcelRangeResult.js';
 import { GotzjiOperationResult, operationResult, operationResultMessage } from './GotzjiOperationResult.js';
+import { GotzjiDoctorPanel } from './GotzjiDoctorPanel.js';
 
 type Row = Readonly<Record<string, unknown>>;
 interface JobResultView { readonly jobId: string; readonly value: unknown; readonly loading: boolean; readonly error: string | null; readonly pageIndex: number }
@@ -308,7 +309,7 @@ export function GotzjiApp({ requestPort }: { readonly requestPort?: (method: Got
       {page === 'settings' && <><GotzjiConnectionPanel disabled={host?.state !== 'ready'} /><GotzjiStartupPanel /></>}
       {page === 'git' && (projectId ? <GotzjiGitPanel key={projectId} projectId={projectId} disabled={busy || host?.state !== 'ready'} request={request} /> : <section><h3>เลือกโครงการก่อนดู Git</h3><button onClick={() => setPage('projects')}>เลือกโครงการ</button></section>)}
       {page === 'live' && <section><h3>บันทึกสดของงาน</h3><p>เลือกงานที่ต้องการอ่านบันทึก โดยไม่เริ่มงานซ้ำ</p><JobList jobs={jobs} disabled={busy} select={setJobId} />{jobId && <><h3>งาน {jobId}</h3><JobStatus value={selectedJob} /><button onClick={() => setPage('worklog')}>ดูสถานะและผลลัพธ์</button></>}</section>}
-      {page === 'doctor' && <><section><h3>ระบบควบคุมงาน</h3><p>{host?.state === 'ready' ? 'ระบบในเครื่องพร้อมทำงาน' : host?.state === 'control-only' ? 'ควบคุมงานเดิมได้ · รอตรวจความเข้ากันได้ของรุ่น' : 'ยังไม่พร้อม'}</p>{host?.errorCode && <p>{host.errorCode}</p>}<p>อัปเดตด้วยไฟล์รุ่นที่ตรวจแล้ว</p>
+      {page === 'doctor' && <><GotzjiDoctorPanel request={request} disabled={busy || !host || host.state === 'unavailable'} onJob={id => { setJobId(id); setPage('worklog'); }} /><section><h3>ระบบควบคุมงาน</h3><p>{host?.state === 'ready' ? 'ระบบในเครื่องพร้อมทำงาน' : host?.state === 'control-only' ? 'ควบคุมงานเดิมได้ · รอตรวจความเข้ากันได้ของรุ่น' : 'ยังไม่พร้อม'}</p>{host?.errorCode && <p>{host.errorCode}</p>}<p>อัปเดตด้วยไฟล์รุ่นที่ตรวจแล้ว</p>
         <h3>เครื่องมือและโปรแกรม</h3>{catalog.map((item) => <p key={`${item.name}:${item.projectId ?? ''}:${item.workflowId ?? ''}:${item.workflowVersion ?? ''}`}>{String(item.workflowId ?? item.name)}: {String(item.state)} {String(item.reason ?? '')}</p>)}</section><section><h3>รายงานช่วยเหลือ</h3><p>บันทึกเหตุผลของงานที่ล้มหรือค้าง ใครกำลังถือโครงการหรือทรัพยากรอะไร คิวงาน และสถานะของ CAD, Office และเบราว์เซอร์ ลงไฟล์ที่คุณเลือก รายงานมีชื่อโครงการตามที่คุณตั้ง แต่ไม่มีเนื้อหาไฟล์ path หรือ URL และไม่ถูกส่งไปที่ไหน</p><button disabled={busy || !host || host.state === 'unavailable'} onClick={() => void act(async () => { const saved = await window.gotzji.exportSupportReport(); setReportExport(saved.exported ? 'บันทึกรายงานแล้ว' : 'ยกเลิกการบันทึก'); })}>บันทึกรายงานช่วยเหลือ</button>{reportExport && <p>{reportExport}</p>}</section><GotzjiConnectionPanel disabled={host?.state !== 'ready'} /><GotzjiStartupPanel /></>}
       {jobId && <GotzjiJobLogs key={jobId} jobId={jobId} visible={page === 'live'} request={request} />}
     </main>

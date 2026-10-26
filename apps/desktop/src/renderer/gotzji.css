@@ -76,6 +76,8 @@
 .gotzji-workflow-review textarea { width:100%; box-sizing:border-box; }
 
 .gotzji-tabs { display:flex; gap:8px; border-bottom:1px solid #283440; padding-bottom:12px; }
+.gotzji-doctor-panel .gotzji-tabs { flex-wrap:wrap; }
+.gotzji-diagnostic-jobs { display:grid; gap:18px; padding-left:22px; overflow-wrap:anywhere; }
 .gotzji-tool-filters { display:grid; grid-template-columns:minmax(180px,2fr) repeat(2,minmax(140px,1fr)); gap:16px; }
 .gotzji-tool-table { overflow:auto; max-height:620px; }
 .gotzji-tool-table th { position:sticky; top:0; background:var(--gz-surface); }
