@@ -211,15 +211,18 @@ public static class GotzjiNativePid { [DllImport("user32.dll")] public static ex
     $application.Visible=$false; $application.DisplayAlerts=0; $application.AutomationSecurity=3
     if ($application.Documents.Count -ne 0) { Fail 'NATIVE_SESSION_IN_USE' }
     $identityDocument=$application.Documents.Add([Type]::Missing,$false,0,$false)
+    $script:stage='word-identity-window'
     if ($identityDocument.Windows.Count -ne 1) { Fail 'NATIVE_SESSION_IDENTITY_UNVERIFIED' }
     $windowHandle=[long]$identityDocument.Windows.Item(1).Hwnd
   } else { $windowHandle=[long]$application.Hwnd }
+  if ($provider -eq 'word') { $script:stage='word-identity-process' }
   $script:ownedPid=[int][GotzjiNativePid]::For($windowHandle)
   $ownedProcess=Get-Process -Id $script:ownedPid -ErrorAction Stop
   if ($script:ownedPid -lt 1 -or $ownedProcess.ProcessName -ne $spec.process -or $existingProviderPids -contains $script:ownedPid) { $script:ownedPid=0; Fail 'NATIVE_SESSION_IDENTITY_UNVERIFIED' }
   $ownedBirth=$ownedProcess.StartTime.ToUniversalTime().Ticks.ToString([Globalization.CultureInfo]::InvariantCulture)
   $ownedExecutable=[IO.Path]::GetFullPath([string]$ownedProcess.Path)
   Write-ProcessIdentity $script:ownedPid $ownedBirth $ownedExecutable 'office'
+  $script:stage='start'
   if ($null -ne $identityDocument) {
     $identityDocument.Close($false); Release-Com $identityDocument; $identityDocument=$null
     if ($application.Documents.Count -ne 0) { Fail 'NATIVE_SESSION_IN_USE' }

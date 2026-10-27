@@ -39,6 +39,54 @@ function fakeChild(): ChildProcessWithoutNullStreams & { kill: ReturnType<typeof
 }
 
 describe('gotzji native admission and verification', () => {
+  it.runIf(process.platform === 'win32')('reports the Word identity-window step when a blank document has no verifiable window', async () => {
+    const provider = await readFile(fileURLToPath(new URL('../../../apps/desktop/build/gotzji-native-office.ps1', import.meta.url)), 'utf8');
+    const start = provider.indexOf("  $script:stage='start'");
+    const end = provider.indexOf('  $script:ownedPid=[int][GotzjiNativePid]::For($windowHandle)', start);
+    expect(start).toBeGreaterThan(0); expect(end).toBeGreaterThan(start);
+    const block = Buffer.from(provider.slice(start, end)).toString('base64');
+    const script = `
+      $ErrorActionPreference='Stop'
+      $documents=[pscustomobject]@{Count=0}
+      $documents|Add-Member ScriptMethod Add { param($template,$newTemplate,$type,$visible) return [pscustomobject]@{Windows=[pscustomobject]@{Count=0}} }
+      $fake=[pscustomobject]@{Visible=$false;DisplayAlerts=0;AutomationSecurity=3;Documents=$documents}
+      function New-Object { param($ComObject) return $fake }
+      function Fail([string]$code) { throw $code }
+      $provider='word';$spec=[pscustomobject]@{progId='Word.Application'}
+      $body=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${block}'))
+      try { & ([scriptblock]::Create($body)); throw 'EXPECTED_FAILURE_MISSING' }
+      catch { [Console]::Write((ConvertTo-Json -Compress ([ordered]@{code=[string]$_.Exception.Message;field=$script:stage}))) }
+    `;
+    const executable = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+    const { stdout } = await promisify(execFile)(executable, ['-NoProfile', '-NonInteractive', '-Command', script], { windowsHide: true, timeout: 10000 });
+    expect(JSON.parse(stdout)).toEqual({ code: 'NATIVE_SESSION_IDENTITY_UNVERIFIED', field: 'word-identity-window' });
+  });
+  it.runIf(process.platform === 'win32')('reports the Word identity-process step when a window maps to the wrong process', async () => {
+    const provider = await readFile(fileURLToPath(new URL('../../../apps/desktop/build/gotzji-native-office.ps1', import.meta.url)), 'utf8');
+    const start = provider.indexOf("  $script:stage='start'");
+    const end = provider.indexOf('  $ownedBirth=', start);
+    expect(start).toBeGreaterThan(0); expect(end).toBeGreaterThan(start);
+    const block = Buffer.from(provider.slice(start, end)).toString('base64');
+    const script = `
+      $ErrorActionPreference='Stop'
+      Add-Type -TypeDefinition 'public static class GotzjiNativePid { public static int For(long hwnd) { return 777; } }'
+      $windows=[pscustomobject]@{Count=1}
+      $windows|Add-Member ScriptMethod Item { param($index) return [pscustomobject]@{Hwnd=5} }
+      $documents=[pscustomobject]@{Count=0;FixtureWindows=$windows}
+      $documents|Add-Member ScriptMethod Add { param($template,$newTemplate,$type,$visible) return [pscustomobject]@{Windows=$this.FixtureWindows} }
+      $fake=[pscustomobject]@{Visible=$false;DisplayAlerts=0;AutomationSecurity=3;Documents=$documents}
+      function New-Object { param($ComObject) return $fake }
+      function Get-Process { param($Id) return [pscustomobject]@{ProcessName='other'} }
+      function Fail([string]$code) { throw $code }
+      $provider='word';$spec=[pscustomobject]@{progId='Word.Application';process='WINWORD'};$existingProviderPids=@()
+      $body=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${block}'))
+      try { & ([scriptblock]::Create($body)); throw 'EXPECTED_FAILURE_MISSING' }
+      catch { [Console]::Write((ConvertTo-Json -Compress ([ordered]@{code=[string]$_.Exception.Message;field=$script:stage}))) }
+    `;
+    const executable = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+    const { stdout } = await promisify(execFile)(executable, ['-NoProfile', '-NonInteractive', '-Command', script], { windowsHide: true, timeout: 10000 });
+    expect(JSON.parse(stdout)).toEqual({ code: 'NATIVE_SESSION_IDENTITY_UNVERIFIED', field: 'word-identity-process' });
+  });
   it('verifies bounded Excel sheet metadata and refuses forged receipt shape without changing the workbook', async () => {
     const f = await fixture();
     const operation = { operation: 'excel.sheets.inspect', filePath: f.source, expectedSha256: nativeBytesDigest(Buffer.from('original')) };
