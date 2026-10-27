@@ -212,7 +212,12 @@ public static class GotzjiNativePid { [DllImport("user32.dll")] public static ex
     if ($application.Documents.Count -ne 0) { Fail 'NATIVE_SESSION_IN_USE' }
     $identityDocument=$application.Documents.Add([Type]::Missing,$false,0,$false)
     $script:stage='word-identity-window'
-    if ($identityDocument.Windows.Count -ne 1) { Fail 'NATIVE_SESSION_IDENTITY_UNVERIFIED' }
+    $identityWindowCount=$identityDocument.Windows.Count
+    if ($identityWindowCount -ne 1) {
+      if ($identityWindowCount -eq 0) { $script:stage='word-identity-window-zero' }
+      elseif ($identityWindowCount -gt 1) { $script:stage='word-identity-window-multiple' }
+      Fail 'NATIVE_SESSION_IDENTITY_UNVERIFIED'
+    }
     $windowHandle=[long]$identityDocument.Windows.Item(1).Hwnd
   } else { $windowHandle=[long]$application.Hwnd }
   if ($provider -eq 'word') { $script:stage='word-identity-process' }

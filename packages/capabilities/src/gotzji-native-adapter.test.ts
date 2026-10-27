@@ -39,7 +39,11 @@ function fakeChild(): ChildProcessWithoutNullStreams & { kill: ReturnType<typeof
 }
 
 describe('gotzji native admission and verification', () => {
-  it.runIf(process.platform === 'win32')('reports the Word identity-window step when a blank document has no verifiable window', async () => {
+  it.runIf(process.platform === 'win32').each([
+    ['0', 'word-identity-window-zero'],
+    ['2', 'word-identity-window-multiple'],
+    ['$null', 'word-identity-window'],
+  ])('reports Word identity-window count %s without claiming identity', async (windowCount, field) => {
     const provider = await readFile(fileURLToPath(new URL('../../../apps/desktop/build/gotzji-native-office.ps1', import.meta.url)), 'utf8');
     const start = provider.indexOf("  $script:stage='start'");
     const end = provider.indexOf('  $script:ownedPid=[int][GotzjiNativePid]::For($windowHandle)', start);
@@ -48,7 +52,7 @@ describe('gotzji native admission and verification', () => {
     const script = `
       $ErrorActionPreference='Stop'
       $documents=[pscustomobject]@{Count=0}
-      $documents|Add-Member ScriptMethod Add { param($template,$newTemplate,$type,$visible) return [pscustomobject]@{Windows=[pscustomobject]@{Count=0}} }
+      $documents|Add-Member ScriptMethod Add { param($template,$newTemplate,$type,$visible) return [pscustomobject]@{Windows=[pscustomobject]@{Count=${windowCount}}} }
       $fake=[pscustomobject]@{Visible=$false;DisplayAlerts=0;AutomationSecurity=3;Documents=$documents}
       function New-Object { param($ComObject) return $fake }
       function Fail([string]$code) { throw $code }
@@ -59,7 +63,19 @@ describe('gotzji native admission and verification', () => {
     `;
     const executable = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
     const { stdout } = await promisify(execFile)(executable, ['-NoProfile', '-NonInteractive', '-Command', script], { windowsHide: true, timeout: 10000 });
-    expect(JSON.parse(stdout)).toEqual({ code: 'NATIVE_SESSION_IDENTITY_UNVERIFIED', field: 'word-identity-window' });
+    expect(JSON.parse(stdout)).toEqual({ code: 'NATIVE_SESSION_IDENTITY_UNVERIFIED', field });
+  });
+  it.runIf(process.platform === 'win32').each(['word-identity-window-zero', 'word-identity-window-multiple'])('preserves %s and the unknown outcome through the provider runner', async (field) => {
+    const child = fakeChild();
+    const start = vi.fn(() => {
+      void Promise.resolve().then(() => {
+        child.stdout.write(JSON.stringify({ ok: false, error: { code: 'NATIVE_SESSION_IDENTITY_UNVERIFIED', field, outcome: 'unknown' } }));
+        child.emit('close', 0, null);
+      });
+      return child;
+    });
+    await expect(runGotzjiNativePowerShell('synthetic.ps1', {}, undefined, undefined, async () => undefined, start))
+      .rejects.toMatchObject({ code: 'NATIVE_SESSION_IDENTITY_UNVERIFIED', field, outcome: 'unknown' });
   });
   it.runIf(process.platform === 'win32')('reports the Word identity-process step when a window maps to the wrong process', async () => {
     const provider = await readFile(fileURLToPath(new URL('../../../apps/desktop/build/gotzji-native-office.ps1', import.meta.url)), 'utf8');

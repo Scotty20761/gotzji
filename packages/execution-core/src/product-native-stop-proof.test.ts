@@ -138,6 +138,14 @@ describe('native process stop evidence', () => {
     await expect(executePreparedNativeOperation(f.config, undefined, { verifyLiveAuthority: () => true })).rejects.toMatchObject({ code: 'SYNTHETIC_DISPATCH_FAILURE', outcome: 'unknown' });
     expect(readPreparedNativeState(f.config)).toMatchObject({ state: 'uncertain', outcome: 'unknown', dispatch: 'dispatched', stopEvidence: { observed: 'unknown', reason: 'missing' } });
   });
+  it.runIf(process.platform === 'win32').each(['word-identity-window-zero', 'word-identity-window-multiple'])('retains %s in the signed state without treating a missing identity as stopped', async (field) => {
+    const provider = `$null=[Console]::In.ReadToEnd();[Console]::Write('{"ok":false,"error":{"code":"NATIVE_SESSION_IDENTITY_UNVERIFIED","field":"${field}","outcome":"unknown"}}')`;
+    const f = await fixture('claude', provider);
+    await expect(executePreparedNativeOperation(f.config, undefined, { verifyLiveAuthority: () => true })).rejects.toMatchObject({ code: 'NATIVE_SESSION_IDENTITY_UNVERIFIED', outcome: 'unknown' });
+    expect(readPreparedNativeState(f.config)).toMatchObject({ state: 'uncertain', outcome: 'unknown', field, stopEvidence: { observed: 'unknown', reason: 'missing' } });
+    await reconcilePreparedNativeStop(f.config);
+    expect(readPreparedNativeState(f.config)).toMatchObject({ state: 'uncertain', outcome: 'unknown', field, stopEvidence: { observed: 'unknown', reason: 'missing' } });
+  });
   it.runIf(process.platform === 'win32')('signs no-launch only for a first helper attempt confirmed absent by the runner', async () => {
     const f = await fixture(); const originalRoot = process.env.SystemRoot;
     try {
