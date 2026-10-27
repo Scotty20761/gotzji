@@ -8,6 +8,25 @@ import { libraryCatalog } from './product-library.js';
 import { startProductTunnelBridge } from './product-connection.js';
 
 describe('governed product HTTP and MCP boundary', () => {
+  it('allows a selected native output only through authenticated app RPC without a caller path or MCP alias', async () => {
+    const calls: { method: string; input: Record<string, unknown>; surface: string }[] = [];
+    const host = await startProductHttp({ token: 'owner', mcpPathSecret: 'tunnel', rpc: async (method, input, surface) => { calls.push({ method, input, surface }); return { jobId: input.jobId }; } });
+    const app = async (input: Record<string, unknown>, authorization = 'Bearer owner'): Promise<{ ok: boolean }> => (await (await fetch(`http://127.0.0.1:${host.port}/rpc`, {
+      method: 'POST', headers: { Authorization: authorization }, body: JSON.stringify({ method: 'readNativeOutput', input }),
+    })).json()) as { ok: boolean };
+    const mcp = async (name: string): Promise<{ result: { isError?: boolean; tools?: { name: string }[] } }> => (await (await fetch(`http://127.0.0.1:${host.port}/mcp/tunnel`, {
+      method: 'POST', body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: name === 'list' ? 'tools/list' : 'tools/call', ...(name === 'list' ? {} : { params: { name, arguments: { jobId: 'a'.repeat(64) } } }) }),
+    })).json()) as { result: { isError?: boolean; tools?: { name: string }[] } };
+    try {
+      expect((await app({ jobId: 'a'.repeat(64) })).ok).toBe(true);
+      expect((await app({ jobId: 'a'.repeat(64), path: 'other.xlsx' })).ok).toBe(false);
+      expect((await app({ jobId: '../bad' })).ok).toBe(false);
+      expect((await app({ jobId: 'a'.repeat(64) }, 'Bearer foreign')).ok).not.toBe(true);
+      expect((await mcp('list')).result.tools!.map(tool => tool.name)).not.toContain('gotzji_read_native_output');
+      expect((await mcp('gotzji_read_native_output')).result.isError).toBe(true);
+      expect(calls).toEqual([{ method: 'readNativeOutput', input: { jobId: 'a'.repeat(64) }, surface: 'app' }]);
+    } finally { await host.close(); }
+  });
   it('keeps archive and restore on authenticated app RPC with strict schemas and no MCP alias', async () => {
     const calls: { method: string; input: Record<string, unknown>; surface: string }[] = [];
     const host = await startProductHttp({ token: 'owner', mcpPathSecret: 'tunnel', rpc: async (method, input, surface) => { calls.push({ method, input, surface }); return []; } });

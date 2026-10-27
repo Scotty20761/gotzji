@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { link, mkdir, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { link, mkdir, readFile, readdir, rename, rm, symlink, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import fs from 'node:fs';
@@ -8,6 +9,8 @@ import { ExecutionCore } from './core.js';
 import { ensureProductControlDocuments } from './product-control-policy.js';
 import { canonicalTemporaryDirectory } from './test-fixtures.js';
 import { productBrokerCall } from './product-broker.mjs';
+import { readVerifiedProjectArtifact } from './product-file-reads.js';
+import { registeredProject } from './product-projects.js';
 
 const fixtures: { root: string; core: ExecutionCore; credential?: string }[] = [];
 async function fixture(protectNested = false, driver?: (root: string) => Promise<string>): Promise<{ root: string; core: ExecutionCore; credential: string; projectRoot: string }> {
@@ -35,6 +38,29 @@ afterEach(async () => {
 });
 
 describe('direct project file reads', () => {
+  it('rejects a native output path replaced during an open-handle read even when the replacement has identical bytes', async () => {
+    const root = await canonicalTemporaryDirectory('gotzji-native-snapshot-');
+    try {
+      const target = path.join(root, 'output.bin'); const bytes = Buffer.from('verified'); await writeFile(target, bytes);
+      const project = registeredProject('owner', { projectId: 'project', displayName: 'Project', rootPath: root });
+      const original = fs.promises.open.bind(fs.promises); let swapped = false;
+      vi.spyOn(fs.promises, 'open').mockImplementation(async (filename, flags, mode) => {
+        const file = await original(filename, flags, mode);
+        if (String(filename) === target) {
+          const read = file.read.bind(file);
+          file.read = (async (...args: Parameters<typeof file.read>) => {
+            const result = await read(...args);
+            if (!swapped) { swapped = true; await rename(target, `${target}.old`); await writeFile(target, bytes); }
+            return result;
+          }) as typeof file.read;
+        }
+        return file;
+      });
+      syncBuiltinESMExports();
+      await expect(readVerifiedProjectArtifact(project, 'output.bin', [], createHash('sha256').update(bytes).digest('hex'))).rejects.toMatchObject({ code: 'FILE_VERSION_CONFLICT' });
+      expect(swapped).toBe(true);
+    } finally { vi.restoreAllMocks(); syncBuiltinESMExports(); await rm(root, { recursive: true, force: true }); }
+  });
   it('pins legacy preparation to its opened file when a private hard link is swapped after the path check', async () => {
     const f = await fixture(true);
     const target = path.join(f.projectRoot, 'note.txt'); const secret = path.join(f.projectRoot, 'internal', 'private.txt');

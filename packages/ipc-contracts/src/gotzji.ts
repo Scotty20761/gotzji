@@ -9,6 +9,7 @@ export const gotzjiIpcChannels = {
   setStartup: 'gotzji:set-startup',
   exportSupportReport: 'gotzji:export-support-report',
   exportJobLogs: 'gotzji:export-job-logs',
+  exportNativeOutput: 'gotzji:export-native-output',
 } as const;
 
 export const gotzjiMethods = [
@@ -50,4 +51,6 @@ export interface GotzjiApi {
   exportSupportReport(): Promise<{ readonly exported: boolean; readonly cancelled: boolean }>;
   /** Saves up to the first 64 KiB of one canonical job's retained logs to an owner-selected file. */
   exportJobLogs(jobId: string): Promise<{ readonly exported: boolean; readonly cancelled: boolean }>;
+  /** Saves a verified native output snapshot from the selected job, without accepting a source path. */
+  exportNativeOutput(jobId: string): Promise<{ readonly exported: boolean; readonly cancelled: boolean }>;
 }

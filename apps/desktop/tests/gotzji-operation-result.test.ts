@@ -43,6 +43,20 @@ describe('same-job operation result presentation', () => {
   it('accepts a successful command with no output and no optional truncation field', () => {
     expect(operationResult(envelope({ operation: 'command.run', jobId: context.jobId, state: 'completed', commandId: 'quiet-check', exitCode: 0, elapsedMs: 0, outputBytes: 0 }), context)).toMatchObject({ kind: 'command', outputBytes: 0, truncated: false });
   });
+  it('offers a verified native copy for the selected job while refusing foreign or unverified output', () => {
+    const output = { operation: 'excel.range.write', jobId: context.jobId, projectId: context.projectId, state: 'completed', outputPath: 'สำเนา.xlsx', nativeReceipt: { verified: true, originalPreserved: true, unrelatedPreserved: true, savedAndReopened: true, outputSha256: sha256 } };
+    const value = operationResult(envelope(output), context);
+    expect(value).toMatchObject({ kind: 'native-write', path: 'สำเนา.xlsx', sha256 });
+    const html = renderToStaticMarkup(createElement(GotzjiOperationResult, { value: value!, onLogs: () => undefined, exportNative: async () => ({ exported: false, cancelled: true }) }));
+    expect(html).toContain('บันทึกสำเนาผลงาน'); expect(html).toContain('16 MiB');
+    for (const reason of ['PROJECT_ARCHIVED', 'ARTIFACT_TOO_LARGE']) {
+      const historical = operationResult({ ...envelope(output), nativeOutputCurrent: false, nativeOutputReason: reason }, context);
+      const historyHtml = renderToStaticMarkup(createElement(GotzjiOperationResult, { value: historical!, onLogs: () => undefined, exportNative: async () => ({ exported: false, cancelled: true }) }));
+      expect(historyHtml).toContain('หลักฐานเดิม'); expect(historyHtml).toContain('ยังไม่ได้ตรวจไฟล์ปัจจุบัน');
+      expect(historyHtml).not.toContain('บันทึกสำเนาผลงาน');
+    }
+    for (const item of [{ ...output, jobId: 'foreign' }, { ...output, projectId: 'foreign' }, { ...output, nativeReceipt: { ...output.nativeReceipt, verified: false } }, { ...output, nativeReceipt: { ...output.nativeReceipt, outputSha256: 'bad' } }]) expect(operationResult(envelope(item), context)).toBeUndefined();
+  });
   it('refuses foreign, incomplete or failed evidence instead of presenting a success summary', () => {
     const file = { operation: 'file.read', state: 'completed', projectId: 'project-a', path: 'data.txt', sha256, content: 'data' };
     for (const value of [null, {}, { ...envelope(file), verifier: 'unverified' }, { ...envelope(file), projectId: 'foreign' },

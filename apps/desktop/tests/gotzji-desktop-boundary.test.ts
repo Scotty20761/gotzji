@@ -1,4 +1,5 @@
 import http from 'node:http';
+import { createHash } from 'node:crypto';
 import { GIT_SNAPSHOT_BUDGET_MS, GIT_COMMAND_BUDGET_MS } from '../../../packages/execution-core/src/git-read-policy.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { gotzjiIpcChannels, ipcChannels } from '@lnwjud/ipc-contracts';
@@ -13,6 +14,60 @@ afterEach(async () => {
 });
 
 describe('gotzji desktop governed boundary', () => {
+  it('accepts a native snapshot at the 16 MiB transport boundary', async () => {
+    const jobId = 'a'.repeat(64); const bytes = Buffer.alloc(16 * 1024 * 1024, 0xa5);
+    const expected = { jobId, filename: 'output.xlsx', sha256: createHash('sha256').update(bytes).digest('hex'), base64: bytes.toString('base64') };
+    const transport: typeof fetch = async () => new Response(JSON.stringify({ ok: true, value: expected }));
+    const client = new GotzjiHostClient(async () => ({ endpoint: 'http://127.0.0.1:1/rpc', token: 'secret', ownerId: 'owner' }), transport);
+    expect(await client.readNativeOutput(jobId)).toEqual(expected);
+  });
+  it('stops an oversized native output response before consuming the entire stream', async () => {
+    let cancelled = false;
+    const chunk = new Uint8Array(1024 * 1024);
+    let sent = 0;
+    const transport: typeof fetch = async () => new Response(new ReadableStream<Uint8Array>({
+      pull(controller): void { if (sent++ < 32) controller.enqueue(chunk); else controller.close(); },
+      cancel(): void { cancelled = true; },
+    }));
+    const client = new GotzjiHostClient(async () => ({ endpoint: 'http://127.0.0.1:1/rpc', token: 'secret', ownerId: 'owner' }), transport);
+    await expect(client.readNativeOutput('a'.repeat(64))).rejects.toMatchObject({ code: 'HOST_RESPONSE_TOO_LARGE' });
+    expect(cancelled).toBe(true);
+    expect(sent).toBeLessThan(32);
+  });
+  it('saves a verified native snapshot at the 16 MiB IPC boundary', async () => {
+    const jobId = 'a'.repeat(64); const bytes = Buffer.alloc(16 * 1024 * 1024, 0xa5);
+    const client = new GotzjiHostClient(async () => null);
+    vi.spyOn(client, 'readNativeOutput').mockResolvedValue({ jobId, filename: 'output.xlsx', sha256: createHash('sha256').update(bytes).digest('hex'), base64: bytes.toString('base64') });
+    const save = vi.fn().mockResolvedValue({ exported: true, cancelled: false });
+    const handlers = new Map<string, (event: object, payload?: unknown) => Promise<unknown>>();
+    registerGotzjiIpcHandlers({ handle: (channel, handler) => { handlers.set(channel, handler); } }, client, () => {}, undefined, undefined, undefined, undefined, undefined, { save });
+    await expect(handlers.get('gotzji:export-native-output')!({}, { jobId })).resolves.toEqual({ exported: true, cancelled: false });
+    expect(save).toHaveBeenCalledTimes(1);
+    const [savedJob, filename, saved] = save.mock.calls[0] as [string, string, Buffer];
+    expect(savedJob).toBe(jobId);
+    expect(filename).toBe('output.xlsx');
+    expect(saved.length).toBe(bytes.length);
+    expect(createHash('sha256').update(saved).digest('hex')).toBe(createHash('sha256').update(bytes).digest('hex'));
+  });
+  it('exports only the verified snapshot of one selected native job through a trusted save dialog', async () => {
+    const jobId = 'a'.repeat(64); const bytes = Buffer.from([0, 255, 1, 128, 65]);
+    const client = new GotzjiHostClient(async () => null);
+    const read = vi.spyOn(client, 'readNativeOutput').mockResolvedValue({ jobId, filename: 'output.xlsx', sha256: createHash('sha256').update(bytes).digest('hex'), base64: bytes.toString('base64') });
+    const save = vi.fn().mockResolvedValueOnce({ exported: false, cancelled: true }).mockResolvedValueOnce({ exported: true, cancelled: false });
+    const handlers = new Map<string, (event: { trusted: boolean }, payload?: unknown) => Promise<unknown>>();
+    registerGotzjiIpcHandlers({ handle: (channel, handler) => { handlers.set(channel, handler); } }, client,
+      event => { if (!event.trusted) throw new Error('UNTRUSTED_RENDERER'); }, undefined, undefined, undefined, undefined, undefined, { save });
+    const exportOutput = handlers.get('gotzji:export-native-output')!;
+    await expect(exportOutput({ trusted: false }, { jobId })).rejects.toThrow('UNTRUSTED_RENDERER');
+    await expect(exportOutput({ trusted: true }, { jobId, path: 'other.xlsx' })).rejects.toThrow('INVALID_GOTZJI_REQUEST');
+    expect(read).not.toHaveBeenCalled(); expect(save).not.toHaveBeenCalled();
+    await expect(exportOutput({ trusted: true }, { jobId })).resolves.toEqual({ exported: false, cancelled: true });
+    await expect(exportOutput({ trusted: true }, { jobId })).resolves.toEqual({ exported: true, cancelled: false });
+    expect(save).toHaveBeenCalledWith(jobId, 'output.xlsx', bytes);
+    read.mockResolvedValueOnce({ jobId, filename: '../other.xlsx', sha256: '0'.repeat(64), base64: bytes.toString('base64') });
+    await expect(exportOutput({ trusted: true }, { jobId })).rejects.toThrow('NATIVE_OUTPUT_INVALID');
+    expect(save).toHaveBeenCalledTimes(2);
+  });
   it('chooses a local project directory only for a trusted no-input desktop request', async () => {
     const client = new GotzjiHostClient(async () => null);
     const handlers = new Map<string, (event: { trusted: boolean }, payload?: unknown) => Promise<unknown>>();

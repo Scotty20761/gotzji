@@ -1,5 +1,5 @@
 import { randomUUID, createHmac } from 'node:crypto';
-import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, openSync, readSync, closeSync, type Dirent } from 'node:fs';
+import { constants, existsSync, fstatSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, openSync, readSync, closeSync, type Dirent } from 'node:fs';
 import { lstat, readdir, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -22,7 +22,7 @@ import { CoreError, type JobView, type SettleDecision, type Preparation, type Re
 import { PRODUCT_NATIVE_OPERATIONS, prepareProductNativeOperation, type ProductNativeInput, type TrustedProductNativeOptions, type ProductNativeOperationName, type PreparedProductNativeOperation } from './product-native.js';
 import { libraryRoute, libraryCatalog, assertHostDirectLibraryWorkflow, prepareLibraryOperation, verifiedLibraryNavigationEvolution, type ProductLibraryInput, type TrustedLibraryOptions } from './product-library.js';
 import type { LibraryRouteKind, LibraryDeliveryScope } from './library-workflow-contract.js';
-import { readProjectFile, listProjectFiles, searchProjectFiles } from './product-file-reads.js';
+import { readProjectFile, readVerifiedProjectArtifact, listProjectFiles, searchProjectFiles } from './product-file-reads.js';
 import { readProjectGit, type ProjectGitResult } from './product-git-reads.js';
 import { decodeUtf8LogPage } from './utf8-log-page.js';
 import type { ProjectGitInput } from './types.js';
@@ -30,6 +30,30 @@ import type { ProjectReadInput, ProjectFileResult, ProjectListInput, ProjectList
 import { PRODUCT_BROWSER_OPERATIONS, prepareProductBrowserOperation, type ProductBrowserInput, type ProductBrowserOperationName, type TrustedProductBrowserOptions } from './product-browser.js';
 
 const WORKSPACE = 'gotzji-qualification-library';
+/** Pin bounded result evidence to its private effect directory and opened file handle. */
+function readNativeResultEvidence(root: string, digest: string, size: number): Buffer {
+  try {
+    const directory = lstatSync(root, { bigint: true });
+    if (!directory.isDirectory() || directory.isSymbolicLink() || realpathSync(root) !== root) throw new CoreError('ARTIFACT_CHANGED');
+    const filename = path.join(root, 'result.txt');
+    const before = lstatSync(filename, { bigint: true });
+    if (!before.isFile() || before.isSymbolicLink() || before.nlink > 1n || before.size !== BigInt(size) || realpathSync(filename) !== filename) throw new CoreError('ARTIFACT_CHANGED');
+    const fd = openSync(filename, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    try {
+      const pinned = fstatSync(fd, { bigint: true });
+      if (!pinned.isFile() || pinned.nlink > 1n || pinned.dev !== before.dev || pinned.ino !== before.ino || pinned.size !== BigInt(size)) throw new CoreError('ARTIFACT_CHANGED');
+      const bytes = Buffer.alloc(size + 1); let length = 0;
+      while (length < bytes.length) { const count = readSync(fd, bytes, length, bytes.length - length, null); if (!count) break; length += count; }
+      const after = fstatSync(fd, { bigint: true }); const current = lstatSync(filename, { bigint: true }); const currentDirectory = lstatSync(root, { bigint: true });
+      if (length !== size || after.size !== BigInt(size) || after.mtimeNs !== pinned.mtimeNs || after.nlink > 1n
+        || !current.isFile() || current.isSymbolicLink() || current.nlink > 1n || current.dev !== pinned.dev || current.ino !== pinned.ino
+        || !currentDirectory.isDirectory() || currentDirectory.isSymbolicLink() || currentDirectory.dev !== directory.dev || currentDirectory.ino !== directory.ino
+        || realpathSync(root) !== root || realpathSync(filename) !== filename || hash(bytes.subarray(0, length)) !== digest) throw new CoreError('ARTIFACT_CHANGED');
+      return bytes.subarray(0, length);
+    } finally { closeSync(fd); }
+  } catch (error) { if (error instanceof CoreError) throw error; throw new CoreError('ARTIFACT_CHANGED'); }
+}
+function isRecord(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === 'object' && !Array.isArray(value); }
 const MUTATION_QUEUES = new Map<string, Promise<unknown>>();
 // Engineering defaults: two write-class Grace jobs (multi-job spec) plus one more slot that only reads can reach, so a
 // version-pinned read never waits behind long commands while total model sessions stay bounded.
@@ -823,6 +847,35 @@ export class ExecutionCore {
   public async readOperationResult(credential: string, binding: TaskBinding): Promise<Record<string, unknown>> {
     const claim = this.bound(credential, binding);
     if (this.#store.input(claim).operation !== 'grace.product-operation' || (await this.view(claim)).status !== 'completed') throw new CoreError('RESULT_NOT_VERIFIED');
+    const prepared = JSON.parse(this.#store.input(claim).text) as PreparedProductOperation;
+    if (prepared.kind === 'native' && 'outputPath' in prepared.native.input) {
+      // The result view precedes export, so it must not bypass the same bounded, owner-bound verification.
+      let unavailable: 'PROJECT_ARCHIVED' | 'ARTIFACT_TOO_LARGE' | undefined;
+      try { await this.readNativeOutput(credential, binding); }
+      catch (error) {
+        if (!(error instanceof CoreError) || (error.code !== 'PROJECT_ARCHIVED' && error.code !== 'ARTIFACT_TOO_LARGE')) throw error;
+        unavailable = error.code;
+      }
+      const receipt = this.#store.operation(claim.id)?.receipt;
+      if (!receipt) throw new CoreError('RESULT_NOT_VERIFIED');
+      let result: unknown;
+      try { result = JSON.parse(receipt); } catch { throw new CoreError('ARTIFACT_CHANGED'); }
+      if (!isRecord(result) || result.verifier !== 'host-product-receipt-v1' || result.projectId !== prepared.project.projectId || result.operation !== prepared.input.operation
+        || typeof result.artifactHash !== 'string' || !/^[a-f0-9]{64}$/u.test(result.artifactHash)
+        || !Number.isSafeInteger(result.bytes) || Number(result.bytes) < 0 || Number(result.bytes) > 16 * 1024 * 1024) throw new CoreError('ARTIFACT_CHANGED');
+      let output: unknown;
+      try { output = JSON.parse(readNativeResultEvidence(this.effectRoot(claim.id), result.artifactHash, Number(result.bytes)).toString('utf8')); }
+      catch { throw new CoreError('ARTIFACT_CHANGED'); }
+      if (!isRecord(output) || !isRecord(output.nativeReceipt) || output.jobId !== claim.id || output.projectId !== prepared.project.projectId
+        || output.operation !== prepared.input.operation || output.outputPath !== prepared.input.outputPath || output.state !== 'completed'
+        || output.nativeReceipt.verified !== true || output.nativeReceipt.savedAndReopened !== true
+        || typeof output.nativeReceipt.outputSha256 !== 'string' || !/^[a-f0-9]{64}$/u.test(output.nativeReceipt.outputSha256)) throw new CoreError('ARTIFACT_CHANGED');
+      this.bound(credential, binding);
+      if ((await this.view(claim)).status !== 'completed') throw new CoreError('RESULT_NOT_VERIFIED');
+      if (this.expired(claim, this.effectRoot(claim.id))) throw new CoreError('RESULT_EXPIRED');
+      if (this.#store.operation(claim.id)?.receipt !== receipt) throw new CoreError('ARTIFACT_CHANGED');
+      return { ...result, output, ...(unavailable ? { nativeOutputCurrent: false, nativeOutputReason: unavailable } : {}) };
+    }
     const receipt = this.#store.operation(claim.id)?.receipt;
     if (!receipt) throw new CoreError('RESULT_NOT_VERIFIED');
     const result = JSON.parse(receipt) as Record<string, unknown>;
@@ -832,11 +885,6 @@ export class ExecutionCore {
     const bytes = readFileSync(filename);
     if (hash(bytes) !== result.artifactHash) throw new CoreError('ARTIFACT_CHANGED');
     const output = JSON.parse(bytes.toString('utf8')) as Record<string, unknown>;
-    const prepared = JSON.parse(this.#store.input(claim).text) as PreparedProductOperation;
-    if (prepared.kind === 'native' && 'outputPath' in prepared.native.input) {
-      const native = output.nativeReceipt as { outputSha256?: string } | undefined;
-      if (!native?.outputSha256 || hash(readFileSync(prepared.native.input.outputPath)) !== native.outputSha256) throw new CoreError('NATIVE_ARTIFACT_CHANGED');
-    }
     if (output.operation === 'file.write') {
       const before = path.join(this.effectRoot(claim.id), 'before.bin');
       if (existsSync(before)) {
@@ -850,6 +898,41 @@ export class ExecutionCore {
       return { ...result, output, nativeSelection: { sheet: prepared.native.input.sheet, range: prepared.native.input.range } };
     }
     return { ...result, output };
+  }
+  /** App-only transport calls this for one owner-bound native result, never for a renderer-supplied path. */
+  public async readNativeOutput(credential: string, binding: TaskBinding): Promise<{ jobId: string; filename: string; sha256: string; base64: string }> {
+    const claim = this.bound(credential, binding);
+    if (this.#store.input(claim).operation !== 'grace.product-operation' || (await this.view(claim)).status !== 'completed') throw new CoreError('RESULT_NOT_VERIFIED');
+    const prepared = JSON.parse(this.#store.input(claim).text) as PreparedProductOperation;
+    if (prepared.kind !== 'native' || typeof prepared.input.outputPath !== 'string' || !('outputPath' in prepared.native.input)) throw new CoreError('NATIVE_OUTPUT_UNAVAILABLE');
+    const lifecycle = this.readProjectLifecycle(credential, prepared.project.projectId);
+    if (lifecycle.project.rootPath !== prepared.project.rootPath || lifecycle.project.resourceKey !== prepared.project.resourceKey
+      || path.resolve(lifecycle.project.rootPath, prepared.input.outputPath) !== prepared.native.input.outputPath) throw new CoreError('PROJECT_ROOT_CHANGED');
+    const receipt = this.#store.operation(claim.id)?.receipt;
+    if (!receipt) throw new CoreError('RESULT_NOT_VERIFIED');
+    if (this.expired(claim, this.effectRoot(claim.id))) throw new CoreError('RESULT_EXPIRED');
+    let result: unknown;
+    try { result = JSON.parse(receipt); } catch { throw new CoreError('ARTIFACT_CHANGED'); }
+    if (!isRecord(result)) throw new CoreError('ARTIFACT_CHANGED');
+    if (result.verifier !== 'host-product-receipt-v1' || typeof result.artifactHash !== 'string' || !/^[a-f0-9]{64}$/u.test(result.artifactHash)
+      || !Number.isSafeInteger(result.bytes) || Number(result.bytes) < 0 || Number(result.bytes) > 16 * 1024 * 1024
+      || result.operation !== prepared.input.operation || result.projectId !== prepared.project.projectId) throw new CoreError('ARTIFACT_CHANGED');
+    const resultBytes = readNativeResultEvidence(this.effectRoot(claim.id), result.artifactHash, Number(result.bytes));
+    let output: unknown;
+    try { output = JSON.parse(resultBytes.toString('utf8')); } catch { throw new CoreError('ARTIFACT_CHANGED'); }
+    if (!isRecord(output) || !isRecord(output.nativeReceipt)) throw new CoreError('ARTIFACT_CHANGED');
+    const digest = output.nativeReceipt.outputSha256;
+    if (output.jobId !== claim.id || output.projectId !== prepared.project.projectId || output.operation !== prepared.input.operation
+      || output.outputPath !== prepared.input.outputPath || output.state !== 'completed' || output.nativeReceipt.verified !== true
+      || output.nativeReceipt.savedAndReopened !== true || typeof digest !== 'string' || !/^[a-f0-9]{64}$/u.test(digest)) throw new CoreError('RESULT_NOT_VERIFIED');
+    const snapshot = await readVerifiedProjectArtifact(lifecycle.project, prepared.input.outputPath, this.privateRuntimeRoots(), digest);
+    if ((await this.view(claim)).status !== 'completed') throw new CoreError('RESULT_NOT_VERIFIED');
+    this.assertReadProjectCurrent(credential, lifecycle);
+    this.bound(credential, binding);
+    if (this.expired(claim, this.effectRoot(claim.id))) throw new CoreError('RESULT_EXPIRED');
+    if (this.#store.operation(claim.id)?.receipt !== receipt) throw new CoreError('ARTIFACT_CHANGED');
+    readNativeResultEvidence(this.effectRoot(claim.id), result.artifactHash, Number(result.bytes));
+    return { jobId: claim.id, filename: path.basename(prepared.input.outputPath), sha256: digest, base64: snapshot.toString('base64') };
   }
   public logs(credential:string,binding:TaskBinding,cursor=0,limit=4000):{text:string;nextCursor:number;expired?:true} {
     const claim=this.bound(credential,binding);const worker=this.#store.worker(claim.id);

@@ -128,6 +128,11 @@ export class GotzjiHostClient {
     const request = parseGotzjiRequest(value);
     return this.call(await this.descriptor(), request.method, request.input);
   }
+  /** Only trusted main-process export calls this; it is not a renderer request method. */
+  public async readNativeOutput(jobId: string): Promise<unknown> {
+    if (!/^[a-f0-9]{64}$/u.test(jobId)) throw new GotzjiHostError('INVALID_GOTZJI_REQUEST');
+    return this.call(await this.descriptor(), 'readNativeOutput', { jobId });
+  }
 
   private async descriptor(): Promise<GotzjiHostDescriptor> {
     const descriptor = await this.discover();
@@ -155,7 +160,9 @@ export class GotzjiHostClient {
       throw new GotzjiHostError('HOST_CONNECTION_LOST');
     }
     if (!response.ok) throw new GotzjiHostError(response.status === 401 || response.status === 403 ? 'HOST_AUTH_REQUIRED' : 'HOST_RESPONSE_FAILED');
-    const value: unknown = await response.json().catch(() => { throw new GotzjiHostError('HOST_RESPONSE_INVALID'); });
+    const value: unknown = hostMethod === 'readNativeOutput'
+      ? await readBoundedNativeResponse(response)
+      : await response.json().catch(() => { throw new GotzjiHostError('HOST_RESPONSE_INVALID'); });
     if (!record(value)) throw new GotzjiHostError('HOST_RESPONSE_INVALID');
     if (value.ok === false && record(value.error)) {
       const data = record(value.error.data) ? value.error.data : value.error;
@@ -166,6 +173,30 @@ export class GotzjiHostClient {
     if (value.ok !== true || !Object.hasOwn(value, 'value')) throw new GotzjiHostError('HOST_RESPONSE_INVALID');
     return value.value;
   }
+}
+
+async function readBoundedNativeResponse(response: Response): Promise<unknown> {
+  // Base64 expands the 16 MiB snapshot; the allowance covers JSON metadata and escaped filenames.
+  const limit = Math.ceil((16 * 1024 * 1024) / 3) * 4 + 4096;
+  if (!response.body) throw new GotzjiHostError('HOST_RESPONSE_INVALID');
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = []; let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > limit) {
+        await reader.cancel().catch(() => undefined);
+        throw new GotzjiHostError('HOST_RESPONSE_TOO_LARGE');
+      }
+      chunks.push(value);
+    }
+    return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks, total))) as unknown;
+  } catch (error) {
+    if (error instanceof GotzjiHostError) throw error;
+    throw new GotzjiHostError('HOST_RESPONSE_INVALID');
+  } finally { reader.releaseLock(); }
 }
 
 function record(value: unknown): value is Record<string, unknown> {

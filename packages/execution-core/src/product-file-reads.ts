@@ -68,6 +68,46 @@ export async function readProjectFile(project: RegisteredProject, relativePath: 
     catch (error) { if (!(error instanceof CoreError) || error.code !== 'FILE_VERSION_CONFLICT' || attempt >= 2) throw error; }
   }
 }
+
+/** Read one bounded binary snapshot through the same project and handle boundaries as text reads. */
+export async function readVerifiedProjectArtifact(project: RegisteredProject, relativePath: string, privateRoots: readonly string[], expectedSha256: string): Promise<Buffer> {
+  const limit = 16 * 1024 * 1024;
+  try {
+    const target = projectTarget(project, relativePath, privateRoots);
+    const root = await lstat(project.rootPath, { bigint: true });
+    if (!root.isDirectory() || root.isSymbolicLink()) throw new CoreError('PROJECT_ROOT_CHANGED');
+    const before = await lstat(target, { bigint: true });
+    if (before.isSymbolicLink() || !before.isFile() || realpathSync(target) !== target) invalidPath('Select a regular output file inside the project');
+    if (before.nlink > 1n) throw new CoreError('FILE_LINK_SCOPE_DENIED');
+    const file = await open(target, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    try {
+      const pinned = await file.stat({ bigint: true });
+      if (pinned.nlink > 1n) throw new CoreError('FILE_LINK_SCOPE_DENIED');
+      if (pinned.dev !== before.dev || pinned.ino !== before.ino) throw new CoreError('FILE_VERSION_CONFLICT');
+      if (pinned.size > BigInt(limit)) throw new CoreError('ARTIFACT_TOO_LARGE');
+      const bytes = Buffer.alloc(Number(pinned.size) + 1);
+      let length = 0;
+      while (length < bytes.length) {
+        const { bytesRead } = await file.read(bytes, length, bytes.length - length, null);
+        if (!bytesRead) break;
+        length += bytesRead;
+      }
+      const after = await file.stat({ bigint: true });
+      if (after.nlink > 1n) throw new CoreError('FILE_LINK_SCOPE_DENIED');
+      if (after.size !== BigInt(length) || after.mtimeNs !== pinned.mtimeNs) throw new CoreError('FILE_VERSION_CONFLICT');
+      projectTarget(project, relativePath, privateRoots);
+      const currentRoot = await lstat(project.rootPath, { bigint: true });
+      if (!currentRoot.isDirectory() || currentRoot.isSymbolicLink() || currentRoot.dev !== root.dev || currentRoot.ino !== root.ino) throw new CoreError('PROJECT_ROOT_CHANGED');
+      const current = await lstat(target, { bigint: true });
+      if (realpathSync(target) !== target || current.isSymbolicLink() || !current.isFile()) invalidPath('The output path was redirected during the read');
+      if (current.nlink > 1n) throw new CoreError('FILE_LINK_SCOPE_DENIED');
+      if (current.dev !== pinned.dev || current.ino !== pinned.ino) throw new CoreError('FILE_VERSION_CONFLICT');
+      const snapshot = bytes.subarray(0, length);
+      if (createHash('sha256').update(snapshot).digest('hex') !== expectedSha256) throw new CoreError('NATIVE_ARTIFACT_CHANGED');
+      return snapshot;
+    } finally { await file.close(); }
+  } catch (error) { return fileReadError(error); }
+}
 export async function searchProjectFiles(project: RegisteredProject, relativePath: string, query: string, privateRoots: readonly string[]): Promise<ProjectSearchResult> {
   const result: { matches: { path: string; line: number; text: string }[] } & Coverage = { matches: [], truncated: false, incompleteReasons: [], skippedCount: 0 };
   if (typeof query !== 'string' || !query || query.length > 1024 || /[\r\n]/u.test(query)) throw new CoreError('PRODUCT_SCHEMA_INVALID', 'Use a nonempty single-line literal query up to 1024 characters', 'query');

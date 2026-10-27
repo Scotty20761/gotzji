@@ -141,6 +141,7 @@ const listener = await startProductHttp({ token: config.daemonSecret, mcpPathSec
     case 'saveProjectMemory': return core.saveProjectMemory(credential, input);
     case 'listProjects': return core.listProjects(credential).map((project) => ({ ...project, recipeIds: core.projectRecipeIds(credential, project) }));
     case 'readProjectFile': return core.readProjectFile(credential, input);
+    case 'readNativeOutput': if (surface !== 'app') throw new CoreError('NATIVE_OUTPUT_DENIED'); return core.readNativeOutput(credential, binding(input));
     case 'readProjectGit': return core.readProjectGit(credential, input);
     case 'listProjectFiles': return core.listProjectFiles(credential, input);
     case 'searchProjectFiles': return core.searchProjectFiles(credential, input);

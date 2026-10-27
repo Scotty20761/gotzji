@@ -5,6 +5,7 @@ import os from 'node:os';
 import { performance } from 'node:perf_hooks';
 import { access, lstat, readFile, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
+import { saveNativeSnapshot } from './native-output-save.js';
 import { autoUpdater } from 'electron-updater';
 import {
   APP_NAME,
@@ -2871,6 +2872,15 @@ function bootstrapGotzjiDesktop(): void {
         const result = mainWindow ? await dialog.showSaveDialog(mainWindow, options) : await dialog.showSaveDialog(options);
         if (result.canceled || !result.filePath) return { exported: false, cancelled: true };
         await writeFile(result.filePath, content, 'utf8');
+        return { exported: true, cancelled: false };
+      },
+    }, {
+      save: async (jobId, filename, content): Promise<{ exported: boolean; cancelled: boolean }> => {
+        const options = { title: `${gotzjiNativeMessages.nativeOutputTitle} · ${jobId}`, defaultPath: filename };
+        const result = mainWindow ? await dialog.showSaveDialog(mainWindow, options) : await dialog.showSaveDialog(options);
+        if (result.canceled || !result.filePath) return { exported: false, cancelled: true };
+        if (!path.isAbsolute(result.filePath)) throw new Error('NATIVE_OUTPUT_DESTINATION_INVALID');
+        await saveNativeSnapshot(result.filePath, content);
         return { exported: true, cancelled: false };
       },
     });

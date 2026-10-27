@@ -1,4 +1,4 @@
-import { mkdir, writeFile, readFile, rm, rmdir, realpath } from 'node:fs/promises';
+import { mkdir, writeFile, readFile, rm, rmdir, realpath, link, unlink } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -40,7 +40,7 @@ async function fixture(cancelOutcome?: 'none' | 'unknown', direct = false, range
   for (const file of ['CLAUDE.md','AGENTS.md','KNOWLEDGE_INDEX.md','references/agent-knowledge-workflow.md']) await writeFile(path.join(libraryRoot, file), 'Explicit no-model core fixture policy\n');
   const scriptPath = path.join(root, 'fixture-provider.ps1'); await writeFile(scriptPath, 'test-only provider; never execute as PowerShell');
   const runner = path.join(root, 'test-native-runner.mjs');
-  await writeFile(runner, `import {readFileSync,writeFileSync} from 'node:fs';import {createHash} from 'node:crypto';const hash=x=>createHash('sha256').update(x).digest('hex');export async function testRunner(_script,input){await new Promise(resolve=>setTimeout(resolve,400));if(input.range==='Z1')throw Object.assign(new Error('NATIVE_TERMINATION_UNVERIFIED'),{code:'NATIVE_TERMINATION_UNVERIFIED',outcome:'unknown'});let outputSha256=null;if(input.outputPath){writeFileSync(input.outputPath,'preserved-fixture-output');outputSha256=hash(readFileSync(input.outputPath));}return{operation:input.operation,provider:input.operation.split('.')[0],providerVersion:'explicit-no-model-fixture',nativePid:process.pid,sourceSha256:hash(readFileSync(input.filePath)),outputSha256,originalPreserved:true,savedAndReopened:!!input.outputPath,unrelatedPreserved:true,verified:true,before:input.operation==='excel.sheets.inspect'?{sheets:[{name:'ข้อมูล',used_range:'B2:D4',rows:3,columns:3}],total:1,returned:1,truncated:false}:{fixture:'original'},after:input.operation==='excel.sheets.inspect'?{sheets:[{name:'ข้อมูล',used_range:'B2:D4',rows:3,columns:3}],total:1,returned:1,truncated:false}:{fixture:'changed'}};}`);
+  await writeFile(runner, `import {readFileSync,writeFileSync} from 'node:fs';import {createHash} from 'node:crypto';const hash=x=>createHash('sha256').update(x).digest('hex');export async function testRunner(_script,input){await new Promise(resolve=>setTimeout(resolve,400));if(input.range==='Z1')throw Object.assign(new Error('NATIVE_TERMINATION_UNVERIFIED'),{code:'NATIVE_TERMINATION_UNVERIFIED',outcome:'unknown'});let outputSha256=null;if(input.outputPath){writeFileSync(input.outputPath,input.outputPath.endsWith('binary-output.xlsx')?Buffer.from([0,255,1,128,65]):'preserved-fixture-output');outputSha256=hash(readFileSync(input.outputPath));}return{operation:input.operation,provider:input.operation.split('.')[0],providerVersion:'explicit-no-model-fixture',nativePid:process.pid,sourceSha256:hash(readFileSync(input.filePath)),outputSha256,originalPreserved:true,savedAndReopened:!!input.outputPath,unrelatedPreserved:true,verified:true,before:input.operation==='excel.sheets.inspect'?{sheets:[{name:'ข้อมูล',used_range:'B2:D4',rows:3,columns:3}],total:1,returned:1,truncated:false}:{fixture:'original'},after:input.operation==='excel.sheets.inspect'?{sheets:[{name:'ข้อมูล',used_range:'B2:D4',rows:3,columns:3}],total:1,returned:1,truncated:false}:{fixture:'changed'}};}`);
   if (rangeSnapshot) {
     // Synthetic provider boundary only: Core must retain the admitted spelling separately from observed cells.
     await writeFile(runner, `import {readFileSync} from 'node:fs';import {createHash} from 'node:crypto';
@@ -328,6 +328,53 @@ describe('native operations through Grace and the shared Goal (explicit no-model
     const db = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'), { timeout: 5000 });
     expect(db.prepare('SELECT COUNT(*) AS count FROM goals').get()?.count).toBe(1);
     expect(db.prepare('SELECT COUNT(*) AS count FROM gotzji_resource_claims').get()?.count).toBe(0); db.close();
+  }, 20000);
+  it('returns the selected owner verified native output snapshot and refuses changed bytes', async () => {
+    const f = await fixture(undefined, true);
+    const input: ProductNativeInput = { requestId: 'native-export', projectId: 'one', operation: 'excel.range.write', path: 'source.xlsx', outputPath: 'binary-output.xlsx', sheet: 'Sheet1', range: 'A1', values: [['new']] };
+    const binding = await job(f, input); await f.core.resume(f.credential, binding);
+    await until(f, async () => (await f.core.get(f.credential, binding)).status === 'completed');
+    const artifact = await f.core.readNativeOutput(f.credential, binding);
+    const expected = Buffer.from([0, 255, 1, 128, 65]);
+    expect(artifact).toMatchObject({ jobId: binding.jobId, filename: 'binary-output.xlsx', sha256: hash(expected) });
+    expect(Buffer.from(artifact.base64, 'base64')).toEqual(expected);
+    const foreign = f.core.enrollAdapter('other-native-owner', 'other-owner');
+    await expect(f.core.readNativeOutput(foreign, binding)).rejects.toThrow();
+    f.core.setProjectArchived(f.credential, { projectId: 'one', archived: true });
+    await expect(f.core.readNativeOutput(f.credential, binding)).rejects.toThrow();
+    await expect(f.core.readOperationResult(f.credential, binding)).resolves.toMatchObject({ nativeOutputCurrent: false, nativeOutputReason: 'PROJECT_ARCHIVED', output: { jobId: binding.jobId } });
+    f.core.setProjectArchived(f.credential, { projectId: 'one', archived: false });
+    const evidence = path.join(f.root, 'state', 'effects', binding.jobId, 'result.txt');
+    const evidenceBytes = await readFile(evidence);
+    const evidenceDb = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'), { timeout: 5000 });
+    const stored = evidenceDb.prepare('SELECT receipt FROM gotzji_operations WHERE job_id=?').get(binding.jobId)?.receipt;
+    if (typeof stored !== 'string') throw new Error('Owned result receipt unavailable');
+    try {
+      evidenceDb.prepare('UPDATE gotzji_operations SET receipt=NULL WHERE job_id=?').run(binding.jobId);
+      await expect(f.core.readNativeOutput(f.credential, binding)).rejects.toMatchObject({ code: 'RESULT_NOT_VERIFIED' });
+      evidenceDb.prepare('UPDATE gotzji_operations SET receipt=? WHERE job_id=?').run('null', binding.jobId);
+      await expect(f.core.readNativeOutput(f.credential, binding)).rejects.toMatchObject({ code: 'ARTIFACT_CHANGED' });
+      const nullBytes = Buffer.from('null');
+      await writeFile(evidence, nullBytes);
+      evidenceDb.prepare('UPDATE gotzji_operations SET receipt=? WHERE job_id=?').run(JSON.stringify({ ...JSON.parse(stored), artifactHash: hash(nullBytes), bytes: nullBytes.length }), binding.jobId);
+      await expect(f.core.readNativeOutput(f.credential, binding)).rejects.toMatchObject({ code: 'ARTIFACT_CHANGED' });
+    } finally {
+      evidenceDb.prepare('UPDATE gotzji_operations SET receipt=? WHERE job_id=?').run(stored, binding.jobId);
+      evidenceDb.close(); await writeFile(evidence, evidenceBytes);
+    }
+    await writeFile(evidence, Buffer.alloc(16 * 1024 * 1024 + 1));
+    await expect(f.core.readNativeOutput(f.credential, binding)).rejects.toMatchObject({ code: 'ARTIFACT_CHANGED' });
+    await writeFile(evidence, evidenceBytes);
+    const output = path.join(f.root, 'one', 'binary-output.xlsx'); const alias = path.join(f.root, 'one', 'alias.xlsx');
+    await link(output, alias);
+    await expect(f.core.readNativeOutput(f.credential, binding)).rejects.toMatchObject({ code: 'FILE_LINK_SCOPE_DENIED' });
+    await unlink(alias);
+    await writeFile(output, 'changed-after-verification');
+    await expect(f.core.readNativeOutput(f.credential, binding)).rejects.toMatchObject({ code: 'NATIVE_ARTIFACT_CHANGED' });
+    await writeFile(output, Buffer.alloc(16 * 1024 * 1024 + 1));
+    await expect(f.core.readNativeOutput(f.credential, binding)).rejects.toMatchObject({ code: 'ARTIFACT_TOO_LARGE' });
+    await expect(f.core.readOperationResult(f.credential, binding)).resolves.toMatchObject({ nativeOutputCurrent: false, nativeOutputReason: 'ARTIFACT_TOO_LARGE', output: { jobId: binding.jobId } });
+    expect(await f.core.list(f.credential)).toHaveLength(1);
   }, 20000);
   it('holds global UI/document/provider locks atomically across independent projects', async () => {
     const f = await fixture(); const first = await job(f, { requestId: 'first', projectId: 'one', operation: 'excel.range.read', path: 'source.xlsx', sheet: 'Sheet1', range: 'A1' });

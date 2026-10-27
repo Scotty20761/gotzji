@@ -412,6 +412,46 @@ for (const oldReply of ['success', 'rejection'] as const) test(`gotzji file outp
   await expect(ui.getByLabel('เนื้อหาผลงานที่ตรวจแล้ว', { exact: true })).toHaveCount(0);
 });
 
+test('native export keeps the selected job fixed until the pending save finishes', async ({ gotzji }) => {
+  const { page } = gotzji; const fixturePath = gotzji.rendererFixturePath();
+  await build({ stdin: { resolveDir: path.join(desktopRoot, 'src', 'renderer'), sourcefile: 'native-export-selection.tsx', loader: 'tsx', contents: `
+    import { createRoot } from 'react-dom/client'; import { GotzjiApp } from './GotzjiApp.tsx';
+    document.getElementById('root').hidden=true; const root=document.createElement('div');root.id='native-export-selection';document.body.append(root);
+    const ids=['1'.repeat(64),'2'.repeat(64)]; const job=id=>({jobId:id,projectId:'project-a',requestedOperation:'excel.range.write',status:'completed'});
+    const request=(method,input)=>{
+      if(method==='listProjects')return Promise.resolve([{projectId:'project-a',displayName:'Project A'}]);
+      if(['listManagedProjects','listCatalog','inspectQueue'].includes(method))return Promise.resolve([]);
+      if(method==='selectedProject')return Promise.resolve({projectId:'project-a'});
+      if(method==='listJobs')return Promise.resolve(ids.map(job));
+      if(method==='status')return Promise.resolve(job(input.jobId));
+      if(method==='result')return Promise.resolve({verifier:'host-product-receipt-v1',operation:'excel.range.write',projectId:'project-a',artifactHash:'f'.repeat(64),output:{operation:'excel.range.write',jobId:input.jobId,projectId:'project-a',state:'completed',outputPath:'copy.xlsx',nativeReceipt:{verified:true,originalPreserved:true,unrelatedPreserved:true,savedAndReopened:true,outputSha256:'a'.repeat(64)}}});
+      return window.gotzji.request({method,input});
+    };
+    const save=id=>new Promise((resolve,reject)=>Reflect.set(root,'pending',{id,resolve,reject}));
+    createRoot(root).render(<GotzjiApp requestPort={request} exportNativePort={save}/>);
+  ` }, bundle: true, format: 'iife', platform: 'browser', jsx: 'automatic', loader: { '.css': 'empty', '.webp': 'dataurl' }, outfile: fixturePath, define: { 'process.env.NODE_ENV': '"production"' } });
+  await page.addScriptTag({ url: pathToFileURL(fixturePath).href });
+  const ui = page.locator('#native-export-selection'); const first = '1'.repeat(64); const second = '2'.repeat(64);
+  await ui.getByRole('button', { name: 'ประวัติงาน', exact: true }).click();
+  await ui.getByRole('button', { name: new RegExp(first) }).click();
+  await ui.getByRole('button', { name: 'ดูผลลัพธ์', exact: true }).click();
+  await ui.getByRole('button', { name: 'บันทึกสำเนาผลงาน', exact: true }).click();
+  await expect(ui.getByLabel('รหัสงาน', { exact: true })).toBeDisabled();
+  await expect(ui.getByRole('button', { name: new RegExp(second) })).toBeDisabled();
+  await expect(ui.getByRole('status').filter({ hasText: first })).toBeVisible();
+  expect(await page.evaluate(() => Reflect.get(Reflect.get(document.getElementById('native-export-selection')!, 'pending'), 'id'))).toBe(first);
+  await page.evaluate(() => Reflect.get(Reflect.get(document.getElementById('native-export-selection')!, 'pending'), 'resolve')({ exported: false, cancelled: true }));
+  await expect(ui.getByRole('button', { name: new RegExp(second) })).toBeEnabled();
+  await ui.getByRole('button', { name: new RegExp(second) }).click();
+  await expect(ui.getByLabel('รหัสงาน', { exact: true })).toHaveValue(second);
+  await ui.getByRole('button', { name: 'ดูผลลัพธ์', exact: true }).click();
+  await ui.getByRole('button', { name: 'บันทึกสำเนาผลงาน', exact: true }).click();
+  await ui.getByRole('button', { name: 'ตั้งค่า', exact: true }).click();
+  await page.evaluate(() => Reflect.get(Reflect.get(document.getElementById('native-export-selection')!, 'pending'), 'reject')(new Error('NATIVE_OUTPUT_WRITE_INCOMPLETE')));
+  await expect(ui.getByRole('alert')).toContainText('ไฟล์ที่เลือกอาจไม่สมบูรณ์');
+  await expect(ui.getByRole('alert')).toContainText(second);
+});
+
 test('gotzji same-job file result shows readable content and survives reselecting after reload', async ({ gotzji }) => {
   const { page } = gotzji; const root = await gotzji.temporaryProject('gotzji-files-panel-e2e-');
   await writeFile(path.join(root, 'result.txt'), '<script>ข้อความจากไฟล์</script>\n', 'utf8');
@@ -1752,7 +1792,7 @@ test.describe('actual Windows Excel qualification', () => {
     const edited = await page.evaluate(async preparationId => Reflect.get(window, 'ownedTestRequest')({ method: 'submit', input: { preparationId } }), editPreparation.preparationId);
     nativeJobId = edited.jobId; nativeJobIds.add(edited.jobId);
     let editStatus = 'queued';
-    await expect.poll(async () => { editStatus = await page.evaluate(async jobId => (await Reflect.get(window, 'ownedTestRequest')({ method: 'status', input: { jobId } })).status, edited.jobId); return editStatus; }, { timeout: 45000 }).not.toMatch(/^(queued|running)$/u);
+    await expect.poll(async () => { editStatus = await page.evaluate(async jobId => (await Reflect.get(window, 'ownedTestRequest')({ method: 'status', input: { jobId } })).status, edited.jobId); return editStatus; }, { timeout: 45000 }).not.toMatch(/^(queued|running|verifying)$/u);
     expect(editStatus).toBe('completed');
     const editResult = await page.evaluate(async jobId => Reflect.get(window, 'ownedTestRequest')({ method: 'result', input: { jobId } }), edited.jobId);
     const outputBytes = await readFile(path.join(root, outputName));
@@ -1769,7 +1809,22 @@ test.describe('actual Windows Excel qualification', () => {
     expect((await page.evaluate(async preparationId => Reflect.get(window, 'ownedTestRequest')({ method: 'submit', input: { preparationId } }), editPreparation.preparationId)).jobId).toBe(edited.jobId);
     await page.getByLabel('รหัสงาน', { exact: true }).fill(edited.jobId);
     await page.getByRole('button', { name: 'ดูผลลัพธ์', exact: true }).click();
-    await expect(page.getByRole('region', { name: 'รายละเอียดผลลัพธ์', exact: true })).toBeVisible();
+    await expect(page.getByRole('region', { name: 'ผลงานจากโปรแกรม', exact: true })).toBeVisible();
+    const savedCopy = path.join(root, 'owner-saved-copy.xlsx');
+    await gotzji.app.evaluate(({ dialog }) => { Reflect.set(globalThis, '__nativeOriginalSaveDialog', dialog.showSaveDialog); });
+    try {
+      await gotzji.app.evaluate(({ dialog }, filename) => { dialog.showSaveDialog = async (): Promise<{ canceled: boolean; filePath: string }> => ({ canceled: true, filePath: filename }); }, savedCopy);
+      await page.getByRole('button', { name: 'บันทึกสำเนาผลงาน', exact: true }).click();
+      await expect(page.getByText('ยกเลิกการบันทึก', { exact: true })).toBeVisible();
+      await expect(readFile(savedCopy)).rejects.toMatchObject({ code: 'ENOENT' });
+      await gotzji.app.evaluate(({ dialog }, filename) => { dialog.showSaveDialog = async (): Promise<{ canceled: boolean; filePath: string }> => ({ canceled: false, filePath: filename }); }, savedCopy);
+      await page.getByRole('button', { name: 'บันทึกสำเนาผลงาน', exact: true }).click();
+      await expect(page.getByText('บันทึกสำเนาที่ตรวจแล้ว', { exact: true })).toBeVisible();
+      expect(await readFile(savedCopy)).toEqual(outputBytes);
+      await page.getByRole('button', { name: 'บันทึกสำเนาผลงาน', exact: true }).click();
+      await expect(page.getByText('มีไฟล์ชื่อนี้อยู่แล้ว เลือกชื่อใหม่เพื่อรักษาไฟล์เดิม', { exact: true })).toBeVisible();
+      expect(await readFile(savedCopy)).toEqual(outputBytes);
+    } finally { await gotzji.app.evaluate(({ dialog }) => { dialog.showSaveDialog = Reflect.get(globalThis, '__nativeOriginalSaveDialog'); }); }
     await testInfo.attach('actual-excel-write-receipt', { body: JSON.stringify(editResult, null, 2), contentType: 'application/json' });
     await testInfo.attach('actual-excel-receipt', { body: JSON.stringify({ jobId: admitted.jobId, sourceSha256, result }, null, 2), contentType: 'application/json' });
     await testInfo.attach('actual-excel-range-receipts', { body: JSON.stringify({ sourceSha256, results: rangeResults }, null, 2), contentType: 'application/json' });
@@ -1822,7 +1877,7 @@ test.describe('actual Windows document qualification', () => {
       const admitted = await page.evaluate(async preparationId => Reflect.get(window, 'ownedTestRequest')({ method: 'submit', input: { preparationId } }), preparation.preparationId);
       jobs.push(admitted.jobId);
       let state = 'queued';
-      await expect.poll(async () => { state = await page.evaluate(async jobId => (await Reflect.get(window, 'ownedTestRequest')({ method: 'status', input: { jobId } })).status, admitted.jobId); return state; }, { timeout: 45000 }).not.toMatch(/^(queued|running)$/u);
+      await expect.poll(async () => { state = await page.evaluate(async jobId => (await Reflect.get(window, 'ownedTestRequest')({ method: 'status', input: { jobId } })).status, admitted.jobId); return state; }, { timeout: 45000 }).not.toMatch(/^(queued|running|verifying)$/u);
       expect(state).toBe('completed');
       const result = await page.evaluate(async jobId => Reflect.get(window, 'ownedTestRequest')({ method: 'result', input: { jobId } }), admitted.jobId);
       expect(result).toMatchObject({ operation, projectId, output: { jobId: admitted.jobId, operation, state: 'completed', nativeReceipt: { provider: provider.id, verified: true, originalPreserved: true, unrelatedPreserved: true, savedAndReopened: write, sourceSha256 } } });
