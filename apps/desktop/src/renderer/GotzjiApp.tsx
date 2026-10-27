@@ -196,7 +196,8 @@ export function GotzjiApp({ requestPort }: { readonly requestPort?: (method: Got
   const browserResult = browserReadResult(result);
   const sheetsResult = excelSheetsResult(result);
   const rangeResult = excelRangeResult(result, jobId);
-  const simpleResult = record(selectedJob) && typeof selectedJob.projectId === 'string' ? operationResult(result, { jobId, projectId: selectedJob.projectId }) : undefined;
+  const resultProjectId = record(selectedJob) && selectedJob.jobId === jobId && typeof selectedJob.projectId === 'string' ? selectedJob.projectId : null;
+  const simpleResult = resultProjectId ? operationResult(result, { jobId, projectId: resultProjectId }) : undefined;
   const boundRecipeIds = Array.isArray(selectedProject?.recipeIds) ? selectedProject.recipeIds as string[] : [];
   const projectCommands = projectCommandOptions(boundRecipeIds, catalog);
   const projectNames = new Map(projects.map(project => [String(project.projectId), String(project.displayName)]));
@@ -312,7 +313,14 @@ export function GotzjiApp({ requestPort }: { readonly requestPort?: (method: Got
               pageChanged={(pageIndex) => setResultView((previous) => previous && previous === resultView ? { ...previous, pageIndex } : previous)} />
               <details><summary>รายละเอียดการตรวจยืนยัน</summary><pre>{display(result)}</pre></details></>
             : browserResult ? <section aria-label="ผลการอ่านหน้าเว็บ"><h4>อ่านหน้าเว็บสำเร็จ</h4><p>{browserResult.url}</p><pre>{browserResult.text || 'หน้านี้ไม่มีข้อความ'}</pre><details><summary>รายละเอียดการตรวจยืนยัน</summary><pre>{display(result)}</pre></details></section>
-            : simpleResult ? <><GotzjiOperationResult value={simpleResult} onLogs={() => setPage('live')} /><details><summary>รายละเอียดการตรวจยืนยัน</summary><pre>{display(result)}</pre></details></>
+            : simpleResult && resultProjectId ? <><GotzjiOperationResult key={`${jobId}:${resultProjectId}`} value={simpleResult} onLogs={() => setPage('live')} disabled={busy || host?.state !== 'ready'} readFile={async (path) => {
+              const generation = resultGeneration.current;
+              const refreshed = await request('result', { jobId });
+              if (resultSelection.current !== jobId || resultGeneration.current !== generation) throw new Error('RESULT_SELECTION_CHANGED');
+              const verified = operationResult(refreshed, { jobId, projectId: resultProjectId });
+              if (simpleResult.kind !== 'file-write' || verified?.kind !== 'file-write' || verified.path !== path || verified.sha256 !== simpleResult.sha256) throw new Error('RESULT_NOT_VERIFIED');
+              return request('readProjectFile', { projectId: resultProjectId, path });
+            }} /><details><summary>รายละเอียดการตรวจยืนยัน</summary><pre>{display(result)}</pre></details></>
             : <section aria-label="รายละเอียดผลลัพธ์"><p>ผลชนิดนี้ยังไม่มีมุมมองสรุป เปิดรายละเอียดจากระบบเพื่อตรวจข้อมูล</p><details><summary>รายละเอียดการตรวจยืนยัน</summary><pre>{display(result)}</pre></details></section>)}</section>}</>}
       {page === 'workflows' && <><section><label htmlFor={workflowProjectSelectId}>โครงการสำหรับเวิร์กโฟลว์</label><select id={workflowProjectSelectId} value={projectId} disabled={busy || host?.state !== 'ready'} onChange={(event) => { const id = event.target.value; if (id) void act(async () => { await request('selectProject', { projectId: id }); setProjectId(id); }); }}><option value="">เลือกโครงการ</option>{projects.map((project) => <option key={String(project.projectId)} value={String(project.projectId)}>{String(project.displayName)}</option>)}</select></section>
         <GotzjiWorkflowPrompts key={`${projectId}:${String(selectedProject?.displayName ?? '')}`} project={selectedProject ? { projectId, displayName: String(selectedProject.displayName) } : null} disabled={busy || host?.state !== 'ready'} />

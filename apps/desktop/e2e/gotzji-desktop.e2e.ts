@@ -301,12 +301,115 @@ test('gotzji entry, project search and file edit return canonical results', asyn
     expect(firstJobId).toBeTruthy();
     await expect(page.getByRole('heading', { name: 'บันทึกไฟล์แล้ว', exact: true })).toBeVisible();
     await expect(page.getByText('มีสำเนาต้นฉบับในหลักฐานของงานนี้', { exact: true })).toBeVisible();
+    const fileResult = page.getByRole('region', { name: 'ผลลัพธ์ไฟล์', exact: true });
+    await fileResult.getByRole('button', { name: 'เปิดดูผลงาน', exact: true }).click();
+    await expect(fileResult.getByLabel('เนื้อหาผลงานที่ตรวจแล้ว', { exact: true })).toHaveText('Final verified sample\n');
+    await expect(fileResult.getByText('เนื้อหาที่เปิดอ่านตรงกับผลงานของงานนี้ ณ ตอนที่เปิดอ่าน ไฟล์ในโครงการอาจเปลี่ยนภายหลัง', { exact: true })).toBeVisible();
+    await fileResult.evaluate(element => element.scrollIntoView({ block: 'center' }));
+    await page.screenshot({ path: path.join(desktopRoot, '..', '..', '.local-artifacts', 'windows-ui-file-open.png') });
+    await writeFile(path.join(projectFilesRoot, 'welcome.txt'), 'Changed after completion\n', 'utf8');
+    await fileResult.getByRole('button', { name: 'เปิดดูผลงาน', exact: true }).click();
+    await expect(fileResult.getByRole('alert')).toContainText('ไฟล์เปลี่ยนไป');
+    await expect(fileResult.getByLabel('เนื้อหาผลงานที่ตรวจแล้ว', { exact: true })).toHaveCount(0);
+    expect(await page.evaluate(async () => (await window.gotzji.request({ method: 'listJobs', input: {} }) as unknown[]).length)).toBe(1);
     await page.getByRole('region', { name: 'ผลลัพธ์ไฟล์', exact: true }).evaluate(element => element.scrollIntoView({ block: 'center' }));
     await page.screenshot({ path: path.join(desktopRoot, '..', '..', '.local-artifacts', 'windows-ui-file-result.png') });
     await page.getByText('รายละเอียดการตรวจยืนยัน', { exact: true }).click();
     await expect(page.locator('pre:visible')).toContainText('"path": "welcome.txt"');
     await expect(page.locator('pre:visible')).toContainText('1eb5f5d070d4535515a4636073d6d716a4f031b51a75255866e2723b37d6e443');
 
+});
+
+for (const oldReply of ['success', 'rejection'] as const) test(`gotzji file output ignores a late ${oldReply} after selecting a different job`, async ({ gotzji }) => {
+  const { page } = gotzji; const fixturePath = gotzji.rendererFixturePath();
+  await build({ stdin: { resolveDir: path.join(desktopRoot, 'src', 'renderer'), sourcefile: 'file-result-race.tsx', loader: 'tsx', contents: `
+    import { StrictMode } from 'react'; import { createRoot } from 'react-dom/client';
+    import { GotzjiApp } from './GotzjiApp.tsx';
+    document.getElementById('root').hidden=true;
+    const root=document.createElement('div');root.id='file-result-race';document.body.append(root);
+    const ids=['1'.repeat(64),'2'.repeat(64)], replies=[], calls=[], pending=[], validations=[];
+    Reflect.set(root,'replies',replies);Reflect.set(root,'calls',calls);Reflect.set(root,'pending',pending);Reflect.set(root,'validations',validations);
+    const job=id=>({jobId:id,projectId:id===ids[0]?'project-a':'project-b',requestedOperation:'file.write',operation:'grace.product-operation',status:'completed'});
+    const resultFor=id=>{const j=job(id);return {verifier:'host-product-receipt-v1',operation:'file.write',projectId:j.projectId,artifactHash:'f'.repeat(64),output:{operation:'file.write',state:'completed',projectId:j.projectId,path:j.projectId+'.txt',sha256:'a'.repeat(64),beforeSha256:null,bytes:1}}};
+    const request=(method,input)=>{
+      calls.push({method,input});
+      if(method==='listProjects')return Promise.resolve([{projectId:'project-a',displayName:'Project A'},{projectId:'project-b',displayName:'Project B'}]);
+      if(method==='listManagedProjects'||method==='listCatalog'||method==='inspectQueue')return Promise.resolve([]);
+      if(method==='selectedProject')return Promise.resolve({projectId:'project-a'});
+      if(method==='listJobs')return Promise.resolve(ids.map(job));
+      if(method==='status')return Promise.resolve(job(input.jobId));
+      if(method==='result'){
+        const mode=Reflect.get(root,'validationMode');Reflect.set(root,'validationMode',null);
+        if(mode==='hold'){const value=new Promise(resolve=>validations.push({resolve,value:resultFor(input.jobId)}));Reflect.set(root,'pendingValidation',value);return value;}
+        if(mode==='expired')return Promise.reject(new Error('RESULT_EXPIRED'));
+        if(mode==='wrong-path'||mode==='wrong-hash'){const value=resultFor(input.jobId);if(mode==='wrong-path')value.output.path='different.txt';else value.output.sha256='b'.repeat(64);return Promise.resolve(value);}
+        return Promise.resolve(resultFor(input.jobId));
+      }
+      if(method==='readProjectFile'){const value=new Promise((resolve,reject)=>replies.push({input,resolve,reject}));pending.push(value);return value;}
+      if(['prepareOperation','submit','resume','cancel','reprioritize'].includes(method))throw new Error('UNEXPECTED_DISPLAY_MUTATION');
+      return window.gotzji.request({method,input});
+    };
+    createRoot(root,{identifierPrefix:'file-result-race-'}).render(<StrictMode><GotzjiApp requestPort={request}/></StrictMode>);
+  ` }, bundle: true, format: 'iife', platform: 'browser', jsx: 'automatic', loader: { '.css': 'empty', '.webp': 'dataurl' }, outfile: fixturePath, define: { 'process.env.NODE_ENV': '"production"' } });
+  await page.addScriptTag({ url: pathToFileURL(fixturePath).href });
+  const ui = page.locator('#file-result-race'); const first = '1'.repeat(64); const second = '2'.repeat(64);
+  await ui.getByRole('button', { name: 'ประวัติงาน', exact: true }).click();
+  await ui.getByRole('button', { name: new RegExp(first) }).click();
+  await ui.getByRole('button', { name: 'ดูผลลัพธ์', exact: true }).click();
+  await ui.getByRole('button', { name: 'เปิดดูผลงาน', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => (Reflect.get(document.getElementById('file-result-race')!, 'replies') as unknown[]).length)).toBe(1);
+  await ui.getByRole('button', { name: new RegExp(second) }).click();
+  await ui.getByRole('button', { name: 'ดูผลลัพธ์', exact: true }).click();
+  await ui.getByRole('button', { name: 'เปิดดูผลงาน', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => (Reflect.get(document.getElementById('file-result-race')!, 'replies') as unknown[]).length)).toBe(2);
+  const inputs = await page.evaluate(async (kind) => {
+    const replies = Reflect.get(document.getElementById('file-result-race')!, 'replies') as Array<{ input: unknown; resolve(value: unknown): void; reject(error: Error): void }>;
+    replies[1]!.resolve({ content: '<script>CURRENT</script>', sha256: 'a'.repeat(64) });
+    if (kind === 'success') replies[0]!.resolve({ content: 'STALE', sha256: 'a'.repeat(64) });
+    else replies[0]!.reject(new Error('STALE'));
+    await Promise.all((Reflect.get(document.getElementById('file-result-race')!, 'pending') as Promise<unknown>[]).map(value => value.catch(() => undefined)));
+    return replies.map(reply => reply.input);
+  }, oldReply);
+  expect(inputs).toEqual([{ projectId: 'project-a', path: 'project-a.txt' }, { projectId: 'project-b', path: 'project-b.txt' }]);
+  await expect(ui.getByLabel('เนื้อหาผลงานที่ตรวจแล้ว', { exact: true })).toHaveText('<script>CURRENT</script>');
+  await expect(ui.locator('script')).toHaveCount(0);
+  await expect(ui.getByRole('region', { name: 'ผลลัพธ์ไฟล์', exact: true }).getByRole('alert')).toHaveCount(0);
+  await expect(ui).not.toContainText('STALE');
+  await ui.getByRole('button', { name: new RegExp(first) }).click();
+  await ui.getByRole('button', { name: 'ดูผลลัพธ์', exact: true }).click();
+  await page.evaluate(() => Reflect.set(document.getElementById('file-result-race')!, 'validationMode', 'hold'));
+  await ui.getByRole('button', { name: 'เปิดดูผลงาน', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => (Reflect.get(document.getElementById('file-result-race')!, 'validations') as unknown[]).length)).toBe(1);
+  await ui.getByRole('button', { name: new RegExp(second) }).click();
+  await ui.getByRole('button', { name: 'ดูผลลัพธ์', exact: true }).click();
+  await page.evaluate(async () => {
+    const root = document.getElementById('file-result-race')!;
+    const values = Reflect.get(root, 'validations') as Array<{ resolve(value: unknown): void; value: unknown }>;
+    values[0]!.resolve(values[0]!.value);
+    await (Reflect.get(root, 'pendingValidation') as Promise<unknown>);
+    await Promise.resolve();
+  });
+  expect(await page.evaluate(() => (Reflect.get(document.getElementById('file-result-race')!, 'calls') as Array<{ method: string }>).filter(call => call.method === 'readProjectFile').length)).toBe(2);
+  await page.evaluate(() => Reflect.set(document.getElementById('file-result-race')!, 'validationMode', 'expired'));
+  await ui.getByRole('button', { name: 'เปิดดูผลงาน', exact: true }).click();
+  await expect(ui.getByRole('alert')).toContainText('ไม่เก็บผลลัพธ์');
+  expect(await page.evaluate(() => (Reflect.get(document.getElementById('file-result-race')!, 'calls') as Array<{ method: string }>).filter(call => call.method === 'readProjectFile').length)).toBe(2);
+  for (const mode of ['wrong-path', 'wrong-hash']) {
+    await page.evaluate((value) => Reflect.set(document.getElementById('file-result-race')!, 'validationMode', value), mode);
+    await ui.getByRole('button', { name: 'เปิดดูผลงาน', exact: true }).click();
+    await expect(ui.getByRole('alert')).toContainText('ยังไม่มีผล');
+    expect(await page.evaluate(() => (Reflect.get(document.getElementById('file-result-race')!, 'calls') as Array<{ method: string }>).filter(call => call.method === 'readProjectFile').length)).toBe(2);
+  }
+  await ui.getByRole('button', { name: 'เปิดดูผลงาน', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => (Reflect.get(document.getElementById('file-result-race')!, 'replies') as unknown[]).length)).toBe(3);
+  await page.evaluate(async () => {
+    const root = document.getElementById('file-result-race')!;
+    const replies = Reflect.get(root, 'replies') as Array<{ reject(error: Error): void }>;
+    replies[2]!.reject(new Error('FILE_NOT_FOUND'));
+    await (Reflect.get(root, 'pending') as Promise<unknown>[])[2]!.catch(() => undefined);
+  });
+  await expect(ui.getByRole('alert')).toContainText('ไม่พบไฟล์ในโครงการ');
+  await expect(ui.getByLabel('เนื้อหาผลงานที่ตรวจแล้ว', { exact: true })).toHaveCount(0);
 });
 
 test('gotzji same-job file result shows readable content and survives reselecting after reload', async ({ gotzji }) => {
