@@ -3,12 +3,13 @@ import type { GotzjiMethod } from '@lnwjud/ipc-contracts';
 
 type Connection = { state: string; configured: boolean; tunnelId?: string; errorCode?: string };
 const states: Record<string, string> = { 'not-configured': 'ยังไม่ได้ตั้งค่า', stopped: 'หยุดอยู่', connecting: 'กำลังเชื่อมต่อ', ready: 'เชื่อมต่อพร้อมใช้งาน', unavailable: 'ยังไม่พร้อม', 'reconciliation-required': 'ต้องตรวจการเชื่อมต่อเดิม' };
-export function GotzjiConnectionPanel({ disabled, requestPort, visible = true, surfaceKey }: { readonly disabled: boolean; readonly requestPort?: (method: GotzjiMethod, input: Record<string, unknown>) => Promise<unknown>; readonly visible?: boolean; readonly surfaceKey?: string }): ReactElement {
+export function GotzjiConnectionPanel({ disabled, requestPort, visible = true, surfaceKey, onStatusChange }: { readonly disabled: boolean; readonly requestPort?: (method: GotzjiMethod, input: Record<string, unknown>) => Promise<unknown>; readonly visible?: boolean; readonly surfaceKey?: string; readonly onStatusChange?: (state: string | null) => void }): ReactElement {
   const [connection, setConnection] = useState<Connection | null>(null);
   const [tunnelId, setTunnelId] = useState(''); const [runtimeKey, setRuntimeKey] = useState('');
   const [organizationId, setOrganizationId] = useState('');
   const [busy, setBusy] = useState(false); const [error, setError] = useState<string | null>(null);
   const [pollError, setPollError] = useState<string | null>(null);
+  useLayoutEffect(() => { onStatusChange?.(busy ? null : connection?.state ?? null); }, [busy, connection, onStatusChange]);
   const generation = useRef(0); const actionInFlight = useRef(false);
   const visibleRef = useRef(visible); const pollEpoch = useRef(0); const pollNow = useRef<() => void>(() => undefined);
   useLayoutEffect(() => {
@@ -22,6 +23,7 @@ export function GotzjiConnectionPanel({ disabled, requestPort, visible = true, s
     const result = await (requestPort ? requestPort(method, input) : window.gotzji.request({ method, input }));
     if (result === null || typeof result !== 'object' || !('state' in result) || typeof result.state !== 'string'
       || !('configured' in result) || typeof result.configured !== 'boolean'
+      || (result.state === 'ready' && !result.configured)
       || ('tunnelId' in result && result.tunnelId !== undefined && typeof result.tunnelId !== 'string')
       || ('errorCode' in result && result.errorCode !== undefined && typeof result.errorCode !== 'string')) throw new Error('CONNECTION_RESPONSE_INVALID');
     return result as Connection;

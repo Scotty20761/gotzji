@@ -412,6 +412,151 @@ for (const oldReply of ['success', 'rejection'] as const) test(`gotzji file outp
   await expect(ui.getByLabel('เนื้อหาผลงานที่ตรวจแล้ว', { exact: true })).toHaveCount(0);
 });
 
+test('guided first use separates local readiness from a real ChatGPT trial', async ({ gotzji }) => {
+  const { page } = gotzji; const fixturePath = gotzji.rendererFixturePath();
+  await build({ stdin: { resolveDir: path.join(desktopRoot, 'src', 'renderer'), sourcefile: 'first-use.tsx', loader: 'tsx', contents: `
+    import { createRoot } from 'react-dom/client';import { GotzjiApp } from './GotzjiApp.tsx';
+    document.getElementById('root').hidden=true;const root=document.createElement('div');root.id='first-use';document.body.append(root);const calls=[];Reflect.set(root,'calls',calls);
+    Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async text=>Reflect.set(root,'copied',text)}});
+    const request=(method,input)=>{calls.push(method);if(method==='connectionStatus')return Promise.resolve({state:'ready',configured:true});
+      if(method==='listProjects')return Promise.resolve([{projectId:'project-a',displayName:'โครงการทดลอง'}]);
+      if(['listManagedProjects','listJobs','listCatalog','inspectQueue'].includes(method))return Promise.resolve([]);
+      if(method==='selectedProject')return Promise.resolve({projectId:'project-a'});return window.gotzji.request({method,input});};
+    createRoot(root).render(<GotzjiApp requestPort={request}/>);
+  ` }, bundle: true, format: 'iife', platform: 'browser', jsx: 'automatic', loader: { '.css': 'empty', '.webp': 'dataurl' }, outfile: fixturePath, define: { 'process.env.NODE_ENV': '"production"' } });
+  await page.addScriptTag({ url: pathToFileURL(fixturePath).href });
+  const ui = page.locator('#first-use'); const setup = ui.getByRole('region', { name: 'เริ่มใช้งาน gotzji', exact: true });
+  await expect(setup).toContainText('โครงการทดลอง');
+  await expect(setup).toContainText('เชื่อมต่อในเครื่องพร้อม');
+  await expect(setup).toContainText('ยังไม่ได้ยืนยันการเรียกจาก ChatGPT');
+  await setup.getByRole('button', { name: 'คัดลอกคำสั่งทดสอบ', exact: true }).click();
+  await expect(setup.getByRole('status')).toContainText('วางใน ChatGPT');
+  expect(await page.evaluate(() => Reflect.get(document.getElementById('first-use')!, 'copied'))).toBe('เรียก gotzji_health แล้วบอกเฉพาะว่าระบบพร้อมหรือไม่ โดยไม่เริ่มงานใหม่');
+  expect(await page.evaluate(() => Reflect.get(document.getElementById('first-use')!, 'calls'))).not.toContain('submit');
+  await setup.getByRole('button', { name: 'ตั้งค่าการเชื่อมต่อ', exact: true }).click();
+  await expect(ui.getByRole('heading', { name: 'ตั้งค่า', exact: true })).toBeVisible();
+});
+
+test('first use withdraws readiness when project data fails or a stop is pending', async ({ gotzji }) => {
+  const { page } = gotzji; const fixturePath = gotzji.rendererFixturePath();
+  await build({ stdin: { resolveDir: path.join(desktopRoot, 'src', 'renderer'), sourcefile: 'first-use-uncertain.tsx', loader: 'tsx', contents: `
+    import { createRoot } from 'react-dom/client';import { GotzjiApp } from './GotzjiApp.tsx';
+    document.getElementById('root').hidden=true;const root=document.createElement('div');root.id='first-use-uncertain';document.body.append(root);
+    Reflect.set(root,'projects',[{projectId:'project-a',displayName:'Project A',rootPath:'C:/private/path'}]);
+    Reflect.set(root,'selected',{projectId:'project-a'});let state='ready';
+    const request=(method,input)=>{
+      if(method==='connectionStatus')return Promise.resolve({state,configured:!Reflect.get(root,'badConnection')});
+      if(method==='stopConnection')return new Promise(resolve=>Reflect.set(root,'finishStop',()=>{state='stopped';resolve({state,configured:true});}));
+      if(method==='listProjects'){if(Reflect.get(root,'failProjects'))return Promise.reject(new Error('offline'));return Promise.resolve(Reflect.get(root,'projects'));}
+      if(method==='selectedProject')return Promise.resolve(Reflect.get(root,'selected'));
+      if(['listManagedProjects','listJobs','listCatalog','inspectQueue'].includes(method))return Promise.resolve([]);
+      return window.gotzji.request({method,input});};
+    const hostStatus=()=>Reflect.get(root,'failHost') ? Promise.reject(new Error('host offline')) : window.gotzji.hostStatus();
+    createRoot(root).render(<GotzjiApp requestPort={request} hostStatusPort={hostStatus}/>);
+  ` }, bundle: true, format: 'iife', platform: 'browser', jsx: 'automatic', loader: { '.css': 'empty', '.webp': 'dataurl' }, outfile: fixturePath, define: { 'process.env.NODE_ENV': '"production"' } });
+  await page.addScriptTag({ url: pathToFileURL(fixturePath).href });
+  const ui = page.locator('#first-use-uncertain'); const setup = ui.getByRole('region', { name: 'เริ่มใช้งาน gotzji', exact: true });
+  const trial = setup.getByRole('button', { name: 'คัดลอกคำสั่งทดสอบ', exact: true });
+  await expect(trial).toBeEnabled();
+  await page.evaluate(() => Reflect.set(document.getElementById('first-use-uncertain')!, 'failHost', true));
+  await ui.getByRole('button', { name: 'รีเฟรช', exact: true }).click();
+  await expect(ui.getByRole('alert')).toContainText('host offline');
+  await expect(setup).toContainText('ระบบในเครื่องยังไม่พร้อม');
+  await expect(trial).toBeDisabled();
+  await page.evaluate(() => Reflect.set(document.getElementById('first-use-uncertain')!, 'failHost', false));
+  await ui.getByRole('button', { name: 'รีเฟรช', exact: true }).click();
+  await expect(trial).toBeEnabled();
+  await page.evaluate(() => Reflect.set(document.getElementById('first-use-uncertain')!, 'failProjects', true));
+  await ui.getByRole('button', { name: 'รีเฟรช', exact: true }).click();
+  await expect(setup).toContainText('ยังอ่านสถานะโครงการไม่ได้');
+  await expect(setup).not.toContainText('Project A');
+  await expect(trial).toBeDisabled();
+  await ui.getByRole('button', { name: 'เครื่องมือ', exact: true }).click();
+  await expect(ui.getByRole('group', { name: 'คำสั่งของโครงการ' })).toHaveCount(0);
+  await ui.getByRole('button', { name: 'หน้าแรก', exact: true }).click();
+  await page.evaluate(() => { const root = document.getElementById('first-use-uncertain')!; Reflect.set(root, 'failProjects', false); Reflect.set(root, 'projects', [{ projectId: 'project-a', displayName: '' }]); });
+  await ui.getByRole('button', { name: 'รีเฟรช', exact: true }).click();
+  await expect(ui.getByRole('alert')).toContainText('PROJECT_RESPONSE_INVALID');
+  await expect(setup).toContainText('ยังอ่านสถานะโครงการไม่ได้');
+  await expect(trial).toBeDisabled();
+  await page.evaluate(() => Reflect.set(document.getElementById('first-use-uncertain')!, 'projects', [{ projectId: 'project-a', displayName: 'Project A' }]));
+  await ui.getByRole('button', { name: 'รีเฟรช', exact: true }).click();
+  await expect(trial).toBeEnabled();
+  await page.evaluate(() => Reflect.set(document.getElementById('first-use-uncertain')!, 'projects', [{ projectId: 'project-b', displayName: 'Project B' }]));
+  await ui.getByRole('button', { name: 'รีเฟรช', exact: true }).click();
+  await expect(setup).toContainText('ยังอ่านสถานะโครงการไม่ได้');
+  await expect(trial).toBeDisabled();
+  await expect(setup).not.toContainText('Project A');
+  await ui.getByRole('button', { name: 'เครื่องมือ', exact: true }).click();
+  await expect(ui.getByRole('group', { name: 'คำสั่งของโครงการ' })).toHaveCount(0);
+  await ui.getByText('เครื่องมือขั้นสูง', { exact: true }).click();
+  await expect(ui.getByRole('button', { name: 'คัดลอกคำสั่งสำหรับ ChatGPT' })).toBeDisabled();
+  await ui.getByRole('button', { name: 'Git', exact: true }).click();
+  await expect(ui.getByText('เลือกโครงการก่อนดู Git', { exact: true })).toBeVisible();
+  await ui.getByRole('button', { name: 'หน้าแรก', exact: true }).click();
+  await page.evaluate(() => Reflect.set(document.getElementById('first-use-uncertain')!, 'selected', { projectId: 'project-b' }));
+  await ui.getByRole('button', { name: 'รีเฟรช', exact: true }).click();
+  await expect(setup).toContainText('Project B');
+  await expect(trial).toBeEnabled();
+  await page.evaluate(() => Reflect.set(document.getElementById('first-use-uncertain')!, 'badConnection', true));
+  await ui.getByRole('button', { name: 'ตรวจสถานะ', exact: true }).click();
+  await expect(ui.getByRole('alert')).toContainText('CONNECTION_RESPONSE_INVALID');
+  await expect(setup).toContainText('ยังไม่ทราบสถานะการเชื่อมต่อ');
+  await expect(trial).toBeDisabled();
+  await page.evaluate(() => Reflect.set(document.getElementById('first-use-uncertain')!, 'badConnection', false));
+  await ui.getByRole('button', { name: 'ตรวจสถานะ', exact: true }).click();
+  await expect(trial).toBeEnabled();
+  await ui.getByRole('button', { name: 'หยุดการเชื่อมต่อ', exact: true }).click();
+  await expect(setup).toContainText('ยังไม่ทราบสถานะการเชื่อมต่อ');
+  await expect(trial).toBeDisabled();
+  await page.evaluate(() => Reflect.get(document.getElementById('first-use-uncertain')!, 'finishStop')());
+  await expect(setup).toContainText('การเชื่อมต่อในเครื่องยังไม่พร้อม');
+  await expect(trial).toBeDisabled();
+});
+
+for (const oldReply of ['success', 'rejection', 'selection-rejection'] as const) test(`an older project refresh ${oldReply} cannot undo a newly selected project`, async ({ gotzji }) => {
+  const { page } = gotzji; const fixturePath = gotzji.rendererFixturePath();
+  await build({ stdin: { resolveDir: path.join(desktopRoot, 'src', 'renderer'), sourcefile: 'first-use-selection-order.tsx', loader: 'tsx', contents: `
+    import { createRoot } from 'react-dom/client';import { GotzjiApp } from './GotzjiApp.tsx';
+    document.getElementById('root').hidden=true;const root=document.createElement('div');root.id='selection-order';document.body.append(root);
+    let selected='project-a';const projects=[{projectId:'project-a',displayName:'Project A',rootPath:'C:/a',archivedAt:null},{projectId:'project-b',displayName:'Project B',rootPath:'C:/b',archivedAt:null}];
+    const request=(method,input)=>{
+      if(method==='connectionStatus')return Promise.resolve({state:'ready',configured:true});
+      if(method==='listProjects'||method==='listManagedProjects')return Promise.resolve(projects);
+      if(method==='selectedProject'){const captured=selected;if(Reflect.get(root,'hold')){Reflect.set(root,'hold',false);return new Promise((resolve,reject)=>Reflect.set(root,'releaseOld',()=>${oldReply === 'success' ? "resolve({projectId:captured})" : "reject(new Error('obsolete project error'))"}));}return Promise.resolve({projectId:selected});}
+      if(method==='selectProject')return new Promise((resolve,reject)=>Reflect.set(root,'releaseSelection',()=>{${oldReply === 'selection-rejection' ? "reject(new Error('selection uncertain'));" : "selected=input.projectId;resolve({projectId:selected});"}}));
+      if(['listJobs','listCatalog','inspectQueue'].includes(method))return Promise.resolve([]);
+      return window.gotzji.request({method,input});};
+    createRoot(root).render(<GotzjiApp requestPort={request}/>);
+  ` }, bundle: true, format: 'iife', platform: 'browser', jsx: 'automatic', loader: { '.css': 'empty', '.webp': 'dataurl' }, outfile: fixturePath, define: { 'process.env.NODE_ENV': '"production"' } });
+  await page.addScriptTag({ url: pathToFileURL(fixturePath).href });
+  const ui = page.locator('#selection-order');
+  await expect(ui.getByRole('region', { name: 'เริ่มใช้งาน gotzji' })).toContainText('Project A');
+  await page.evaluate(() => Reflect.set(document.getElementById('selection-order')!, 'hold', true));
+  await expect.poll(() => page.evaluate(() => typeof Reflect.get(document.getElementById('selection-order')!, 'releaseOld')), { timeout: 8000 }).toBe('function');
+  await ui.getByRole('button', { name: 'โครงการ', exact: true }).click();
+  await ui.getByRole('button', { name: 'Project B · C:/b', exact: true }).click();
+  await ui.getByRole('button', { name: 'หน้าแรก', exact: true }).click();
+  const setup = ui.getByRole('region', { name: 'เริ่มใช้งาน gotzji' });
+  await expect(setup).toContainText('ยังอ่านสถานะโครงการไม่ได้');
+  await expect(setup.getByRole('button', { name: 'คัดลอกคำสั่งทดสอบ' })).toBeDisabled();
+  expect(await ui.locator('main > header').innerText()).not.toContain('Project A');
+  await page.evaluate(() => Reflect.get(document.getElementById('selection-order')!, 'releaseSelection')());
+  if (oldReply === 'selection-rejection') {
+    await expect(ui.getByRole('alert')).toContainText('selection uncertain');
+    await ui.getByRole('button', { name: 'เครื่องมือ', exact: true }).click();
+    await expect(ui.getByRole('group', { name: 'คำสั่งของโครงการ' })).toHaveCount(0);
+    await ui.getByText('เครื่องมือขั้นสูง', { exact: true }).click();
+    await expect(ui.getByRole('button', { name: 'คัดลอกคำสั่งสำหรับ ChatGPT' })).toBeDisabled();
+    return;
+  }
+  await expect(setup).toContainText('Project B');
+  await page.evaluate(async () => { Reflect.get(document.getElementById('selection-order')!, 'releaseOld')(); await new Promise(requestAnimationFrame); await new Promise(requestAnimationFrame); });
+  expect(await ui.locator('main > header').innerText()).toContain('Project B');
+  expect(await ui.innerText()).not.toContain('obsolete project error');
+  await expect(setup).toContainText('Project B');
+});
+
 test('connection settings ignore an older poll after the owner stops the connection', async ({ gotzji }) => {
   const { page } = gotzji; const fixturePath = gotzji.rendererFixturePath();
   await build({ stdin: { resolveDir: path.join(desktopRoot, 'src', 'renderer'), sourcefile: 'connection-order.tsx', loader: 'tsx', contents: `

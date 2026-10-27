@@ -27,6 +27,7 @@ import { GotzjiExcelSheetsResult, excelSheetsResult } from './GotzjiExcelSheetsR
 import { GotzjiExcelRangeResult, excelRangeResult } from './GotzjiExcelRangeResult.js';
 import { GotzjiOperationResult, operationResult, operationResultMessage } from './GotzjiOperationResult.js';
 import { GotzjiDoctorPanel } from './GotzjiDoctorPanel.js';
+import { GotzjiGettingStarted } from './GotzjiGettingStarted.js';
 
 type Row = Readonly<Record<string, unknown>>;
 interface JobResultView { readonly jobId: string; readonly value: unknown; readonly loading: boolean; readonly error: string | null; readonly pageIndex: number }
@@ -34,7 +35,7 @@ type Page = 'home' | 'projects' | 'workflows' | 'tools' | 'git' | 'worklog' | 'l
 const labels: Record<Page, string> = { home: 'หน้าแรก', projects: 'โครงการ', workflows: 'เวิร์กโฟลว์', tools: 'เครื่องมือ', git: 'Git', worklog: 'ประวัติงาน', live: 'บันทึกสด', settings: 'ตั้งค่า', doctor: 'ตรวจระบบ' };
 
 /** Product controls address explicit canonical IDs, never the inherited provider API. */
-export function GotzjiApp({ requestPort, exportNativePort }: { readonly requestPort?: (method: GotzjiMethod, input: Record<string, unknown>) => Promise<unknown>; readonly exportNativePort?: (jobId: string) => Promise<{ readonly exported: boolean; readonly cancelled: boolean }> } = {}): ReactElement {
+export function GotzjiApp({ requestPort, exportNativePort, hostStatusPort }: { readonly requestPort?: (method: GotzjiMethod, input: Record<string, unknown>) => Promise<unknown>; readonly exportNativePort?: (jobId: string) => Promise<{ readonly exported: boolean; readonly cancelled: boolean }>; readonly hostStatusPort?: () => Promise<GotzjiHostStatus> } = {}): ReactElement {
   const worklogTabsId = useId();
   const historyFilterId = useId();
   const [historySearch, setHistorySearch] = useState('');
@@ -45,6 +46,7 @@ export function GotzjiApp({ requestPort, exportNativePort }: { readonly requestP
   const operationSelectId = useId();
   const [page, setPage] = useState<Page>('home');
   const [host, setHost] = useState<GotzjiHostStatus | null>(null);
+  const [connectionState, setConnectionState] = useState<string | null>(null);
   const [projects, setProjects] = useState<readonly Row[]>([]);
   const [managedProjects, setManagedProjects] = useState<readonly ManagedProject[] | null>(null);
   const [jobs, setJobs] = useState<readonly Row[]>([]);
@@ -53,6 +55,7 @@ export function GotzjiApp({ requestPort, exportNativePort }: { readonly requestP
   const [catalogState, setCatalogState] = useState<'ready' | 'unavailable'>('unavailable');
   const [diagnosticToolKey, setDiagnosticToolKey] = useState<string | null>(null);
   const [projectId, setProjectId] = useState('');
+  const [projectKnown, setProjectKnown] = useState(false);
   const [jobId, setJobId] = useState('');
   const [nativeExportJob, setNativeExportJob] = useState<string | null>(null);
   const [nativeExportNotice, setNativeExportNotice] = useState<string | null>(null);
@@ -92,6 +95,7 @@ export function GotzjiApp({ requestPort, exportNativePort }: { readonly requestP
   const [queue, setQueue] = useState<readonly Row[]>([]);
   const [jobPriority, setJobPriority] = useState('1');
   const refreshGeneration = useRef(0);
+  const selectionInFlight = useRef(false);
   const resultGeneration = useRef(0);
   const resultSelection = useRef('');
   const preparationProject = useRef(projectId);
@@ -127,14 +131,17 @@ export function GotzjiApp({ requestPort, exportNativePort }: { readonly requestP
     return (): void => { resultSelection.current = ''; resultGeneration.current += 1; };
   }, [jobId, request]);
   const refresh = useCallback(async (): Promise<void> => {
+    if (selectionInFlight.current) return;
     const generation = ++refreshGeneration.current;
     try {
-      const status = await window.gotzji.hostStatus();
+      let status: GotzjiHostStatus;
+      try { status = await (hostStatusPort ?? window.gotzji.hostStatus)(); }
+      catch (cause) { if (generation === refreshGeneration.current) setHost(null); throw cause; }
       if (generation !== refreshGeneration.current) return;
       setHost(status);
-      if (status.state === 'unavailable') { setCatalogState('unavailable'); setCatalog([]); setJobsLoaded(false); setManagedProjects(null); return; }
+      if (status.state === 'unavailable') { setProjectKnown(false); setProjectId(''); setCatalogState('unavailable'); setCatalog([]); setJobsLoaded(false); setManagedProjects(null); return; }
       if (status.state === 'control-only') {
-        setCatalogState('unavailable'); setCatalog([]);
+        setProjectKnown(false); setProjectId(''); setCatalogState('unavailable'); setCatalog([]);
         const jobRows = await request('listJobs');
         if (generation !== refreshGeneration.current) return;
         setJobs(rows(jobRows)); setJobsLoaded(true); setProjects([]); setManagedProjects(null);
@@ -145,17 +152,36 @@ export function GotzjiApp({ requestPort, exportNativePort }: { readonly requestP
       ]);
       if (generation !== refreshGeneration.current) return;
       if (!Array.isArray(catalogRows) || !catalogRows.every(item => record(item) && typeof item.name === 'string' && typeof item.state === 'string')) throw new Error('CATALOG_RESPONSE_INVALID');
-      setProjects(rows(projectRows));
+      const projectList = rows(projectRows);
+      if (projectList.some(item => typeof item.projectId !== 'string' || !item.projectId.trim() || typeof item.displayName !== 'string' || !item.displayName.trim())
+        || selected !== null && (!record(selected) || typeof selected.projectId !== 'string' || !selected.projectId.trim()
+          || !projectList.some(project => project.projectId === selected.projectId))) throw new Error('PROJECT_RESPONSE_INVALID');
+      setProjects(projectList);
       setManagedProjects(managedProjectRows(managedRows));
       setProjectId(record(selected) && typeof selected.projectId === 'string' ? selected.projectId : '');
+      setProjectKnown(true);
       setJobs(rows(jobRows)); setJobsLoaded(true);
       setCatalog(rows(catalogRows));
       setCatalogState('ready');
     } catch (cause) {
-      if (generation === refreshGeneration.current) { setCatalogState('unavailable'); setCatalog([]); }
+      if (generation !== refreshGeneration.current) return;
+      setProjectKnown(false); setProjectId(''); setCatalogState('unavailable'); setCatalog([]);
       throw cause;
     }
-  }, [request]);
+  }, [request, hostStatusPort]);
+
+  const selectProject = useCallback(async (id: string): Promise<void> => {
+    selectionInFlight.current = true;
+    refreshGeneration.current += 1;
+    setProjectKnown(false);
+    setProjectId('');
+    try {
+      await request('selectProject', { projectId: id });
+      const known = projectKnown && projects.some(project => project.projectId === id);
+      setProjectId(known ? id : '');
+      setProjectKnown(known);
+    } finally { selectionInFlight.current = false; }
+  }, [request, projectKnown, projects]);
 
   useEffect(() => {
     document.title = 'gotzji';
@@ -256,13 +282,13 @@ export function GotzjiApp({ requestPort, exportNativePort }: { readonly requestP
     <aside><div className="gotzji-brand"><img src={gracePortrait} alt="Grace ผู้ช่วยส่วนตัว" /><div><h1>gotzji</h1><p>สั่งงานผ่านปลั๊กอิน ChatGPT</p></div></div><nav>{(Object.keys(labels) as Page[]).map((name) =>
       <button key={name} aria-current={page === name ? 'page' : undefined} onClick={() => setPage(name)}>{labels[name]}</button>)}</nav>
       <p className="gotzji-owner">{host?.ownerId ? 'คอมพิวเตอร์เครื่องนี้' : 'กำลังเชื่อมต่อ'}</p><GotzjiVersionNotes /></aside>
-    <main><header><h2>{labels[page]}</h2>{selectedProject && <p>โครงการที่เลือก: {String(selectedProject.displayName)}</p>}<button disabled={busy} onClick={() => void act(refresh)}>รีเฟรช</button></header>
+    <main><header><h2>{labels[page]}</h2>{projectKnown && selectedProject && <p>โครงการที่เลือก: {String(selectedProject.displayName)}</p>}<button disabled={busy} onClick={() => void act(refresh)}>รีเฟรช</button></header>
       {error !== null && <div role="alert" className="gotzji-error">{error}<button onClick={() => setError(null)}>ปิด</button></div>}
-      {page === 'home' && <><div className="gotzji-welcome"><div><p className="gotzji-greeting">Grace ผู้ช่วยงานบนคอมพิวเตอร์</p><h3>วันนี้มีอะไรให้ช่วยคะ</h3><p>เลือกโครงการ แล้วสั่งงานต่อจาก ChatGPT หรือเปิดดูงานเดิมได้ที่นี่</p><button onClick={() => setPage('projects')}>เปิดโครงการ</button></div><img src={gracePortrait} alt="" /></div><section><h3>เรื่องที่รอคุณดูแล</h3>{!jobsLoaded ? <p>กำลังตรวจงานที่รอคุณดูแล</p> : jobs.filter((job) => ['blocked', 'failed'].includes(String(job.status))).length === 0 ? <p>ไม่พบเรื่องที่รอคุณตอบจากข้อมูลล่าสุด</p> : <JobList jobs={jobs.filter((job) => ['blocked', 'failed'].includes(String(job.status)))} disabled={busy || nativeExportJob !== null} select={(id) => { selectJob(id); setPage('worklog'); }} />}</section><section><h3>ระบบควบคุม</h3><p>{host?.state === 'ready' ? 'ระบบในเครื่องพร้อมทำงาน' : host?.state === 'control-only' ? 'ดูผลและยกเลิกงานเดิมได้ · ต้องตรวจระบบก่อนเริ่มงานใหม่' : 'กำลังรอระบบ'}</p>
+      {page === 'home' && <><div className="gotzji-welcome"><div><p className="gotzji-greeting">Grace ผู้ช่วยงานบนคอมพิวเตอร์</p><h3>วันนี้มีอะไรให้ช่วยคะ</h3><p>เลือกโครงการ แล้วสั่งงานต่อจาก ChatGPT หรือเปิดดูงานเดิมได้ที่นี่</p><button onClick={() => setPage('projects')}>เปิดโครงการ</button></div><img src={gracePortrait} alt="" /></div><GotzjiGettingStarted hostState={host?.state ?? null} projectName={selectedProject ? String(selectedProject.displayName) : null} projectKnown={projectKnown} connectionState={connectionState} openProjects={() => setPage('projects')} openSettings={() => setPage('settings')} openDoctor={() => setPage('doctor')} /><section><h3>เรื่องที่รอคุณดูแล</h3>{!jobsLoaded ? <p>กำลังตรวจงานที่รอคุณดูแล</p> : jobs.filter((job) => ['blocked', 'failed'].includes(String(job.status))).length === 0 ? <p>ไม่พบเรื่องที่รอคุณตอบจากข้อมูลล่าสุด</p> : <JobList jobs={jobs.filter((job) => ['blocked', 'failed'].includes(String(job.status)))} disabled={busy || nativeExportJob !== null} select={(id) => { selectJob(id); setPage('worklog'); }} />}</section><section><h3>ระบบควบคุม</h3><p>{host?.state === 'ready' ? 'ระบบในเครื่องพร้อมทำงาน' : host?.state === 'control-only' ? 'ดูผลและยกเลิกงานเดิมได้ · ต้องตรวจระบบก่อนเริ่มงานใหม่' : 'กำลังรอระบบ'}</p>
         {host?.errorCode && <p>{host.errorCode}</p>}{host?.action && <p>{host.action}</p>}<p>งานที่เริ่มแล้วมีประวัติแยกกัน เปิดกลับมาดูและควบคุมได้จากประวัติงาน</p></section>
         <section><h3>คิวงาน</h3><p>{queueState === 'ready' ? `งานที่กำลังรอ ${queue.length} งาน` : queueState === 'error' ? 'ยังอ่านคิวไม่ได้ ระบบจะตรวจใหม่เมื่อเชื่อมต่อได้' : 'กำลังอ่านคิวงาน…'}</p><button onClick={() => { setWorklogTab('queue'); setPage('worklog'); }}>เปิดคิวงาน</button></section><section><h3>งานล่าสุด {jobs.length} งาน</h3><JobList jobs={jobs} disabled={busy || nativeExportJob !== null} select={(id) => { selectJob(id); setPage('worklog'); }} /></section><div className="gotzji-navigation-target" ref={deliveryApprovalsRef} tabIndex={-1} role="group" aria-label="คำขอส่งมอบ"><GotzjiDeliveryApprovals request={request} disabled={busy || host?.state !== 'ready'} /></div></>}
       {page === 'projects' && <>{projectId && <GotzjiProjectContext key={projectId} projectId={projectId} request={request} onJob={(id) => { selectJob(id); setWorklogTab('history'); setPage('worklog'); }} />}<GotzjiProjectManager projects={managedProjects} selectedProjectId={projectId} disabled={busy || host?.state !== 'ready'} request={request}
-        select={(id) => void act(async () => { await request('selectProject', { projectId: id }); setProjectId(id); setPage(current => current === 'projects' ? 'tools' : current); })} changed={refresh} />
+        select={(id) => void act(async () => { await selectProject(id); setPage(current => current === 'projects' ? 'tools' : current); })} changed={refresh} />
         <section><h3>เพิ่มโครงการ</h3>{(['projectId', 'displayName', 'rootPath'] as const).map((field) => <label key={field}>{field === 'projectId' ? 'รหัสโครงการ' : field === 'displayName' ? 'ชื่อโครงการ' : 'โฟลเดอร์โครงการ'}
           <input disabled={busy} value={registration[field]} onChange={(event) => setRegistration({ ...registration, [field]: event.target.value })} /></label>)}
           <button disabled={busy || host?.state !== 'ready'} onClick={() => void act(async () => {
@@ -272,7 +298,7 @@ export function GotzjiApp({ requestPort, exportNativePort }: { readonly requestP
           {recipes.length > 0 && <fieldset><legend>คำสั่งที่ระบบตรวจไว้แล้ว</legend>{recipes.map((recipe) => <label key={String(recipe.recipeId)}>
             <input type="checkbox" disabled={busy} checked={selectedRecipes.includes(String(recipe.recipeId))} onChange={(event) => setSelectedRecipes((previous) => event.target.checked ? [...previous, String(recipe.recipeId)] : previous.filter((id) => id !== recipe.recipeId))} />{String(recipe.description)}</label>)}</fieldset>}
           <button disabled={busy || !registration.projectId || !registration.rootPath || !registration.displayName}
-            onClick={() => void act(async () => { await request('registerProject', { ...registration, kind: projectKind, recipeIds: selectedRecipes }); await request('selectProject', { projectId: registration.projectId }); await refresh(); })}>ลงทะเบียน</button>
+            onClick={() => void act(async () => { await request('registerProject', { ...registration, kind: projectKind, recipeIds: selectedRecipes }); await selectProject(registration.projectId); await refresh(); })}>ลงทะเบียน</button>
           <label>ประเภทโครงการ<select value={projectKind} disabled={busy} onChange={(event) => setProjectKind(event.target.value as 'project' | 'library')}><option value="project">โครงการทั่วไป</option><option value="library">Library ที่มีข้อกำหนดและดัชนี</option></select></label></section>
         <section><h3>คำสั่งที่เจ้าของตรวจแล้ว</h3><p>คำสั่งนี้รันโปรแกรมที่เลือกด้วยสิทธิ์ของคุณ ChatGPT เลือกได้เฉพาะคำสั่งที่ผูกกับโครงการ และใส่อาร์กิวเมนต์เองไม่ได้ ไฟล์ที่เขียนเป็น {'${projectRoot}/…'} จะตรึงค่าตอนเริ่มงานแต่ละครั้ง ซึ่ง ChatGPT แก้ไฟล์ในโครงการได้ ถ้าต้องการตรึงสคริปต์ไว้ตั้งแต่ตอนอนุมัติ ให้ใช้ path เต็มนอกโครงการ อย่าใส่ path ในชื่อคำสั่ง เพราะ ChatGPT เห็นชื่อนี้ PowerShell ให้ใส่ -NoProfile -NonInteractive -ExecutionPolicy Bypass -File และ python แนะนำ -I</p>
           {(['recipeId', 'displayName', 'executable', 'timeoutMinutes'] as const).map((field) => <label key={field}>{field === 'recipeId' ? 'รหัสคำสั่ง' : field === 'displayName' ? 'ชื่อที่ ChatGPT เห็น' : field === 'executable' ? 'โปรแกรม (path เต็ม)' : 'เวลาสูงสุด (นาที)'}
@@ -301,7 +327,7 @@ export function GotzjiApp({ requestPort, exportNativePort }: { readonly requestP
       }} />{projectId && <div ref={projectFilesRef} tabIndex={-1}><GotzjiProjectFiles chatgptOnly key={projectId} projectId={projectId} request={request} disabled={busy || host?.state !== 'ready'} onJob={(id) => { selectJob(id); setPage('worklog'); void refresh(); }} /></div>}
         <GotzjiToolReference />
         {selectedProject?.kind === 'library' && <GotzjiLibraryChannelPanel projectId={projectId} disabled={host?.state !== 'ready'} />}
-        <details className="gotzji-advanced" open={toolPreparationOpen || operation === 'excel.range.read' && sheetsResult !== undefined} onToggle={event => setToolPreparationOpen(event.currentTarget.open)}><summary>เครื่องมือขั้นสูง</summary><section ref={toolPreparationRef} tabIndex={-1}><h3>เตรียมคำสั่งของโครงการ</h3><label>โครงการ<select disabled={busy} value={projectId} onChange={(event) => { const id = event.target.value; if (id) void act(async () => { await request('selectProject', { projectId: id }); setProjectId(id); }); }}><option value="">เลือกโครงการ</option>
+        <details className="gotzji-advanced" open={toolPreparationOpen || operation === 'excel.range.read' && sheetsResult !== undefined} onToggle={event => setToolPreparationOpen(event.currentTarget.open)}><summary>เครื่องมือขั้นสูง</summary><section ref={toolPreparationRef} tabIndex={-1}><h3>เตรียมคำสั่งของโครงการ</h3><label>โครงการ<select disabled={busy} value={projectId} onChange={(event) => { const id = event.target.value; if (id) void act(async () => { await selectProject(id); }); }}><option value="">เลือกโครงการ</option>
           {projects.map((project) => <option key={String(project.projectId)} value={String(project.projectId)}>{String(project.displayName)}</option>)}</select></label>
           <label htmlFor={operationSelectId}>เครื่องมือ</label><select id={operationSelectId} disabled={busy} value={operation} onChange={(event) => setOperation(event.target.value)}>{available.map((item) => <option key={String(item.name)} value={String(item.name)}>{String(item.name)}</option>)}{workflows.map((item) => <option key={`${item.workflowId}:${item.workflowVersion}`} value={`library:${item.workflowId}:${item.workflowVersion}`}>{String(item.workflowId)} · {String(item.description)}</option>)}</select>
           {!operation.startsWith('browser.') && !operation.startsWith('library:') && <label>{operation === 'command.run' ? 'คำสั่งที่ตรวจไว้แล้ว' : 'ไฟล์ในโครงการ'}{operation === 'command.run'
@@ -350,7 +376,7 @@ export function GotzjiApp({ requestPort, exportNativePort }: { readonly requestP
             {selectedJob.settleDecisions.includes('no-effect') && <button disabled={busy} onClick={() => void act(async () => { setSelectedJob(await request('settleJob', { jobId, decision: 'no-effect' })); await refresh(); })}>ไม่มีผล · ปล่อยโครงการ</button>}</div></fieldset>}
           {result !== null && (sheetsResult ? <><GotzjiExcelSheetsResult value={sheetsResult} disabled={busy || host?.state !== 'ready' || !projects.some((project) => project.projectId === sheetsResult.projectId)}
             select={(sheet) => void act(async () => {
-              await request('selectProject', { projectId: sheetsResult.projectId }); setProjectId(sheetsResult.projectId);
+              await selectProject(sheetsResult.projectId);
               setOperation('excel.range.read'); setTarget(sheetsResult.path); setExpectedSha256(sheetsResult.sourceSha256);
               setNativeValues((previous) => ({ ...previous, sheet: sheet.name, range: sheet.used_range.split(':')[0]! })); setPage('tools');
             })} /><details><summary>รายละเอียดการตรวจยืนยัน</summary><pre>{display(result)}</pre></details></>
@@ -367,7 +393,7 @@ export function GotzjiApp({ requestPort, exportNativePort }: { readonly requestP
               return request('readProjectFile', { projectId: resultProjectId, path });
             }} /><details><summary>รายละเอียดการตรวจยืนยัน</summary><pre>{display(result)}</pre></details></>
             : <section aria-label="รายละเอียดผลลัพธ์"><p>ผลชนิดนี้ยังไม่มีมุมมองสรุป เปิดรายละเอียดจากระบบเพื่อตรวจข้อมูล</p><details><summary>รายละเอียดการตรวจยืนยัน</summary><pre>{display(result)}</pre></details></section>)}</section>}</>}
-      {page === 'workflows' && <><section><label htmlFor={workflowProjectSelectId}>โครงการสำหรับเวิร์กโฟลว์</label><select id={workflowProjectSelectId} value={projectId} disabled={busy || host?.state !== 'ready'} onChange={(event) => { const id = event.target.value; if (id) void act(async () => { await request('selectProject', { projectId: id }); setProjectId(id); }); }}><option value="">เลือกโครงการ</option>{projects.map((project) => <option key={String(project.projectId)} value={String(project.projectId)}>{String(project.displayName)}</option>)}</select></section>
+      {page === 'workflows' && <><section><label htmlFor={workflowProjectSelectId}>โครงการสำหรับเวิร์กโฟลว์</label><select id={workflowProjectSelectId} value={projectId} disabled={busy || host?.state !== 'ready'} onChange={(event) => { const id = event.target.value; if (id) void act(async () => { await selectProject(id); }); }}><option value="">เลือกโครงการ</option>{projects.map((project) => <option key={String(project.projectId)} value={String(project.projectId)}>{String(project.displayName)}</option>)}</select></section>
         <GotzjiWorkflowPrompts key={`${projectId}:${String(selectedProject?.displayName ?? '')}`} project={selectedProject ? { projectId, displayName: String(selectedProject.displayName) } : null} disabled={busy || host?.state !== 'ready'} />
         <section><h3>งาน Library ของโครงการ</h3><p>เลือกงานที่ระบบรองรับสำหรับโครงการนี้ แล้วตรวจรายละเอียดก่อนเริ่ม</p>
           {workflows.length === 0 ? <><p>ยังไม่มีงาน Library ที่พร้อมใช้งานสำหรับโครงการนี้</p><button onClick={() => setPage('projects')}>เลือกโครงการ</button></> : workflows.map((workflow) => <article key={`${workflow.workflowId}:${workflow.workflowVersion}`}><h4>{String(workflow.workflowId)}</h4><p>{String(workflow.description)}</p><button onClick={() => { setOperation(`library:${workflow.workflowId}:${workflow.workflowVersion}`); setPage('tools'); }}>เปิดรายละเอียดและเตรียมงาน</button></article>)}
@@ -377,7 +403,7 @@ export function GotzjiApp({ requestPort, exportNativePort }: { readonly requestP
       {page === 'live' && <section><h3>บันทึกสดของงาน</h3><p>เลือกงานที่ต้องการอ่านบันทึก โดยไม่เริ่มงานซ้ำ</p><JobList jobs={jobs} disabled={busy || nativeExportJob !== null} select={selectJob} />{jobId && <><h3>งาน {jobId}</h3><JobStatus value={selectedJob} /><button onClick={() => setPage('worklog')}>ดูสถานะและผลลัพธ์</button></>}</section>}
       {page === 'doctor' && <><GotzjiDoctorPanel request={request} disabled={busy || !host || host.state === 'unavailable'} onJob={id => { selectJob(id); setPage('worklog'); }} /><section><h3>ระบบควบคุมงาน</h3><p>{host?.state === 'ready' ? 'ระบบในเครื่องพร้อมทำงาน' : host?.state === 'control-only' ? 'ควบคุมงานเดิมได้ · รอตรวจความเข้ากันได้ของรุ่น' : 'ยังไม่พร้อม'}</p>{host?.errorCode && <p>{host.errorCode}</p>}<p>อัปเดตด้วยไฟล์รุ่นที่ตรวจแล้ว</p>
         <div className="gotzji-navigation-target" ref={toolStatusRef} tabIndex={-1} role="group" aria-label="สถานะเครื่องมือ"><h3>เครื่องมือและโปรแกรม</h3>{catalogState !== 'ready' ? <p role="status">ยังอ่านสถานะเครื่องมือล่าสุดไม่ได้ ตรวจการเชื่อมต่อแล้วรีเฟรชอีกครั้ง</p> : <><p>สถานะจากการอ่านครั้งล่าสุด อาจเปลี่ยนได้</p>{diagnosticToolKey !== null && <div aria-label="เครื่องมือที่เลือก">{diagnosticTool ? <><p>เครื่องมือที่เลือก: {String(diagnosticTool.workflowId ?? diagnosticTool.recipeId ?? diagnosticTool.name)}</p><p>{String(diagnosticTool.name)}{diagnosticTool.projectId !== undefined ? ` · โครงการ: ${String(diagnosticTool.projectId)}` : ''}{diagnosticTool.workflowVersion !== undefined ? ` · รุ่น: ${String(diagnosticTool.workflowVersion)}` : ''}</p><p>{String(diagnosticTool.state)} {String(diagnosticTool.reason ?? '')}</p></> : <p>รายการที่เลือกไม่อยู่ในข้อมูลล่าสุด ลองกลับไปเลือกเครื่องมืออีกครั้ง</p>}</div>}{catalog.map((item) => <p key={toolIdentity(item)}>{String(item.workflowId ?? item.name)}: {String(item.state)} {String(item.reason ?? '')}</p>)}</>}</div></section><section><h3>รายงานช่วยเหลือ</h3><p>บันทึกเหตุผลของงานที่ล้มหรือค้าง ใครกำลังถือโครงการหรือทรัพยากรอะไร คิวงาน และสถานะของ CAD, Office และเบราว์เซอร์ ลงไฟล์ที่คุณเลือก รายงานมีชื่อโครงการตามที่คุณตั้ง แต่ไม่มีเนื้อหาไฟล์ path หรือ URL และไม่ถูกส่งไปที่ไหน</p><button disabled={busy || !host || host.state === 'unavailable'} onClick={() => void act(async () => { const saved = await window.gotzji.exportSupportReport(); setReportExport(saved.exported ? 'บันทึกรายงานแล้ว' : 'ยกเลิกการบันทึก'); })}>บันทึกรายงานช่วยเหลือ</button>{reportExport && <p>{reportExport}</p>}</section><GotzjiStartupPanel /></>}
-      <div hidden={!(['home', 'settings', 'doctor'] as Page[]).includes(page)}><GotzjiConnectionPanel disabled={host?.state !== 'ready'} {...(requestPort ? { requestPort } : {})} visible={(['home', 'settings', 'doctor'] as Page[]).includes(page)} surfaceKey={page} /></div>
+      <div hidden={!(['home', 'settings', 'doctor'] as Page[]).includes(page)}><GotzjiConnectionPanel disabled={host?.state !== 'ready'} {...(requestPort ? { requestPort } : {})} visible={(['home', 'settings', 'doctor'] as Page[]).includes(page)} surfaceKey={page} onStatusChange={setConnectionState} /></div>
       {jobId && <GotzjiJobLogs key={jobId} jobId={jobId} visible={page === 'live'} request={request} />}
     </main>
   </div>;
