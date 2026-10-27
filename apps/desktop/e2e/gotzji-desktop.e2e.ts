@@ -1275,6 +1275,58 @@ test('gotzji owner approves one ChatGPT delivery request without starting it fro
   expect(await readFile(path.join(root, 'delivered.txt'), 'utf8')).toBe('once\n');
 });
 
+test('gotzji approves one local Git commit and verifies its exact result', async ({ gotzji }) => {
+  test.setTimeout(120000);
+  const { page } = gotzji;
+  const root = await gotzji.temporaryProject('gotzji-files-panel-e2e-');
+  const locator = process.platform === 'win32' ? 'where.exe' : 'which';
+  const gitName = process.platform === 'win32' ? 'git.exe' : 'git';
+  const gitExecutable = await realpath((await promisify(execFile)(locator, [gitName])).stdout.trim().split(/\r?\n/u)[0]!);
+  await writeFile(path.join(root, 'empty-attributes'), '');
+  const gitEnvironment = { ...childEnvironment(), HOME: root, USERPROFILE: root, XDG_CONFIG_HOME: root, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: process.platform === 'win32' ? 'NUL' : '/dev/null', GIT_ATTR_NOSYSTEM: '1', GIT_TEMPLATE_DIR: '', GIT_AUTHOR_NAME: 'Synthetic Owner', GIT_AUTHOR_EMAIL: 'owner@example.invalid', GIT_COMMITTER_NAME: 'Synthetic Owner', GIT_COMMITTER_EMAIL: 'owner@example.invalid' };
+  const git = (args: string[]): Promise<{ stdout: string; stderr: string }> => promisify(execFile)(gitExecutable, ['-c', 'core.hooksPath=', '-c', 'core.attributesFile=empty-attributes', '-c', 'commit.gpgSign=false', ...args], { cwd: root, env: gitEnvironment, windowsHide: true });
+  await git(['init']);
+  expect((await git(['remote'])).stdout.trim()).toBe('');
+  await writeFile(path.join(root, 'proof.txt'), 'before\n');
+  await git(['add', 'proof.txt']); await git(['commit', '-m', 'Initial owned fixture']);
+  const initialHead = (await git(['rev-parse', 'HEAD'])).stdout.trim();
+  await writeFile(path.join(root, 'proof.txt'), 'after\n');
+  await writeFile(path.join(root, 'commit-fixture.cjs'), `const { execFileSync } = require('node:child_process');\nexecFileSync(${JSON.stringify(gitExecutable)}, ['-c', 'core.hooksPath=', '-c', 'core.attributesFile=empty-attributes', '-c', 'commit.gpgSign=false', '-c', 'user.name=Synthetic Owner', '-c', 'user.email=owner@example.invalid', 'commit', '-am', 'Owned delivery proof'], { stdio: 'inherit', env: { ...process.env, HOME: process.cwd(), USERPROFILE: process.cwd(), XDG_CONFIG_HOME: process.cwd(), GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: process.platform === 'win32' ? 'NUL' : '/dev/null', GIT_ATTR_NOSYSTEM: '1' } });\n`);
+  const prepared = await page.evaluate(async ({ rootPath, executable, gitPath }) => {
+    await Reflect.get(window, 'ownedTestRequest')({ method: 'registerRecipe', input: { recipeId: 'local-git-commit', displayName: 'บันทึก Git ทดสอบ', executable, args: ['${projectRoot}/commit-fixture.cjs'], dependencies: ['${projectRoot}/commit-fixture.cjs', '${projectRoot}/empty-attributes', gitPath], delivery: true, writeScope: 'project' } });
+    await Reflect.get(window, 'ownedTestRequest')({ method: 'registerProject', input: { projectId: 'local-git-delivery', displayName: 'โครงการ Git ทดสอบ', rootPath, recipeIds: ['local-git-commit'] } });
+    return Reflect.get(window, 'ownedTestRequest')({ method: 'prepareOperation', input: { requestId: 'local-git-delivery-once', projectId: 'local-git-delivery', operation: 'command.run', commandId: 'local-git-commit' } }) as Promise<{ preparationId: string; digest: string }>;
+  }, { rootPath: root, executable: await realpath(process.execPath), gitPath: gitExecutable });
+  expect((await git(['rev-parse', 'HEAD'])).stdout.trim()).toBe(initialHead);
+  expect(await page.evaluate(() => window.gotzji.request({ method: 'listJobs', input: {} }))).toEqual([]);
+  await page.getByRole('button', { name: 'รีเฟรช', exact: true }).click();
+  await page.getByRole('button', { name: 'โครงการ', exact: true }).click();
+  await page.getByRole('button', { name: /^โครงการ Git ทดสอบ ·/ }).click();
+  await page.getByRole('button', { name: 'Git', exact: true }).click();
+  await page.getByRole('button', { name: 'ตรวจคำขอส่งมอบ', exact: true }).click();
+  const panel = page.getByRole('region', { name: 'อนุมัติคำขอส่งมอบ' });
+  await panel.getByRole('button', { name: 'อ่านคำขอส่งมอบล่าสุด', exact: true }).click();
+  await expect(panel.getByText('โครงการ Git ทดสอบ · local-git-commit', { exact: true })).toBeVisible();
+  await panel.getByText('ตรวจโปรแกรม คำสั่ง และไฟล์ที่ตรึงไว้', { exact: true }).click();
+  await expect(panel.getByText(`รหัสยืนยันรายละเอียด: ${prepared.digest}`, { exact: true })).toBeVisible();
+  await panel.getByRole('checkbox').check();
+  await panel.getByRole('button', { name: 'อนุมัติคำขอนี้', exact: true }).click();
+  await expect(panel.getByText('อนุมัติแล้ว · ยังไม่ได้เริ่มงาน', { exact: true })).toBeVisible();
+  expect(await page.evaluate(() => window.gotzji.request({ method: 'listJobs', input: {} }))).toEqual([]);
+  expect((await git(['rev-parse', 'HEAD'])).stdout.trim()).toBe(initialHead);
+  const job = await page.evaluate(preparationId => Reflect.get(window, 'ownedTestRequest')({ method: 'submit', input: { preparationId } }) as Promise<{ jobId: string }>, prepared.preparationId);
+  const replay = await page.evaluate(preparationId => Reflect.get(window, 'ownedTestRequest')({ method: 'submit', input: { preparationId } }) as Promise<{ jobId: string }>, prepared.preparationId);
+  expect(replay.jobId).toBe(job.jobId);
+  await expect.poll(() => page.evaluate(jobId => window.gotzji.request({ method: 'result', input: { jobId } }).then(() => true).catch(() => false), job.jobId), { timeout: 30000 }).toBe(true);
+  const result = await page.evaluate(jobId => window.gotzji.request({ method: 'result', input: { jobId } }), job.jobId);
+  expect(result).toMatchObject({ projectId: 'local-git-delivery', operation: 'command.run', output: { jobId: job.jobId, commandId: 'local-git-commit', state: 'completed', exitCode: 0 } });
+  const newHead = (await git(['rev-parse', 'HEAD'])).stdout.trim();
+  expect(newHead).not.toBe(initialHead);
+  expect((await git(['rev-list', '--count', `${initialHead}..${newHead}`])).stdout.trim()).toBe('1');
+  expect((await git(['show', `${newHead}:proof.txt`])).stdout).toBe('after\n');
+  expect(await page.evaluate(() => window.gotzji.request({ method: 'listJobs', input: {} }))).toMatchObject([{ jobId: job.jobId, projectId: 'local-git-delivery', status: 'completed' }]);
+});
+
 test('gotzji browser review retains synthetic renderer admission across hidden pages', async ({ gotzji }) => {
   const { page } = gotzji; const fixturePath = gotzji.rendererFixturePath();
   await build({ stdin: { resolveDir: desktopRoot, sourcefile: 'owned-browser-ui.tsx', loader: 'tsx', contents: `
