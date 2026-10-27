@@ -412,6 +412,98 @@ for (const oldReply of ['success', 'rejection'] as const) test(`gotzji file outp
   await expect(ui.getByLabel('เนื้อหาผลงานที่ตรวจแล้ว', { exact: true })).toHaveCount(0);
 });
 
+test('connection settings ignore an older poll after the owner stops the connection', async ({ gotzji }) => {
+  const { page } = gotzji; const fixturePath = gotzji.rendererFixturePath();
+  await build({ stdin: { resolveDir: path.join(desktopRoot, 'src', 'renderer'), sourcefile: 'connection-order.tsx', loader: 'tsx', contents: `
+    import { createRoot } from 'react-dom/client'; import { GotzjiConnectionPanel } from './GotzjiConnectionPanel.tsx';
+    document.getElementById('root').hidden=true;const root=document.createElement('div');root.id='connection-order';document.body.append(root);let reads=0;const polls=[];Reflect.set(root,'polls',polls);
+    const request=(method)=>{if(method==='stopConnection')return Promise.resolve({state:'stopped',configured:true});
+      if(method==='connectionStatus'){if(++reads===1)return Promise.resolve({state:'ready',configured:true});
+        return new Promise((resolve,reject)=>polls.push({resolve,reject}));}throw new Error('UNEXPECTED_REQUEST');};
+    createRoot(root).render(<GotzjiConnectionPanel disabled={false} requestPort={request}/>);
+  ` }, bundle: true, format: 'iife', platform: 'browser', jsx: 'automatic', outfile: fixturePath, define: { 'process.env.NODE_ENV': '"production"' } });
+  await page.addScriptTag({ url: pathToFileURL(fixturePath).href });
+  const ui = page.locator('#connection-order');
+  await expect(ui).toContainText('เชื่อมต่อพร้อมใช้งาน');
+  await expect.poll(() => page.evaluate(() => Reflect.get(document.getElementById('connection-order')!, 'polls').length), { timeout: 7000 }).toBe(1);
+  await page.waitForTimeout(5200);
+  expect(await page.evaluate(() => Reflect.get(document.getElementById('connection-order')!, 'polls').length)).toBe(1);
+  await page.evaluate(() => Reflect.get(document.getElementById('connection-order')!, 'polls')[0].resolve({ state: 'stopped', configured: true }));
+  await expect(ui).toContainText('หยุดอยู่');
+  await expect.poll(() => page.evaluate(() => Reflect.get(document.getElementById('connection-order')!, 'polls').length), { timeout: 7000 }).toBe(2);
+  await ui.getByRole('button', { name: 'หยุดการเชื่อมต่อ', exact: true }).click();
+  await expect(ui).toContainText('หยุดอยู่');
+  await page.evaluate(() => Reflect.get(document.getElementById('connection-order')!, 'polls')[1].resolve({ state: 'ready', configured: true }));
+  await expect(ui).toContainText('หยุดอยู่');
+  await expect(ui).not.toContainText('เชื่อมต่อพร้อมใช้งาน');
+  await expect.poll(() => page.evaluate(() => Reflect.get(document.getElementById('connection-order')!, 'polls').length), { timeout: 7000 }).toBe(3);
+  await page.evaluate(() => Reflect.get(document.getElementById('connection-order')!, 'polls')[2].reject(new Error('offline')));
+  await expect(ui.getByRole('alert')).toContainText('ตรวจสถานะการเชื่อมต่อไม่สำเร็จ');
+  await expect(ui).not.toContainText('หยุดอยู่');
+  await expect.poll(() => page.evaluate(() => Reflect.get(document.getElementById('connection-order')!, 'polls').length), { timeout: 7000 }).toBe(4);
+  await page.evaluate(() => Reflect.get(document.getElementById('connection-order')!, 'polls')[3].resolve({ state: 'ready', configured: true, errorCode: {} }));
+  await expect(ui.getByRole('alert')).toContainText('ตรวจสถานะการเชื่อมต่อไม่สำเร็จ');
+  await expect(ui).not.toContainText('เชื่อมต่อพร้อมใช้งาน');
+  await ui.getByRole('button', { name: 'ตรวจสถานะ', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => Reflect.get(document.getElementById('connection-order')!, 'polls').length)).toBe(5);
+  await page.evaluate(() => Reflect.get(document.getElementById('connection-order')!, 'polls')[4].reject(new Error('manual offline')));
+  await expect(ui.getByRole('alert')).toContainText('ผลคำสั่งก่อนหน้า: manual offline');
+  await expect.poll(() => page.evaluate(() => Reflect.get(document.getElementById('connection-order')!, 'polls').length), { timeout: 7000 }).toBe(6);
+  await page.evaluate(() => Reflect.get(document.getElementById('connection-order')!, 'polls')[5].reject(new Error('current offline')));
+  await expect(ui.getByRole('alert').filter({ hasText: 'ตรวจสถานะการเชื่อมต่อไม่สำเร็จ' })).toBeVisible();
+  await expect(ui.getByRole('alert').filter({ hasText: 'ผลคำสั่งก่อนหน้า: manual offline' })).toBeVisible();
+  await expect.poll(() => page.evaluate(() => Reflect.get(document.getElementById('connection-order')!, 'polls').length), { timeout: 7000 }).toBe(7);
+  await page.evaluate(() => Reflect.get(document.getElementById('connection-order')!, 'polls')[6].resolve({ state: 'ready', configured: true }));
+  await expect(ui).toContainText('เชื่อมต่อพร้อมใช้งาน');
+  await expect(ui.getByRole('alert')).toContainText('ผลคำสั่งก่อนหน้า: manual offline');
+});
+
+test('connection action keeps one state while moving between app pages', async ({ gotzji }) => {
+  const { page } = gotzji; const fixturePath = gotzji.rendererFixturePath();
+  await build({ stdin: { resolveDir: path.join(desktopRoot, 'src', 'renderer'), sourcefile: 'connection-navigation.tsx', loader: 'tsx', contents: `
+    import { createRoot } from 'react-dom/client';import { GotzjiApp } from './GotzjiApp.tsx';
+    document.getElementById('root').hidden=true;const root=document.createElement('div');root.id='connection-navigation';document.body.append(root);Reflect.set(root,'statusReads',0);let state='ready';
+    const request=(method,input)=>{if(method==='connectionStatus'){Reflect.set(root,'statusReads',Reflect.get(root,'statusReads')+1);if(Reflect.get(root,'holdNext')){Reflect.set(root,'holdNext',false);return new Promise(resolve=>Reflect.set(root,'oldPoll',resolve));}return Promise.resolve({state,configured:true});}
+      if(method==='stopConnection')return new Promise(resolve=>Reflect.set(root,'stop',value=>{state=value.state;resolve(value);}));
+      if(['listProjects','listManagedProjects','listJobs','listCatalog','inspectQueue'].includes(method))return Promise.resolve([]);
+      if(method==='selectedProject')return Promise.resolve(null);return window.gotzji.request({method,input});};
+    createRoot(root).render(<GotzjiApp requestPort={request}/>);
+  ` }, bundle: true, format: 'iife', platform: 'browser', jsx: 'automatic', loader: { '.css': 'empty', '.webp': 'dataurl' }, outfile: fixturePath, define: { 'process.env.NODE_ENV': '"production"' } });
+  await page.addScriptTag({ url: pathToFileURL(fixturePath).href });
+  const ui = page.locator('#connection-navigation');
+  await expect(ui).toContainText('เชื่อมต่อพร้อมใช้งาน');
+  await ui.getByText('ตั้งค่าการเชื่อมต่อของ gotzji', { exact: true }).click();
+  await ui.getByLabel('Runtime API key', { exact: true }).fill('unsent-key');
+  await ui.getByRole('button', { name: 'หยุดการเชื่อมต่อ', exact: true }).click();
+  await ui.getByRole('button', { name: 'เครื่องมือ', exact: true }).click();
+  const reads = await page.evaluate(() => Reflect.get(document.getElementById('connection-navigation')!, 'statusReads'));
+  await page.waitForTimeout(5200);
+  expect(await page.evaluate(() => Reflect.get(document.getElementById('connection-navigation')!, 'statusReads'))).toBe(reads);
+  await ui.getByRole('button', { name: 'ตั้งค่า', exact: true }).click();
+  await expect(ui.getByLabel('Runtime API key', { exact: true })).toHaveValue('');
+  await expect(ui.getByRole('button', { name: 'หยุดการเชื่อมต่อ', exact: true })).toBeDisabled();
+  await page.evaluate(() => Reflect.get(document.getElementById('connection-navigation')!, 'stop')({ state: 'stopped', configured: true }));
+  await expect(ui).toContainText('หยุดอยู่');
+  await ui.getByRole('button', { name: 'ตรวจระบบ', exact: true }).click();
+  await expect(ui).toContainText('หยุดอยู่');
+  await ui.getByRole('button', { name: 'เครื่องมือ', exact: true }).click();
+  const idleReads = await page.evaluate(() => Reflect.get(document.getElementById('connection-navigation')!, 'statusReads'));
+  await page.waitForTimeout(5200);
+  expect(await page.evaluate(() => Reflect.get(document.getElementById('connection-navigation')!, 'statusReads'))).toBe(idleReads);
+  await ui.getByRole('button', { name: 'ตรวจระบบ', exact: true }).click();
+  await expect(ui).toContainText('หยุดอยู่');
+  await page.evaluate(() => Reflect.set(document.getElementById('connection-navigation')!, 'holdNext', true));
+  await ui.getByRole('button', { name: 'ตั้งค่า', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => typeof Reflect.get(document.getElementById('connection-navigation')!, 'oldPoll'))).toBe('function');
+  await ui.getByRole('button', { name: 'เครื่องมือ', exact: true }).click();
+  await ui.getByRole('button', { name: 'ตั้งค่า', exact: true }).click();
+  await expect(ui).not.toContainText('เชื่อมต่อพร้อมใช้งาน');
+  await expect(ui).not.toContainText('หยุดอยู่');
+  await page.evaluate(() => Reflect.get(document.getElementById('connection-navigation')!, 'oldPoll')({ state: 'ready', configured: true }));
+  await expect(ui).toContainText('หยุดอยู่');
+  await expect(ui).not.toContainText('เชื่อมต่อพร้อมใช้งาน');
+});
+
 test('native export keeps the selected job fixed until the pending save finishes', async ({ gotzji }) => {
   const { page } = gotzji; const fixturePath = gotzji.rendererFixturePath();
   await build({ stdin: { resolveDir: path.join(desktopRoot, 'src', 'renderer'), sourcefile: 'native-export-selection.tsx', loader: 'tsx', contents: `
@@ -428,7 +520,7 @@ test('native export keeps the selected job fixed until the pending save finishes
       return window.gotzji.request({method,input});
     };
     const save=id=>new Promise((resolve,reject)=>Reflect.set(root,'pending',{id,resolve,reject}));
-    createRoot(root).render(<GotzjiApp requestPort={request} exportNativePort={save}/>);
+    createRoot(root).render(<><p role="alert">unrelated diagnostic</p><GotzjiApp requestPort={request} exportNativePort={save}/></>);
   ` }, bundle: true, format: 'iife', platform: 'browser', jsx: 'automatic', loader: { '.css': 'empty', '.webp': 'dataurl' }, outfile: fixturePath, define: { 'process.env.NODE_ENV': '"production"' } });
   await page.addScriptTag({ url: pathToFileURL(fixturePath).href });
   const ui = page.locator('#native-export-selection'); const first = '1'.repeat(64); const second = '2'.repeat(64);
@@ -448,8 +540,9 @@ test('native export keeps the selected job fixed until the pending save finishes
   await ui.getByRole('button', { name: 'บันทึกสำเนาผลงาน', exact: true }).click();
   await ui.getByRole('button', { name: 'ตั้งค่า', exact: true }).click();
   await page.evaluate(() => Reflect.get(Reflect.get(document.getElementById('native-export-selection')!, 'pending'), 'reject')(new Error('NATIVE_OUTPUT_WRITE_INCOMPLETE')));
-  await expect(ui.getByRole('alert')).toContainText('ไฟล์ที่เลือกอาจไม่สมบูรณ์');
-  await expect(ui.getByRole('alert')).toContainText(second);
+  const warning = ui.getByRole('alert').filter({ hasText: 'ไฟล์ที่เลือกอาจไม่สมบูรณ์' });
+  await expect(warning).toBeVisible();
+  await expect(warning).toContainText(second);
 });
 
 test('gotzji same-job file result shows readable content and survives reselecting after reload', async ({ gotzji }) => {
