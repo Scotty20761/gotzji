@@ -1186,6 +1186,9 @@ test('gotzji app archives and restores one project while retaining files, memory
 
 test('gotzji owner approves one ChatGPT delivery request without starting it from Desktop', async ({ gotzji }) => {
   const { page } = gotzji;
+  await page.getByRole('button', { name: 'โครงการ', exact: true }).click();
+  await expect(page.getByText('คำสั่งส่งมอบ (push, เผยแพร่, โปรโมตเป็นเวอร์ชันทางการ):', { exact: false })).toContainText('ChatGPT เตรียมคำขอ คุณอนุมัติคำขอนั้น แล้ว ChatGPT ส่งคำขอเดิมเพื่อเริ่มงาน');
+  await page.getByRole('button', { name: 'หน้าแรก', exact: true }).click();
   const root = await gotzji.temporaryProject('gotzji-files-panel-e2e-');
   await writeFile(path.join(root, 'ship.mjs'), "import {appendFileSync} from 'node:fs';appendFileSync('delivered.txt','once\\n');console.log('delivered once');");
   const prepared = await page.evaluate(async ({ rootPath, executable }) => {

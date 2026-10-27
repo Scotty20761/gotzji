@@ -11,7 +11,7 @@ import { GotzjiJobLogs } from './GotzjiJobLogs.js';
 import { GotzjiProjectCommands } from './GotzjiProjectCommands.js';
 import { projectCommandOptions } from './gotzji-project-commands.js';
 import { buildNativeFormInput, nativeFormFields } from './gotzji-native-form.js';
-import { EMPTY_RECIPE_FORM, recipeRequest, recipeReviewLines, type RecipeForm } from './gotzji-recipe-form.js';
+import { DELIVERY_INSTRUCTION, EMPTY_RECIPE_FORM, recipeRequest, recipeReviewLines, type RecipeForm } from './gotzji-recipe-form.js';
 import { GotzjiConnectionPanel } from './GotzjiConnectionPanel.js';
 import { GotzjiStartupPanel } from './GotzjiStartupPanel.js';
 import { GotzjiBrowserPanel } from './GotzjiBrowserPanel.js';
@@ -237,7 +237,7 @@ export function GotzjiApp({ requestPort }: { readonly requestPort?: (method: Got
           <label><input type="checkbox" disabled={busy} checked={recipeForm.projectOnly} onChange={(event) => setRecipeForm({ ...recipeForm, projectOnly: event.target.checked })} />
             เขียนเฉพาะในโฟลเดอร์ของโครงการ: เลือกเมื่อคำสั่งนี้ไม่เขียนนอกโฟลเดอร์ของโครงการ และไม่รัน Git หรือ build ทั้งคลัง งานในโฟลเดอร์อื่นของเวิร์กสเปซเดียวกันจะทำพร้อมกันได้ ถ้าไม่เลือก คำสั่งนี้จะถือทั้งเวิร์กสเปซจนจบ</label>
           <label><input type="checkbox" disabled={busy} checked={recipeForm.delivery} onChange={(event) => setRecipeForm({ ...recipeForm, delivery: event.target.checked })} />
-            คำสั่งส่งมอบ (push, เผยแพร่, โปรโมตเป็นเวอร์ชันทางการ): ChatGPT สั่งรันเองไม่ได้ คุณกดรันจากหน้าทำงานของแอปนี้เองทุกครั้ง สิ่งที่ถูกส่งออกคือสิ่งที่อยู่ในโครงการตอนที่รัน ถ้าต้องการตรึงสิ่งที่ส่ง ให้ประกาศไฟล์นั้นเป็นไฟล์ที่คำสั่งใช้</label>
+            คำสั่งส่งมอบ (push, เผยแพร่, โปรโมตเป็นเวอร์ชันทางการ): {DELIVERY_INSTRUCTION} การอนุมัติยังไม่เริ่มงาน สิ่งที่ถูกส่งออกคือสิ่งที่อยู่ในโครงการตอนที่รัน ถ้าต้องการตรึงสิ่งที่ส่ง ให้ประกาศไฟล์นั้นเป็นไฟล์ที่คำสั่งใช้</label>
           <button disabled={busy || !recipeForm.recipeId || !recipeForm.executable} onClick={() => void act(async () => { setRecipeReview(recipeReviewLines(await request('registerRecipe', { ...recipeRequest(recipeForm) }))); await refresh(); })}>อนุมัติคำสั่งนี้</button>
           {recipeReview.length > 0 && <pre>{recipeReview.join('\n')}</pre>}
           <label>ผูกกับโครงการ<select disabled={busy} value={recipeBinding.projectId} onChange={(event) => setRecipeBinding({ ...recipeBinding, projectId: event.target.value })}><option value="">เลือกโครงการ</option>

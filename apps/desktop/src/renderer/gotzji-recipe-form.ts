@@ -2,6 +2,7 @@
 export interface RecipeForm { readonly recipeId: string; readonly displayName: string; readonly executable: string; readonly args: string; readonly dependencies: string; readonly timeoutMinutes: string; readonly projectOnly: boolean; readonly delivery: boolean }
 
 export const EMPTY_RECIPE_FORM: RecipeForm = { recipeId: '', displayName: '', executable: '', args: '', dependencies: '', timeoutMinutes: '', projectOnly: false, delivery: false };
+export const DELIVERY_INSTRUCTION = 'ChatGPT เตรียมคำขอ คุณอนุมัติคำขอนั้น แล้ว ChatGPT ส่งคำขอเดิมเพื่อเริ่มงาน';
 
 /** The request the owner approves: each non-empty argument line is sent exactly as typed; other fields are trimmed. */
 export function recipeRequest(form: RecipeForm): Readonly<Record<string, unknown>> {
@@ -25,7 +26,7 @@ export function recipeReviewLines(value: unknown): readonly string[] {
   return [
     `โปรแกรม ${String(entry.executable)}`, `SHA-256 ${String(entry.executableSha256)}`,
     ...(Array.isArray(entry.args) ? entry.args.map((arg, index) => `อาร์กิวเมนต์ ${index + 1}: ${JSON.stringify(String(arg))}`) : []),
-    ...(entry.delivery === true ? ['คำสั่งส่งมอบ: ChatGPT สั่งรันเองไม่ได้ เจ้าของกดรันจากแอปนี้เท่านั้น'] : []),
+    ...(entry.delivery === true ? [`คำสั่งส่งมอบ: ${DELIVERY_INSTRUCTION}`] : []),
     entry.writeScope === 'project' ? 'เขียนได้เฉพาะในโฟลเดอร์ของโปรเจกต์ (งานในโฟลเดอร์อื่นของเวิร์กสเปซเดียวกันทำพร้อมกันได้)' : 'เขียนได้ทั้งเวิร์กสเปซ (งานอื่นในเวิร์กสเปซเดียวกันต้องรอ)',
     ...dependencies.map((item) => item.pinned === 'at-approval' ? `ตรึงตอนอนุมัติ ${String(item.path)} · ${String(item.sha256)}` : `ตรึงทุกครั้งที่เริ่มงาน (ChatGPT แก้ไฟล์นี้ได้) ${String(item.path)}`),
   ];
