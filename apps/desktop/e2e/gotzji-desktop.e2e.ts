@@ -477,8 +477,9 @@ test('gotzji live Tools search prepares a selected operation without starting wo
   await tools.getByLabel('ความพร้อม', { exact: true }).selectOption('unavailable');
   const unavailable = tools.getByRole('row').filter({ has: page.getByText('excel', { exact: true }) });
   await expect(unavailable).toContainText('ยังเชื่อมและตรวจไม่ครบ');
-  await unavailable.getByRole('button', { name: 'ตรวจตั้งค่าเครื่องมือ', exact: true }).click();
-  await expect(page.getByRole('heading', { name: 'ตั้งค่า', exact: true })).toBeVisible();
+  await unavailable.getByRole('button', { name: 'ตรวจความพร้อมในตรวจระบบ', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'ตรวจระบบ', exact: true })).toBeVisible();
+  await expect(page.getByRole('group', { name: 'สถานะเครื่องมือ', exact: true }).locator('[aria-label="เครื่องมือที่เลือก"]')).toContainText('เครื่องมือที่เลือก: excel');
   expect(await page.evaluate(() => window.gotzji.request({ method: 'listJobs', input: {} }))).toEqual([]);
 });
 
@@ -497,7 +498,7 @@ test('gotzji Tools filters retain full workflow identity and explain unavailable
     function Proof(){const [selected,setSelected]=useState(true);const [disabled,setDisabled]=useState(false);const [entries,setEntries]=useState(catalog);const [library,setLibrary]=useState(false);return <>
       <button onClick={()=>setLibrary(!library)}>Toggle Library</button>
       <button onClick={()=>setSelected(!selected)}>Toggle project</button><button onClick={()=>setDisabled(!disabled)}>Toggle host</button><button onClick={()=>setEntries([])}>Empty catalog</button>
-      <GotzjiToolsPanel catalog={entries} projectName={selected?'Project A':null} canBindRecipes={!library} disabled={disabled} onPrepare={row=>root.dataset.prepared=JSON.stringify(row)} onProject={()=>root.dataset.action='project'} onSettings={()=>root.dataset.action='settings'}/></>;}
+      <GotzjiToolsPanel catalog={entries} projectName={selected?'Project A':null} canBindRecipes={!library} disabled={disabled} onPrepare={row=>root.dataset.prepared=JSON.stringify(row)} onProject={()=>root.dataset.action='project'} onDiagnostics={()=>root.dataset.action='diagnostics'}/></>;}
     createRoot(root).render(<Proof/>);
   ` }, bundle: true, format: 'iife', platform: 'browser', jsx: 'automatic', outfile: fixturePath, define: { 'process.env.NODE_ENV': '"production"' } });
   await page.addScriptTag({ url: pathToFileURL(fixturePath).href });
@@ -525,9 +526,9 @@ test('gotzji Tools filters retain full workflow identity and explain unavailable
   await search.fill('');
   await proof.getByLabel('ประเภทเครื่องมือ', { exact: true }).selectOption('excel');
   await proof.getByLabel('ความพร้อม', { exact: true }).selectOption('unavailable');
-  await expect(proof.getByText('ยังไม่มีตัวเชื่อมโปรแกรมที่ผ่านการตรวจสำหรับเครื่องมือนี้ ตรวจการติดตั้งและตัวเชื่อมในตั้งค่า', { exact: true })).toBeVisible();
-  await proof.getByRole('button', { name: 'ตรวจตั้งค่าเครื่องมือ', exact: true }).click();
-  await expect(proof).toHaveAttribute('data-action', 'settings');
+  await expect(proof.getByText('ยังไม่มีตัวเชื่อมโปรแกรมที่ผ่านการตรวจสำหรับเครื่องมือนี้ เปิดตรวจระบบเพื่อดูสถานะเครื่องมือ', { exact: true })).toBeVisible();
+  await proof.getByRole('button', { name: 'ตรวจความพร้อมในตรวจระบบ', exact: true }).click();
+  await expect(proof).toHaveAttribute('data-action', 'diagnostics');
   await search.fill('no-such-tool');
   await expect(proof.getByText('ไม่พบเครื่องมือที่ตรงกับตัวกรอง ลองเปลี่ยนคำค้นหรือเลือกทุกประเภท', { exact: true })).toBeVisible();
   await search.fill(''); await proof.getByLabel('ประเภทเครื่องมือ', { exact: true }).selectOption('other');
@@ -536,6 +537,60 @@ test('gotzji Tools filters retain full workflow identity and explain unavailable
   await expect(proof.locator('script')).toHaveCount(0);
   await proof.getByRole('button', { name: 'Empty catalog', exact: true }).click();
   await expect(proof.getByText('ยังไม่มีรายการจากระบบ ลองรีเฟรชหรือตรวจการเชื่อมต่อ', { exact: true })).toBeVisible();
+  expect(await page.evaluate(() => window.gotzji.request({ method: 'listJobs', input: {} }))).toEqual([]);
+});
+
+test('gotzji unavailable tool opens its current diagnostics without starting work', async ({ gotzji }) => {
+  const { page } = gotzji; const fixturePath = gotzji.rendererFixturePath();
+  const rootPath = await gotzji.temporaryProject('gotzji-files-panel-e2e-');
+  await page.evaluate(async rootPath => {
+    await window.gotzji.request({ method: 'registerProject', input: { projectId: 'diagnostics-project', displayName: 'โครงการตรวจเครื่องมือ', rootPath } });
+    await window.gotzji.request({ method: 'selectProject', input: { projectId: 'diagnostics-project' } });
+  }, rootPath);
+  await build({ stdin: { resolveDir: path.join(desktopRoot, 'src', 'renderer'), sourcefile: 'tool-diagnostics-fixture.tsx', loader: 'tsx', contents: `
+    import { createRoot } from 'react-dom/client'; import { GotzjiApp } from './GotzjiApp.tsx';
+    document.getElementById('root').hidden=true;const root=document.createElement('div');root.id='tool-diagnostics-proof';document.body.append(root);
+    const request=async(method,input)=>{
+      if(method==='listCatalog'&&root.dataset.failed)throw new Error('OWNED_CATALOG_READ_FAILED');
+      if(method==='listCatalog'&&root.dataset.malformed)return [null];
+      if(method==='listCatalog')return [
+        ...Array.from({length:15},(_,i)=>({name:'future.'+i,state:'unsupported'})),
+        {name:'library.workflow',projectId:'diagnostics-project',workflowId:'report',workflowVersion:'2',state:'unsupported',reason:'VERSION_TWO'},
+        ...(root.dataset.removed?[]:[{name:'library.workflow',projectId:'diagnostics-project',workflowId:'report',workflowVersion:'3',state:'unsupported',reason:'VERSION_THREE'}])];
+      if(method==='prepareOperation'||method==='submit')throw new Error('Desktop started work');
+      return window.gotzji.request({method,input});};
+    createRoot(root,{identifierPrefix:'tool-diagnostics-'}).render(<GotzjiApp requestPort={request}/>);
+  ` }, bundle: true, format: 'iife', platform: 'browser', jsx: 'automatic', loader: { '.css': 'empty', '.webp': 'dataurl' }, outfile: fixturePath, define: { 'process.env.NODE_ENV': '"production"' } });
+  await page.addScriptTag({ url: pathToFileURL(fixturePath).href });
+  const appView = page.locator('#tool-diagnostics-proof');
+  await appView.getByRole('navigation').getByRole('button', { name: 'เครื่องมือ', exact: true }).click();
+  const tools = appView.getByRole('region', { name: 'เครื่องมือของเครื่องนี้', exact: true });
+  await tools.getByLabel('ค้นหาเครื่องมือ', { exact: true }).fill('report');
+  await tools.getByRole('row').filter({ hasText: 'รุ่น: 3' }).getByRole('button', { name: 'ตรวจความพร้อมในตรวจระบบ', exact: true }).click();
+  const diagnostics = appView.getByRole('group', { name: 'สถานะเครื่องมือ', exact: true });
+  await expect(diagnostics).toBeFocused();
+  await expect(diagnostics.getByRole('heading', { name: 'เครื่องมือและโปรแกรม', exact: true })).toBeInViewport();
+  const selected = diagnostics.locator('[aria-label="เครื่องมือที่เลือก"]');
+  await expect(selected).toContainText('โครงการ: diagnostics-project');
+  await expect(selected).toContainText('รุ่น: 3');
+  await expect(selected).toContainText('unsupported VERSION_THREE');
+  await expect(selected).not.toContainText('VERSION_TWO');
+  await expect(selected.getByText('unsupported VERSION_THREE', { exact: true })).toBeInViewport();
+  await page.evaluate(() => { document.getElementById('tool-diagnostics-proof')!.dataset.failed = 'true'; });
+  await appView.getByRole('button', { name: 'รีเฟรช', exact: true }).click();
+  await expect(diagnostics).toContainText('ยังอ่านสถานะเครื่องมือล่าสุดไม่ได้ ตรวจการเชื่อมต่อแล้วรีเฟรชอีกครั้ง');
+  await expect(diagnostics).not.toContainText('VERSION_THREE');
+  await appView.getByRole('navigation').getByRole('button', { name: 'เครื่องมือ', exact: true }).click();
+  await expect(appView.getByText('ยังไม่มีรายการจากระบบ ลองรีเฟรชหรือตรวจการเชื่อมต่อ', { exact: true })).toBeVisible();
+  await appView.getByRole('navigation').getByRole('button', { name: 'ตรวจระบบ', exact: true }).click();
+  await page.evaluate(() => { const root = document.getElementById('tool-diagnostics-proof')!; delete root.dataset.failed; root.dataset.malformed = 'true'; });
+  await appView.getByRole('button', { name: 'รีเฟรช', exact: true }).click();
+  await expect(appView.getByRole('alert').filter({ hasText: 'CATALOG_RESPONSE_INVALID' })).toBeVisible();
+  await expect(diagnostics).toContainText('ยังอ่านสถานะเครื่องมือล่าสุดไม่ได้ ตรวจการเชื่อมต่อแล้วรีเฟรชอีกครั้ง');
+  await expect(diagnostics).not.toContainText('VERSION_THREE');
+  await page.evaluate(() => { const root = document.getElementById('tool-diagnostics-proof')!; delete root.dataset.malformed; root.dataset.removed = 'true'; });
+  await appView.getByRole('button', { name: 'รีเฟรช', exact: true }).click();
+  await expect(diagnostics).toContainText('รายการที่เลือกไม่อยู่ในข้อมูลล่าสุด ลองกลับไปเลือกเครื่องมืออีกครั้ง');
   expect(await page.evaluate(() => window.gotzji.request({ method: 'listJobs', input: {} }))).toEqual([]);
 });
 

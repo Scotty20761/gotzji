@@ -19,8 +19,8 @@ const descriptions: Readonly<Record<string, string>> = {
 };
 const reasons: Readonly<Record<string, string>> = {
   PROVIDER_NOT_QUALIFIED: 'เครื่องมือตระกูลนี้ยังเชื่อมและตรวจไม่ครบ ดูเครื่องมือย่อยและตรวจระบบก่อนใช้งาน',
-  NATIVE_PROVIDER_NOT_QUALIFIED: 'ยังไม่มีตัวเชื่อมโปรแกรมที่ผ่านการตรวจสำหรับเครื่องมือนี้ ตรวจการติดตั้งและตัวเชื่อมในตั้งค่า',
-  BROWSER_PROVIDER_NOT_QUALIFIED: 'ยังไม่มีเบราว์เซอร์ที่ลงทะเบียนพร้อมใช้ เปิดส่วนเบราว์เซอร์ของโครงการเพื่อตรวจการเชื่อมต่อ',
+  NATIVE_PROVIDER_NOT_QUALIFIED: 'ยังไม่มีตัวเชื่อมโปรแกรมที่ผ่านการตรวจสำหรับเครื่องมือนี้ เปิดตรวจระบบเพื่อดูสถานะเครื่องมือ',
+  BROWSER_PROVIDER_NOT_QUALIFIED: 'ยังไม่มีเบราว์เซอร์ที่ลงทะเบียนพร้อมใช้ เปิดตรวจระบบเพื่อดูสถานะเครื่องมือ',
   PRODUCT_PROFILE_REQUIRED: 'ระบบนี้ยังไม่พร้อมรับงานใหม่ เปิดตรวจระบบเพื่อตรวจการเชื่อมต่อ',
   BUILTIN_RECIPE_SUPERSEDED: 'คำสั่งนี้มีรุ่นใหม่แทนแล้ว เลือกคำสั่งรุ่นปัจจุบันที่ผูกกับโครงการ',
 };
@@ -31,11 +31,11 @@ function category(row: ToolRow): Category {
 }
 
 /** Displays host declarations; selecting a row only prepares the existing owner journey. */
-export function GotzjiToolsPanel({ catalog, projectName, boundRecipeIds = [], canBindRecipes = true, disabled, onPrepare, onSettings, onProject }: {
+export function GotzjiToolsPanel({ catalog, projectName, boundRecipeIds = [], canBindRecipes = true, disabled, onPrepare, onDiagnostics, onProject }: {
   readonly catalog: readonly ToolRow[]; readonly projectName: string | null; readonly disabled: boolean;
   readonly boundRecipeIds?: readonly string[];
   readonly canBindRecipes?: boolean;
-  readonly onPrepare: (row: ToolRow) => void; readonly onSettings: () => void; readonly onProject: (row?: ToolRow) => void;
+  readonly onPrepare: (row: ToolRow) => void; readonly onDiagnostics: (row: ToolRow) => void; readonly onProject: (row?: ToolRow) => void;
 }): ReactElement {
   const id = useId();
   const [query, setQuery] = useState('');
@@ -63,9 +63,9 @@ export function GotzjiToolsPanel({ catalog, projectName, boundRecipeIds = [], ca
       const direct = ['file.read.direct', 'file.list', 'file.search'].includes(name);
       const unbound = typeof row.recipeId === 'string' && !boundRecipeIds.includes(row.recipeId);
       return <tr key={JSON.stringify([row.name, row.recipeId, row.projectId, row.workflowId, row.workflowVersion])}>
-        <td><strong>{String(row.workflowId ?? row.recipeId ?? labels[name] ?? name)}</strong><p><code>{name}</code></p><small>{categories[category(row)]}</small></td>
+        <td><strong>{String(row.workflowId ?? row.recipeId ?? labels[name] ?? name)}</strong><p><code>{name}</code></p>{row.workflowVersion !== undefined && <p>รุ่น: {String(row.workflowVersion)}</p>}{row.projectId !== undefined && <p>โครงการ: {String(row.projectId)}</p>}<small>{categories[category(row)]}</small></td>
         <td><strong>{available ? 'ระบบแจ้งว่าพร้อม' : 'ยังไม่พร้อม'}</strong><p>{available ? descriptions[name] ?? String(row.description ?? '') : reasons[String(row.reason)] ?? 'ยังไม่มีข้อมูลยืนยันความพร้อม ตรวจระบบและตัวเชื่อมก่อนใช้งาน'}</p>{available && unbound && projectName && <p>{canBindRecipes ? 'คำสั่งนี้ยังไม่ผูกกับโครงการที่เลือก' : 'คำสั่งแบบนี้ใช้กับโครงการทั่วไป สำหรับ Library ให้เลือกเวิร์กโฟลว์ของโครงการ'}</p>}{!available && <details><summary>รายละเอียดจากระบบ</summary><p>{String(row.reason ?? row.state ?? 'ไม่ทราบสถานะ')}</p><p>{String(row.description ?? '')}</p></details>}</td>
-        <td>{available ? unbound ? <button disabled={disabled || !projectName} onClick={() => onProject(row)}>{canBindRecipes ? 'ผูกคำสั่งกับโครงการ' : 'เลือกโครงการทั่วไป'}</button> : <button disabled={disabled || !projectName} onClick={() => onPrepare(row)}>{direct ? 'เปิดไฟล์ในโครงการ' : 'เตรียมคำสั่ง'}</button> : <button onClick={onSettings}>ตรวจตั้งค่าเครื่องมือ</button>}</td>
+        <td>{available ? unbound ? <button disabled={disabled || !projectName} onClick={() => onProject(row)}>{canBindRecipes ? 'ผูกคำสั่งกับโครงการ' : 'เลือกโครงการทั่วไป'}</button> : <button disabled={disabled || !projectName} onClick={() => onPrepare(row)}>{direct ? 'เปิดไฟล์ในโครงการ' : 'เตรียมคำสั่ง'}</button> : <button onClick={() => onDiagnostics(row)}>ตรวจความพร้อมในตรวจระบบ</button>}</td>
       </tr>;
     })}</tbody></table></div>}
   </section>;

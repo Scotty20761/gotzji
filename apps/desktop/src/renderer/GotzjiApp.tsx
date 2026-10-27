@@ -50,6 +50,8 @@ export function GotzjiApp({ requestPort }: { readonly requestPort?: (method: Got
   const [jobs, setJobs] = useState<readonly Row[]>([]);
   const [jobsLoaded, setJobsLoaded] = useState(false);
   const [catalog, setCatalog] = useState<readonly Row[]>([]);
+  const [catalogState, setCatalogState] = useState<'ready' | 'unavailable'>('unavailable');
+  const [diagnosticToolKey, setDiagnosticToolKey] = useState<string | null>(null);
   const [projectId, setProjectId] = useState('');
   const [jobId, setJobId] = useState('');
   const [selectedJob, setSelectedJob] = useState<unknown>(null);
@@ -66,7 +68,9 @@ export function GotzjiApp({ requestPort }: { readonly requestPort?: (method: Got
   const projectFilesRef = useRef<HTMLDivElement>(null);
   const projectCommandsRef = useRef<HTMLDivElement>(null);
   const deliveryApprovalsRef = useRef<HTMLDivElement>(null);
+  const toolStatusRef = useRef<HTMLDivElement>(null);
   const gitDestination = useRef<'commands' | 'approvals' | null>(null);
+  const toolDiagnosticsDestination = useRef(false);
   const [target, setTarget] = useState('');
   const [content, setContent] = useState('');
   const [expectedSha256, setExpectedSha256] = useState('');
@@ -98,30 +102,44 @@ export function GotzjiApp({ requestPort }: { readonly requestPort?: (method: Got
     else if (page === 'tools' && gitDestination.current === 'commands') gitDestination.current = null;
   }, [page]);
   useLayoutEffect(() => {
+    if (page === 'doctor' && toolDiagnosticsDestination.current && toolStatusRef.current) {
+      toolDiagnosticsDestination.current = false;
+      toolStatusRef.current.focus(); toolStatusRef.current.scrollIntoView({ block: 'start' });
+    }
+  }, [page]);
+  useLayoutEffect(() => {
     resultSelection.current = jobId; resultGeneration.current += 1; setResultView(null);
     return (): void => { resultSelection.current = ''; resultGeneration.current += 1; };
   }, [jobId, request]);
   const refresh = useCallback(async (): Promise<void> => {
     const generation = ++refreshGeneration.current;
-    const status = await window.gotzji.hostStatus();
-    if (generation !== refreshGeneration.current) return;
-    setHost(status);
-    if (status.state === 'unavailable') { setJobsLoaded(false); setManagedProjects(null); return; }
-    if (status.state === 'control-only') {
-      const jobRows = await request('listJobs');
+    try {
+      const status = await window.gotzji.hostStatus();
       if (generation !== refreshGeneration.current) return;
-      setJobs(rows(jobRows)); setJobsLoaded(true); setProjects([]); setManagedProjects(null); setCatalog([]);
-      return;
+      setHost(status);
+      if (status.state === 'unavailable') { setCatalogState('unavailable'); setCatalog([]); setJobsLoaded(false); setManagedProjects(null); return; }
+      if (status.state === 'control-only') {
+        setCatalogState('unavailable'); setCatalog([]);
+        const jobRows = await request('listJobs');
+        if (generation !== refreshGeneration.current) return;
+        setJobs(rows(jobRows)); setJobsLoaded(true); setProjects([]); setManagedProjects(null);
+        return;
+      }
+      const [projectRows, jobRows, catalogRows, selected, managedRows] = await Promise.all([
+        request('listProjects'), request('listJobs'), request('listCatalog'), request('selectedProject'), request('listManagedProjects'),
+      ]);
+      if (generation !== refreshGeneration.current) return;
+      if (!Array.isArray(catalogRows) || !catalogRows.every(item => record(item) && typeof item.name === 'string' && typeof item.state === 'string')) throw new Error('CATALOG_RESPONSE_INVALID');
+      setProjects(rows(projectRows));
+      setManagedProjects(managedProjectRows(managedRows));
+      setProjectId(record(selected) && typeof selected.projectId === 'string' ? selected.projectId : '');
+      setJobs(rows(jobRows)); setJobsLoaded(true);
+      setCatalog(rows(catalogRows));
+      setCatalogState('ready');
+    } catch (cause) {
+      if (generation === refreshGeneration.current) { setCatalogState('unavailable'); setCatalog([]); }
+      throw cause;
     }
-    const [projectRows, jobRows, catalogRows, selected, managedRows] = await Promise.all([
-      request('listProjects'), request('listJobs'), request('listCatalog'), request('selectedProject'), request('listManagedProjects'),
-    ]);
-    if (generation !== refreshGeneration.current) return;
-    setProjects(rows(projectRows));
-    setManagedProjects(managedProjectRows(managedRows));
-    setProjectId(record(selected) && typeof selected.projectId === 'string' ? selected.projectId : '');
-    setJobs(rows(jobRows)); setJobsLoaded(true);
-    setCatalog(rows(catalogRows));
   }, [request]);
 
   useEffect(() => {
@@ -202,6 +220,7 @@ export function GotzjiApp({ requestPort }: { readonly requestPort?: (method: Got
   const workflows = catalog.filter((item) => item.state === 'available' && item.name === 'library.workflow' && item.projectId === projectId);
   const recipes = catalog.filter((item) => item.state === 'available' && typeof item.recipeId === 'string');
   const selectedProject = projects.find((item) => item.projectId === projectId);
+  const diagnosticTool = diagnosticToolKey === null ? undefined : catalog.find(item => toolIdentity(item) === diagnosticToolKey);
   const browserResult = browserReadResult(result);
   const sheetsResult = excelSheetsResult(result);
   const rangeResult = excelRangeResult(result, jobId);
@@ -256,7 +275,7 @@ export function GotzjiApp({ requestPort }: { readonly requestPort?: (method: Got
           <button disabled={busy || !recipeBinding.projectId || !recipeBinding.recipeId} onClick={() => void act(async () => { await request('bindProjectRecipe', recipeBinding); await refresh(); })}>เพิ่มคำสั่งให้โครงการ</button></section></>}
       {selectedProject && <div className="gotzji-navigation-target" ref={projectCommandsRef} tabIndex={-1} role="group" aria-label="คำสั่งของโครงการ" hidden={page !== 'tools'}><GotzjiProjectCommands chatgptOnly key={`${JSON.stringify(selectedProject)}:${JSON.stringify(projectCommands)}`} visible={page === 'tools'} projectId={projectId} projectName={String(selectedProject.displayName)} commands={projectCommands} disabled={busy || host?.state !== 'ready'} request={request} onSettings={() => setPage('projects')} onJob={(id) => { setJobId(id); setPage((current) => current === 'tools' ? 'worklog' : current); void refresh(); }} /></div>}
       {selectedProject && <GotzjiBrowserPanel chatgptOnly key={projectId} visible={page === 'tools'} projectId={projectId} projectName={String(selectedProject.displayName)} disabled={busy || host?.state !== 'ready'} request={request} onChanged={refresh} onJob={(id) => { setJobId(id); setPage((current) => current === 'tools' ? 'worklog' : current); void refresh(); }} />}
-      {page === 'tools' && <><GotzjiToolsPanel catalog={catalog.filter(item => item.projectId === undefined || item.projectId === projectId)} projectName={selectedProject ? String(selectedProject.displayName) : null} boundRecipeIds={boundRecipeIds} canBindRecipes={selectedProject?.kind !== 'library'} disabled={busy || host?.state !== 'ready'} onProject={item => { if (typeof item?.recipeId === 'string') setRecipeBinding({ projectId: selectedProject?.kind === 'library' ? '' : projectId, recipeId: item.recipeId }); setPage('projects'); }} onSettings={() => setPage('settings')} onPrepare={item => {
+      {page === 'tools' && <><GotzjiToolsPanel catalog={catalog.filter(item => item.projectId === undefined || item.projectId === projectId)} projectName={selectedProject ? String(selectedProject.displayName) : null} boundRecipeIds={boundRecipeIds} canBindRecipes={selectedProject?.kind !== 'library'} disabled={busy || host?.state !== 'ready'} onProject={item => { if (typeof item?.recipeId === 'string') setRecipeBinding({ projectId: selectedProject?.kind === 'library' ? '' : projectId, recipeId: item.recipeId }); setPage('projects'); }} onDiagnostics={item => { setDiagnosticToolKey(toolIdentity(item)); toolDiagnosticsDestination.current = true; setPage('doctor'); }} onPrepare={item => {
         if (['file.read.direct', 'file.list', 'file.search'].includes(String(item.name))) { projectFilesRef.current?.focus(); projectFilesRef.current?.scrollIntoView({ block: 'start' }); return; }
         setOperation(item.name === 'library.workflow' ? `library:${item.workflowId}:${item.workflowVersion}` : typeof item.recipeId === 'string' ? 'command.run' : String(item.name));
         setTarget(typeof item.recipeId === 'string' && boundRecipeIds.includes(item.recipeId) ? item.recipeId : '');
@@ -340,7 +359,7 @@ export function GotzjiApp({ requestPort }: { readonly requestPort?: (method: Got
       {page === 'git' && (projectId ? <GotzjiGitPanel key={projectId} projectId={projectId} disabled={busy || host?.state !== 'ready'} request={request} onCommands={() => { if (!selectedProject) { setPage('projects'); return; } gitDestination.current = 'commands'; setPage('tools'); }} onApprovals={() => { gitDestination.current = 'approvals'; setPage('home'); }} /> : <section><h3>เลือกโครงการก่อนดู Git</h3><button onClick={() => setPage('projects')}>เลือกโครงการ</button></section>)}
       {page === 'live' && <section><h3>บันทึกสดของงาน</h3><p>เลือกงานที่ต้องการอ่านบันทึก โดยไม่เริ่มงานซ้ำ</p><JobList jobs={jobs} disabled={busy} select={setJobId} />{jobId && <><h3>งาน {jobId}</h3><JobStatus value={selectedJob} /><button onClick={() => setPage('worklog')}>ดูสถานะและผลลัพธ์</button></>}</section>}
       {page === 'doctor' && <><GotzjiDoctorPanel request={request} disabled={busy || !host || host.state === 'unavailable'} onJob={id => { setJobId(id); setPage('worklog'); }} /><section><h3>ระบบควบคุมงาน</h3><p>{host?.state === 'ready' ? 'ระบบในเครื่องพร้อมทำงาน' : host?.state === 'control-only' ? 'ควบคุมงานเดิมได้ · รอตรวจความเข้ากันได้ของรุ่น' : 'ยังไม่พร้อม'}</p>{host?.errorCode && <p>{host.errorCode}</p>}<p>อัปเดตด้วยไฟล์รุ่นที่ตรวจแล้ว</p>
-        <h3>เครื่องมือและโปรแกรม</h3>{catalog.map((item) => <p key={`${item.name}:${item.projectId ?? ''}:${item.workflowId ?? ''}:${item.workflowVersion ?? ''}`}>{String(item.workflowId ?? item.name)}: {String(item.state)} {String(item.reason ?? '')}</p>)}</section><section><h3>รายงานช่วยเหลือ</h3><p>บันทึกเหตุผลของงานที่ล้มหรือค้าง ใครกำลังถือโครงการหรือทรัพยากรอะไร คิวงาน และสถานะของ CAD, Office และเบราว์เซอร์ ลงไฟล์ที่คุณเลือก รายงานมีชื่อโครงการตามที่คุณตั้ง แต่ไม่มีเนื้อหาไฟล์ path หรือ URL และไม่ถูกส่งไปที่ไหน</p><button disabled={busy || !host || host.state === 'unavailable'} onClick={() => void act(async () => { const saved = await window.gotzji.exportSupportReport(); setReportExport(saved.exported ? 'บันทึกรายงานแล้ว' : 'ยกเลิกการบันทึก'); })}>บันทึกรายงานช่วยเหลือ</button>{reportExport && <p>{reportExport}</p>}</section><GotzjiConnectionPanel disabled={host?.state !== 'ready'} /><GotzjiStartupPanel /></>}
+        <div className="gotzji-navigation-target" ref={toolStatusRef} tabIndex={-1} role="group" aria-label="สถานะเครื่องมือ"><h3>เครื่องมือและโปรแกรม</h3>{catalogState !== 'ready' ? <p role="status">ยังอ่านสถานะเครื่องมือล่าสุดไม่ได้ ตรวจการเชื่อมต่อแล้วรีเฟรชอีกครั้ง</p> : <><p>สถานะจากการอ่านครั้งล่าสุด อาจเปลี่ยนได้</p>{diagnosticToolKey !== null && <div aria-label="เครื่องมือที่เลือก">{diagnosticTool ? <><p>เครื่องมือที่เลือก: {String(diagnosticTool.workflowId ?? diagnosticTool.recipeId ?? diagnosticTool.name)}</p><p>{String(diagnosticTool.name)}{diagnosticTool.projectId !== undefined ? ` · โครงการ: ${String(diagnosticTool.projectId)}` : ''}{diagnosticTool.workflowVersion !== undefined ? ` · รุ่น: ${String(diagnosticTool.workflowVersion)}` : ''}</p><p>{String(diagnosticTool.state)} {String(diagnosticTool.reason ?? '')}</p></> : <p>รายการที่เลือกไม่อยู่ในข้อมูลล่าสุด ลองกลับไปเลือกเครื่องมืออีกครั้ง</p>}</div>}{catalog.map((item) => <p key={toolIdentity(item)}>{String(item.workflowId ?? item.name)}: {String(item.state)} {String(item.reason ?? '')}</p>)}</>}</div></section><section><h3>รายงานช่วยเหลือ</h3><p>บันทึกเหตุผลของงานที่ล้มหรือค้าง ใครกำลังถือโครงการหรือทรัพยากรอะไร คิวงาน และสถานะของ CAD, Office และเบราว์เซอร์ ลงไฟล์ที่คุณเลือก รายงานมีชื่อโครงการตามที่คุณตั้ง แต่ไม่มีเนื้อหาไฟล์ path หรือ URL และไม่ถูกส่งไปที่ไหน</p><button disabled={busy || !host || host.state === 'unavailable'} onClick={() => void act(async () => { const saved = await window.gotzji.exportSupportReport(); setReportExport(saved.exported ? 'บันทึกรายงานแล้ว' : 'ยกเลิกการบันทึก'); })}>บันทึกรายงานช่วยเหลือ</button>{reportExport && <p>{reportExport}</p>}</section><GotzjiConnectionPanel disabled={host?.state !== 'ready'} /><GotzjiStartupPanel /></>}
       {jobId && <GotzjiJobLogs key={jobId} jobId={jobId} visible={page === 'live'} request={request} />}
     </main>
   </div>;
@@ -364,6 +383,7 @@ function JobStatus({ value }: { readonly value: unknown }): ReactElement {
 }
 function priorityOptions(): ReactElement[] { return ['ต่ำ', 'ปกติ', 'สูง', 'เร่งด่วน'].map((label, index) => <option key={index} value={String(index)}>{label}</option>); }
 
+function toolIdentity(item: Row): string { return JSON.stringify([item.name, item.recipeId, item.projectId, item.workflowId, item.workflowVersion]); }
 function record(value: unknown): value is Row { return value !== null && typeof value === 'object' && !Array.isArray(value); }
 function rows(value: unknown): readonly Row[] {
   const candidate = Array.isArray(value) ? value : record(value) ? (value.items ?? value.projects ?? value.jobs ?? value.operations) : null;
