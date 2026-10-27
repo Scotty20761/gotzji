@@ -30,8 +30,11 @@
 .gotzji-app button:disabled { opacity:.45; cursor:default; }
 .gotzji-app button:not(:disabled):hover { border-color:var(--gz-grace); background:#1c3536; }
 .gotzji-app button:focus-visible,.gotzji-app input:focus-visible,.gotzji-app textarea:focus-visible,.gotzji-app select:focus-visible,.gotzji-app summary:focus-visible { outline:2px solid var(--gz-attention); outline-offset:3px; }
+.gotzji-app .gotzji-navigation-target:focus { outline:2px solid var(--gz-attention); outline-offset:3px; }
 .gotzji-app input,.gotzji-app textarea,.gotzji-app select { padding:10px; color:inherit; border:1px solid; border-radius:6px; font:inherit; background:#0a1117; border-color:#364856; }
 .gotzji-app input[type=checkbox] { width:auto; }
+.gotzji-app .gotzji-git-checkbox { display:flex; align-items:center; gap:8px; }
+.gotzji-app .gotzji-git-checkbox input { margin:0; flex:none; }
 .gotzji-app .gotzji-welcome { display:flex; align-items:center; justify-content:space-between; gap:24px; min-height:220px; padding:12px 24px 0; overflow:hidden; }
 .gotzji-welcome > div { max-width:580px; padding:15px 0 24px; }
 .gotzji-welcome h3 { font-size:30px; line-height:1.45; margin:8px 0; }

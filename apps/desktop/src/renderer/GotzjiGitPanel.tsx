@@ -5,6 +5,8 @@ interface Props {
   readonly projectId: string;
   readonly disabled: boolean;
   readonly request: (method: GotzjiMethod, input: Record<string, unknown>) => Promise<unknown>;
+  readonly onCommands: () => void;
+  readonly onApprovals: () => void;
 }
 type View = 'status' | 'diff' | 'log';
 interface Result { view: View; entries?: Record<string, unknown>[]; patch?: string; truncated: boolean }
@@ -24,7 +26,7 @@ const explanations: Record<string, string> = {
 };
 function record(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === 'object' && !Array.isArray(value); }
 
-export function GotzjiGitPanel({ projectId, disabled, request }: Props): ReactElement {
+export function GotzjiGitPanel({ projectId, disabled, request, onCommands, onApprovals }: Props): ReactElement {
   const [path, setPath] = useState('');
   const [staged, setStaged] = useState(false);
   const [result, setResult] = useState<Result | null>(null);
@@ -49,13 +51,14 @@ export function GotzjiGitPanel({ projectId, disabled, request }: Props): ReactEl
     <h3>Git ของโครงการ</h3><p>ดูสิ่งที่เปลี่ยนและประวัติของโครงการที่เลือก ข้อมูลจะแสดงตามการอ่านครั้งล่าสุด</p>
     <div className="gotzji-actions"><button disabled={locked} onClick={() => void read('status')}>อ่านสถานะ Git</button><button disabled={locked} onClick={() => void read('log')}>อ่านประวัติ Git</button></div>
     <label>ไฟล์ที่ต้องการดูความต่าง<input disabled={locked} value={path} onChange={(event) => { setPath(event.target.value); setResult(null); }} placeholder="src/example.ts" /></label>
-    <label><input type="checkbox" disabled={locked} checked={staged} onChange={(event) => { setStaged(event.target.checked); setResult(null); }} />ดูส่วนที่เตรียมบันทึกแล้ว</label>
+    <label className="gotzji-git-checkbox"><input type="checkbox" disabled={locked} checked={staged} onChange={(event) => { setStaged(event.target.checked); setResult(null); }} />ดูส่วนที่เตรียมบันทึกแล้ว</label>
     <button disabled={locked || !path} onClick={() => void read('diff')}>ดูความต่างของไฟล์</button>
     {busy && <p role="status">กำลังอ่าน Git…</p>}{error && <p role="alert">{error}</p>}
     {result?.truncated && <p role="status">ข้อมูลที่แสดงเป็นบางส่วน มีเนื้อหาเกินขนาดที่แสดงได้</p>}
     {result?.view === 'status' && (result.entries?.length ? <ul>{result.entries.map((entry, index) => <li key={`${String(entry.path)}:${index}`}><button disabled={locked} onClick={() => { setPath(String(entry.path)); setStaged(false); setResult(null); }}>{String(entry.path)}</button> · {kinds[String(entry.kind)] ?? String(entry.kind)}</li>)}</ul> : <p>ไม่มีไฟล์ที่เปลี่ยนในสถานะที่อ่านได้</p>)}
     {result?.view === 'diff' && <pre aria-label="ความต่างของไฟล์">{result.patch || 'ไม่มีความต่างในส่วนที่เลือก'}</pre>}
     {result?.view === 'log' && <><p>แสดงประวัติล่าสุดไม่เกิน 20 รายการ</p>{result.entries?.length ? <ol>{result.entries.map((entry, index) => <li key={`${String(entry.hash)}:${index}`}><strong>{String(entry.subject)}</strong><p>{String(entry.author)} · {String(entry.date)} · <code>{String(entry.hash).slice(0, 12)}</code></p></li>)}</ol> : <p>ไม่มีประวัติในข้อมูลที่อ่านได้</p>}</>}
-    <p className="gotzji-muted">การบันทึก ส่งโค้ด และจัดการสาขาผ่านหน้านี้ยังอยู่ระหว่างพัฒนา</p>
+    <p className="gotzji-muted">การบันทึก ส่งโค้ด และจัดการสาขาต้องใช้คำสั่งที่คุณตรวจและผูกกับโครงการก่อน ChatGPT เตรียมงาน ส่วนคำสั่งที่ระบุว่าเป็นการส่งมอบต้องให้คุณตรวจและอนุมัติคำขอแต่ละครั้ง</p>
+    <div className="gotzji-actions"><button disabled={locked} onClick={onCommands}>ดูคำสั่งของโครงการ</button><button disabled={locked} onClick={onApprovals}>ตรวจคำขอส่งมอบ</button></div>
   </section>;
 }

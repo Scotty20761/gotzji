@@ -633,6 +633,54 @@ test('gotzji new file retries one real admission after a lost acknowledgement', 
 
 });
 
+test('gotzji Git page reaches project commands and owner approvals without starting work', async ({ gotzji }) => {
+  const { page } = gotzji; const root = await gotzji.temporaryProject('gotzji-files-panel-e2e-');
+  await writeFile(path.join(root, 'check.mjs'), "console.log('fixture only')");
+  await page.evaluate(async ({ rootPath, executable }) => {
+    await Reflect.get(window, 'ownedTestRequest')({ method: 'registerRecipe', input: { recipeId: 'reviewed-check', displayName: 'คำสั่งตรวจตัวอย่าง', executable, args: ['${projectRoot}/check.mjs'], dependencies: ['${projectRoot}/check.mjs'] } });
+    await Reflect.get(window, 'ownedTestRequest')({ method: 'registerProject', input: { projectId: 'git-navigation', displayName: 'โครงการทดสอบ Git', rootPath, recipeIds: ['reviewed-check'] } });
+  }, { rootPath: root, executable: await realpath(process.execPath) });
+  await page.getByRole('button', { name: 'รีเฟรช', exact: true }).click();
+  await page.getByRole('button', { name: 'โครงการ', exact: true }).click();
+  await page.getByRole('button', { name: /^โครงการทดสอบ Git ·/ }).click();
+  await page.getByRole('button', { name: 'Git', exact: true }).click();
+  await page.screenshot({ path: path.join(desktopRoot, '..', '..', '.local-artifacts', 'windows-ui-git-navigation.png') });
+  const checkboxAlignment = await page.getByRole('checkbox', { name: 'ดูส่วนที่เตรียมบันทึกแล้ว', exact: true }).evaluate((element) => {
+    const box = element.getBoundingClientRect(); const text = document.createRange(); text.selectNodeContents(element.parentElement!.lastChild!);
+    const label = text.getBoundingClientRect(); return Math.abs((box.top + box.bottom) / 2 - (label.top + label.bottom) / 2);
+  });
+  expect(checkboxAlignment).toBeLessThan(8);
+  const stagedCheckbox = page.getByRole('checkbox', { name: 'ดูส่วนที่เตรียมบันทึกแล้ว', exact: true });
+  await stagedCheckbox.check(); await expect(stagedCheckbox).toBeChecked(); await stagedCheckbox.uncheck();
+  await page.getByRole('button', { name: 'ดูคำสั่งของโครงการ', exact: true }).click();
+  const commands = page.getByRole('region', { name: 'คำสั่งที่ผูกกับโครงการ', exact: true });
+  await expect(commands).toContainText('โครงการทดสอบ Git');
+  await expect(commands.locator('..')).toBeFocused();
+  await expect(commands.getByRole('heading', { name: 'คำสั่งสำหรับ ChatGPT' })).toBeInViewport();
+  await expect(commands.locator('..')).toHaveCSS('outline-style', 'solid');
+  await expect(commands.getByRole('button', { name: 'คัดลอกคำสั่ง คำสั่งตรวจตัวอย่าง', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Git', exact: true }).click();
+  await page.getByRole('button', { name: 'ตรวจคำขอส่งมอบ', exact: true }).click();
+  const approvals = page.getByRole('region', { name: 'อนุมัติคำขอส่งมอบ', exact: true });
+  await expect(approvals).toBeVisible();
+  await expect(approvals.locator('..')).toBeFocused();
+  await expect(approvals.getByRole('heading', { name: 'คำขอส่งมอบที่รอคุณตรวจ' })).toBeInViewport();
+  await expect(approvals.locator('..')).toHaveCSS('outline-style', 'solid');
+  const emptyRoot = await gotzji.temporaryProject('gotzji-files-panel-e2e-');
+  await page.evaluate(async rootPath => window.gotzji.request({ method: 'registerProject', input: { projectId: 'git-empty', displayName: 'โครงการไม่มีคำสั่ง', rootPath } }), emptyRoot);
+  await page.getByRole('button', { name: 'รีเฟรช', exact: true }).click();
+  await page.getByRole('button', { name: 'โครงการ', exact: true }).click();
+  await page.getByRole('button', { name: /^โครงการไม่มีคำสั่ง ·/ }).click();
+  await page.getByRole('button', { name: 'Git', exact: true }).click();
+  await page.getByRole('button', { name: 'ดูคำสั่งของโครงการ', exact: true }).click();
+  const emptyCommands = page.getByRole('region', { name: 'คำสั่งที่ผูกกับโครงการ', exact: true });
+  await expect(emptyCommands).toContainText('โครงการไม่มีคำสั่ง');
+  await expect(emptyCommands.getByRole('button', { name: 'ตั้งค่าคำสั่งของโครงการ', exact: true })).toBeVisible();
+  await expect(emptyCommands.getByRole('button', { name: 'คัดลอกคำสั่ง คำสั่งตรวจตัวอย่าง', exact: true })).toHaveCount(0);
+  expect(await page.evaluate(async () => (await window.gotzji.request({ method: 'listJobs', input: {} }) as unknown[]).length)).toBe(0);
+  expect(await readFile(path.join(root, 'check.mjs'), 'utf8')).toBe("console.log('fixture only')");
+});
+
 test('gotzji Git status, selected diff and history preserve the source index', async ({ gotzji }) => {
     // Enclose fixture entry/materialization, the 90s read transport and owned teardown.
     test.setTimeout(180_000);
