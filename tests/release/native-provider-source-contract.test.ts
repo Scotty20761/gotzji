@@ -120,7 +120,13 @@ describe('native provider source contract', () => {
     expect(source).toContain("['--user', 'list-unit-files'");
     expect(source).toContain("['--user', 'status', serviceName");
     expect(source).toContain('gui/${typeof process.getuid === \'function\' ? process.getuid() : 0}/${serviceName}');
-    expect(source).toContain('env: sanitizedDiagnosticEnvironment()');
+    const start = source.indexOf('function runBoundedProcess(');
+    const end = source.indexOf('export function benchmarkPackageCommand(', start);
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const runner = source.slice(start, end);
+    expect(runner).toContain('environment: NodeJS.ProcessEnv = sanitizedDiagnosticEnvironment()');
+    expect(runner).toContain('env: environment');
   });
 
   it('preserves POSIX desktop-session handles for regular child processes', async () => {
