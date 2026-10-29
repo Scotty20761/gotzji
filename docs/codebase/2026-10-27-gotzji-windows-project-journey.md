@@ -321,3 +321,65 @@ Deterministic Electron regressions went RED and GREEN for malformed project data
 On the final first-use source, Desktop build exit 0 (Vite emitted its existing >500 kB chunk warning), renderer typecheck exit 0, changed-path ESLint exit 0, git diff --check exit 0, Desktop full suite 147 files / 979 passed / 2 skipped exit 0, and default product Electron 38 passed / 4 explicit native skips exit 0. The earlier 30-pass/1-EBUSY/4-skip run remains a historical failure with unknown cause; this later pass does not diagnose it or alter retained roots.
 
 A fresh read-only connected gotzji_health call returned MCP -32603/Internal error. It still does not identify the actual connector endpoint or establish cause; the installed gotzji app had no targetable visible window when enumerated. No normal profile, key, connection, or unrelated process was changed. The Excel job 85868f954b663016b751da96d3135fa67b15ca265e0c6389137e45192b3a81bc remains NATIVE_TERMINATION_UNVERIFIED; Word PID 33684 remains unattested and untouched. Preserve all historical evidence; do not replay unknown jobs. Windows and companion work, exact installed/caller qualification and release gates remain open.
+
+## Resume round 1 and pause checkpoint — Claude session 892896860352 (2026-10-28 to 2026-10-30)
+
+The owner approved the resume plan in Claude Code on 2026-10-28 and asked to pause after this round on 2026-10-30. Nothing was committed or pushed in this round; dev stays at 4371e4437f505cda5375103000e7d90aa9ed025a with 15 modified tracked files (the 13 inherited WIP files, native-core.test.ts and this ledger). The byte backup and manifest are named in the vault handoff.
+
+Pre-flight: all 13 inherited WIP files matched HANDOFF-MANIFEST.json in the earlier backup. WINWORD PID 33684 was closed with owner approval after identity (PID, birth ticks, executable, sole Word process) and zero documents/windows were checked twice, then Application.Quit; CIM confirmed absence.
+
+Connector -32603: the tunnel client recorded on 10-24 (PID 48264, parent host gone) forwarded to a dead in-process bridge on 127.0.0.1:54010; the next host's restore() received CONNECTION_PREDECESSOR_ACTIVE (product-connection.ts:81), start() threw (:103) and restore() swallowed it (:147). After the 2026-10-29 22:10 reboot the orphan was gone; launching the installed app at 23:13 created a new tunnel whose upstream port was listening. A real ChatGPT web caller in new chats then returned gotzji_health Success (state ready) and gotzji_projects Success (3 projects), and lnwjud workspace_list and workspace_info Success. This is actual-caller evidence for those read tools at that time only. The owner decided that the product should reclaim a predecessor tunnel automatically only when every proof passes, and otherwise show a one-click recovery; that fix is not implemented yet.
+
+Packet A changes this round:
+- refresh() no longer withdraws the lists at the start of every 5 s poll, which unmounted them and dropped keyboard focus.
+- Lists are withdrawn only when the same read was already pending at the previous poll, so a manual refresh that crosses a tick does not blank them.
+- activeJobs is read through settleRead(): a failed or older-host read marks only running work unavailable. Attention and running fall back to history rows with a note (running carries the Doctor link), and History and Live Logs keep their lists. METHOD_DENIED is matched in the message because Electron IPC passes only the message.
+- Home order follows plan revision 2.1: readiness, control, delivery approvals, attention, running, queue, recent.
+- Attention copy states that it lists stuck or failed work.
+- Live Logs lists readable active jobs that are missing from the 100-job page.
+- A host-unavailable History message was restored.
+Each Electron regression went RED before its fix and GREEN after.
+
+Other packets: B (cleanup refusal reasons) is unchanged in behavior and deltaMs was not added. C's seed-failure branch was exercised by a controlled fault injection, and its retained-root message now says the seeded processes are not proven stopped (the pre-existing process leak is not fixed). E1 adds per-phase timing and an opt-in GOTZJI_NATIVE_TIMING_TRACE fetch trace, restored in afterEach. replay-status-speed bounds activeJobs at 1000 ms; it measured 125 ms.
+
+Reviews: the first Standards and Spec pass both returned fix-then-ship; the recheck confirmed findings 1-9 closed and raised the IPC METHOD_DENIED and tick-withdrawal issues, which are now fixed.
+
+Final-delta re-review (Claude session 29d5e14279bb, 2026-10-30, independent read-only reviewer): FIX-THEN-SHIP, claims 1, 2 and 4-8 confirmed, claim 3 partial. Fixed test-first, each RED observed before its fix (logs .local-artifacts/round1-reviewfix-{red,step1,green}-20261030.log):
+- Major: refresh() cleared jobsError before its first await and the stale tick cleared it again, so while reads kept failing the Doctor link unmounted on every 5 s poll and dropped keyboard focus, and a read pending past a tick read as "loading". jobsError now clears only on a successful job read, and a stale tick shows the read failure with the Doctor link.
+- Minor (regression against HEAD): any failed project or catalog read, or a slow activeJobs, withdrew the job lists. Every read now settles on its own; history is applied as soon as listJobs answers; a jobsPending ref limits the catch and the stale-tick withdrawal to the job read itself.
+- Minor: attention's version-skew fallback has a note but no Doctor link; the claim above is corrected to match the code rather than adding a second identically named button.
+- Nit: methodDenied no longer reads a .code property, which never crosses Electron IPC, so a fixture setting .code can no longer pass vacuously.
+- Nit: the e2e now pins the whole plan 2.1 Home order and the host-unavailable History message.
+Left as found: the job-status whitelist is repeated in validJobRows, the History filter and Core JobStatus, and one unknown status rejects the whole list (version skew with a newer host); the real-IPC Live Logs running-region assertion would pass through the history fallback.
+Focused Electron after the fixes: 6/6 (4 Home, 2 first-use) at 55% load. The reviewer's verification of the fix delta returned SHIP: findings closed, no new assertion vacuous. One new minor effect is a follow-up: history now lands one render before activeJobs, so while activeJobs is still in flight (about 125 ms measured, up to its 10 s timeout) attention and running combine fresh history with the previous active rows; a job that just failed can stay under running until activeJobs settles. Candidate fix: merge rows by jobId, preferring the higher revision.
+
+Verification, with CPU load recorded in each log header under .local-artifacts/round1-*:
+- Typecheck (renderer, main, Core) and scoped ESLint exit 0.
+- Focused Core: 5 files pass.
+- Last Home/first-use Electron set: 6/6 at 25% load.
+- Full Electron: 42 passed, 4 skipped, exit 0 at 25% load. This run predates the last renderer change.
+- Full Desktop: 979 passed, 2 skipped, 1 failed in both runs. The failure is multi-workspace-concurrency-acceptance ("build.started" timeout, termination_unverified); cause unknown.
+- Full Core: 478 passed, 2 failed, 1 skipped at 88% starting load. The Phase-R seed spawnSync hit ETIMEDOUT at 15 s; the new diagnostics retained the root and no recorded process survived. product.test.ts 'drains a pending product predicate…' found an owned PID alive right after cleanup (cause unknown).
+- An earlier full Core run under heavy rendering load had 7 timeouts (lifecycle, grace, replay); all passed in the later run.
+- EBUSY teardown appeared at 91% load and not at 25-34%; GIT_SNAPSHOT_BUDGET failed at 79% and passed at 25%. Load is a working hypothesis, not a proven cause.
+
+Final-byte suites after the re-review fixes (Claude session 29d5e14279bb, .local-artifacts/round1-suites-final2-20261030; the runner waited for three consecutive samples at or below 45% CPU with no Remotion process, then sampled load every 30 s):
+- Build exit 0.
+- Full Desktop: 979 passed, 1 failed, 2 skipped at 22-49% load; the failure is the same multi-workspace test, diagnosed below.
+- Full Electron: 41 passed, 1 failed, 4 skipped. The failure is fixture teardown only: "selected Excel result discards stale rejection" passed its body, then owned data-root removal hit EBUSY on runtime/core.sqlite inside the 10 s window at 46-73% load (its sibling "stale success" passed). This is the recorded EBUSY-teardown class, not a Packet A assertion.
+- Full Core: 472 passed, 8 failed, 1 skipped. All 8 are timeouts (5, 10 and 15 s test timeouts and one AbortSignal timeout) in phase-r, product-library and product.test; none is an assertion. Average load in the window was 22%, but a peer Remotion render was present in half the samples and 643 processes were running at the start. The 00:34 run on the same Core bytes failed two different tests, so the set moves between runs; CI is the clean signal.
+
+Desktop multi-workspace diagnosis (resolved cause, fix pending owner decision):
+- Reproduced in isolation: .local-artifacts/round1-multiworkspace-isolated-red-20261030.log, same "build.started" timeout with both processes termination_unverified.
+- Fail path: on Windows every managed process starts as powershell.exe -NoProfile -NonInteractive -File containment.ps1 (windows-contained-launch.ts:42). This machine's effective execution policy is Restricted (every scope Undefined; the policy registry key was last written 2024-12-01), so PowerShell refuses the script, exits 1 before writing a receipt, handleNativeClose marks the record termination_unverified, and the fixture never runs.
+- Disproofs run: a probe script launched the same way is refused (UnauthorizedAccess, exit 1); with PSExecutionPolicyPreference=Restricted inherited, adding -ExecutionPolicy Bypass runs it (exit 0). process-manager's createSafeEnvironment drops PSExecutionPolicyPreference, so the policy of the launching shell cannot reach the launcher; the machine policy did not change either.
+- Why it passed on 10-22 and 10-27 is not proven. Those runs were Codex sessions, and this machine has CodexSandboxOffline/Online accounts whose policy could not be read from this account; the runs that fail are this account's.
+- Every other PowerShell -File launch in the repository (six call sites) already passes -ExecutionPolicy Bypass; windows-contained-launch.ts is the only one that does not. windows-contained-launch.test.ts now forces PSExecutionPolicyPreference=Restricted on the child and is RED (.local-artifacts/round1-containment-policy-red-20261030.log), uncommitted.
+- The one-argument fix was refused by the Claude Code auto-mode safety check because it bypasses a security policy, so it waits for the owner. Production impact to confirm: managed processes and contained Git operations on a Restricted Windows client would fail the same way.
+
+Next on resume:
+1. Rerun Desktop and Electron in full on the final bytes, and re-review the final delta.
+2. Commit B, C, E1 and A by explicit paths, push, and watch exactly one CI run.
+3. Diagnose the Desktop multi-workspace failure in isolation.
+4. Implement the proof-gated tunnel reclaim with incident tests.
+5. Rerun the C0 inventory workflow; the 2026-10-28 run produced nothing because the weekly usage limit was hit.
