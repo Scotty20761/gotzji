@@ -13,8 +13,9 @@ interface ConnectionConfiguration {
   schemaVersion: 1; ownerId: string; tunnelId: string; runtimeKey: string; bridgeSecret: string; desiredActive: boolean;
   channel?: 'product' | 'lnwjud-library';
   organizationId?: string;
-  process?: { pid: number; identity?: ProcessIdentity; executableSha256: string };
+  process?: { pid: number; identity?: ProcessIdentity; executableSha256: string; spawnedBy?: ProductConnectionHost };
 }
+export interface ProductConnectionHost { readonly pid: number; readonly identity: ProcessIdentity }
 export interface ProductConnectionStatus {
   readonly state: 'not-configured' | 'stopped' | 'connecting' | 'ready' | 'unavailable' | 'reconciliation-required';
   readonly configured: boolean; readonly transport: 'openai-secure-mcp-tunnel'; readonly tunnelId?: string; readonly errorCode?: string;
@@ -23,6 +24,9 @@ export interface ProductConnectionOptions {
   readonly directory: string; readonly ownerId: string; readonly executable: string; readonly executableSha256: string;
   readonly mcpTarget: () => string; readonly protector?: ProductSecretProtector;
   readonly channel?: 'product' | 'lnwjud-library';
+  /** The host holding machine ownership; recorded as the creator of each client it starts. */
+  readonly host?: ProductConnectionHost;
+  readonly identityReader?: typeof processIdentities;
 }
 const hash = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 const exec = promisify(execFile);
@@ -74,7 +78,7 @@ export class GotzjiConnectionService {
     const base = { configured: !!config, transport: 'openai-secure-mcp-tunnel' as const, ...(config ? { tunnelId: config.tunnelId } : {}) };
     if (!config) return { ...base, state: 'not-configured' };
     if (!config.process) return { ...base, state: config.desiredActive ? 'unavailable' : 'stopped', ...(this.errorCode ? { errorCode: this.errorCode } : {}) };
-    const observed = (await processIdentities([config.process.pid]))[config.process.pid];
+    const observed = (await this.identities([config.process.pid]))[config.process.pid];
     if (observed === 'unknown') return { ...base, state: 'reconciliation-required', errorCode: 'CONNECTION_PROCESS_UNKNOWN' };
     if (!config.process.identity && observed) return { ...base, state: 'reconciliation-required', errorCode: 'CONNECTION_PROCESS_UNKNOWN' };
     if (!sameProcessIdentity(config.process.identity, observed)) return { ...base, state: config.desiredActive ? 'unavailable' : 'stopped', ...(this.errorCode ? { errorCode: this.errorCode } : {}) };
@@ -97,7 +101,8 @@ export class GotzjiConnectionService {
     await this.write({ schemaVersion: 1, ownerId: this.options.ownerId, channel: this.options.channel ?? 'product', tunnelId: input.tunnelId, ...(input.organizationId ? { organizationId: input.organizationId } : {}), runtimeKey: input.runtimeKey.trim(), bridgeSecret: randomBytes(32).toString('hex'), desiredActive: false });
     this.errorCode = undefined; return this.status();
   }); }
-  public start(): Promise<ProductConnectionStatus> { return this.serial(async () => {
+  public start(): Promise<ProductConnectionStatus> { return this.serial(() => this.startNow()); }
+  private async startNow(): Promise<ProductConnectionStatus> {
     const config = await this.read(); if (!config) throw new CoreError('CONNECTION_CONFIGURATION_REQUIRED');
     const current = await this.status(); if (current.state === 'ready' || current.state === 'connecting') return current;
     if (current.state === 'reconciliation-required') throw new CoreError('CONNECTION_RECONCILIATION_REQUIRED');
@@ -116,35 +121,93 @@ export class GotzjiConnectionService {
     if (!child.pid) { await this.bridge.close(); this.bridge = undefined; throw new CoreError('CONNECTION_CLIENT_UNAVAILABLE'); }
     // Persist uncertainty before the OS probe; a probe failure never permits a
     // second transport worker or an unproved PID kill on the next Start call.
-    await this.write({ ...config, desiredActive: true, process: { pid: child.pid, executableSha256: this.options.executableSha256 } });
+    const creator = this.options.host ? { spawnedBy: this.options.host } : {};
+    await this.write({ ...config, desiredActive: true, process: { pid: child.pid, executableSha256: this.options.executableSha256, ...creator } });
     let identity: ProcessIdentity | undefined;
     for (let attempt = 0; attempt < 10; attempt++) {
-      const observed = (await processIdentities([child.pid]))[child.pid];
+      const observed = (await this.identities([child.pid]))[child.pid];
       if (observed && observed !== 'unknown') { identity = observed; break; }
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
     if (!identity || identity.executable.toLowerCase() !== realpathSync(this.options.executable).toLowerCase()) { this.errorCode = 'CONNECTION_PROCESS_UNKNOWN'; throw new CoreError(this.errorCode); }
-    await this.write({ ...config, desiredActive: true, process: { pid: child.pid, identity, executableSha256: this.options.executableSha256 } });
+    await this.write({ ...config, desiredActive: true, process: { pid: child.pid, identity, executableSha256: this.options.executableSha256, ...creator } });
     this.errorCode = undefined; return this.status();
-  }); }
-  public stop(): Promise<ProductConnectionStatus> { return this.serial(async () => {
+  }
+  public stop(): Promise<ProductConnectionStatus> { return this.serial(() => this.stopNow()); }
+  /** The owner's one-action recovery: end the recorded client with identity proof, then connect again. */
+  public recover(): Promise<ProductConnectionStatus> { return this.serial(async () => { await this.stopNow(); return this.startNow(); }); }
+  private async stopNow(): Promise<ProductConnectionStatus> {
     const config = await this.read(); if (!config) return this.status();
-    if (config.process) {
-      const observed = (await processIdentities([config.process.pid]))[config.process.pid];
-      if (observed === 'unknown') throw new CoreError('CONNECTION_PROCESS_UNKNOWN');
-      if (!config.process.identity && observed) throw new CoreError('CONNECTION_PROCESS_UNKNOWN');
-      if (sameProcessIdentity(config.process.identity, observed)) {
-        this.assertClient();
-        if (config.process.executableSha256 !== this.options.executableSha256 || config.process.identity!.executable.toLowerCase() !== realpathSync(this.options.executable).toLowerCase()) throw new CoreError('CONNECTION_PROCESS_OWNER_DENIED');
-        process.kill(config.process.pid, 'SIGTERM');
-        for (let attempt = 0; attempt < 20; attempt++) { const value = (await processIdentities([config.process.pid]))[config.process.pid]; if (value !== 'unknown' && !sameProcessIdentity(config.process.identity, value)) break; if (attempt === 19) throw new CoreError('CONNECTION_TERMINATION_UNVERIFIED'); await new Promise((resolve) => setTimeout(resolve, 100)); }
-      }
-    }
+    if (config.process) await this.terminateRecorded(config.process);
     await this.bridge?.close(); this.bridge = undefined; this.child = undefined; this.healthFile = undefined; this.errorCode = undefined;
     const retained = { ...config, desiredActive: false }; delete retained.process;
     await this.write(retained); return this.status();
-  }); }
-  public async restore(): Promise<void> { const config = await this.read(); if (config?.desiredActive) { try { await this.start(); } catch { this.errorCode = 'CONNECTION_RECONCILIATION_REQUIRED'; } } }
+  }
+  private async terminateRecorded(recorded: NonNullable<ConnectionConfiguration['process']>): Promise<void> {
+    const observed = (await this.identities([recorded.pid]))[recorded.pid];
+    if (observed === 'unknown') throw new CoreError('CONNECTION_PROCESS_UNKNOWN');
+    if (!recorded.identity && observed) throw new CoreError('CONNECTION_PROCESS_UNKNOWN');
+    if (!sameProcessIdentity(recorded.identity, observed)) return;
+    this.assertClient();
+    if (recorded.executableSha256 !== this.options.executableSha256 || recorded.identity!.executable.toLowerCase() !== realpathSync(this.options.executable).toLowerCase()) throw new CoreError('CONNECTION_PROCESS_OWNER_DENIED');
+    // Re-read just before the signal, so a reused PID has the shortest possible window.
+    const current = (await this.identities([recorded.pid]))[recorded.pid];
+    if (current === 'unknown') throw new CoreError('CONNECTION_PROCESS_UNKNOWN');
+    if (!sameProcessIdentity(recorded.identity, current)) return;
+    process.kill(recorded.pid, 'SIGTERM');
+    for (let attempt = 0; attempt < 20; attempt++) { const value = (await this.identities([recorded.pid]))[recorded.pid]; if (value !== 'unknown' && !sameProcessIdentity(recorded.identity, value)) break; if (attempt === 19) throw new CoreError('CONNECTION_TERMINATION_UNVERIFIED'); await new Promise((resolve) => setTimeout(resolve, 100)); }
+  }
+  public async restore(): Promise<void> {
+    const config = await this.read(); if (!config?.desiredActive) return;
+    try {
+      await this.serial(async () => {
+        // A Stop the owner pressed while this host was starting stands.
+        if (!(await this.read())?.desiredActive) return;
+        await this.reclaimProvenPredecessor(); await this.startNow();
+      });
+    } catch { this.errorCode = 'CONNECTION_RECONCILIATION_REQUIRED'; }
+  }
+  // A client left running by an earlier host is ended only when every proof holds: this host owns the
+  // machine, the creating host is gone, the process is the recorded one running this pinned client, and
+  // its end is observed before a successor starts. Otherwise nothing is touched and the owner decides.
+  private async reclaimProvenPredecessor(): Promise<void> {
+    const config = await this.read(); const recorded = config?.process;
+    if (!config || !recorded || (await this.status()).errorCode !== 'CONNECTION_PREDECESSOR_ACTIVE') return;
+    const host = this.options.host; const creator = recorded.spawnedBy;
+    const creatorNow = creator ? (await this.identities([creator.pid]))[creator.pid] : undefined;
+    let client: string | undefined; try { client = realpathSync(this.options.executable).toLowerCase(); } catch { client = undefined; }
+    const refusal = !host ? 'ownership-unproven'
+      : !creator ? 'creator-unknown'
+        : creatorNow === undefined || creatorNow === 'unknown' ? 'creator-unproven'
+          : sameProcessIdentity(creator.identity, creatorNow) || sameProcessIdentity(creator.identity, host.identity) ? 'creator-alive'
+            : recorded.executableSha256 !== this.options.executableSha256 || !client || recorded.identity?.executable.toLowerCase() !== client ? 'executable-mismatch'
+              : undefined;
+    if (refusal) { this.recordReclaim(recorded, 'refused', refusal); return; }
+    try { await this.terminateRecorded(recorded); } catch (cause) {
+      const code = cause instanceof CoreError ? cause.code : undefined;
+      // A signal may already have been sent on these two paths, so they are not recorded as untouched.
+      if (code === 'CONNECTION_TERMINATION_UNVERIFIED' || code === undefined) this.recordReclaim(recorded, 'kill-unverified', code ? 'termination-unverified' : 'signal-failed');
+      else this.recordReclaim(recorded, 'refused', code === 'CONNECTION_PROCESS_UNKNOWN' ? 'identity-unknown' : 'executable-mismatch');
+      throw cause;
+    }
+    const retained = { ...config }; delete retained.process;
+    await this.write(retained);
+    this.recordReclaim(recorded, 'reclaimed');
+  }
+  private recordReclaim(recorded: NonNullable<ConnectionConfiguration['process']>, outcome: 'reclaimed' | 'refused' | 'kill-unverified', reason?: string): void {
+    const creator = recorded.spawnedBy;
+    // Null means the creating host left no matching exit record: it ended without a clean exit
+    // (a crash, a forced end or power loss), or the record predates creator tracking.
+    let creatorExit: { exitCode: unknown; recordedAt: unknown } | null = null;
+    try {
+      const exit = JSON.parse(readFileSync(path.join(this.options.directory, 'product-host-exit.json'), 'utf8')) as { pid?: unknown; birth?: unknown; exitCode?: unknown; recordedAt?: unknown };
+      if (creator && exit.pid === creator.pid && exit.birth === creator.identity.birth) creatorExit = { exitCode: exit.exitCode, recordedAt: exit.recordedAt };
+    } catch { /* No exit record was written. */ }
+    try {
+      writeFileSync(path.join(this.profileDirectory(), 'predecessor-reclaim.json'), JSON.stringify({ schemaVersion: 1, recordedAt: new Date().toISOString(), channel: this.options.channel ?? 'product', outcome, ...(reason ? { reason } : {}), predecessor: { pid: recorded.pid, identity: recorded.identity ?? null }, creator: creator ?? null, creatorExit }), { mode: 0o600 });
+    } catch { /* The record is evidence only; failing to write it never blocks recovery. */ }
+  }
+  private identities(pids: readonly number[]): ReturnType<typeof processIdentities> { return (this.options.identityReader ?? processIdentities)(pids); }
   private profileDirectory(): string { return path.join(this.options.directory, this.options.channel === 'lnwjud-library' ? 'gotzji-lnwjud-library-tunnel' : 'gotzji-tunnel'); }
   private configPath(): string { return path.join(this.options.directory, this.options.channel === 'lnwjud-library' ? 'product-lnwjud-library-tunnel.sealed.json' : 'product-tunnel.sealed.json'); }
   private assertClient(): void {
@@ -158,7 +221,8 @@ export class GotzjiConnectionService {
     if (envelope.schemaVersion !== 1 || typeof envelope.payload !== 'string' || envelope.payload.length > 16384) throw new CoreError('CONNECTION_CONFIGURATION_INVALID');
     const config = JSON.parse(await this.protector.unprotect(envelope.payload)) as ConnectionConfiguration;
     if (config.schemaVersion !== 1 || config.ownerId !== this.options.ownerId || (config.channel ?? 'product') !== (this.options.channel ?? 'product') || !/^tunnel_[a-z0-9]{32}$/u.test(config.tunnelId) || !/^[a-f0-9]{64}$/u.test(config.bridgeSecret) || typeof config.runtimeKey !== 'string' || typeof config.desiredActive !== 'boolean' || config.organizationId !== undefined && !/^org[-_][A-Za-z0-9_-]{1,160}$/u.test(config.organizationId)) throw new CoreError('CONNECTION_OWNER_DENIED');
-    if (config.process && (!Number.isSafeInteger(config.process.pid) || config.process.pid < 1 || config.process.identity && (typeof config.process.identity.birth !== 'string' || typeof config.process.identity.executable !== 'string') || !/^[a-f0-9]{64}$/u.test(config.process.executableSha256))) throw new CoreError('CONNECTION_PROCESS_OWNER_DENIED');
+    if (config.process && (!Number.isSafeInteger(config.process.pid) || config.process.pid < 1 || config.process.identity && (typeof config.process.identity.birth !== 'string' || typeof config.process.identity.executable !== 'string') || !/^[a-f0-9]{64}$/u.test(config.process.executableSha256)
+      || config.process.spawnedBy !== undefined && (!Number.isSafeInteger(config.process.spawnedBy.pid) || config.process.spawnedBy.pid < 1 || typeof config.process.spawnedBy.identity?.birth !== 'string' || typeof config.process.spawnedBy.identity?.executable !== 'string'))) throw new CoreError('CONNECTION_PROCESS_OWNER_DENIED');
     return config;
   }
   private async write(config: ConnectionConfiguration): Promise<void> {

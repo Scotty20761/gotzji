@@ -69,7 +69,7 @@ export function parseGotzjiRequest(value: unknown): GotzjiRequest {
     if (method === 'authorizeLibraryDelivery') { requiredText(value.input, 'jobId'); if (!['commit', 'push', 'deploy', 'user-delivery'].includes(String(value.input.scope))) throw new GotzjiHostError('INVALID_GOTZJI_REQUEST'); }
   }
   if (method === 'enrollLibraryChannel') { requiredText(value.input, 'projectId'); if (Object.keys(value.input).some((key) => key !== 'projectId')) throw new GotzjiHostError('INVALID_GOTZJI_REQUEST'); }
-  if (['connectionStatus', 'startConnection', 'stopConnection', 'libraryChannelStatus', 'startLibraryConnection', 'stopLibraryConnection'].includes(method) && Object.keys(value.input).length > 0) throw new GotzjiHostError('INVALID_GOTZJI_REQUEST');
+  if (['connectionStatus', 'startConnection', 'stopConnection', 'recoverConnection', 'libraryChannelStatus', 'startLibraryConnection', 'stopLibraryConnection'].includes(method) && Object.keys(value.input).length > 0) throw new GotzjiHostError('INVALID_GOTZJI_REQUEST');
   if (['configureConnection', 'configureLibraryConnection'].includes(method)) {
     if (Object.keys(value.input).some((key) => !['tunnelId', 'runtimeKey', 'organizationId'].includes(key)) || typeof value.input.tunnelId !== 'string' || !/^tunnel_[a-z0-9]{32}$/u.test(value.input.tunnelId) || typeof value.input.runtimeKey !== 'string' || value.input.runtimeKey.length < 20 || value.input.runtimeKey.length > 1024 || /[\r\n\0]/u.test(value.input.runtimeKey) || value.input.organizationId !== undefined && (typeof value.input.organizationId !== 'string' || !/^org[-_][A-Za-z0-9_-]{1,160}$/u.test(value.input.organizationId))) throw new GotzjiHostError('INVALID_GOTZJI_REQUEST');
   }

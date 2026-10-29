@@ -33,7 +33,13 @@ if (ownership.status !== 'acquired') {
   process.stderr.write(JSON.stringify({ code: ownership.status === 'owned' ? 'PRODUCT_HOST_OWNER_ACTIVE' : 'PRODUCT_HOST_OWNER_UNKNOWN', layer: 'host-ownership' }) + '\n');
   process.exit(0);
 }
-process.once('exit', () => ownership.release());
+// Only a real OS identity proves this host to a successor; the unpackaged E2E reader is synthetic.
+const hostRecord = testIdentityReader ? undefined : { pid: process.pid, identity: { birth: ownership.birth, executable: ownership.executable } };
+// A later host that reclaims this host's tunnel client reads how this host ended; no record means no clean exit.
+process.once('exit', (exitCode) => {
+  try { writeFileSync(path.join(directory, 'product-host-exit.json'), JSON.stringify({ schemaVersion: 1, pid: process.pid, birth: ownership.birth, exitCode, recordedAt: new Date().toISOString() }), { mode: 0o600 }); } catch { /* Exit evidence is best effort. */ }
+  ownership.release();
+});
 if (config.libraryRoot === path.join(directory, 'workspace')) ensureProductControlDocuments(config.libraryRoot, { stateDirectory: directory, authority: config.authority });
 if (!config.credential) {
   config = { ...config, credential: randomBytes(32).toString('hex') };
@@ -126,6 +132,7 @@ const listener = await startProductHttp({ token: config.daemonSecret, mcpPathSec
     case 'configureConnection': if (surface !== 'app' || !connection) throw new CoreError('CONNECTION_CONTROL_DENIED'); return connection.configure(input);
     case 'startConnection': if (surface !== 'app' || !connection) throw new CoreError('CONNECTION_CONTROL_DENIED'); return connection.start();
     case 'stopConnection': if (surface !== 'app' || !connection) throw new CoreError('CONNECTION_CONTROL_DENIED'); return connection.stop();
+    case 'recoverConnection': if (surface !== 'app' || !connection) throw new CoreError('CONNECTION_CONTROL_DENIED'); return connection.recover();
     case 'health': return { product: 'gotzji', ownerId: config.ownerId, state: currentBuild ? 'ready' : 'control-only', controller: 'chatgpt-plugin', automaticUpdates: false, buildIdentity, configurationIdentity };
     case 'testOnlyE2eShutdown': {
       if (!testSecretFixture || surface !== 'app' || typeof input.nonce !== 'string' || !/^[a-f0-9]{64}$/u.test(input.nonce) || Object.keys(input).length !== 1) throw new CoreError('METHOD_DENIED');
@@ -168,7 +175,7 @@ const listener = await startProductHttp({ token: config.daemonSecret, mcpPathSec
     default: throw new CoreError('METHOD_DENIED');
   }
 } });
-if (config.tunnel) connection = new GotzjiConnectionService({ directory, ownerId: config.ownerId, ...config.tunnel, mcpTarget: () => `http://127.0.0.1:${listener.port}/mcp/${config.mcpPathSecret}` });
+if (config.tunnel) connection = new GotzjiConnectionService({ directory, ownerId: config.ownerId, ...config.tunnel, ...(hostRecord ? { host: hostRecord } : {}), mcpTarget: () => `http://127.0.0.1:${listener.port}/mcp/${config.mcpPathSecret}` });
 const body = JSON.stringify({ port: listener.port, pid: process.pid, identity: { birth: ownership.birth, executable: ownership.executable }, ownerId: config.ownerId, buildIdentity, configurationIdentity });
 await completeProductHostStartup(authorityPersistence, () => { if (!startupControlOnly) core.startSupervisor(); }, () => {
   writeFileSync(path.join(directory, 'product-endpoint.json'), JSON.stringify({ body, mac: createHmac('sha256', config.daemonSecret).update(body).digest('hex') }), { mode: 0o600 });

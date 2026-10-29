@@ -63,6 +63,8 @@ export function GotzjiConnectionPanel({ disabled, requestPort, visible = true, s
     {connection?.tunnelId && <p>{connection.tunnelId}</p>}
     {currentError && <p role="alert">{connectionErrorMessage(currentError)}</p>}
     {error && <p role="alert">ผลคำสั่งก่อนหน้า: {connectionErrorMessage(error)}</p>}
+    {connection?.state === 'reconciliation-required' && connection.errorCode === 'CONNECTION_PREDECESSOR_ACTIVE'
+      && <div className="gotzji-actions"><button disabled={busy || disabled} onClick={() => void act('recoverConnection')}>ปิดตัวเดิมแล้วเชื่อมต่อใหม่</button></div>}
     <p>สร้างการเชื่อมต่อสำหรับ gotzji ในหน้า OpenAI Tunnels แล้วเพิ่มใน ChatGPT ด้วยบัญชีของคุณ</p>
     <div className="gotzji-actions"><button onClick={() => void window.gotzji.openConnectionSetup('tunnels')}>เปิดหน้า OpenAI Tunnels</button><button onClick={() => void window.gotzji.openConnectionSetup('keys')}>เปิดหน้า Runtime API keys</button><button onClick={() => void window.gotzji.openConnectionSetup('connectors')}>เปิดการเชื่อมต่อใน ChatGPT</button></div>
     <details open={!connection?.configured}><summary>ตั้งค่าการเชื่อมต่อของ gotzji</summary><label>รหัส Tunnel<input autoComplete="off" disabled={busy || disabled} value={tunnelId} onChange={(event) => setTunnelId(event.target.value)} placeholder="tunnel_…" /></label>
@@ -76,5 +78,7 @@ export function GotzjiConnectionPanel({ disabled, requestPort, visible = true, s
 }
 
 function connectionErrorMessage(error: string): string {
+  if (error.includes('CONNECTION_PROCESS_OWNER_DENIED')) return 'ตัวเชื่อมต่อที่บันทึกไว้ไม่ใช่โปรแกรมเชื่อมต่อของ gotzji ชุดนี้ แอปจึงไม่ปิดให้ โปรดตรวจที่หน้าตรวจระบบ';
+  if (error.includes('CONNECTION_PREDECESSOR_ACTIVE')) return 'ตัวเชื่อมต่อจากการเปิดแอปครั้งก่อนยังทำงานค้างอยู่ แอปปิดให้เองไม่ได้เพราะยังพิสูจน์ไม่ครบว่าปลอดภัย กดปุ่มด้านล่างเพื่อปิดตัวเดิมแล้วเชื่อมต่อใหม่';
   return error.includes('CONNECTION_RUNTIME_KEY_INVALID') ? 'กุญแจที่บันทึกไว้มีรูปแบบไม่ถูกต้อง กรุณากรอก Runtime API key ของ gotzji โดยตรงในแอป แล้วบันทึกใหม่' : error;
 }

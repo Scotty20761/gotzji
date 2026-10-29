@@ -859,6 +859,29 @@ test('connection settings ignore an older poll after the owner stops the connect
   await expect(ui.getByRole('alert')).toContainText('ผลคำสั่งก่อนหน้า: manual offline');
 });
 
+test('a tunnel left by an earlier app run is explained and recovered in one owner action', async ({ gotzji }) => {
+  const { page } = gotzji; const fixturePath = gotzji.rendererFixturePath();
+  await build({ stdin: { resolveDir: path.join(desktopRoot, 'src', 'renderer'), sourcefile: 'connection-recovery.tsx', loader: 'tsx', contents: `
+    import { createRoot } from 'react-dom/client'; import { GotzjiConnectionPanel } from './GotzjiConnectionPanel.tsx';
+    document.getElementById('root').hidden=true;const calls=[];
+    const request=(method)=>{calls.push(method);if(method==='recoverConnection')return Promise.resolve({state:'connecting',configured:true});
+      if(method==='connectionStatus')return Promise.resolve(calls.includes('recoverConnection')?{state:'connecting',configured:true}:{state:'reconciliation-required',configured:true,errorCode:'CONNECTION_PREDECESSOR_ACTIVE'});
+      throw new Error('UNEXPECTED_REQUEST');};
+    for(const [id,disabled] of [['connection-recovery',false],['connection-recovery-disabled',true]]){const root=document.createElement('div');root.id=id;document.body.append(root);Reflect.set(root,'calls',calls);
+      createRoot(root).render(<GotzjiConnectionPanel disabled={disabled} requestPort={request}/>);}
+  ` }, bundle: true, format: 'iife', platform: 'browser', jsx: 'automatic', outfile: fixturePath, define: { 'process.env.NODE_ENV': '"production"' } });
+  await page.addScriptTag({ url: pathToFileURL(fixturePath).href });
+  const ui = page.locator('#connection-recovery');
+  const recover = ui.getByRole('button', { name: 'ปิดตัวเดิมแล้วเชื่อมต่อใหม่', exact: true });
+  await expect(ui.getByRole('alert')).toContainText('ตัวเชื่อมต่อจากการเปิดแอปครั้งก่อนยังทำงานค้างอยู่');
+  await expect(ui).not.toContainText('CONNECTION_PREDECESSOR_ACTIVE');
+  await expect(page.locator('#connection-recovery-disabled').getByRole('button', { name: 'ปิดตัวเดิมแล้วเชื่อมต่อใหม่', exact: true })).toBeDisabled();
+  await recover.click();
+  await expect(ui).toContainText('กำลังเชื่อมต่อ');
+  await expect(recover).toHaveCount(0);
+  expect((await page.evaluate(() => Reflect.get(document.getElementById('connection-recovery')!, 'calls') as string[])).filter(method => method === 'recoverConnection')).toHaveLength(1);
+});
+
 test('connection action keeps one state while moving between app pages', async ({ gotzji }) => {
   const { page } = gotzji; const fixturePath = gotzji.rendererFixturePath();
   await build({ stdin: { resolveDir: path.join(desktopRoot, 'src', 'renderer'), sourcefile: 'connection-navigation.tsx', loader: 'tsx', contents: `

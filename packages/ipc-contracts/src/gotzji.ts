@@ -18,7 +18,7 @@ export const gotzjiMethods = [
   'readProjectFile', 'listProjectFiles', 'searchProjectFiles', 'readProjectGit',
   'listProjects', 'listManagedProjects', 'setProjectArchived', 'registerProject', 'registerRecipe', 'bindProjectRecipe', 'supportReport', 'listCatalog', 'prepareOperation', 'submit',
   'listJobs', 'activeJobs', 'status', 'logs', 'result', 'cancel', 'settleJob', 'resume', 'inspectQueue', 'reprioritize',
-  'connectionStatus', 'configureConnection', 'startConnection', 'stopConnection',
+  'connectionStatus', 'configureConnection', 'startConnection', 'stopConnection', 'recoverConnection',
   'startBrowserSession', 'browserSession', 'stopBrowserSession', 'authorizeLibraryDelivery',
   'enrollLibraryChannel', 'libraryChannelStatus', 'configureLibraryConnection', 'startLibraryConnection', 'stopLibraryConnection',
 ] as const;
