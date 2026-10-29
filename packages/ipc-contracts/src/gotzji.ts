@@ -17,7 +17,7 @@ export const gotzjiMethods = [
   'selectProject', 'selectedProject', 'projectContext', 'saveProjectMemory',
   'readProjectFile', 'listProjectFiles', 'searchProjectFiles', 'readProjectGit',
   'listProjects', 'listManagedProjects', 'setProjectArchived', 'registerProject', 'registerRecipe', 'bindProjectRecipe', 'supportReport', 'listCatalog', 'prepareOperation', 'submit',
-  'listJobs', 'status', 'logs', 'result', 'cancel', 'settleJob', 'resume', 'inspectQueue', 'reprioritize',
+  'listJobs', 'activeJobs', 'status', 'logs', 'result', 'cancel', 'settleJob', 'resume', 'inspectQueue', 'reprioritize',
   'connectionStatus', 'configureConnection', 'startConnection', 'stopConnection',
   'startBrowserSession', 'browserSession', 'stopBrowserSession', 'authorizeLibraryDelivery',
   'enrollLibraryChannel', 'libraryChannelStatus', 'configureLibraryConnection', 'startLibraryConnection', 'stopLibraryConnection',

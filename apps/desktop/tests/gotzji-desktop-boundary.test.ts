@@ -14,6 +14,11 @@ afterEach(async () => {
 });
 
 describe('gotzji desktop governed boundary', () => {
+  it('accepts only an argument-free active-job read from the desktop', () => {
+    expect(parseGotzjiRequest({ method: 'activeJobs', input: {} })).toEqual({ method: 'activeJobs', input: {} });
+    expect(() => parseGotzjiRequest({ method: 'activeJobs', input: { ownerId: 'foreign' } })).toThrow('CALLER_AUTHORITY_DENIED');
+    expect(() => parseGotzjiRequest({ method: 'activeJobs', input: { projectId: 'other' } })).toThrow('INVALID_GOTZJI_REQUEST');
+  });
   it('accepts a native snapshot at the 16 MiB transport boundary', async () => {
     const jobId = 'a'.repeat(64); const bytes = Buffer.alloc(16 * 1024 * 1024, 0xa5);
     const expected = { jobId, filename: 'output.xlsx', sha256: createHash('sha256').update(bytes).digest('hex'), base64: bytes.toString('base64') };

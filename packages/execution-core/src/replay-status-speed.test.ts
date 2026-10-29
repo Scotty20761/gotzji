@@ -55,7 +55,7 @@ function seedHistory(f: Fixture, jobId: string, count: number): void {
       const id = randomBytes(32).toString('hex'); const goal = randomBytes(16).toString('hex'); seeded.add(id);
       db.prepare('UPDATE seed_goal SET id=?, goal_key=?').run(goal, `gotzji-${id}`); db.exec('INSERT INTO goals SELECT * FROM seed_goal;');
       db.prepare("UPDATE seed_checkpoints SET id=? || '-' || revision, goal_id=?").run(goal, goal); db.exec('INSERT INTO goal_checkpoints SELECT * FROM seed_checkpoints;');
-      db.prepare('UPDATE seed_gotzji_claims SET id=?, request_id=?, goal_key=?, goal_id=?').run(id, `history-${n}`, `gotzji-${id}`, goal); db.exec('INSERT INTO gotzji_claims SELECT * FROM seed_gotzji_claims;');
+      db.prepare('UPDATE seed_gotzji_claims SET id=?, request_id=?, goal_key=?, goal_id=?').run(id, `history-${id}`, `gotzji-${id}`, goal); db.exec('INSERT INTO gotzji_claims SELECT * FROM seed_gotzji_claims;');
       db.prepare('UPDATE seed_gotzji_product_jobs SET job_id=?').run(id); db.exec('INSERT INTO gotzji_product_jobs SELECT * FROM seed_gotzji_product_jobs;');
       db.prepare('UPDATE seed_gotzji_operations SET job_id=?').run(id); db.exec('INSERT INTO gotzji_operations SELECT * FROM seed_gotzji_operations;');
       db.prepare('UPDATE seed_gotzji_workers SET job_id=?, epoch=?').run(id, randomBytes(16).toString('hex')); db.exec('INSERT INTO gotzji_workers SELECT * FROM seed_gotzji_workers;');
@@ -97,12 +97,14 @@ describe('replayed status speed (incident I8)', () => {
     const first = await timed(() => f.core.list(f.credential));
     const one = await timed(() => f.core.get(f.credential, long));
     const queue = await timed(() => f.core.inspectQueue(f.credential));
-    console.log(`status with 3,033 jobs: list ${first.ms} ms, get ${one.ms} ms, queue ${queue.ms} ms`);
+    // The Desktop polls activeJobs every 5 s alongside list and queue, so it gets the same I8 bound.
+    const active = await timed(() => f.core.activeJobs(f.credential));
+    console.log(`status with 3,033 jobs: list ${first.ms} ms, get ${one.ms} ms, queue ${queue.ms} ms, active ${active.ms} ms`);
     expect(first.value).toHaveLength(100);
     expect(first.value[0]?.requestId).toBe('queued-29');
     expect(queue.value).toHaveLength(30);
     expect(queue.value.map((view) => view.queuePosition)).toEqual(Array.from({ length: 30 }, (_, index) => index + 1));
-    expect(first.ms).toBeLessThan(2000); expect(one.ms).toBeLessThan(500); expect(queue.ms).toBeLessThan(1000);
+    expect(first.ms).toBeLessThan(2000); expect(one.ms).toBeLessThan(500); expect(queue.ms).toBeLessThan(1000); expect(active.ms).toBeLessThan(1000);
     // Paging continues where the page ended, without overlap.
     const next = await f.core.list(f.credential, { before: first.value[99]!.jobId });
     expect(next).toHaveLength(100);
@@ -115,6 +117,11 @@ describe('replayed status speed (incident I8)', () => {
     expect(await f.core.list(f.credential, { projectIds: [] })).toEqual([]);
     expect((await f.core.activeJobs(f.credential)).map((view) => view.jobId)).toEqual(expect.arrayContaining([long.jobId, other.jobId]));
     expect(await f.core.activeJobs(f.credential)).toHaveLength(32);
+    seedHistory(f, finished.jobId, 101);
+    expect((await f.core.list(f.credential)).some(view => view.jobId === long.jobId)).toBe(false);
+    expect((await f.core.activeJobs(f.credential)).map(view => view.jobId)).toEqual(expect.arrayContaining([long.jobId, other.jobId]));
+    const foreignCredential = f.core.enrollAdapter('other-desktop', 'foreign-owner');
+    expect(await f.core.activeJobs(foreignCredential)).toEqual([]);
     // Leave nothing running: cancel the queue, then let both commands finish.
     for (const binding of queued) await f.core.cancel(f.credential, binding);
     await writeFile(path.join(a, 'release'), ''); await writeFile(path.join(b, 'release'), '');

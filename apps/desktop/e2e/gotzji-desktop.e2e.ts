@@ -412,6 +412,262 @@ for (const oldReply of ['success', 'rejection'] as const) test(`gotzji file outp
   await expect(ui.getByLabel('เนื้อหาผลงานที่ตรวจแล้ว', { exact: true })).toHaveCount(0);
 });
 
+test('home shows current attention and running jobs and withdraws stale history on read failure', async ({ gotzji }) => {
+  const { page } = gotzji; const fixturePath = gotzji.rendererFixturePath();
+  const running = '1'.repeat(64); const verifying = '2'.repeat(64); const blocked = '3'.repeat(64); const completed = '4'.repeat(64); const older = '5'.repeat(64);
+  await build({ stdin: { resolveDir: path.join(desktopRoot, 'src', 'renderer'), sourcefile: 'home-attention.tsx', loader: 'tsx', contents: `
+    import { createRoot } from 'react-dom/client';import { GotzjiApp } from './GotzjiApp.tsx';
+    document.getElementById('root').hidden=true;const root=document.createElement('div');root.id='home-attention';document.body.append(root);const calls=[];Reflect.set(root,'calls',calls);
+    const jobs=[{jobId:'${running}',status:'running',requestedOperation:'file.read',projectId:'project-a'},{jobId:'${verifying}',status:'verifying',requestedOperation:'file.read',projectId:'project-a'},{jobId:'${blocked}',status:'blocked',requestedOperation:'file.read',projectId:'project-a'},{jobId:'${completed}',status:'completed',requestedOperation:'file.read',projectId:'project-a'}];
+    const oldActive={jobId:'${older}',status:'running',requestedOperation:'file.read',projectId:'project-a'};
+    const request=(method,input)=>{calls.push(method);if(method==='connectionStatus')return Promise.resolve({state:'ready',configured:true});
+      if(method==='listProjects')return Promise.resolve([{projectId:'project-a',displayName:'Project A'}]);
+      if(method==='selectedProject')return Promise.resolve({projectId:'project-a'});
+      if(method==='listJobs'){
+        if(Reflect.get(root,'failJobs'))return Promise.reject(new Error('history offline'));
+        if(Reflect.get(root,'invalidJobs'))return Promise.resolve([{}]);
+        if(Reflect.get(root,'holdJobs')){Reflect.set(root,'holdJobs',false);return new Promise((resolve,reject)=>Reflect.set(root,'releaseJobs',kind=>kind==='reject'?reject(new Error('obsolete history error')):resolve(jobs)));}
+        return Promise.resolve(Reflect.get(root,'emptyJobs')?[]:jobs);}
+      if(method==='activeJobs'){const read=()=>Reflect.get(root,'failActive')?Promise.reject(new Error('active offline')):Promise.resolve(Reflect.get(root,'emptyJobs')?[]:[...jobs.filter(job=>job.status!=='completed'),oldActive]);
+        if(Reflect.get(root,'holdActive')){Reflect.set(root,'holdActive',false);return new Promise(resolve=>Reflect.set(root,'releaseActive',()=>resolve(read())));}
+        return read();}
+      if(method==='status')return Promise.resolve(jobs.find(job=>job.jobId===input.jobId) ?? (input.jobId==='${older}'?oldActive:undefined));
+      if(method==='listCatalog'&&Reflect.get(root,'failCatalog'))return Promise.reject(new Error('catalog offline'));
+      if(['listManagedProjects','listCatalog','inspectQueue'].includes(method))return Promise.resolve([]);
+      return window.gotzji.request({method,input});};
+    createRoot(root).render(<GotzjiApp requestPort={request}/>);
+  ` }, bundle: true, format: 'iife', platform: 'browser', jsx: 'automatic', loader: { '.css': 'empty', '.webp': 'dataurl' }, outfile: fixturePath, define: { 'process.env.NODE_ENV': '"production"' } });
+  await page.addScriptTag({ url: pathToFileURL(fixturePath).href });
+  const ui = page.locator('#home-attention');
+  const attention = ui.getByRole('region', { name: 'เรื่องที่รอคุณดูแล', exact: true });
+  const active = ui.getByRole('region', { name: 'งานที่กำลังทำ', exact: true });
+  const recent = ui.getByRole('region', { name: 'งานล่าสุด', exact: true });
+  await expect(attention).toContainText(blocked);
+  await expect(active).toContainText(running); await expect(active).toContainText(verifying); await expect(active).toContainText(older);
+  await expect(active).not.toContainText(blocked); await expect(active).not.toContainText(completed);
+  await expect(recent).not.toContainText(older);
+  expect(await ui.evaluate((root) => Boolean(root.querySelector('[aria-label="เรื่องที่รอคุณดูแล"]')!.compareDocumentPosition(root.querySelector('[aria-label="งานที่กำลังทำ"]')!) & Node.DOCUMENT_POSITION_FOLLOWING))).toBe(true);
+  await active.getByRole('button', { name: new RegExp(older) }).click();
+  await expect(ui.getByRole('heading', { name: `งาน ${older}`, exact: true })).toBeVisible();
+  await ui.getByRole('button', { name: 'หน้าแรก', exact: true }).click();
+  await page.evaluate(() => Reflect.set(document.getElementById('home-attention')!, 'failJobs', true));
+  await ui.getByRole('button', { name: 'รีเฟรช', exact: true }).click();
+  await expect(ui.getByRole('alert')).toContainText('history offline');
+  await expect(attention).toContainText('ยังอ่านสถานะงานล่าสุดไม่ได้');
+  await expect(active).toContainText('ยังอ่านสถานะงานล่าสุดไม่ได้');
+  await expect(recent).toContainText('ยังอ่านสถานะงานล่าสุดไม่ได้');
+  await expect(attention.getByRole('button', { name: 'เปิดหน้าตรวจระบบ', exact: true })).toBeVisible();
+  await expect(ui.getByRole('button', { name: new RegExp(running) })).toHaveCount(0);
+  // While reads keep failing, the Doctor link stays mounted across background polls, so keyboard focus survives.
+  const listJobsCalls = (): Promise<number> => page.evaluate(() => (Reflect.get(document.getElementById('home-attention')!, 'calls') as string[]).filter(method => method === 'listJobs').length);
+  const doctor = attention.getByRole('button', { name: 'เปิดหน้าตรวจระบบ', exact: true });
+  await doctor.focus();
+  await doctor.evaluate((element) => Reflect.set(window, 'focusedDoctor', element));
+  const failedReads = await listJobsCalls();
+  await expect.poll(listJobsCalls, { timeout: 8000 }).toBeGreaterThan(failedReads);
+  await page.evaluate(async () => { await new Promise(requestAnimationFrame); await new Promise(requestAnimationFrame); });
+  expect(await page.evaluate(() => { const element = Reflect.get(window, 'focusedDoctor') as HTMLElement; return element.isConnected && document.activeElement === element; })).toBe(true);
+  await page.evaluate(() => Reflect.set(document.getElementById('home-attention')!, 'failJobs', false));
+  await ui.getByRole('button', { name: 'รีเฟรช', exact: true }).click();
+  await expect(active).toContainText(running);
+  await expect(recent).toContainText(completed);
+  await page.evaluate(() => Reflect.set(document.getElementById('home-attention')!, 'failActive', true));
+  await ui.getByRole('button', { name: 'รีเฟรช', exact: true }).click();
+  await expect(ui.getByRole('alert')).toContainText('active offline');
+  await expect(active).toContainText('ยังอ่านงานที่กำลังทำไม่ได้');
+  await expect(recent).toContainText(completed);
+  await page.evaluate(() => Reflect.set(document.getElementById('home-attention')!, 'failActive', false));
+  await ui.getByRole('button', { name: 'รีเฟรช', exact: true }).click();
+  await expect(active).toContainText(older);
+  // A catalog read that fails withdraws only what it feeds; the job lists it does not feed stay.
+  await page.evaluate(() => Reflect.set(document.getElementById('home-attention')!, 'failCatalog', true));
+  await ui.getByRole('button', { name: 'รีเฟรช', exact: true }).click();
+  await expect(ui.getByRole('alert')).toContainText('catalog offline');
+  await expect(recent).toContainText(completed, { timeout: 1000 });
+  await expect(active).toContainText(running, { timeout: 1000 });
+  await page.evaluate(() => Reflect.set(document.getElementById('home-attention')!, 'failCatalog', false));
+  // A slow running-work read keeps the refresh pending, but the history it already read is not withdrawn as stale.
+  await page.evaluate(() => Reflect.set(document.getElementById('home-attention')!, 'holdActive', true));
+  await expect.poll(() => page.evaluate(() => typeof Reflect.get(document.getElementById('home-attention')!, 'releaseActive')), { timeout: 8000 }).toBe('function');
+  await page.waitForTimeout(5200);
+  await expect(recent).toContainText(completed, { timeout: 1000 });
+  await page.evaluate(() => Reflect.get(document.getElementById('home-attention')!, 'releaseActive')());
+  await expect(active).toContainText(older);
+  await page.evaluate(() => Reflect.set(document.getElementById('home-attention')!, 'invalidJobs', true));
+  await ui.getByRole('button', { name: 'รีเฟรช', exact: true }).click();
+  await expect(ui.getByRole('alert')).toContainText('JOB_RESPONSE_INVALID');
+  await expect(active).toContainText('ยังอ่านสถานะงานล่าสุดไม่ได้');
+  await page.evaluate(() => { const root = document.getElementById('home-attention')!; Reflect.set(root, 'invalidJobs', false); Reflect.set(root, 'holdJobs', true); });
+  await expect.poll(() => page.evaluate(() => typeof Reflect.get(document.getElementById('home-attention')!, 'releaseJobs')), { timeout: 8000 }).toBe('function');
+  // A refresh still reading keeps the last failure and its Doctor link instead of flashing back to "loading".
+  await expect(active).toContainText('ยังอ่านสถานะงานล่าสุดไม่ได้', { timeout: 1000 });
+  await expect(attention.getByRole('button', { name: 'เปิดหน้าตรวจระบบ', exact: true })).toBeVisible();
+  const callsBeforeWait = await page.evaluate(() => Reflect.get(document.getElementById('home-attention')!, 'calls').filter((method: string) => method === 'listJobs').length);
+  await page.waitForTimeout(5200);
+  expect(await page.evaluate(() => Reflect.get(document.getElementById('home-attention')!, 'calls').filter((method: string) => method === 'listJobs').length)).toBe(callsBeforeWait);
+  await page.evaluate(() => Reflect.get(document.getElementById('home-attention')!, 'releaseJobs')());
+  await expect(active).toContainText(running);
+  await page.evaluate(() => { const root = document.getElementById('home-attention')!; Reflect.set(root, 'releaseJobs', undefined); Reflect.set(root, 'holdJobs', true); });
+  await expect.poll(() => page.evaluate(() => typeof Reflect.get(document.getElementById('home-attention')!, 'releaseJobs')), { timeout: 8000 }).toBe('function');
+  await ui.getByRole('button', { name: 'รีเฟรช', exact: true }).click();
+  await expect(active).toContainText(running);
+  await page.waitForTimeout(5200);
+  expect(await active.innerText()).toContain(running);
+  await page.evaluate(async () => { Reflect.get(document.getElementById('home-attention')!, 'releaseJobs')('reject'); await new Promise(requestAnimationFrame); await new Promise(requestAnimationFrame); });
+  expect(await ui.innerText()).not.toContain('obsolete history error');
+  await page.evaluate(() => Reflect.set(document.getElementById('home-attention')!, 'emptyJobs', true));
+  await ui.getByRole('button', { name: 'รีเฟรช', exact: true }).click();
+  await expect(attention).toContainText('ไม่พบงานที่ติดขัดหรือล้มเหลวจากงานที่อ่านได้');
+  await expect(active).toContainText('ไม่พบงานที่กำลังทำจากงานที่อ่านได้');
+  expect(await page.evaluate(() => Reflect.get(document.getElementById('home-attention')!, 'calls'))).not.toContain('submit');
+});
+
+test('home and history keep their lists and keyboard focus during a background refresh', async ({ gotzji }) => {
+  const { page } = gotzji; const fixturePath = gotzji.rendererFixturePath();
+  const running = '6'.repeat(64); const completed = '7'.repeat(64); const olderActive = 'a'.repeat(64);
+  const firstAdded = 'b'.repeat(64); const secondAdded = 'c'.repeat(64);
+  await build({ stdin: { resolveDir: path.join(desktopRoot, 'src', 'renderer'), sourcefile: 'home-background-refresh.tsx', loader: 'tsx', contents: `
+    import { createRoot } from 'react-dom/client';import { GotzjiApp } from './GotzjiApp.tsx';
+    document.getElementById('root').hidden=true;const root=document.createElement('div');root.id='home-background-refresh';document.body.append(root);const calls=[];Reflect.set(root,'calls',calls);
+    let jobs=[{jobId:'${running}',status:'running',requestedOperation:'file.read',projectId:'project-a'},{jobId:'${completed}',status:'completed',requestedOperation:'file.read',projectId:'project-a'}];
+    const olderActive={jobId:'${olderActive}',status:'running',requestedOperation:'file.read',projectId:'project-a'};
+    const request=(method,input)=>{calls.push(method);if(method==='connectionStatus')return Promise.resolve({state:'ready',configured:true});
+      if(method==='listProjects')return Promise.resolve([{projectId:'project-a',displayName:'Project A'}]);
+      if(method==='selectedProject')return Promise.resolve({projectId:'project-a'});
+      if(method==='listJobs'){if(Reflect.get(root,'holdJobs')){Reflect.set(root,'holdJobs',false);return new Promise(resolve=>Reflect.set(root,'releaseJobs',added=>{if(added)jobs=[...jobs,{jobId:added,status:'completed',requestedOperation:'file.read',projectId:'project-a'}];resolve(jobs);}));}return Promise.resolve(jobs);}
+      if(method==='activeJobs')return Promise.resolve([...jobs.filter(job=>job.status!=='completed'),olderActive]);
+      if(method==='status')return Promise.resolve([...jobs,olderActive].find(job=>job.jobId===input.jobId));
+      if(['listManagedProjects','listCatalog','inspectQueue'].includes(method))return Promise.resolve([]);
+      return window.gotzji.request({method,input});};
+    createRoot(root).render(<GotzjiApp requestPort={request}/>);
+  ` }, bundle: true, format: 'iife', platform: 'browser', jsx: 'automatic', loader: { '.css': 'empty', '.webp': 'dataurl' }, outfile: fixturePath, define: { 'process.env.NODE_ENV': '"production"' } });
+  await page.addScriptTag({ url: pathToFileURL(fixturePath).href });
+  const ui = page.locator('#home-background-refresh');
+  // Only the 5 s background poll takes the held read, so a click never moves focus during the check.
+  const holdNextBackgroundRead = async (): Promise<void> => {
+    await page.evaluate(() => { const root = document.getElementById('home-background-refresh')!; Reflect.set(root, 'releaseJobs', undefined); Reflect.set(root, 'holdJobs', true); });
+    await expect.poll(() => page.evaluate(() => typeof Reflect.get(document.getElementById('home-background-refresh')!, 'releaseJobs')), { timeout: 8000 }).toBe('function');
+  };
+  const releaseRead = (added?: string): Promise<void> => page.evaluate((jobId) => Reflect.get(document.getElementById('home-background-refresh')!, 'releaseJobs')(jobId), added);
+  const focusedJobRetained = (): Promise<boolean> => page.evaluate(() => {
+    const element = Reflect.get(window, 'focusedJob') as HTMLElement | undefined;
+    return !!element && element.isConnected && document.activeElement === element;
+  });
+  // A Home section is found by its accessible name, or by its heading when it has none.
+  const precedes = (first: string, second: string): Promise<boolean> => ui.evaluate((root, [a, b]) => {
+    const at = (name: string): Element => root.querySelector(`[aria-label="${name}"]`) ?? [...root.querySelectorAll('h3')].find(heading => heading.textContent === name)!;
+    return Boolean(at(a).compareDocumentPosition(at(b)) & Node.DOCUMENT_POSITION_FOLLOWING);
+  }, [first, second]);
+  const active = ui.getByRole('region', { name: 'งานที่กำลังทำ', exact: true });
+  const recent = ui.getByRole('region', { name: 'งานล่าสุด', exact: true });
+  const activeButton = active.getByRole('button', { name: new RegExp(running) });
+  await expect(activeButton).toBeEnabled();
+  // Plan revision 2.1 Home order: readiness, control, delivery approvals, attention, running, queue, recent.
+  const homeOrder = ['เริ่มใช้งาน gotzji', 'ระบบควบคุม', 'คำขอส่งมอบ', 'เรื่องที่รอคุณดูแล', 'งานที่กำลังทำ', 'คิวงาน', 'งานล่าสุด'];
+  for (const [index, name] of homeOrder.slice(1).entries()) expect(await precedes(homeOrder[index]!, name), `${homeOrder[index]} before ${name}`).toBe(true);
+  await activeButton.focus();
+  await activeButton.evaluate((element) => Reflect.set(window, 'focusedJob', element));
+  await holdNextBackgroundRead();
+  expect(await focusedJobRetained()).toBe(true);
+  await expect(active).not.toContainText(/กำลังอ่านสถานะงาน|ยังอ่านสถานะงานล่าสุดไม่ได้/u, { timeout: 1000 });
+  await releaseRead(firstAdded);
+  await expect(recent).toContainText(firstAdded);
+  expect(await focusedJobRetained()).toBe(true);
+  await ui.getByRole('button', { name: 'ประวัติงาน', exact: true }).click();
+  const history = ui.getByRole('region', { name: 'ค้นหาและกรองประวัติงาน', exact: true });
+  const historyButton = history.getByRole('button', { name: new RegExp(completed) });
+  await expect(historyButton).toBeEnabled();
+  await historyButton.focus();
+  await historyButton.evaluate((element) => Reflect.set(window, 'focusedJob', element));
+  await holdNextBackgroundRead();
+  expect(await focusedJobRetained()).toBe(true);
+  await expect(history).toContainText('แสดง 3 จาก 3 งานที่อ่านได้', { timeout: 1000 });
+  await releaseRead(secondAdded);
+  await expect(history).toContainText(secondAdded);
+  expect(await focusedJobRetained()).toBe(true);
+  // A running job older than the history page is still selectable for its live output.
+  await ui.getByRole('button', { name: 'บันทึกสด', exact: true }).click();
+  await expect(ui.locator('section', { has: page.getByRole('heading', { name: 'บันทึกสดของงาน', exact: true }) })).toContainText(olderActive);
+  // A read still pending at the next poll withdraws the lists instead of presenting them as current,
+  // and says so with the Doctor link rather than reading as a fresh load.
+  await ui.getByRole('button', { name: 'หน้าแรก', exact: true }).click();
+  await holdNextBackgroundRead();
+  await expect(active).toContainText('ยังอ่านสถานะงานล่าสุดไม่ได้', { timeout: 8000 });
+  await expect(ui.getByRole('region', { name: 'เรื่องที่รอคุณดูแล', exact: true }).getByRole('button', { name: 'เปิดหน้าตรวจระบบ', exact: true })).toBeVisible();
+  await releaseRead();
+  await expect(active).toContainText(running);
+  // A manual refresh that crosses a poll tick is not yet stale: the lists stay until a whole interval has passed.
+  const listCalls = (): Promise<number> => page.evaluate(() => (Reflect.get(document.getElementById('home-background-refresh')!, 'calls') as string[]).filter(method => method === 'listJobs').length);
+  const beforeTick = await listCalls();
+  await expect.poll(listCalls, { timeout: 8000 }).toBeGreaterThan(beforeTick);
+  await page.evaluate(() => { const root = document.getElementById('home-background-refresh')!; Reflect.set(root, 'releaseJobs', undefined); Reflect.set(root, 'holdJobs', true); });
+  await ui.getByRole('button', { name: 'รีเฟรช', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => typeof Reflect.get(document.getElementById('home-background-refresh')!, 'releaseJobs')), { timeout: 2000 }).toBe('function');
+  await page.waitForTimeout(5200);
+  await expect(active).toContainText(running, { timeout: 1000 });
+  await expect(active).toContainText('ยังอ่านสถานะงานล่าสุดไม่ได้', { timeout: 6000 });
+  await releaseRead();
+  await expect(active).toContainText(running);
+});
+
+test('control-only keeps history and live logs when the host cannot read active jobs', async ({ gotzji }) => {
+  const { page } = gotzji; const fixturePath = gotzji.rendererFixturePath();
+  const blocked = 'd'.repeat(64); const completed = 'e'.repeat(64); const historyRunning = 'f'.repeat(64);
+  await build({ stdin: { resolveDir: path.join(desktopRoot, 'src', 'renderer'), sourcefile: 'home-control-only.tsx', loader: 'tsx', contents: `
+    import { createRoot } from 'react-dom/client';import { GotzjiApp } from './GotzjiApp.tsx';
+    document.getElementById('root').hidden=true;const root=document.createElement('div');root.id='home-control-only';document.body.append(root);const calls=[];Reflect.set(root,'calls',calls);
+    const jobs=[{jobId:'${blocked}',status:'blocked',requestedOperation:'file.read',projectId:'project-a'},{jobId:'${historyRunning}',status:'running',requestedOperation:'file.read',projectId:'project-a'},{jobId:'${completed}',status:'completed',requestedOperation:'file.read',projectId:'project-a'}];
+    const host=()=>Promise.resolve({product:'gotzji',state:Reflect.get(root,'hostState')??'control-only',ownerId:'owner',controller:'chatgpt-plugin',automaticUpdates:false});
+    const request=(method,input)=>{calls.push(method);if(method==='connectionStatus')return Promise.resolve({state:'stopped',configured:true});
+      if(method==='listJobs')return Promise.resolve(jobs);
+      if(method==='activeJobs')return Promise.reject(new Error("Error invoking remote method 'gotzji:request': GotzjiHostError: METHOD_DENIED"));
+      if(method==='status')return Promise.resolve(jobs.find(job=>job.jobId===input.jobId));
+      if(method==='inspectQueue')return Promise.resolve([]);
+      return window.gotzji.request({method,input});};
+    createRoot(root).render(<GotzjiApp requestPort={request} hostStatusPort={host}/>);
+  ` }, bundle: true, format: 'iife', platform: 'browser', jsx: 'automatic', loader: { '.css': 'empty', '.webp': 'dataurl' }, outfile: fixturePath, define: { 'process.env.NODE_ENV': '"production"' } });
+  await page.addScriptTag({ url: pathToFileURL(fixturePath).href });
+  const ui = page.locator('#home-control-only');
+  const attention = ui.getByRole('region', { name: 'เรื่องที่รอคุณดูแล', exact: true });
+  const active = ui.getByRole('region', { name: 'งานที่กำลังทำ', exact: true });
+  await expect(attention).toContainText(blocked);
+  await expect(attention).toContainText('อ่านงานที่ยังทำอยู่ไม่ได้ในตอนนี้ จึงแสดงเฉพาะปัญหาจากประวัติล่าสุด');
+  await expect(active).toContainText('ยังอ่านงานที่กำลังทำไม่ได้ จึงแสดงเฉพาะงานที่กำลังทำจากประวัติล่าสุด');
+  await expect(active).toContainText(historyRunning);
+  await expect(ui).not.toContainText('METHOD_DENIED');
+  await page.waitForTimeout(5200);
+  await expect(ui).not.toContainText('METHOD_DENIED', { timeout: 1000 });
+  await ui.getByRole('button', { name: 'ประวัติงาน', exact: true }).click();
+  await expect(ui.getByRole('region', { name: 'ค้นหาและกรองประวัติงาน', exact: true })).toContainText(completed);
+  await ui.getByRole('button', { name: 'บันทึกสด', exact: true }).click();
+  await expect(ui.locator('section', { has: page.getByRole('heading', { name: 'บันทึกสดของงาน', exact: true }) })).toContainText(blocked);
+  // An unavailable host withdraws history with the reconnect message, not the generic read failure.
+  await page.evaluate(() => Reflect.set(document.getElementById('home-control-only')!, 'hostState', 'unavailable'));
+  await ui.getByRole('button', { name: 'ประวัติงาน', exact: true }).click();
+  await ui.getByRole('button', { name: 'รีเฟรช', exact: true }).click();
+  await expect(ui.getByRole('region', { name: 'ค้นหาและกรองประวัติงาน', exact: true })).toContainText('ระบบในเครื่องยังไม่พร้อม อ่านประวัติใหม่เมื่อเชื่อมต่อได้');
+  expect(await page.evaluate(() => Reflect.get(document.getElementById('home-control-only')!, 'calls'))).not.toContain('submit');
+});
+
+test('home can refresh after an abandoned StrictMode effect remains pending', async ({ gotzji }) => {
+  const { page } = gotzji; const fixturePath = gotzji.rendererFixturePath();
+  await build({ stdin: { resolveDir: path.join(desktopRoot, 'src', 'renderer'), sourcefile: 'home-strict-refresh.tsx', loader: 'tsx', contents: `
+    import { StrictMode } from 'react';import { createRoot } from 'react-dom/client';import { GotzjiApp } from './GotzjiApp.tsx';
+    document.getElementById('root').hidden=true;const root=document.createElement('div');root.id='home-strict-refresh';document.body.append(root);let calls=0;
+    const host=()=>++calls===1?new Promise(resolve=>Reflect.set(root,'oldHost',resolve)):window.gotzji.hostStatus();
+    const request=(method,input)=>{if(method==='connectionStatus')return Promise.resolve({state:'ready',configured:true});
+      if(method==='listProjects')return Promise.resolve([{projectId:'project-a',displayName:'Project A'}]);
+      if(method==='selectedProject')return Promise.resolve({projectId:'project-a'});
+      if(['listManagedProjects','listJobs','listCatalog','inspectQueue'].includes(method))return Promise.resolve([]);
+      return window.gotzji.request({method,input});};
+    createRoot(root).render(<StrictMode><GotzjiApp requestPort={request} hostStatusPort={host}/></StrictMode>);
+  ` }, bundle: true, format: 'iife', platform: 'browser', jsx: 'automatic', loader: { '.css': 'empty', '.webp': 'dataurl' }, outfile: fixturePath, define: { 'process.env.NODE_ENV': '"development"' } });
+  await page.addScriptTag({ url: pathToFileURL(fixturePath).href });
+  const setup = page.locator('#home-strict-refresh').getByRole('region', { name: 'เริ่มใช้งาน gotzji' });
+  await expect(setup).toContainText('Project A');
+  await expect(setup.getByRole('button', { name: 'คัดลอกคำสั่งทดสอบ' })).toBeEnabled();
+});
+
 test('guided first use separates local readiness from a real ChatGPT trial', async ({ gotzji }) => {
   const { page } = gotzji; const fixturePath = gotzji.rendererFixturePath();
   await build({ stdin: { resolveDir: path.join(desktopRoot, 'src', 'renderer'), sourcefile: 'first-use.tsx', loader: 'tsx', contents: `
@@ -1219,7 +1475,11 @@ test('gotzji live logs page the same command and selected cancellation preserves
     return jobs;
   }, { a: rootA, b: rootB, executable: await realpath(process.execPath) });
   for (const jobId of ids) await expect.poll(async () => page.evaluate(async (id) => (await Reflect.get(window, 'ownedTestRequest')({ method: 'status', input: { jobId: id } }) as { status: string }).status, jobId), { timeout: testInfo.timeout }).toBe('running');
+  const liveJobs = await page.evaluate(async () => await window.gotzji.request({ method: 'activeJobs', input: {} }) as { jobId: string }[]);
+  expect(liveJobs.map(job => job.jobId)).toEqual(expect.arrayContaining(ids));
   await page.getByRole('button', { name: 'รีเฟรช', exact: true }).click();
+  await expect(page.getByRole('region', { name: 'งานที่กำลังทำ', exact: true })).toContainText(ids[0]!);
+  await expect(page.getByRole('region', { name: 'งานที่กำลังทำ', exact: true })).toContainText(ids[1]!);
   await page.getByRole('button', { name: 'ประวัติงาน', exact: true }).click();
   await page.getByLabel('รหัสงาน', { exact: true }).fill(ids[0]!);
   await expect(page.getByRole('heading', { name: `งาน ${ids[0]}`, exact: true })).toBeVisible();

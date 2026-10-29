@@ -50,7 +50,10 @@ export function GotzjiApp({ requestPort, exportNativePort, hostStatusPort }: { r
   const [projects, setProjects] = useState<readonly Row[]>([]);
   const [managedProjects, setManagedProjects] = useState<readonly ManagedProject[] | null>(null);
   const [jobs, setJobs] = useState<readonly Row[]>([]);
+  const [activeJobs, setActiveJobs] = useState<readonly Row[]>([]);
+  const [activeState, setActiveState] = useState<'loading' | 'ready' | 'unavailable'>('loading');
   const [jobsLoaded, setJobsLoaded] = useState(false);
+  const [jobsError, setJobsError] = useState(false);
   const [catalog, setCatalog] = useState<readonly Row[]>([]);
   const [catalogState, setCatalogState] = useState<'ready' | 'unavailable'>('unavailable');
   const [diagnosticToolKey, setDiagnosticToolKey] = useState<string | null>(null);
@@ -95,6 +98,9 @@ export function GotzjiApp({ requestPort, exportNativePort, hostStatusPort }: { r
   const [queue, setQueue] = useState<readonly Row[]>([]);
   const [jobPriority, setJobPriority] = useState('1');
   const refreshGeneration = useRef(0);
+  const refreshInFlight = useRef<number | null>(null);
+  const jobsPending = useRef<number | null>(null);
+  const pendingAtLastPoll = useRef<number | null>(null);
   const selectionInFlight = useRef(false);
   const resultGeneration = useRef(0);
   const resultSelection = useRef('');
@@ -133,24 +139,49 @@ export function GotzjiApp({ requestPort, exportNativePort, hostStatusPort }: { r
   const refresh = useCallback(async (): Promise<void> => {
     if (selectionInFlight.current) return;
     const generation = ++refreshGeneration.current;
+    refreshInFlight.current = generation;
+    jobsPending.current = generation;
     try {
       let status: GotzjiHostStatus;
       try { status = await (hostStatusPort ?? window.gotzji.hostStatus)(); }
       catch (cause) { if (generation === refreshGeneration.current) setHost(null); throw cause; }
       if (generation !== refreshGeneration.current) return;
       setHost(status);
-      if (status.state === 'unavailable') { setProjectKnown(false); setProjectId(''); setCatalogState('unavailable'); setCatalog([]); setJobsLoaded(false); setManagedProjects(null); return; }
+      if (status.state === 'unavailable') { setProjectKnown(false); setProjectId(''); setCatalogState('unavailable'); setCatalog([]); setJobsLoaded(false); setJobsError(true); setActiveState('unavailable'); setManagedProjects(null); return; }
+      // Each read settles on its own and history is applied as soon as it is read, so a project,
+      // catalog or running-work read that fails or stays slow (an older host in control-only
+      // version skew denies activeJobs) does not withdraw the history the owner controls jobs from.
+      const applyJobs = (result: SettledRead): SettledRead => {
+        if (generation !== refreshGeneration.current) return result;
+        if (jobsPending.current === generation) jobsPending.current = null;
+        let jobRows: readonly Row[] | undefined; let failure: unknown = result.ok ? undefined : result.reason;
+        if (result.ok) { try { jobRows = validJobRows(result.value); } catch (cause) { failure = cause; } }
+        if (jobRows) { setJobs(jobRows); setJobsLoaded(true); setJobsError(false); return result; }
+        setJobsLoaded(false); setJobsError(true); return { ok: false, reason: failure };
+      };
+      const applyActive = (result: SettledRead): void => {
+        let activeRows: readonly Row[] | undefined; let failure: unknown = result.ok ? undefined : result.reason;
+        if (result.ok) { try { activeRows = validJobRows(result.value); } catch (cause) { failure = cause; } }
+        if (activeRows) { setActiveJobs(activeRows); setActiveState('ready'); return; }
+        setActiveJobs([]); setActiveState('unavailable');
+        if (!methodDenied(failure)) setError(message(failure));
+      };
       if (status.state === 'control-only') {
         setProjectKnown(false); setProjectId(''); setCatalogState('unavailable'); setCatalog([]);
-        const jobRows = await request('listJobs');
+        const [jobsRead, activeResult] = await Promise.all([settleRead(request('listJobs')).then(applyJobs), settleRead(request('activeJobs'))]);
         if (generation !== refreshGeneration.current) return;
-        setJobs(rows(jobRows)); setJobsLoaded(true); setProjects([]); setManagedProjects(null);
+        setProjects([]); setManagedProjects(null);
+        applyActive(activeResult);
+        settledValue(jobsRead);
         return;
       }
-      const [projectRows, jobRows, catalogRows, selected, managedRows] = await Promise.all([
-        request('listProjects'), request('listJobs'), request('listCatalog'), request('selectedProject'), request('listManagedProjects'),
+      const [projectRead, jobsRead, activeResult, catalogRead, selectedRead, managedRead] = await Promise.all([
+        settleRead(request('listProjects')), settleRead(request('listJobs')).then(applyJobs), settleRead(request('activeJobs')),
+        settleRead(request('listCatalog')), settleRead(request('selectedProject')), settleRead(request('listManagedProjects')),
       ]);
       if (generation !== refreshGeneration.current) return;
+      applyActive(activeResult);
+      const [projectRows, , catalogRows, selected, managedRows] = [projectRead, jobsRead, catalogRead, selectedRead, managedRead].map(settledValue);
       if (!Array.isArray(catalogRows) || !catalogRows.every(item => record(item) && typeof item.name === 'string' && typeof item.state === 'string')) throw new Error('CATALOG_RESPONSE_INVALID');
       const projectList = rows(projectRows);
       if (projectList.some(item => typeof item.projectId !== 'string' || !item.projectId.trim() || typeof item.displayName !== 'string' || !item.displayName.trim())
@@ -160,19 +191,23 @@ export function GotzjiApp({ requestPort, exportNativePort, hostStatusPort }: { r
       setManagedProjects(managedProjectRows(managedRows));
       setProjectId(record(selected) && typeof selected.projectId === 'string' ? selected.projectId : '');
       setProjectKnown(true);
-      setJobs(rows(jobRows)); setJobsLoaded(true);
       setCatalog(rows(catalogRows));
       setCatalogState('ready');
     } catch (cause) {
       if (generation !== refreshGeneration.current) return;
       setProjectKnown(false); setProjectId(''); setCatalogState('unavailable'); setCatalog([]);
+      if (jobsPending.current === generation) { setJobsLoaded(false); setJobsError(true); setActiveState('unavailable'); }
       throw cause;
+    } finally {
+      if (refreshInFlight.current === generation) refreshInFlight.current = null;
+      if (jobsPending.current === generation) jobsPending.current = null;
     }
   }, [request, hostStatusPort]);
 
   const selectProject = useCallback(async (id: string): Promise<void> => {
     selectionInFlight.current = true;
     refreshGeneration.current += 1;
+    refreshInFlight.current = null;
     setProjectKnown(false);
     setProjectId('');
     try {
@@ -186,10 +221,18 @@ export function GotzjiApp({ requestPort, exportNativePort, hostStatusPort }: { r
   useEffect(() => {
     document.title = 'gotzji';
     let disposed = false;
-    const update = (): void => { void refresh().catch((cause: unknown) => { if (!disposed) setError(message(cause)); }); };
+    const update = (): void => {
+      const pending = refreshInFlight.current;
+      if (pending !== null) {
+        if (pendingAtLastPoll.current === pending && jobsPending.current === pending) { setJobsLoaded(false); setJobsError(true); }
+        pendingAtLastPoll.current = pending; return;
+      }
+      void refresh().catch((cause: unknown) => { if (!disposed) setError(message(cause)); });
+      pendingAtLastPoll.current = refreshInFlight.current;
+    };
     update();
     const timer = window.setInterval(update, 5_000);
-    return (): void => { disposed = true; refreshGeneration.current += 1; window.clearInterval(timer); };
+    return (): void => { disposed = true; refreshGeneration.current += 1; refreshInFlight.current = null; window.clearInterval(timer); };
   }, [refresh]);
   useEffect(() => {
     setPreparationId(null); setRequestId(null);
@@ -270,6 +313,14 @@ export function GotzjiApp({ requestPort, exportNativePort, hostStatusPort }: { r
   const boundRecipeIds = Array.isArray(selectedProject?.recipeIds) ? selectedProject.recipeIds as string[] : [];
   const projectCommands = projectCommandOptions(boundRecipeIds, catalog);
   const projectNames = new Map(projects.map(project => [String(project.projectId), String(project.displayName)]));
+  const activeReadable = activeState === 'ready';
+  const readableActive = activeReadable ? activeJobs : [];
+  const activeIds = new Set(readableActive.map(job => job.jobId));
+  const attentionJobs = [...readableActive.filter(job => ['blocked', 'failed'].includes(String(job.status))), ...jobs.filter(job => !activeIds.has(job.jobId) && ['blocked', 'failed'].includes(String(job.status)))];
+  const runningJobs = (activeReadable ? readableActive : jobs).filter(job => ['running', 'verifying'].includes(String(job.status)));
+  const historyIds = new Set(jobs.map(job => job.jobId));
+  const liveJobs = [...readableActive.filter(job => !historyIds.has(job.jobId)), ...jobs];
+  const jobsUnavailable = host?.state === 'unavailable' ? 'ระบบในเครื่องยังไม่พร้อม อ่านประวัติใหม่เมื่อเชื่อมต่อได้' : jobsError ? 'ยังอ่านสถานะงานล่าสุดไม่ได้' : 'กำลังอ่านสถานะงาน…';
   const historyQuery = historySearch.trim().toLocaleLowerCase();
   const matchingHistory = jobs.filter(job => {
     const text = [job.jobId, job.projectId, projectNames.get(String(job.projectId)), job.requestedOperation, job.operation, job.summary, statusLabel(job.status)].join(' ').toLocaleLowerCase();
@@ -284,9 +335,9 @@ export function GotzjiApp({ requestPort, exportNativePort, hostStatusPort }: { r
       <p className="gotzji-owner">{host?.ownerId ? 'คอมพิวเตอร์เครื่องนี้' : 'กำลังเชื่อมต่อ'}</p><GotzjiVersionNotes /></aside>
     <main><header><h2>{labels[page]}</h2>{projectKnown && selectedProject && <p>โครงการที่เลือก: {String(selectedProject.displayName)}</p>}<button disabled={busy} onClick={() => void act(refresh)}>รีเฟรช</button></header>
       {error !== null && <div role="alert" className="gotzji-error">{error}<button onClick={() => setError(null)}>ปิด</button></div>}
-      {page === 'home' && <><div className="gotzji-welcome"><div><p className="gotzji-greeting">Grace ผู้ช่วยงานบนคอมพิวเตอร์</p><h3>วันนี้มีอะไรให้ช่วยคะ</h3><p>เลือกโครงการ แล้วสั่งงานต่อจาก ChatGPT หรือเปิดดูงานเดิมได้ที่นี่</p><button onClick={() => setPage('projects')}>เปิดโครงการ</button></div><img src={gracePortrait} alt="" /></div><GotzjiGettingStarted hostState={host?.state ?? null} projectName={selectedProject ? String(selectedProject.displayName) : null} projectKnown={projectKnown} connectionState={connectionState} openProjects={() => setPage('projects')} openSettings={() => setPage('settings')} openDoctor={() => setPage('doctor')} /><section><h3>เรื่องที่รอคุณดูแล</h3>{!jobsLoaded ? <p>กำลังตรวจงานที่รอคุณดูแล</p> : jobs.filter((job) => ['blocked', 'failed'].includes(String(job.status))).length === 0 ? <p>ไม่พบเรื่องที่รอคุณตอบจากข้อมูลล่าสุด</p> : <JobList jobs={jobs.filter((job) => ['blocked', 'failed'].includes(String(job.status)))} disabled={busy || nativeExportJob !== null} select={(id) => { selectJob(id); setPage('worklog'); }} />}</section><section><h3>ระบบควบคุม</h3><p>{host?.state === 'ready' ? 'ระบบในเครื่องพร้อมทำงาน' : host?.state === 'control-only' ? 'ดูผลและยกเลิกงานเดิมได้ · ต้องตรวจระบบก่อนเริ่มงานใหม่' : 'กำลังรอระบบ'}</p>
-        {host?.errorCode && <p>{host.errorCode}</p>}{host?.action && <p>{host.action}</p>}<p>งานที่เริ่มแล้วมีประวัติแยกกัน เปิดกลับมาดูและควบคุมได้จากประวัติงาน</p></section>
-        <section><h3>คิวงาน</h3><p>{queueState === 'ready' ? `งานที่กำลังรอ ${queue.length} งาน` : queueState === 'error' ? 'ยังอ่านคิวไม่ได้ ระบบจะตรวจใหม่เมื่อเชื่อมต่อได้' : 'กำลังอ่านคิวงาน…'}</p><button onClick={() => { setWorklogTab('queue'); setPage('worklog'); }}>เปิดคิวงาน</button></section><section><h3>งานล่าสุด {jobs.length} งาน</h3><JobList jobs={jobs} disabled={busy || nativeExportJob !== null} select={(id) => { selectJob(id); setPage('worklog'); }} /></section><div className="gotzji-navigation-target" ref={deliveryApprovalsRef} tabIndex={-1} role="group" aria-label="คำขอส่งมอบ"><GotzjiDeliveryApprovals request={request} disabled={busy || host?.state !== 'ready'} /></div></>}
+      {page === 'home' && <><div className="gotzji-welcome"><div><p className="gotzji-greeting">Grace ผู้ช่วยงานบนคอมพิวเตอร์</p><h3>วันนี้มีอะไรให้ช่วยคะ</h3><p>เลือกโครงการ แล้วสั่งงานต่อจาก ChatGPT หรือเปิดดูงานเดิมได้ที่นี่</p><button onClick={() => setPage('projects')}>เปิดโครงการ</button></div><img src={gracePortrait} alt="" /></div><GotzjiGettingStarted hostState={host?.state ?? null} projectName={selectedProject ? String(selectedProject.displayName) : null} projectKnown={projectKnown} connectionState={connectionState} openProjects={() => setPage('projects')} openSettings={() => setPage('settings')} openDoctor={() => setPage('doctor')} /><section><h3>ระบบควบคุม</h3><p>{host?.state === 'ready' ? 'ระบบในเครื่องพร้อมทำงาน' : host?.state === 'control-only' ? 'ดูผลและยกเลิกงานเดิมได้ · ต้องตรวจระบบก่อนเริ่มงานใหม่' : 'กำลังรอระบบ'}</p>
+        {host?.errorCode && <p>{host.errorCode}</p>}{host?.action && <p>{host.action}</p>}<p>งานที่เริ่มแล้วมีประวัติแยกกัน เปิดกลับมาดูและควบคุมได้จากประวัติงาน</p></section><div className="gotzji-navigation-target" ref={deliveryApprovalsRef} tabIndex={-1} role="group" aria-label="คำขอส่งมอบ"><GotzjiDeliveryApprovals request={request} disabled={busy || host?.state !== 'ready'} /></div><section aria-label="เรื่องที่รอคุณดูแล"><h3>เรื่องที่รอคุณดูแล</h3><p>งานที่ติดขัดหรือล้มเหลว จากงานที่ยังทำอยู่หรือถือทรัพยากร และประวัติล่าสุดไม่เกิน 100 งาน สถานะอาจเปลี่ยนหลังอ่าน</p>{!jobsLoaded ? <><p>{jobsUnavailable}</p>{jobsError && <button onClick={() => setPage('doctor')}>เปิดหน้าตรวจระบบ</button>}</> : <>{!activeReadable && <p>อ่านงานที่ยังทำอยู่ไม่ได้ในตอนนี้ จึงแสดงเฉพาะปัญหาจากประวัติล่าสุด</p>}{attentionJobs.length === 0 ? <p>ไม่พบงานที่ติดขัดหรือล้มเหลวจากงานที่อ่านได้</p> : <JobList jobs={attentionJobs} projectNames={projectNames} disabled={busy || nativeExportJob !== null} select={(id) => { selectJob(id); setWorklogTab('history'); setPage('worklog'); }} />}</>}</section><section aria-label="งานที่กำลังทำ"><h3>งานที่กำลังทำ</h3><p>จากการอ่านงานที่ยังทำอยู่หรือถือทรัพยากร สถานะอาจเปลี่ยนหลังอ่าน</p>{!jobsLoaded ? <p>{jobsUnavailable}</p> : <>{!activeReadable && <><p>ยังอ่านงานที่กำลังทำไม่ได้ จึงแสดงเฉพาะงานที่กำลังทำจากประวัติล่าสุด</p><button onClick={() => setPage('doctor')}>เปิดหน้าตรวจระบบ</button></>}{runningJobs.length === 0 ? <p>ไม่พบงานที่กำลังทำจากงานที่อ่านได้</p> : <JobList jobs={runningJobs} projectNames={projectNames} disabled={busy || nativeExportJob !== null} select={(id) => { selectJob(id); setWorklogTab('history'); setPage('worklog'); }} />}</>}</section>
+        <section><h3>คิวงาน</h3><p>{queueState === 'ready' ? `งานที่กำลังรอ ${queue.length} งาน` : queueState === 'error' ? 'ยังอ่านคิวไม่ได้ ระบบจะตรวจใหม่เมื่อเชื่อมต่อได้' : 'กำลังอ่านคิวงาน…'}</p><button onClick={() => { setWorklogTab('queue'); setPage('worklog'); }}>เปิดคิวงาน</button></section><section aria-label="งานล่าสุด"><h3>งานล่าสุด</h3>{!jobsLoaded ? <p>{jobsUnavailable}</p> : <><p>{jobs.length} งานที่อ่านได้</p><JobList jobs={jobs} projectNames={projectNames} disabled={busy || nativeExportJob !== null} select={(id) => { selectJob(id); setWorklogTab('history'); setPage('worklog'); }} /></>}</section></>}
       {page === 'projects' && <>{projectId && <GotzjiProjectContext key={projectId} projectId={projectId} request={request} onJob={(id) => { selectJob(id); setWorklogTab('history'); setPage('worklog'); }} />}<GotzjiProjectManager projects={managedProjects} selectedProjectId={projectId} disabled={busy || host?.state !== 'ready'} request={request}
         select={(id) => void act(async () => { await selectProject(id); setPage(current => current === 'projects' ? 'tools' : current); })} changed={refresh} />
         <section><h3>เพิ่มโครงการ</h3>{(['projectId', 'displayName', 'rootPath'] as const).map((field) => <label key={field}>{field === 'projectId' ? 'รหัสโครงการ' : field === 'displayName' ? 'ชื่อโครงการ' : 'โฟลเดอร์โครงการ'}
@@ -354,7 +405,7 @@ export function GotzjiApp({ requestPort, exportNativePort, hostStatusPort }: { r
         {worklogTab === 'history' ? <><h3>เลือกงาน</h3><div role="region" aria-label="ค้นหาและกรองประวัติงาน">
           <label htmlFor={`${historyFilterId}-search`}>ค้นหาประวัติงาน<input id={`${historyFilterId}-search`} type="search" value={historySearch} onChange={event => setHistorySearch(event.target.value)} placeholder="โครงการ รหัสงาน หรือเครื่องมือ" /></label>
           <label htmlFor={`${historyFilterId}-status`}>สถานะงานที่แสดง</label><select id={`${historyFilterId}-status`} value={historyStatus} onChange={event => setHistoryStatus(event.target.value)}><option value="all">ทุกสถานะ</option>{['queued', 'running', 'verifying', 'blocked', 'completed', 'cancelled', 'failed'].map(status => <option key={status} value={status}>{statusLabel(status)}</option>)}</select>
-          {!jobsLoaded ? <p>{host?.state === 'unavailable' ? 'ระบบในเครื่องยังไม่พร้อม อ่านประวัติใหม่เมื่อเชื่อมต่อได้' : 'กำลังอ่านประวัติงาน…'}</p> : <><p aria-live="polite">แสดง {matchingHistory.length} จาก {jobs.length} งานที่อ่านได้</p>{jobs.length > 0 && matchingHistory.length === 0 ? <p>ไม่พบงานที่ตรงกับตัวกรองในข้อมูลที่อ่านได้</p> : <JobList jobs={matchingHistory} projectNames={projectNames} disabled={busy || nativeExportJob !== null} select={selectJob} />}</>}
+          {!jobsLoaded ? <p>{jobsUnavailable}</p> : <><p aria-live="polite">แสดง {matchingHistory.length} จาก {jobs.length} งานที่อ่านได้</p>{jobs.length > 0 && matchingHistory.length === 0 ? <p>ไม่พบงานที่ตรงกับตัวกรองในข้อมูลที่อ่านได้</p> : <JobList jobs={matchingHistory} projectNames={projectNames} disabled={busy || nativeExportJob !== null} select={selectJob} />}</>}
         </div>
           <label>รหัสงาน<input disabled={busy || nativeExportJob !== null} value={jobId} onChange={(event) => selectJob(event.target.value)} placeholder="เลือกรายการหรือวางรหัสงาน" /></label></>
           : <><h3>งานที่กำลังรอ</h3>{queueState === 'loading' ? <p role="status">กำลังอ่านคิวงาน…</p> : queueState === 'error' ? <p role="alert">ยังอ่านคิวไม่ได้ ระบบจะตรวจใหม่เมื่อเชื่อมต่อได้</p> : <JobList jobs={queue} disabled={busy || nativeExportJob !== null} select={selectJob} />}</>}
@@ -400,7 +451,7 @@ export function GotzjiApp({ requestPort, exportNativePort, hostStatusPort }: { r
         </section></>}
       {page === 'settings' && <><GotzjiStartupPanel /></>}
       {page === 'git' && (projectId ? <GotzjiGitPanel key={projectId} projectId={projectId} disabled={busy || host?.state !== 'ready'} request={request} onCommands={() => { if (!selectedProject) { setPage('projects'); return; } gitDestination.current = 'commands'; setPage('tools'); }} onApprovals={() => { gitDestination.current = 'approvals'; setPage('home'); }} /> : <section><h3>เลือกโครงการก่อนดู Git</h3><button onClick={() => setPage('projects')}>เลือกโครงการ</button></section>)}
-      {page === 'live' && <section><h3>บันทึกสดของงาน</h3><p>เลือกงานที่ต้องการอ่านบันทึก โดยไม่เริ่มงานซ้ำ</p><JobList jobs={jobs} disabled={busy || nativeExportJob !== null} select={selectJob} />{jobId && <><h3>งาน {jobId}</h3><JobStatus value={selectedJob} /><button onClick={() => setPage('worklog')}>ดูสถานะและผลลัพธ์</button></>}</section>}
+      {page === 'live' && <section><h3>บันทึกสดของงาน</h3><p>เลือกงานที่ต้องการอ่านบันทึก โดยไม่เริ่มงานซ้ำ</p>{!jobsLoaded ? <p>{jobsUnavailable}</p> : <JobList jobs={liveJobs} projectNames={projectNames} disabled={busy || nativeExportJob !== null} select={selectJob} />}{jobId && <><h3>งาน {jobId}</h3><JobStatus value={selectedJob} /><button onClick={() => setPage('worklog')}>ดูสถานะและผลลัพธ์</button></>}</section>}
       {page === 'doctor' && <><GotzjiDoctorPanel request={request} disabled={busy || !host || host.state === 'unavailable'} onJob={id => { selectJob(id); setPage('worklog'); }} /><section><h3>ระบบควบคุมงาน</h3><p>{host?.state === 'ready' ? 'ระบบในเครื่องพร้อมทำงาน' : host?.state === 'control-only' ? 'ควบคุมงานเดิมได้ · รอตรวจความเข้ากันได้ของรุ่น' : 'ยังไม่พร้อม'}</p>{host?.errorCode && <p>{host.errorCode}</p>}<p>อัปเดตด้วยไฟล์รุ่นที่ตรวจแล้ว</p>
         <div className="gotzji-navigation-target" ref={toolStatusRef} tabIndex={-1} role="group" aria-label="สถานะเครื่องมือ"><h3>เครื่องมือและโปรแกรม</h3>{catalogState !== 'ready' ? <p role="status">ยังอ่านสถานะเครื่องมือล่าสุดไม่ได้ ตรวจการเชื่อมต่อแล้วรีเฟรชอีกครั้ง</p> : <><p>สถานะจากการอ่านครั้งล่าสุด อาจเปลี่ยนได้</p>{diagnosticToolKey !== null && <div aria-label="เครื่องมือที่เลือก">{diagnosticTool ? <><p>เครื่องมือที่เลือก: {String(diagnosticTool.workflowId ?? diagnosticTool.recipeId ?? diagnosticTool.name)}</p><p>{String(diagnosticTool.name)}{diagnosticTool.projectId !== undefined ? ` · โครงการ: ${String(diagnosticTool.projectId)}` : ''}{diagnosticTool.workflowVersion !== undefined ? ` · รุ่น: ${String(diagnosticTool.workflowVersion)}` : ''}</p><p>{String(diagnosticTool.state)} {String(diagnosticTool.reason ?? '')}</p></> : <p>รายการที่เลือกไม่อยู่ในข้อมูลล่าสุด ลองกลับไปเลือกเครื่องมืออีกครั้ง</p>}</div>}{catalog.map((item) => <p key={toolIdentity(item)}>{String(item.workflowId ?? item.name)}: {String(item.state)} {String(item.reason ?? '')}</p>)}</>}</div></section><section><h3>รายงานช่วยเหลือ</h3><p>บันทึกเหตุผลของงานที่ล้มหรือค้าง ใครกำลังถือโครงการหรือทรัพยากรอะไร คิวงาน และสถานะของ CAD, Office และเบราว์เซอร์ ลงไฟล์ที่คุณเลือก รายงานมีชื่อโครงการตามที่คุณตั้ง แต่ไม่มีเนื้อหาไฟล์ path หรือ URL และไม่ถูกส่งไปที่ไหน</p><button disabled={busy || !host || host.state === 'unavailable'} onClick={() => void act(async () => { const saved = await window.gotzji.exportSupportReport(); setReportExport(saved.exported ? 'บันทึกรายงานแล้ว' : 'ยกเลิกการบันทึก'); })}>บันทึกรายงานช่วยเหลือ</button>{reportExport && <p>{reportExport}</p>}</section><GotzjiStartupPanel /></>}
       <div hidden={!(['home', 'settings', 'doctor'] as Page[]).includes(page)}><GotzjiConnectionPanel disabled={host?.state !== 'ready'} {...(requestPort ? { requestPort } : {})} visible={(['home', 'settings', 'doctor'] as Page[]).includes(page)} surfaceKey={page} onStatusChange={setConnectionState} /></div>
@@ -433,6 +484,17 @@ function rows(value: unknown): readonly Row[] {
   const candidate = Array.isArray(value) ? value : record(value) ? (value.items ?? value.projects ?? value.jobs ?? value.operations) : null;
   if (!Array.isArray(candidate) || candidate.some((item: unknown) => !record(item))) throw new Error('LIST_RESPONSE_INVALID');
   return candidate as Row[];
+}
+type SettledRead = { ok: true; value: unknown } | { ok: false; reason: unknown };
+function settleRead(read: Promise<unknown>): Promise<SettledRead> { return read.then(value => ({ ok: true, value }), (reason: unknown) => ({ ok: false, reason })); }
+function settledValue(read: SettledRead): unknown { if (!read.ok) throw read.reason; return read.value; }
+// Electron IPC delivers only the error message to the renderer, so the code is read from it.
+function methodDenied(value: unknown): boolean { return value instanceof Error && /\bMETHOD_DENIED\b/u.test(value.message); }
+function validJobRows(value: unknown): readonly Row[] {
+  const list = rows(value);
+  if (list.some(job => typeof job.jobId !== 'string' || !job.jobId.trim()
+    || typeof job.status !== 'string' || !['queued', 'running', 'verifying', 'blocked', 'completed', 'cancelled', 'failed'].includes(job.status))) throw new Error('JOB_RESPONSE_INVALID');
+  return list;
 }
 function managedProjectRows(value: unknown): readonly ManagedProject[] {
   return rows(value).map((project) => {

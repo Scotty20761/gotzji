@@ -8,6 +8,24 @@ import { libraryCatalog } from './product-library.js';
 import { startProductTunnelBridge } from './product-connection.js';
 
 describe('governed product HTTP and MCP boundary', () => {
+  it('exposes the owner active-job view only to authenticated app reads with no caller arguments', async () => {
+    const calls: { method: string; input: Record<string, unknown>; surface: string }[] = [];
+    const host = await startProductHttp({ token: 'owner', mcpPathSecret: 'tunnel', rpc: async (method, input, surface) => { calls.push({ method, input, surface }); return []; } });
+    const app = async (input: Record<string, unknown>, authorization = 'Bearer owner'): Promise<{ ok?: boolean }> => (await (await fetch(`http://127.0.0.1:${host.port}/rpc`, {
+      method: 'POST', headers: { Authorization: authorization }, body: JSON.stringify({ method: 'activeJobs', input }),
+    })).json()) as { ok?: boolean };
+    const mcp = async (method: string, params?: Record<string, unknown>): Promise<{ result: { isError?: boolean; tools?: { name: string }[] } }> => (await (await fetch(`http://127.0.0.1:${host.port}/mcp/tunnel`, {
+      method: 'POST', body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, ...(params ? { params } : {}) }),
+    })).json()) as { result: { isError?: boolean; tools?: { name: string }[] } };
+    try {
+      expect((await app({})).ok).toBe(true);
+      expect((await app({ ownerId: 'foreign' })).ok).not.toBe(true);
+      expect((await app({}, 'Bearer foreign')).ok).not.toBe(true);
+      expect((await mcp('tools/list')).result.tools!.map(tool => tool.name)).not.toContain('gotzji_active_jobs');
+      expect((await mcp('tools/call', { name: 'gotzji_active_jobs', arguments: {} })).result.isError).toBe(true);
+      expect(calls).toEqual([{ method: 'activeJobs', input: {}, surface: 'app' }]);
+    } finally { await host.close(); }
+  });
   it('allows a selected native output only through authenticated app RPC without a caller path or MCP alias', async () => {
     const calls: { method: string; input: Record<string, unknown>; surface: string }[] = [];
     const host = await startProductHttp({ token: 'owner', mcpPathSecret: 'tunnel', rpc: async (method, input, surface) => { calls.push({ method, input, surface }); return { jobId: input.jobId }; } });

@@ -91,7 +91,7 @@ if (!startupControlOnly) {
 const configurationIdentity = productConfigurationIdentity(config);
 const runtimeVersion = existsSync(manifestPath) ? JSON.parse(readFileSync(manifestPath, 'utf8')).version : 'development';
 const allowCurrentWork = () => { try { return !startupControlOnly && productRuntimeIdentity(entry, runtimeOptions) === buildIdentity; } catch { return false; } };
-const controls = new Set(['health', 'list', 'inspectQueue', 'supportReport', 'status', 'logs', 'result', 'cancel', 'settleJob', 'connectionStatus', 'stopConnection', 'browserSession', 'stopBrowserSession', 'libraryChannelStatus', 'stopLibraryConnection', ...(testSecretFixture ? ['testOnlyE2eShutdown'] : [])]);
+const controls = new Set(['health', 'list', 'activeJobs', 'inspectQueue', 'supportReport', 'status', 'logs', 'result', 'cancel', 'settleJob', 'connectionStatus', 'stopConnection', 'browserSession', 'stopBrowserSession', 'libraryChannelStatus', 'stopLibraryConnection', ...(testSecretFixture ? ['testOnlyE2eShutdown'] : [])]);
 let connection;
 const browser = config.browser && !startupControlOnly ? new ProductBrowserService({ directory, ownerId: config.ownerId, credential, core, ...config.browser, prerequisite: productBrowserPrerequisite(path.join(path.dirname(entry), 'product-browser-broker.mjs')) }) : undefined;
 const libraryChannel = new ProductLibraryChannel({ directory, ownerId: config.ownerId, primaryCredential: credential, core, version: runtimeVersion, allowWork: allowCurrentWork, ...(config.tunnel ? { tunnel: config.tunnel } : {}), ...(testSecretProtector ? { protector: testSecretProtector } : {}) });
@@ -155,6 +155,7 @@ const listener = await startProductHttp({ token: config.daemonSecret, mcpPathSec
     case 'prepareOperation': if (surface === 'app') throw new CoreError('CHATGPT_START_REQUIRED'); return core.prepareOperation(credential, input);
     case 'submit': if (surface === 'app') throw new CoreError('CHATGPT_START_REQUIRED'); return core.submit(credential, input.preparationId);
     case 'list': return core.list(credential, surface === 'app' ? input : { limit: 25, ...input });
+    case 'activeJobs': if (surface !== 'app') throw new CoreError('METHOD_DENIED'); return core.activeJobs(credential);
     case 'inspectQueue': return core.inspectQueue(credential);
     case 'supportReport': if (surface !== 'app') throw new CoreError('SUPPORT_REPORT_DENIED'); return core.supportReport(credential, hostMetrics());
     case 'reprioritize': return core.reprioritize(credential, input);
