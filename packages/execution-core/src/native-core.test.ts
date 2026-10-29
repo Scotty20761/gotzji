@@ -16,6 +16,9 @@ import { canonicalTemporaryDirectory } from './test-fixtures.js';
 interface Fixture { root: string; core: ExecutionCore; credential: string }
 const fixtures: Fixture[] = [];
 let stopCheck: { closing: boolean; pending: Set<Promise<unknown>>; restore?: (() => void) | undefined } | undefined;
+// The opt-in timing trace replaces fetch; afterEach restores it even when a timed-out body outlives its test.
+const untracedFetch = globalThis.fetch;
+let activeTrace: typeof fetch | undefined;
 function checkStopOpen(): void { if (stopCheck?.closing) throw new Error('Stop check is closing; retained fixture'); }
 function trackStopCheck<T>(promise: Promise<T>): Promise<T> {
   const check = stopCheck;
@@ -62,6 +65,8 @@ async function until(f: Fixture, check: () => Promise<boolean>): Promise<void> {
   throw new Error(JSON.stringify(await f.core.list(f.credential)));
 }
 afterEach(async () => {
+  if (activeTrace && globalThis.fetch === activeTrace) globalThis.fetch = untracedFetch;
+  activeTrace = undefined;
   // A timed-out check cannot close SQLite underneath its outstanding public call.
   await drainStopCheck();
   for (const f of fixtures.splice(0)) {
@@ -250,22 +255,43 @@ describe('native operations through Grace and the shared Goal (explicit no-model
       }
     }, 20000);
     it(`retains cancelled native claims when its no-effect result conflicts with ${changed} bytes`, async () => {
-      const f = await fixture('none');
-      const first = await job(f, { requestId: `cancel-${changed}`, projectId: 'one', operation: 'excel.range.write', path: 'source.xlsx', outputPath: 'output.xlsx', sheet: 'Sheet1', range: 'C1', values: [['new']] });
-      await f.core.resume(f.credential, first);
-      await until(f, async () => { try { return await readFile(path.join(f.root, 'native-started'), 'utf8') === 'started'; } catch { return false; } });
-      const target = path.join(f.root, 'one', changed === 'source' ? 'source.xlsx' : 'output.xlsx');
-      await writeFile(target, 'independent owner bytes');
-      await expect(f.core.cancel(f.credential, first)).rejects.toMatchObject({ code: changed === 'source' ? 'NATIVE_ORIGINAL_CHANGED' : 'NATIVE_EFFECT_RECONCILIATION_REQUIRED' });
-      expect(await readFile(target, 'utf8')).toBe('independent owner bytes');
-      const db = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'), { timeout: 5000 });
-      expect(Number(db.prepare('SELECT COUNT(*) AS count FROM gotzji_resource_claims WHERE job_id=?').get(first.jobId)?.count)).toBeGreaterThan(0); db.close();
-      expect((await f.core.get(f.credential, first)).settleDecisions).toContain('effect-present');
-      expect(await f.core.settleBlockedJob(f.credential, first, 'effect-present')).toMatchObject({ status: 'cancelled' });
-      await expect(f.core.readOperationResult(f.credential, first)).rejects.toMatchObject({ code: 'RESULT_NOT_VERIFIED' });
-      const next = await job(f, { requestId: `after-settle-${changed}`, projectId: 'two', operation: 'excel.range.read', path: 'source.xlsx', sheet: 'Sheet1', range: 'A1' });
-      expect(await f.core.resume(f.credential, next)).not.toHaveProperty('waitingReason');
-      await until(f, async () => (await f.core.get(f.credential, next)).status === 'completed');
+      const started = performance.now(); let phase = 'fixture'; let failure: unknown;
+      const stages: Record<string, number> = {}; let last = started;
+      const mark = (next: string): void => { const now = performance.now(); stages[phase] = Math.round((now - last) * 100) / 100; last = now; phase = next; };
+      // Opt-in worker-call trace for timing diagnosis; it observes calls without changing them.
+      const workerCalls: { call: string; ms: number; outcome: number | string }[] = [];
+      const originalFetch = globalThis.fetch;
+      const traced: typeof fetch = async (input, init) => {
+        const url = new URL(typeof input === 'string' || input instanceof URL ? input : input.url); const begun = performance.now(); const call = `${phase}:${url.pathname}`;
+        try { const response = await originalFetch(input, init); workerCalls.push({ call, ms: Math.round(performance.now() - begun), outcome: response.status }); return response; }
+        catch (error) { workerCalls.push({ call, ms: Math.round(performance.now() - begun), outcome: error instanceof Error ? error.name : 'error' }); throw error; }
+      };
+      if (process.env.GOTZJI_NATIVE_TIMING_TRACE === '1') { globalThis.fetch = traced; activeTrace = traced; }
+      try {
+        const f = await fixture('none');
+        mark('job'); const first = await job(f, { requestId: `cancel-${changed}`, projectId: 'one', operation: 'excel.range.write', path: 'source.xlsx', outputPath: 'output.xlsx', sheet: 'Sheet1', range: 'C1', values: [['new']] });
+        mark('resume'); await f.core.resume(f.credential, first);
+        mark('awaitStarted'); await until(f, async () => { try { return await readFile(path.join(f.root, 'native-started'), 'utf8') === 'started'; } catch { return false; } });
+        mark('conflictWrite'); const target = path.join(f.root, 'one', changed === 'source' ? 'source.xlsx' : 'output.xlsx');
+        await writeFile(target, 'independent owner bytes');
+        mark('cancel'); await expect(f.core.cancel(f.credential, first)).rejects.toMatchObject({ code: changed === 'source' ? 'NATIVE_ORIGINAL_CHANGED' : 'NATIVE_EFFECT_RECONCILIATION_REQUIRED' });
+        mark('checkRetained'); expect(await readFile(target, 'utf8')).toBe('independent owner bytes');
+        const db = new DatabaseSync(path.join(f.root, 'state', 'core.sqlite'), { timeout: 5000 });
+        expect(Number(db.prepare('SELECT COUNT(*) AS count FROM gotzji_resource_claims WHERE job_id=?').get(first.jobId)?.count)).toBeGreaterThan(0); db.close();
+        expect((await f.core.get(f.credential, first)).settleDecisions).toContain('effect-present');
+        mark('settle'); expect(await f.core.settleBlockedJob(f.credential, first, 'effect-present')).toMatchObject({ status: 'cancelled' });
+        mark('readResult'); await expect(f.core.readOperationResult(f.credential, first)).rejects.toMatchObject({ code: 'RESULT_NOT_VERIFIED' });
+        mark('nextJob'); const next = await job(f, { requestId: `after-settle-${changed}`, projectId: 'two', operation: 'excel.range.read', path: 'source.xlsx', sheet: 'Sheet1', range: 'A1' });
+        mark('nextResume'); expect(await f.core.resume(f.credential, next)).not.toHaveProperty('waitingReason');
+        mark('awaitCompleted'); await until(f, async () => (await f.core.get(f.credential, next)).status === 'completed');
+        mark('done');
+      } catch (error) { failure = error; throw error; }
+      finally {
+        if (globalThis.fetch === traced) globalThis.fetch = originalFetch;
+        if (activeTrace === traced) activeTrace = undefined;
+        const elapsedMs = Math.round((performance.now() - started) * 100) / 100;
+        if (elapsedMs > 10_000 || failure !== undefined || process.env.GOTZJI_NATIVE_TIMING_TRACE === '1') process.stderr.write(`[native-cancel-conflict-timing] ${JSON.stringify({ changed, phase, elapsedMs, stages, workerCalls, failure: failure instanceof Error ? failure.name : failure === undefined ? null : typeof failure })}\n`);
+      }
     }, 20000);
   }
   it('discovers Excel sheets through the durable native job and retrieves the same metadata after reopen and replay', async () => {
