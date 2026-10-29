@@ -30,6 +30,24 @@ it('denies tampered, expired and out-of-scope capabilities without consuming a v
   const fresh=issueSyntheticCleanupCapability(f.config,f.directory,f.entrypoint);const freshRecord=JSON.parse(await readFile(file,'utf8')) as {body:string};const expiredBody=JSON.stringify({...JSON.parse(freshRecord.body),expiresAt:Date.now()-1});await writeFile(file,JSON.stringify({body:expiredBody,mac:createHmac('sha256',f.config.token).update(expiredBody).digest('hex')}));expect(syntheticCleanupAuthorizer(f.config,f.directory,f.entrypoint)(fresh)).toBe(false);
   expect(()=>issueSyntheticCleanupCapability(f.config,path.join(f.root,'library'),f.entrypoint)).toThrow('TEST_CLEANUP_DENIED');
 });
+it('reports which capability binding or expiry check denied the request without consuming it',async()=>{
+  const f=await fixture();let now=100000;vi.spyOn(Date,'now').mockImplementation(()=>now);
+  const nonce=issueSyntheticCleanupCapability(f.config,f.directory,f.entrypoint);const file=path.join(f.directory,'synthetic-test-cleanup.json');
+  const original=JSON.parse(await readFile(file,'utf8')) as {body:string;mac:string};
+  const denied:string[]=[];const authorize=(config=f.config):(capability:string)=>boolean=>syntheticCleanupAuthorizer(config,f.directory,f.entrypoint,(reason:string)=>denied.push(reason));
+  expect(authorize()('f'.repeat(64))).toBe(false);expect(denied.pop()).toBe('binding-capability');
+  expect(authorize({...f.config,jobId:'other'})(nonce)).toBe(false);expect(denied.pop()).toBe('binding-job');
+  expect(authorize({...f.config,epoch:'other'})(nonce)).toBe(false);expect(denied.pop()).toBe('binding-epoch');
+  const body=JSON.stringify({...JSON.parse(original.body),expiresAt:'invalid'});
+  await writeFile(file,JSON.stringify({body,mac:createHmac('sha256',f.config.token).update(body).digest('hex')}));
+  expect(authorize()(nonce)).toBe(false);expect(denied.pop()).toBe('expiry-invalid');
+  const nullBody='null';await writeFile(file,JSON.stringify({body:nullBody,mac:createHmac('sha256',f.config.token).update(nullBody).digest('hex')}));
+  expect(authorize()(nonce)).toBe(false);expect(denied.pop()).toBe('binding-expiry');
+  await writeFile(file,JSON.stringify(original));
+  now=110001;expect(authorize()(nonce)).toBe(false);expect(denied.pop()).toBe('expiry-expired');
+  now=99999;expect(authorize()(nonce)).toBe(false);expect(denied.pop()).toBe('expiry-future');
+  now=100000;expect(authorize()(nonce)).toBe(true);
+});
 it.runIf(process.platform==='win32')('compares one canonical spelling of Temp and the worker directory',async()=>{
   // Hosted runners can spell TEMP as an 8.3 alias (RUNNER~1). A different-case spelling reaches the same split
   // between JavaScript realpath (keeps the given spelling) and native realpath on any Windows host.

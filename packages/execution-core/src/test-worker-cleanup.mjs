@@ -44,8 +44,12 @@ export function syntheticCleanupAuthorizer(config, directory, entrypoint, onDeni
       if (typeof record.body !== 'string' || record.mac !== createHmac('sha256', config.token).update(record.body).digest('hex')) return refuse();
       const value = JSON.parse(record.body);
       stage = 'binding-expiry';
-      if (value.capability !== capability || value.jobId !== config.jobId || value.epoch !== config.epoch
-        || !Number.isSafeInteger(value.expiresAt) || value.expiresAt < Date.now() || value.expiresAt > Date.now() + 10000) return refuse();
+      if (value.capability !== capability) return refuse('binding-capability');
+      if (value.jobId !== config.jobId) return refuse('binding-job');
+      if (value.epoch !== config.epoch) return refuse('binding-epoch');
+      if (!Number.isSafeInteger(value.expiresAt)) return refuse('expiry-invalid');
+      if (value.expiresAt < Date.now()) return refuse('expiry-expired');
+      if (value.expiresAt > Date.now() + 10000) return refuse('expiry-future');
       stage = 'consume';
       const used = path.join(directory, `.synthetic-cleanup-used-${createHash('sha256').update(capability).digest('hex')}`);
       writeFileSync(used, '', { flag: 'wx', mode: 0o600 });

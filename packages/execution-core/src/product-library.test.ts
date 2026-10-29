@@ -149,7 +149,7 @@ async function cleanupSyntheticWorker(worker:WorkerRow):Promise<void>{
     const body=await response.json().catch(()=>undefined) as {error?:{code?:unknown;stage?:unknown;reason?:unknown}}|undefined;
     const code=typeof body?.error?.code==='string'&&/^[A-Z][A-Z0-9_]{1,79}$/u.test(body.error.code)?body.error.code:'UNKNOWN';
     const stage=['authorization','owned-children','identity-probes','descendant-proof'].includes(String(body?.error?.stage))?String(body!.error!.stage):'unknown';
-    const reason=['context','runtime','temp-parent','fixture-path','driver','library-root','operation','capability','record','mac','binding-expiry','consume'].includes(String(body?.error?.reason))?String(body!.error!.reason):'unknown';
+    const reason=['context','runtime','temp-parent','fixture-path','driver','library-root','operation','capability','record','mac','binding-expiry','binding-capability','binding-job','binding-epoch','expiry-invalid','expiry-expired','expiry-future','consume'].includes(String(body?.error?.reason))?String(body!.error!.reason):'unknown';
     throw new Error(`Fixture cleanup refused: ${worker.directory} (HTTP ${response.status}; ${code}; ${stage}; ${reason})`);
   }
   const result=await response.json() as {nonce:string;pid:number;epoch:string};
