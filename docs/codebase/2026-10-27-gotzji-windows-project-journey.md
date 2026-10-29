@@ -377,9 +377,24 @@ Desktop multi-workspace diagnosis (resolved cause, fix pending owner decision):
 - Every other PowerShell -File launch in the repository (six call sites) already passes -ExecutionPolicy Bypass; windows-contained-launch.ts is the only one that does not. windows-contained-launch.test.ts now forces PSExecutionPolicyPreference=Restricted on the child and is RED (.local-artifacts/round1-containment-policy-red-20261030.log), uncommitted.
 - The one-argument fix was refused by the Claude Code auto-mode safety check because it bypasses a security policy, so it waits for the owner. Production impact to confirm: managed processes and contained Git operations on a Restricted Windows client would fail the same way.
 
+Round-1 commits B 489e0b7e, C 03e05f43, E1 24adb9a1, A 114f9ed4 and this ledger ec6a3469 were pushed to dev once. Exact-SHA CI: the push run 40941796628 completed with success; the pull_request run 40941804204 was still in progress when this section was written.
+
+Proof-gated predecessor tunnel reclaim (plan step 6, owner decision 2026-10-29):
+- restore() now runs reclaimProvenPredecessor() and startNow() in one serialized step, after re-reading desiredActive so an owner Stop during startup stands. A predecessor client is ended automatically only when all six proofs hold: the host proved machine ownership with a real OS identity (product-server passes `host` only then, never in unpackaged E2E mode); the recorded creating host is observed gone (null or a different identity; 'unknown' or an absent observation refuses); the creator is not this host; the recorded pid+birth+executable match; the recorded and on-disk client SHA-256 and path match the pinned client; and termination is proved before any successor starts.
+- terminateRecorded() is the former stop() kill path, shared by stop(), recover() and the reclaim, with one addition: it re-reads the identity immediately before the signal and throws on 'unknown', so a reused PID has the shortest possible window.
+- Any failed proof closes nothing and writes gotzji-tunnel/predecessor-reclaim.json with outcome 'refused' and the reason (ownership-unproven, creator-unknown, creator-unproven, creator-alive, executable-mismatch, identity-unknown). A signal that was sent but whose end was not observed is recorded as 'kill-unverified' instead. A successful reclaim records 'reclaimed'. Each record carries the creator's exit record when one matches by pid+birth: the host now writes product-host-exit.json (pid, birth, exit code) on exit, and null means the creator ended without a clean exit. Writing the record is best effort.
+- One-click recovery: recoverConnection (app surface only, not in control-only controls) runs recover() = stop then start in one serialized step, with identity, hash and path proof but no creator proof, because the owner decided. The connection panel, which Home, Settings and Doctor all show, explains a predecessor in Thai instead of showing CONNECTION_PREDECESSOR_ACTIVE, offers "ปิดตัวเดิมแล้วเชื่อมต่อใหม่", and explains CONNECTION_PROCESS_OWNER_DENIED. A legacy record without creator data, like the 10-24 one, takes this path.
+- Tests (product-connection-reclaim.test.ts, real Windows processes from a csc-compiled client that sleeps until killed): T1 reproduces the incident and failed on the old code (the predecessor stayed alive); with the change the predecessor ends, the successor's profile points at a bridge that answers (403 unauthenticated, where the incident's port was dead), and the record links the creator's exit. T2 covers every refusal, each proving the predecessor is alive and the record unchanged. T5: the same bytes at another path (standing in for lnwjud's client) are refused automatically and by one-click recovery. T6: an Electron test of the panel notice, the disabled state and exactly one recoverConnection call. Logs .local-artifacts/round1-reclaim-*-20261030.log.
+- Independent review: FIX-THEN-SHIP with no safety blocker; every finding with a concrete failure scenario was fixed and retested. Left as follow-ups:
+  - the library channel gets no host, so it keeps its previous behaviour until it has its own notice and recovery button;
+  - product-host-exit.json is one file that the next exiting host overwrites;
+  - the notice can appear during the short window before the startup reclaim decides;
+  - restore() still reports CONNECTION_RECONCILIATION_REQUIRED instead of a more specific start error;
+  - an unchanged gap: startNow spawns before its first record write, and an identity-probe failure after spawn cannot be stopped from the app.
+- Verification on these bytes: Core, renderer and main typecheck and ESLint exit 0; Core 28/28 (reclaim, connection, product-http); Electron connection tests passed; Desktop boundary 22/22.
+
 Next on resume:
-1. Rerun Desktop and Electron in full on the final bytes, and re-review the final delta.
-2. Commit B, C, E1 and A by explicit paths, push, and watch exactly one CI run.
-3. Diagnose the Desktop multi-workspace failure in isolation.
-4. Implement the proof-gated tunnel reclaim with incident tests.
-5. Rerun the C0 inventory workflow; the 2026-10-28 run produced nothing because the weekly usage limit was hit.
+1. Owner decision on the Windows containment launcher fix (-ExecutionPolicy Bypass), then apply it, take windows-contained-launch.test.ts and the multi-workspace test GREEN, and rerun Desktop.
+2. Confirm the pull_request CI run 40941804204, then push the reclaim and watch its exact CI run.
+3. Rerun the C0 inventory workflow at lower effort; the 2026-10-28 run produced nothing because the weekly usage limit was hit.
+4. Follow-ups listed above, including Packet A's mixed snapshot and the library-channel recovery.
