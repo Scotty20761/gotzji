@@ -159,8 +159,8 @@ describe('multi-workspace concurrency acceptance', () => {
           userConfirmed: true,
         },
       });
-      expect(shellA.isError).not.toBe(true);
-      expect(shellB.isError).not.toBe(true);
+      expect(shellA.isError, JSON.stringify([shellA.content, shellA.structuredContent])).not.toBe(true);
+      expect(shellB.isError, JSON.stringify([shellB.content, shellB.structuredContent])).not.toBe(true);
       const taskA = stringField(shellA, 'task_id');
       const taskB = stringField(shellB, 'task_id');
 
