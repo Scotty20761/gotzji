@@ -52,6 +52,8 @@ describe('session resilience acceptance', () => {
       platform: 'node',
       format: 'cjs',
       target: 'node24',
+      // unzipper's optional S3 opener requires this uninstalled peer lazily; exceljs never calls it.
+      external: ['@aws-sdk/client-s3'],
       logLevel: 'silent',
     });
 
