@@ -12,6 +12,16 @@
       "sourceCommit": "b69ad4119f1b19bdab13c61ee2fcc88d46b89071"
     },
     {
+      "name": "saxes",
+      "version": "5.0.1",
+      "license": "ISC",
+      "fileName": "saxes-5.0.1-ISC.txt",
+      "sha256": "0fac2374380621b22e6b50451057721a9c52935b02d16d106a9f04897f061d0e",
+      "evidenceKind": "upstream-commit-license",
+      "source": "https://raw.githubusercontent.com/lddubeau/saxes/6ef6a275b20f19cb67808daf0d8f64e06aaf5b0e/LICENSE",
+      "sourceCommit": "6ef6a275b20f19cb67808daf0d8f64e06aaf5b0e"
+    },
+    {
       "name": "tr46",
       "version": "0.0.3",
       "license": "MIT",
