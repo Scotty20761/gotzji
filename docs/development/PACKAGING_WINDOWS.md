@@ -6,7 +6,7 @@ Expected local candidate paths:
 - apps/desktop/dist/installers/gotzji-Setup-1.0.0.exe
 - apps/desktop/dist/installers/gotzji-Portable-1.0.0.exe
 
-Use corepack pnpm@10.15.0 package:windows from a clean owned source checkpoint. The canonical script builds the host and app, bundles native runtime helpers and preserves upstream/third-party notices. Build prerequisites include Node/Corepack and the .NET SDK where the native secret migrator requires it. Installed-user absence of those build tools requires a separate clean-machine qualification.
+Use corepack pnpm@10.15.0 package:windows from a clean owned source checkpoint. The canonical script builds the host and app, bundles native runtime helpers and preserves upstream/third-party notices. Build prerequisites include Node/Corepack and the .NET SDK where the native secret migrator requires it; that SDK's `dotnet` must come first on PATH. Tunnel-client provenance verification needs cosign 3.1.3 or later on PATH, or `LNWJUD_COSIGN_PATH` set to its executable. The dependency-notice step stops on any production package that ships no license text; add an entry under `third-party/license-overrides/` only from upstream or publisher evidence, never for a package that declares no license. Installed-user absence of those build tools requires a separate clean-machine qualification.
 
 The owned release policy is official-unsigned: Setup and Portable report NotSigned, and both exact artifacts must match complete SHA-256/provenance/runtime evidence. This policy does not claim SmartScreen publisher trust. Automatic updates remain disabled. Keep private candidate files separate from publication until .github/RELEASE_CHECKLIST.md is satisfied; publish the same qualified bytes without rebuilding.
 
