@@ -1,10 +1,12 @@
-import { useEffect, useMemo, useReducer, useRef, useState, type ReactElement, type UIEvent } from 'react';
+import { ActionButton, FormInput } from '../ui/UiPrimitives.js';
+import { useDeferredValue, useEffect, useMemo, useReducer, useRef, useState, type ReactElement, type UIEvent } from 'react';
 import { canonicalWorkspaceScopeId, workspaceScopeMatches, type ActivityTargetDetail, type LiveLogExportReference, type LogLevel, type LogLine, type LogSessionSummary, type LogSource, type UiLocale, type WorkspaceSummary } from '@lnwjud/ipc-contracts';
 import { formatDisplayTimestampItem } from '@lnwjud/shared/date-time-display';
 import { copyTextToClipboard } from '../../clipboard.js';
 import type { MessageKey } from '../../i18n/messages.js';
 import { formatLogExportDateTime, formatLogUiTime } from '../../log-timestamp.js';
 import { CopyableScopeBadge } from '../CopyableScopeBadge.js';
+import { SearchableSelect } from '../../components/ui/SearchableSelect.js';
 import { ExpandableTargetDetail } from '../logs/ExpandableTargetDetail.js';
 import { activeDetailMatchIds, activeLogFeed, createDetailSearchState, normalizeDetailSearchQuery, reduceDetailSearchState, transitionLogFeedFreeze } from '../logs/detail-search-state.js';
 import { collectSessionFilterOptions, collectWorkspaceFilterOptions } from '../../scope-filter-options.js';
@@ -60,6 +62,7 @@ const PROGRESSIVE_PAGE_SIZE = 120;
 export function LogStreamPanel(props: LogStreamPanelProps): ReactElement {
   const [paused, setPaused] = useState(false);
   const [filter, setFilter] = useState('');
+  const deferredFilter = useDeferredValue(filter);
   const [copiedId, setCopiedId] = useState<number | null>(null);
   const [copyErrorId, setCopyErrorId] = useState<number | null>(null);
   const [workspaceId, setWorkspaceId] = useState<string | null>(null);
@@ -93,7 +96,7 @@ export function LogStreamPanel(props: LogStreamPanelProps): ReactElement {
   const scope = useMemo<LogScopeSelection>(() => ({ workspaceId, sessionId }), [workspaceId, sessionId]);
   const searchCandidates = useMemo(() => visibleLogLines(feedLines, scope, '', feed.workspaces), [feed, scope]);
   useEffect(() => {
-    const query = normalizeDetailSearchQuery(filter);
+    const query = normalizeDetailSearchQuery(deferredFilter);
     const generation = ++detailSearchGeneration.current;
     if (query.length === 0 || props.onSearchTargetDetails === undefined) {
       dispatchDetailSearch({ type: 'reset', generation });
@@ -117,9 +120,9 @@ export function LogStreamPanel(props: LogStreamPanelProps): ReactElement {
       });
     }, 180);
     return (): void => window.clearTimeout(timeout);
-  }, [filter, props.onSearchTargetDetails, searchCandidates]);
-  const hiddenMatches = activeDetailMatchIds(detailSearchState, filter);
-  const matchingLines = useMemo(() => visibleLogLines(feedLines, scope, filter, feed.workspaces, hiddenMatches), [feed, scope, filter, hiddenMatches]);
+  }, [deferredFilter, props.onSearchTargetDetails, searchCandidates]);
+  const hiddenMatches = activeDetailMatchIds(detailSearchState, deferredFilter);
+  const matchingLines = useMemo(() => visibleLogLines(feedLines, scope, deferredFilter, feed.workspaces, hiddenMatches), [feed, scope, deferredFilter, hiddenMatches]);
   useEffect(() => setVisibleCount(PROGRESSIVE_PAGE_SIZE), [props.source, filter, workspaceId, sessionId]);
   const visible = useMemo(() => matchingLines.slice(0, visibleCount), [matchingLines, visibleCount]);
   const newestLineId = matchingLines[0]?.id ?? null;
@@ -157,45 +160,45 @@ export function LogStreamPanel(props: LogStreamPanelProps): ReactElement {
       <div className="section-heading">
         <h2>{props.title}</h2>
         <div className="worklog-actions">
-          <button type="button" className={paused ? 'active' : undefined} onClick={() => {
+          <ActionButton type="button" className={paused ? 'active' : undefined} onClick={() => {
             const nextPaused = !paused;
             setFeedFreeze((state) => transitionLogFeedFreeze(state, currentFeed, nextPaused || normalizeDetailSearchQuery(filter).length > 0));
             setPaused(nextPaused);
           }}>
             {paused ? props.followLabel : props.pauseLabel}
-          </button>
-          <button type="button" disabled={sessionId === null} onClick={() => { if (sessionId !== null) void props.onClear({ workspaceId: null, sessionId }); }}>{props.clearSessionLabel}</button>
-          <button type="button" disabled={workspaceId === null} onClick={() => { if (workspaceId !== null) void props.onClear({ workspaceId, sessionId: null }); }}>{props.clearWorkspaceLabel}</button>
-          <button type="button" onClick={() => { void props.onClear({ workspaceId: null, sessionId: null }); }}>{props.clearLabel}</button>
-          <button type="button" onClick={() => { void props.onExport(scope, filter, matchingLines.map((line) => ({ lineId: line.id, correlationRef: detailRefForLine(line) }))); }}>{props.exportLabel}</button>
+          </ActionButton>
+          {props.source === 'tunnel' ? null : <>
+            <ActionButton type="button" disabled={sessionId === null} onClick={() => { if (sessionId !== null) void props.onClear({ workspaceId: null, sessionId }); }}>{props.clearSessionLabel}</ActionButton>
+            <ActionButton type="button" disabled={workspaceId === null} onClick={() => { if (workspaceId !== null) void props.onClear({ workspaceId, sessionId: null }); }}>{props.clearWorkspaceLabel}</ActionButton>
+          </>}
+          <ActionButton type="button" onClick={() => { void props.onClear({ workspaceId: null, sessionId: null }); }}>{props.clearLabel}</ActionButton>
+          <ActionButton type="button" onClick={() => { void props.onExport(scope, filter, matchingLines.map((line) => ({ lineId: line.id, correlationRef: detailRefForLine(line) }))); }}>{props.exportLabel}</ActionButton>
         </div>
       </div>
       {props.description === undefined ? null : <p className="hint log-source-description">{props.description}</p>}
-      <div className="scope-filter-bar">
+      {props.source === 'tunnel' ? null : <div className="scope-filter-bar">
         <label>
           <span>{props.workspaceLabel ?? 'Workspace'}</span>
-          <select value={workspaceId ?? ''} onChange={(event) => {
-            const nextWorkspaceId = event.target.value.length === 0 ? null : event.target.value;
-            setWorkspaceId(nextWorkspaceId);
-            if (sessionId !== null) void props.onSessionChange?.({ workspaceId: nextWorkspaceId, sessionId });
-          }}>
-            <option value="">{props.scopeAllLabel ?? 'All'}</option>
-            {workspaceOptions.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
-          </select>
+          <SearchableSelect label={props.workspaceLabel ?? 'Workspace'} value={workspaceId ?? ''}
+            options={[{value:'',label:props.scopeAllLabel ?? 'All'},...workspaceOptions.map(option=>({value:option.id,label:option.label}))]}
+            onChange={(value) => {
+              const nextWorkspaceId = value.length === 0 ? null : value;
+              setWorkspaceId(nextWorkspaceId);
+              if (sessionId !== null) void props.onSessionChange?.({ workspaceId: nextWorkspaceId, sessionId });
+            }} />
         </label>
         <label>
           <span>{props.sessionLabel ?? 'Session'}</span>
-          <select value={sessionId ?? ''} onChange={(event) => {
-            const nextSessionId = event.target.value.length === 0 ? null : event.target.value;
-            setSessionId(nextSessionId);
-            void props.onSessionChange?.({ workspaceId, sessionId: nextSessionId });
-          }}>
-            <option value="">{props.scopeAllLabel ?? 'All'}</option>
-            {sessionOptions.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
-          </select>
+          <SearchableSelect label={props.sessionLabel ?? 'Session'} value={sessionId ?? ''}
+            options={[{value:'',label:props.scopeAllLabel ?? 'All'},...sessionOptions.map(option=>({value:option.id,label:option.label}))]}
+            onChange={(value) => {
+              const nextSessionId = value.length === 0 ? null : value;
+              setSessionId(nextSessionId);
+              void props.onSessionChange?.({ workspaceId, sessionId: nextSessionId });
+            }} />
         </label>
-      </div>
-      <input
+      </div>}
+      <FormInput
         type="text"
         className="log-filter"
         placeholder={props.filterPlaceholder}
@@ -207,6 +210,7 @@ export function LogStreamPanel(props: LogStreamPanelProps): ReactElement {
         }}
         aria-label={props.filterPlaceholder}
       />
+      {filter !== deferredFilter ? <p role="status" className="ui-loading-status">{props.locale === 'en' ? 'Filtering logs' : 'กำลังกรองบันทึก'}…</p> : null}
       {detailSearchState.status === 'loading' ? <p className="log-detail-search-status" role="status">{props.detailLoadingLabel ?? 'Searching complete details…'}</p> : null}
       {detailSearchState.status === 'error' ? <p className="log-detail-search-status log-detail-error" role="alert">{props.detailErrorLabel ?? 'Complete details could not be searched.'}</p> : null}
       {props.source === 'tunnel' && !props.tunnelLogExists ? (
@@ -227,7 +231,7 @@ export function LogStreamPanel(props: LogStreamPanelProps): ReactElement {
               <span className="tag level-tag">[{line.level.toUpperCase()}]</span>
               {display.kind === null ? null : <span className={`event-tag ${display.kind}`}>[{display.kind.toUpperCase()}]</span>}
               <span className="log-message"><ScopeBadges line={line} showWorkspace={workspaceId === null} showSession={sessionId === null} workspaces={feed.workspaces} />{display.detail}</span>
-              <button
+              <ActionButton
                 type="button"
                 className="row-copy-button"
                 title={copiedId === line.id ? (props.copiedLabel ?? 'Copied') : (props.copyLabel ?? 'Copy full log')}
@@ -235,7 +239,7 @@ export function LogStreamPanel(props: LogStreamPanelProps): ReactElement {
                 onClick={() => { void copyLine(line); }}
               >
                 {copiedId === line.id ? '✓' : '⧉'}
-              </button>
+              </ActionButton>
               {copyErrorId === line.id ? <p className="log-detail-error row-copy-error" role="alert">{props.detailErrorLabel ?? 'Complete details are unavailable; nothing was copied.'}</p> : null}
               {line.targetDetail === undefined ? null : (
                 <ExpandableTargetDetail

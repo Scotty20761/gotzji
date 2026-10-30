@@ -1,4 +1,7 @@
 $ErrorActionPreference = 'Stop'
+[Console]::InputEncoding = [Text.UTF8Encoding]::new($false, $true)
+[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+$OutputEncoding = [Console]::OutputEncoding
 
 function Get-Field {
   param([object]$Object, [string]$Name)
@@ -44,6 +47,22 @@ function ConvertTo-ExcelRangeValues {
   }
   if ($top.Count -eq 1) { return $top[0] }
   throw ("values shape does not match target range {0}x{1}" -f $rowCount, $columnCount)
+}
+
+function ConvertFrom-ExcelRangeValues {
+  param([object]$Values, [object]$Range)
+  $rows = [int]$Range.Rows.Count; $columns = [int]$Range.Columns.Count
+  if ([long]$rows * $columns -gt 100000) { throw 'Excel range reads are limited to 100000 cells' }
+  $matrix = [Collections.Generic.List[object]]::new()
+  for ($row = 0; $row -lt $rows; $row++) {
+    $cells = [Collections.Generic.List[object]]::new()
+    for ($column = 0; $column -lt $columns; $column++) {
+      $value = if ($Values -is [Array] -and $Values.Rank -eq 2) { $Values.GetValue($row + $Values.GetLowerBound(0), $column + $Values.GetLowerBound(1)) } else { $Values }
+      $cells.Add($value)
+    }
+    $matrix.Add($cells.ToArray())
+  }
+  return ,$matrix.ToArray()
 }
 
 function Success {
@@ -837,6 +856,498 @@ function Add-OutlookRecipients {
   }
 }
 
+function Read-OfficeInteger {
+  param([object]$Value, [string]$Name, [int]$Minimum = 1, [int]$Maximum = 1000000)
+  $number = 0
+  if ($null -eq $Value -or -not [int]::TryParse([string]$Value, [ref]$number) -or $number -lt $Minimum -or $number -gt $Maximum) { throw "$Name must be an integer between $Minimum and $Maximum" }
+  return $number
+}
+
+function Read-OfficeNumber {
+  param([object]$Value, [string]$Name, [double]$Minimum = 0, [double]$Maximum = 100000)
+  $number = 0.0
+  if ($null -eq $Value -or -not [double]::TryParse([string]$Value, [Globalization.NumberStyles]::Float, [Globalization.CultureInfo]::InvariantCulture, [ref]$number) -or [double]::IsNaN($number) -or [double]::IsInfinity($number) -or $number -lt $Minimum -or $number -gt $Maximum) { throw "$Name must be a finite number between $Minimum and $Maximum" }
+  return $number
+}
+
+function Get-OfficeRequiredText {
+  param([object]$Parameters, [string]$Name)
+  $value = Get-Field $Parameters $Name
+  if ($null -eq $value -or [string]::IsNullOrWhiteSpace([string]$value)) { throw "$Name is required" }
+  return [string]$value
+}
+
+function Assert-OfficeOutput {
+  param([string]$Path)
+  $item = Get-Item -LiteralPath $Path -ErrorAction Stop
+  if ($item.PSIsContainer -or $item.Length -le 0) { throw 'Office output is missing or empty' }
+  return [ordered]@{ target = $item.FullName; bytes = [long]$item.Length; verified = $true }
+}
+
+function Open-OfficeExcelWorkbook {
+  param([object]$Excel, [string]$Path, [bool]$ReadOnly = $false, [bool]$ExplicitMacro = $false, [bool]$ExplicitRefresh = $false)
+  if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { throw 'Excel file was not found' }
+  $extension = [IO.Path]::GetExtension($Path).ToLowerInvariant()
+  $xmlFormats = @('.xlsx', '.xlsm', '.xltx', '.xltm', '.xlam')
+  if ($extension -notin ($xmlFormats + @('.csv', '.tsv', '.txt'))) { throw 'Legacy, binary or uninspectable Excel files require macro-safe conversion before native automation' }
+  if ($ExplicitMacro -and $extension -notin @('.xlsm', '.xltm', '.xlam')) { throw 'Explicit VBA macro execution requires an inspectable macro-enabled OOXML workbook' }
+  if ($extension -in $xmlFormats) {
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $archive = [IO.Compression.ZipFile]::OpenRead($Path)
+    try {
+      if (@($archive.Entries | Where-Object { $_.FullName -match '^xl/macrosheets/' }).Count -gt 0) { throw 'Excel 4 macro sheets cannot be opened by native Office actions' }
+      if (-not $ExplicitRefresh) {
+        foreach ($entry in $archive.Entries) {
+          if ($entry.FullName -notmatch '^xl/(?:connections\.xml|queryTables/[^/]+\.xml|pivotCache/pivotCacheDefinition[^/]*\.xml)$') { continue }
+          if ($entry.Length -gt 1048576) { throw 'Workbook connection metadata exceeds its bounded inspection limit' }
+          $settings = [Xml.XmlReaderSettings]::new(); $settings.DtdProcessing = [Xml.DtdProcessing]::Prohibit; $settings.XmlResolver = $null; $settings.MaxCharactersInDocument = 1048576
+          $stream = $entry.Open(); $reader = [Xml.XmlReader]::Create($stream, $settings)
+          try { while ($reader.Read()) { if ($reader.NodeType -ne [Xml.XmlNodeType]::Element) { continue }; $refresh = $reader.GetAttribute('refreshOnLoad'); if ($refresh -in @('1', 'true')) { throw 'Workbook requests refresh on open; use an approved refresh_connections action' } } }
+          finally { $reader.Dispose(); $stream.Dispose() }
+        }
+      }
+    }
+    finally { $archive.Dispose() }
+  }
+  $Excel.AutomationSecurity = if ($ExplicitMacro) { 1 } else { 3 }
+  $Excel.EnableEvents = $false
+  $Excel.AskToUpdateLinks = $false
+  try { return ,$Excel.Workbooks.Open($Path, 0, $ReadOnly) }
+  finally { $Excel.AutomationSecurity = 3 }
+}
+
+function Invoke-ExcelExtendedAction {
+  param([object]$Excel, [string]$Action, [object]$OfficeInput)
+  $file = Get-OfficeRequiredText $OfficeInput 'file_path'
+  $readOnly = $Action -in @('read_named_ranges', 'read_filters', 'read_data_validation', 'read_conditional_formatting', 'connection_metadata', 'list_macros')
+  $book = Open-OfficeExcelWorkbook $Excel $file $readOnly ($Action -eq 'run_macro') ($Action -eq 'refresh_connections')
+  try {
+    $options = Get-Field $OfficeInput 'parameters'
+    $sheetName = [string](Get-Field $OfficeInput 'sheet')
+    $sheet = if ($sheetName.Length -eq 0) { $book.Worksheets.Item(1) } else { $book.Worksheets.Item($sheetName) }
+    $rangeName = [string](Get-Field $OfficeInput 'range')
+    $result = [ordered]@{ app = 'excel'; action = $Action; file_path = $file; sheet = [string]$sheet.Name }
+    switch ($Action) {
+      'read_named_ranges' {
+        $rows = @(); foreach ($entry in $book.Names) { if ($rows.Count -ge 500) { break }; $rows += [ordered]@{ name = [string]$entry.Name; refers_to = [string]$entry.RefersTo; visible = [bool]$entry.Visible } }
+        $result.names = $rows; $result.total = [int]$book.Names.Count; $result.truncated = $result.total -gt $rows.Count
+      }
+      'read_filters' {
+        $rows = @(); if ($sheet.AutoFilterMode) { $filter = $sheet.AutoFilter; for ($i = 1; $i -le $filter.Filters.Count; $i++) { $entry = $filter.Filters.Item($i); $row = [ordered]@{ field = $i; active = [bool]$entry.On }; if ($entry.On) { $row.operator = [int]$entry.Operator; $row.criteria1 = $entry.Criteria1; try { $row.criteria2 = $entry.Criteria2 } catch { } }; $rows += $row }; $result.range = [string]$filter.Range.Address($false, $false) }; $result.filters = $rows
+      }
+      'read_data_validation' {
+        if ($rangeName.Length -eq 0) { throw 'range is required' }; $target = $sheet.Range($rangeName)
+        if ($target.CountLarge -gt 10000) { throw 'Validation reads are limited to 10000 cells' }
+        $rows = @(); foreach ($cell in $target.Cells) { try { $validation = $cell.Validation; $rows += [ordered]@{ cell = [string]$cell.Address($false, $false); type = [int]$validation.Type; operator = [int]$validation.Operator; formula1 = [string]$validation.Formula1; formula2 = [string]$validation.Formula2; ignore_blank = [bool]$validation.IgnoreBlank; in_cell_dropdown = [bool]$validation.InCellDropdown } } catch { } }; $result.validation = $rows
+      }
+      'read_conditional_formatting' {
+        if ($rangeName.Length -eq 0) { throw 'range is required' }; $target = $sheet.Range($rangeName); $rows = @()
+        foreach ($entry in $target.FormatConditions) { if ($rows.Count -ge 500) { break }; $row = [ordered]@{ type = [int]$entry.Type; priority = [int]$entry.Priority; applies_to = [string]$entry.AppliesTo.Address($false, $false); stop_if_true = [bool]$entry.StopIfTrue }; try { $row.formula1 = [string]$entry.Formula1; $row.formula2 = [string]$entry.Formula2; $row.operator = [int]$entry.Operator } catch { }; $rows += $row }; $result.conditions = $rows; $result.total = [int]$target.FormatConditions.Count; $result.truncated = $result.total -gt $rows.Count
+      }
+      'connection_metadata' {
+        $rows = @(); foreach ($entry in $book.Connections) { if ($rows.Count -ge 500) { break }; $rows += [ordered]@{ name = [string]$entry.Name; type = [int]$entry.Type; description = [string]$entry.Description } }; $result.connections = $rows; $result.total = [int]$book.Connections.Count; $result.truncated = $result.total -gt $rows.Count
+      }
+      { $_ -in @('copy_sheet', 'move_sheet') } {
+        $targetName = Get-OfficeRequiredText $options 'target_sheet'; $destination = $book.Worksheets.Item($targetName)
+        if ($destination.Name -eq $sheet.Name) { throw 'target_sheet must be different from sheet' }
+        if ($Action -eq 'copy_sheet') { $sheet.Copy([Type]::Missing, $destination); $copy = $book.Worksheets.Item($destination.Index + 1); $newName = [string](Get-Field $OfficeInput 'new_name'); if ($newName.Length -gt 0) { $copy.Name = $newName }; $result.created_sheet = [string]$copy.Name }
+        else { $sheet.Move([Type]::Missing, $destination) }; $result.sheet_index = [int]$sheet.Index
+      }
+      'set_border' {
+        if ($rangeName.Length -eq 0) { throw 'range is required' }; $target = $sheet.Range($rangeName)
+        $edges = Get-Field $options 'edges'; if ($null -eq $edges) { $edges = @(7, 8, 9, 10) }
+        foreach ($edge in @($edges)) { $border = $target.Borders.Item((Read-OfficeInteger $edge 'edge' 5 12)); $border.LineStyle = Read-OfficeInteger (Get-Field $options 'line_style') 'line_style' -4142 13; $weight = Get-Field $options 'weight'; if ($null -ne $weight) { $border.Weight = Read-OfficeInteger $weight 'weight' -4138 4 }; $color = Get-Field $options 'color'; if ($null -ne $color) { $border.Color = Read-OfficeInteger $color 'color' 0 16777215 } }; $result.range = [string]$target.Address($false, $false)
+      }
+      { $_ -in @('create_named_range', 'update_named_range', 'delete_named_range') } {
+        $name = Get-OfficeRequiredText $OfficeInput 'name'
+        if ($Action -eq 'delete_named_range') { $book.Names.Item($name).Delete(); $result.deleted = $true }
+        else { if ($rangeName.Length -eq 0) { throw 'range is required' }; $target = $sheet.Range($rangeName); $refers = "='" + ([string]$sheet.Name).Replace("'", "''") + "'!" + [string]$target.Address($true, $true)
+          if ($Action -eq 'create_named_range') { try { $existing = $book.Names.Item($name) } catch { $existing = $null }; if ($null -ne $existing) { throw 'Named range already exists' }; $entry = $book.Names.Add($name, $refers) } else { $entry = $book.Names.Item($name); $entry.RefersTo = $refers }; $result.name = [string]$entry.Name; $result.refers_to = [string]$entry.RefersTo }
+      }
+      { $_ -in @('set_conditional_formatting', 'delete_conditional_formatting') } {
+        if ($rangeName.Length -eq 0) { throw 'range is required' }; $target = $sheet.Range($rangeName)
+        if ($Action -eq 'delete_conditional_formatting') { $index = Read-OfficeInteger (Get-Field $OfficeInput 'index') 'index' 1 $target.FormatConditions.Count; $target.FormatConditions.Item($index).Delete(); $result.deleted_index = $index }
+        else { $type = Read-OfficeInteger (Get-Field $options 'type') 'type' 1 2; $formula1 = Get-OfficeRequiredText $options 'formula1'; $operator = if ($type -eq 1) { Read-OfficeInteger (Get-Field $options 'operator') 'operator' 1 8 } else { [Type]::Missing }; $formula2 = Get-Field $options 'formula2'; $condition = $target.FormatConditions.Add($type, $operator, $formula1, $formula2); $color = Get-Field $options 'color'; if ($null -ne $color) { $condition.Interior.Color = Read-OfficeInteger $color 'color' 0 16777215 }; $result.priority = [int]$condition.Priority }; $result.condition_count = [int]$target.FormatConditions.Count
+      }
+      'add_hyperlink' {
+        if ($rangeName.Length -eq 0) { throw 'range is required' }; $address = Get-OfficeRequiredText $options 'address'; $link = $sheet.Hyperlinks.Add($sheet.Range($rangeName), $address); $result.address = [string]$link.Address
+      }
+      'replace_image' {
+        $name = Get-OfficeRequiredText $OfficeInput 'name'; $image = Get-OfficeRequiredText $OfficeInput 'image_path'; $old = $sheet.Shapes.Item($name)
+        if ([int]$old.Type -ne 13) { throw 'The selected shape is not an embedded image' }
+        $replacement = $sheet.Shapes.AddPicture($image, 0, -1, $old.Left, $old.Top, $old.Width, $old.Height); $old.Delete(); $replacement.Name = $name; $result.name = [string]$replacement.Name
+      }
+      'refresh_connections' {
+        $limit = Read-OfficeNumber (Get-Field $OfficeInput 'timeout_seconds') 'timeout_seconds' 0.1 300; $book.RefreshAll(); $clock = [Diagnostics.Stopwatch]::StartNew()
+        do { $refreshing = $false; foreach ($connection in $book.Connections) { if ($connection.Type -eq 1) { $refreshing = $refreshing -or [bool]$connection.OLEDBConnection.Refreshing }; if ($connection.Type -eq 2) { $refreshing = $refreshing -or [bool]$connection.ODBCConnection.Refreshing } }; if ($refreshing) { if ($clock.Elapsed.TotalSeconds -ge $limit) { foreach ($connection in $book.Connections) { try { if ($connection.Type -eq 1) { $connection.OLEDBConnection.CancelRefresh() }; if ($connection.Type -eq 2) { $connection.ODBCConnection.CancelRefresh() } } catch { } }; throw 'Connection refresh did not complete within the bounded timeout' }; Start-Sleep -Milliseconds 100 } } while ($refreshing); $result.refresh_completed = $true
+      }
+      'print' { $sheet.PrintOut(); $result.submitted = $true; $result.completion_verified = $false }
+      'list_macros' {
+        $result.has_vba_project = [bool]$book.HasVBProject; $rows = @(); $available = $true
+        if ($book.HasVBProject) { try { foreach ($component in $book.VBProject.VBComponents) { if ($component.Type -ne 1) { continue }; $module = $component.CodeModule; for ($line = 1; $line -le $module.CountOfLines; $line++) { $text = [string]$module.Lines($line, 1); if ($text -match '^\s*(?:Public\s+)?Sub\s+([\p{L}\p{N}_]+)\s*\(\s*\)') { $rows += [string]$component.Name + '.' + $Matches[1]; if ($rows.Count -ge 500) { break } } }; if ($rows.Count -ge 500) { break } } } catch { $available = $false; $result.reason = 'VBA project inspection is denied by existing Office trust settings' } }; $result.macros = $rows; $result.inspection_available = $available; $result.truncated = $rows.Count -ge 500
+      }
+      'run_macro' {
+        $macro = Get-OfficeRequiredText $OfficeInput 'macro'; if ($macro -notmatch '^[\p{L}_][\p{L}\p{N}_]*(?:\.[\p{L}_][\p{L}\p{N}_]*)?$') { throw 'macro must name a workbook-local VBA procedure' }
+        $qualified = "'" + ([string]$book.Name).Replace("'", "''") + "'!" + $macro; $result.result = $Excel.Run($qualified); $result.macro = $qualified
+      }
+      default { throw "Unsupported extended excel action: $Action" }
+    }
+    if (-not $readOnly -and $Action -ne 'print') { $book.Save(); $result.saved = $true }
+    return $result
+  } finally { $book.Close($false); Release-ComObject $book }
+}
+
+function Resolve-WordSemanticRange {
+  param([object]$Document, [object]$OfficeInput)
+  $selector = Get-Field $OfficeInput 'range'
+  if ($null -eq $selector) { return ,$Document.Content.Duplicate }
+  $start = Read-OfficeInteger (Get-Field $selector 'start') 'range.start' 0 $Document.Content.End
+  $end = Read-OfficeInteger (Get-Field $selector 'end') 'range.end' $start $Document.Content.End
+  return ,$Document.Range($start, $end)
+}
+
+function Set-WordSemanticFont {
+  param([object]$Font, [object]$Options)
+  foreach ($key in @('name', 'size', 'bold', 'italic', 'underline', 'color', 'strike_through', 'superscript', 'subscript')) {
+    $value = Get-Field $Options $key; if ($null -eq $value) { continue }
+    switch ($key) {
+      'name' { $Font.Name = [string]$value }
+      'size' { $Font.Size = Read-OfficeNumber $value 'size' 1 1638 }
+      'bold' { $Font.Bold = if ($value) { -1 } else { 0 } }
+      'italic' { $Font.Italic = if ($value) { -1 } else { 0 } }
+      'underline' { $Font.Underline = Read-OfficeInteger $value 'underline' 0 55 }
+      'color' { $Font.Color = Read-OfficeInteger $value 'color' 0 16777215 }
+      'strike_through' { $Font.StrikeThrough = if ($value) { -1 } else { 0 } }
+      'superscript' { $Font.Superscript = if ($value) { -1 } else { 0 } }
+      'subscript' { $Font.Subscript = if ($value) { -1 } else { 0 } }
+    }
+  }
+}
+
+function Set-WordSemanticParagraph {
+  param([object]$Format, [object]$Options)
+  foreach ($key in @('alignment', 'space_before', 'space_after', 'line_spacing', 'left_indent', 'right_indent', 'first_line_indent', 'keep_with_next', 'keep_together')) {
+    $value = Get-Field $Options $key; if ($null -eq $value) { continue }
+    switch ($key) {
+      'alignment' { $Format.Alignment = Read-OfficeInteger $value 'alignment' 0 9 }
+      'space_before' { $Format.SpaceBefore = Read-OfficeNumber $value $key 0 1584 }
+      'space_after' { $Format.SpaceAfter = Read-OfficeNumber $value $key 0 1584 }
+      'line_spacing' { $Format.LineSpacing = Read-OfficeNumber $value $key 1 1584 }
+      'left_indent' { $Format.LeftIndent = Read-OfficeNumber $value $key -1584 1584 }
+      'right_indent' { $Format.RightIndent = Read-OfficeNumber $value $key -1584 1584 }
+      'first_line_indent' { $Format.FirstLineIndent = Read-OfficeNumber $value $key -1584 1584 }
+      'keep_with_next' { $Format.KeepWithNext = if ($value) { -1 } else { 0 } }
+      'keep_together' { $Format.KeepTogether = if ($value) { -1 } else { 0 } }
+    }
+  }
+}
+
+function Read-OfficeMergeCsv {
+  param([string]$Source)
+  if ([IO.Path]::GetExtension($Source).ToLowerInvariant() -ne '.csv') { throw 'Mail merge source must be a local UTF-8 CSV file' }
+  $file = Get-Item -LiteralPath $Source -ErrorAction Stop
+  if ($file.PSIsContainer -or $file.Length -gt 5MB) { throw 'Mail merge CSV must be a file of at most 5 MiB' }
+  Add-Type -AssemblyName Microsoft.VisualBasic
+  $parser = New-Object Microsoft.VisualBasic.FileIO.TextFieldParser($Source, ([Text.UTF8Encoding]::new($false, $true)), $false)
+  try {
+    $parser.SetDelimiters(','); $parser.HasFieldsEnclosedInQuotes = $true; $parser.TrimWhiteSpace = $false
+    $headers = $parser.ReadFields()
+    if ($null -eq $headers -or $headers.Length -lt 1 -or $headers.Length -gt 63) { throw 'Mail merge CSV requires from 1 to 63 named columns' }
+    $headers[0] = $headers[0].TrimStart([char]0xFEFF)
+    $names = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($header in $headers) { if ($header -notmatch '^[\p{L}_][\p{L}\p{N}_]{0,63}$' -or -not $names.Add($header)) { throw 'Mail merge CSV headers must be unique field identifiers of at most 64 characters' } }
+    $records = [Collections.ArrayList]::new()
+    while (-not $parser.EndOfData) {
+      if ($records.Count -ge 100000) { throw 'Mail merge CSV exceeds 100000 records' }
+      $row = $parser.ReadFields()
+      if ($row.Length -ne $headers.Length) { throw 'Mail merge CSV row has a different column count from its header' }
+      foreach ($value in $row) { if ($value.Length -gt 32767 -or $value.Contains([string][char]0)) { throw 'Mail merge CSV values must have at most 32767 characters and no NUL characters' } }
+      [void]$records.Add($row)
+    }
+    if ($records.Count -eq 0) { throw 'Mail merge CSV has no records' }
+    return [ordered]@{ headers = $headers; records = $records }
+  } finally { $parser.Close(); $parser.Dispose() }
+}
+
+function Test-OfficeSurrogatePair {
+  param([string]$Text)
+  return $Text.Length -ge 2 -and [char]::IsSurrogatePair($Text, 0)
+}
+
+function Assert-WordUnicodeBoundary {
+  param([object]$Document, [int]$Position, [string]$Name)
+  if ($Position -gt 0 -and $Position -lt $Document.Content.End -and (Test-OfficeSurrogatePair ([string]$Document.Range($Position - 1, $Position + 1).Text))) { throw "$Name splits a Unicode surrogate pair" }
+}
+
+function Invoke-WordExtendedAction {
+  param([object]$Word, [string]$Action, [object]$OfficeInput)
+  $file = Get-OfficeRequiredText $OfficeInput 'file_path'
+  $readOnly = $Action -in @('get_runs', 'get_styles', 'get_fields', 'get_footnotes', 'get_endnotes', 'page_setup', 'mail_merge_preview')
+  $document = $Word.Documents.Open($file, $false, $readOnly)
+  $mergeDirectory = $null; $mergeSource = $null
+  try {
+    $options = Get-Field $OfficeInput 'parameters'; $range = Resolve-WordSemanticRange $document $OfficeInput
+    $result = [ordered]@{ app = 'word'; action = $Action; file_path = $file }
+    switch ($Action) {
+      'get_runs' {
+        $limit = Get-Field $options 'max_characters'; if ($null -eq $limit) { $limit = 10000 }; $limit = Read-OfficeInteger $limit 'max_characters' 1 100000
+        Assert-WordUnicodeBoundary $document $range.Start 'range.start'; Assert-WordUnicodeBoundary $document $range.End 'range.end'
+        $budgetStop = [Math]::Min($range.End, $range.Start + $limit); $stop = $budgetStop
+        if ($stop -gt $range.Start -and $stop -lt $range.End -and (Test-OfficeSurrogatePair ([string]$document.Range($stop - 1, $stop + 1).Text))) { $stop++ }
+        $runs = @(); $previous = ''; $row = $null
+        for ($position = $range.Start; $position -lt $stop;) {
+          $width = 1; if ($position + 1 -lt $stop -and (Test-OfficeSurrogatePair ([string]$document.Range($position, $position + 2).Text))) { $width = 2 }
+          $character = $document.Range($position, $position + $width); $font = $character.Font; $format = [ordered]@{ name = [string]$font.Name; size = [double]$font.Size; bold = [int]$font.Bold; italic = [int]$font.Italic; underline = [int]$font.Underline; color = [int]$font.Color }; $key = $format | ConvertTo-Json -Compress
+          if ($null -eq $row -or $key -ne $previous) { $row = [ordered]@{ start = $position; end = $position + $width; text = [string]$character.Text; font = $format }; $runs += $row; $previous = $key } else { $row.end = $position + $width; $row.text += [string]$character.Text }
+          $position += $width
+        }
+        $result.runs = $runs; $result.next_start = $stop; $result.truncated = $stop -lt $range.End; $result.range_end = [int]$range.End; $result.requested_max_characters = $limit; $result.returned_utf16_units = $stop - $range.Start; $result.boundary_adjustment_utf16_units = $stop - $budgetStop; $result.maximum_returned_utf16_units = $limit + 1
+      }
+      'get_styles' {
+        $rows = @(); foreach ($style in $document.Styles) { if ($rows.Count -ge 500) { break }; $rows += [ordered]@{ name = [string]$style.NameLocal; type = [int]$style.Type; built_in = [bool]$style.BuiltIn; in_use = [bool]$style.InUse } }; $result.styles = $rows; $result.total = [int]$document.Styles.Count; $result.truncated = $result.total -gt $rows.Count
+      }
+      'get_fields' {
+        $rows = @(); foreach ($field in $range.Fields) { if ($rows.Count -ge 500) { break }; $rows += [ordered]@{ index = $rows.Count + 1; type = [int]$field.Type; code = [string]$field.Code.Text; result = [string]$field.Result.Text; locked = [bool]$field.Locked; start = [int]$field.Code.Start; end = [int]$field.Result.End } }; $result.fields = $rows; $result.total = [int]$range.Fields.Count; $result.truncated = $result.total -gt $rows.Count
+      }
+      { $_ -in @('get_footnotes', 'get_endnotes') } {
+        if ($Action -eq 'get_footnotes') { $collection = $document.Footnotes } else { $collection = $document.Endnotes }; $rows = @(); foreach ($note in $collection) { if ($rows.Count -ge 500) { break }; $rows += [ordered]@{ index = [int]$note.Index; text = [string]$note.Range.Text; reference_start = [int]$note.Reference.Start } }; $result.notes = $rows; $result.total = [int]$collection.Count; $result.truncated = $result.total -gt $rows.Count
+      }
+      { $_ -in @('page_setup', 'set_page_setup') } {
+        $sectionIndex = Get-Field $options 'section'; if ($null -eq $sectionIndex) { $sectionIndex = 1 }; $section = $document.Sections.Item((Read-OfficeInteger $sectionIndex 'section' 1 $document.Sections.Count)); $setup = $section.PageSetup
+        if ($Action -eq 'set_page_setup') { foreach ($key in @('top_margin', 'bottom_margin', 'left_margin', 'right_margin', 'page_width', 'page_height', 'orientation')) { $value = Get-Field $options $key; if ($null -eq $value) { continue }; switch ($key) { 'orientation' { $setup.Orientation = Read-OfficeInteger $value $key 0 1 }; 'top_margin' { $setup.TopMargin = Read-OfficeNumber $value $key }; 'bottom_margin' { $setup.BottomMargin = Read-OfficeNumber $value $key }; 'left_margin' { $setup.LeftMargin = Read-OfficeNumber $value $key }; 'right_margin' { $setup.RightMargin = Read-OfficeNumber $value $key }; 'page_width' { $setup.PageWidth = Read-OfficeNumber $value $key 1 }; 'page_height' { $setup.PageHeight = Read-OfficeNumber $value $key 1 } } } }
+        $result.page_setup = [ordered]@{ section = [int]$sectionIndex; top_margin = [double]$setup.TopMargin; bottom_margin = [double]$setup.BottomMargin; left_margin = [double]$setup.LeftMargin; right_margin = [double]$setup.RightMargin; page_width = [double]$setup.PageWidth; page_height = [double]$setup.PageHeight; orientation = [int]$setup.Orientation }
+      }
+      'replace_range' { $range.Text = [string](Get-Field $OfficeInput 'replace_with'); $result.start = [int]$range.Start; $result.end = [int]$range.End; $result.text = [string]$range.Text }
+      'delete_range' { $result.start = [int]$range.Start; $result.deleted_characters = [int]$range.Delete() }
+      'set_character_format' { Set-WordSemanticFont $range.Font $options; $result.start = [int]$range.Start; $result.end = [int]$range.End }
+      { $_ -in @('set_paragraph_format', 'set_alignment', 'set_spacing') } { Set-WordSemanticParagraph $range.ParagraphFormat $options; $result.start = [int]$range.Start; $result.end = [int]$range.End }
+      'create_or_update_style' {
+        $definition = Get-Field $OfficeInput 'style'; $name = Get-OfficeRequiredText $definition 'name'; try { $style = $document.Styles.Item($name) } catch { $style = $null }; if ($null -eq $style) { $type = Get-Field $definition 'type'; if ($null -eq $type) { $type = 1 }; $style = $document.Styles.Add($name, (Read-OfficeInteger $type 'style.type' 1 3)) }; Set-WordSemanticFont $style.Font (Get-Field $definition 'font'); Set-WordSemanticParagraph $style.ParagraphFormat (Get-Field $definition 'paragraph'); $result.style = [string]$style.NameLocal
+      }
+      'add_heading' { $level = Read-OfficeInteger (Get-Field $options 'level') 'level' 1 9; $range.Collapse(0); $range.InsertAfter([string](Get-Field $OfficeInput 'text') + "`r"); $range.Style = -1 - $level; $result.text = [string]$range.Text; $result.level = $level }
+      { $_ -in @('add_page_break', 'add_section_break') } { $range.Collapse(0); $kind = if ($Action -eq 'add_page_break') { 7 } else { $value = Get-Field $options 'kind'; if ($null -eq $value) { 2 } else { Read-OfficeInteger $value 'kind' 2 5 } }; $range.InsertBreak($kind); $result.break_type = $kind }
+      { $_ -in @('merge_cells', 'split_cells', 'set_table_style') } {
+        $selector = Get-Field $OfficeInput 'table'; $table = $document.Tables.Item((Read-OfficeInteger (Get-Field $selector 'index') 'table.index' 1 $document.Tables.Count))
+        if ($Action -eq 'set_table_style') { $name = Get-OfficeRequiredText $options 'name'; $style = $document.Styles.Item($name); if ($style.Type -ne 3) { throw 'The selected style is not a table style' }; $table.Style = $style; $result.style = [string]$style.NameLocal }
+        else { $row = Read-OfficeInteger (Get-Field $selector 'row') 'table.row'; $column = Read-OfficeInteger (Get-Field $selector 'column') 'table.column'; $cell = $table.Cell($row, $column)
+          if ($Action -eq 'merge_cells') { $endRow = Read-OfficeInteger (Get-Field $options 'end_row') 'end_row' $row; $endColumn = Read-OfficeInteger (Get-Field $options 'end_column') 'end_column' $column; $cell.Merge($table.Cell($endRow, $endColumn)) }
+          else { $rows = Read-OfficeInteger (Get-Field $options 'rows') 'rows' 1 100; $columns = Read-OfficeInteger (Get-Field $options 'columns') 'columns' 1 100; $cell.Split($rows, $columns) }; $result.text = [string]$cell.Range.Text }; $result.table_index = [int](Get-Field $selector 'index')
+      }
+      'replace_image' { $index = Read-OfficeInteger (Get-Field $OfficeInput 'index') 'index' 1 $document.InlineShapes.Count; $image = Get-OfficeRequiredText $OfficeInput 'image_path'; $old = $document.InlineShapes.Item($index); if ($old.Type -ne 3) { throw 'Selected inline shape is not an embedded image' }; $position = $old.Range.Duplicate; $width = $old.Width; $height = $old.Height; $old.Delete(); $replacement = $document.InlineShapes.AddPicture($image, $false, $true, $position); $replacement.Width = $width; $replacement.Height = $height; $result.start = [int]$replacement.Range.Start }
+      { $_ -in @('add_textbox', 'add_shape') } {
+        $left = Read-OfficeNumber (Get-Field $options 'left') 'left'; $top = Read-OfficeNumber (Get-Field $options 'top') 'top'; $width = Read-OfficeNumber (Get-Field $options 'width') 'width' 1; $height = Read-OfficeNumber (Get-Field $options 'height') 'height' 1
+        $shape = if ($Action -eq 'add_textbox') { $document.Shapes.AddTextbox(1, $left, $top, $width, $height, $range) } else { $type = Read-OfficeInteger (Get-Field $options 'type') 'type' 1 200; $document.Shapes.AddShape($type, $left, $top, $width, $height, $range) }; $text = Get-Field $OfficeInput 'text'; if ($null -ne $text) { $shape.TextFrame.TextRange.Text = [string]$text }; $result.name = [string]$shape.Name; $result.id = [int]$shape.ID
+      }
+      'add_hyperlink' { $link = $document.Hyperlinks.Add($range, (Get-OfficeRequiredText $options 'address')); $result.address = [string]$link.Address }
+      'edit_hyperlink' { $link = $document.Hyperlinks.Item((Read-OfficeInteger (Get-Field $OfficeInput 'index') 'index' 1 $document.Hyperlinks.Count)); $link.Address = Get-OfficeRequiredText $options 'address'; $result.address = [string]$link.Address }
+      { $_ -in @('add_bookmark', 'remove_bookmark') } { $name = Get-OfficeRequiredText $options 'name'; if ($Action -eq 'add_bookmark') { $entry = $document.Bookmarks.Add($name, $range); $result.start = [int]$entry.Range.Start; $result.end = [int]$entry.Range.End } else { $document.Bookmarks.Item($name).Delete(); $result.deleted = $true }; $result.name = $name }
+      'page_numbering' { $sectionIndex = Read-OfficeInteger (Get-Field $options 'section') 'section' 1 $document.Sections.Count; $section = $document.Sections.Item($sectionIndex); $footer = $section.Footers.Item(1); $number = $footer.PageNumbers.Add((Read-OfficeInteger (Get-Field $options 'alignment') 'alignment' 0 4), $true); $result.section = $sectionIndex; $result.index = [int]$number.Index }
+      { $_ -in @('add_footnote', 'add_endnote') } { if ($Action -eq 'add_footnote') { $collection = $document.Footnotes } else { $collection = $document.Endnotes }; $range.Collapse(0); $note = $collection.Add($range, [Type]::Missing, [string](Get-Field $OfficeInput 'text')); $result.index = [int]$note.Index; $result.text = [string]$note.Range.Text }
+      'update_toc' { $toc = $document.TablesOfContents.Item((Read-OfficeInteger (Get-Field $OfficeInput 'index') 'index' 1 $document.TablesOfContents.Count)); $toc.Update(); $result.text = [string]$toc.Range.Text }
+      'update_field' { $field = $document.Fields.Item((Read-OfficeInteger (Get-Field $OfficeInput 'index') 'index' 1 $document.Fields.Count)); $updated = $field.Update(); $result.updated = [bool]$updated; $result.text = [string]$field.Result.Text }
+      { $_ -in @('resolve_comment', 'delete_comment') } { $comment = $document.Comments.Item((Read-OfficeInteger (Get-Field $OfficeInput 'index') 'index' 1 $document.Comments.Count)); if ($Action -eq 'resolve_comment') { $comment.Done = $true; $result.resolved = [bool]$comment.Done } else { $comment.Delete(); $result.deleted = $true } }
+      { $_ -in @('mail_merge_preview', 'mail_merge') } {
+        $source = Get-OfficeRequiredText $OfficeInput 'source_path'; $csv = Read-OfficeMergeCsv $source
+        if ($Action -eq 'mail_merge_preview') { $first = Get-Field $options 'record'; if ($null -eq $first) { $first = 1 }; $first = Read-OfficeInteger $first 'record' 1 $csv.records.Count; $last = $first; $result.record = $first }
+        else { $first = Get-Field $options 'first_record'; if ($null -eq $first) { $first = 1 }; $first = Read-OfficeInteger $first 'first_record' 1 $csv.records.Count; $last = Get-Field $options 'last_record'; if ($null -eq $last) { $last = [Math]::Min($csv.records.Count, $first + 999) }; $last = Read-OfficeInteger $last 'last_record' $first ([Math]::Min($csv.records.Count, $first + 999)); $result.first_record = $first; $result.last_record = $last }
+        $result.record_count = $csv.records.Count; $result.source_path = $source
+        $mergeDirectory = Join-Path ([IO.Path]::GetTempPath()) ('lnwjud-office-merge-' + [Guid]::NewGuid().ToString('N'))
+        [void][IO.Directory]::CreateDirectory($mergeDirectory); $mergeSource = Join-Path $mergeDirectory 'records.docx'
+        $sourceDocument = $Word.Documents.Add()
+        try {
+          $table = $sourceDocument.Tables.Add($sourceDocument.Range(0, 0), $last - $first + 2, $csv.headers.Length)
+          for ($column = 0; $column -lt $csv.headers.Length; $column++) { $table.Cell(1, $column + 1).Range.Text = $csv.headers[$column] }
+          for ($record = $first; $record -le $last; $record++) { for ($column = 0; $column -lt $csv.headers.Length; $column++) { $table.Cell($record - $first + 2, $column + 1).Range.Text = $csv.records[$record - 1][$column] } }
+          $sourceDocument.SaveAs2([string]$mergeSource, 16)
+        } finally { $sourceDocument.Close($false); Release-ComObject $sourceDocument }
+        $merge = $document.MailMerge; $merge.OpenDataSource([string]$mergeSource, 9, $false, $true, $false, $false); $data = $merge.DataSource
+        $data.FirstRecord = 1; $data.LastRecord = $last - $first + 1
+        if ($Action -eq 'mail_merge_preview') { $data.ActiveRecord = 1; $fields = @(); foreach ($field in $data.DataFields) { $fields += [ordered]@{ name = [string]$field.Name; value = [string]$field.Value } }; $result.fields = $fields }
+        $merge.Destination = 0; $merge.Execute($false); $output = $Word.ActiveDocument; if ($output.FullName -eq $document.FullName) { throw 'Mail merge did not produce a new document' }
+        try { if ($Action -eq 'mail_merge_preview') { $result.rendered_text = [string]$output.Content.Text } else { $target = Get-OfficeRequiredText $OfficeInput 'target_path'; $output.SaveAs2([string]$target, 16); $result.output = Assert-OfficeOutput $target } } finally { $output.Close($false); Release-ComObject $output }
+      }
+      'print' { $document.PrintOut($false); $result.submitted = $true; $result.completion_verified = $false }
+      default { throw "Unsupported extended word action: $Action" }
+    }
+    if (-not $readOnly -and $Action -notin @('print', 'mail_merge')) { $document.Save(); $result.saved = $true }
+    return $result
+  } finally {
+    $document.Close($false); Release-ComObject $document
+    if ($null -ne $mergeSource) { Remove-Item -LiteralPath $mergeSource -Force -ErrorAction SilentlyContinue }
+    if ($null -ne $mergeDirectory) { Remove-Item -LiteralPath $mergeDirectory -Force -ErrorAction SilentlyContinue }
+  }
+}
+
+function Resolve-PowerPointSemanticShape {
+  param([object]$Slide, [object]$OfficeInput)
+  $identity = Get-OfficeRequiredText $OfficeInput 'shape'
+  $numeric = 0
+  if ([int]::TryParse($identity, [ref]$numeric)) { foreach ($shape in $Slide.Shapes) { if ([int]$shape.Id -eq $numeric) { return ,$shape } }; throw 'Shape ID was not found' }
+  return ,$Slide.Shapes.Item($identity)
+}
+
+function Get-OfficeActivePowerPointApplication {
+  try { return ,([Runtime.InteropServices.Marshal]::GetActiveObject('PowerPoint.Application')) }
+  catch [Runtime.InteropServices.COMException] {
+    if ($_.Exception.HResult -eq -2147221021) { return $null }
+    throw
+  }
+}
+
+function New-OfficePowerPointApplication {
+  return ,(New-Object -ComObject PowerPoint.Application)
+}
+
+function Open-OfficePowerPointApplication {
+  param([object]$OfficeInput)
+  $timeout = Get-Field $OfficeInput 'timeout_seconds'; if ($null -eq $timeout) { $timeout = 120 }
+  $timeout = Read-OfficeNumber $timeout 'timeout_seconds' 0.1 300
+  $identity = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+  $mutex = [Threading.Mutex]::new($false, ('Local\lnwjud-office-powerpoint-' + $identity))
+  $held = $false; $application = $null
+  try {
+    try { $held = $mutex.WaitOne([int][Math]::Max(1, [Math]::Floor($timeout * 1000))) }
+    catch [Threading.AbandonedMutexException] { $held = $true }
+    if (-not $held) { throw 'PowerPoint application is busy; acquisition timed out' }
+    $application = Get-OfficeActivePowerPointApplication
+    $owned = $null -eq $application
+    if ($owned) { $application = New-OfficePowerPointApplication }
+    return [ordered]@{ application = $application; owned = $owned; original_security = [int]$application.AutomationSecurity; mutex = $mutex; held = $true }
+  } catch {
+    if ($null -ne $application) { Release-ComObject $application }
+    if ($held) { $mutex.ReleaseMutex() }
+    $mutex.Dispose()
+    throw
+  }
+}
+
+function Close-OfficePowerPointApplication {
+  param([object]$Scope)
+  if ($null -eq $Scope) { return }
+  try {
+    if ($Scope.owned -and $Scope.application.Presentations.Count -eq 0) { $Scope.application.Quit() }
+    else { $Scope.application.AutomationSecurity = $Scope.original_security }
+  } finally {
+    try { Release-ComObject $Scope.application }
+    finally { try { if ($Scope.held) { $Scope.mutex.ReleaseMutex() } } finally { $Scope.mutex.Dispose() } }
+  }
+}
+
+function Open-OfficePowerPointPresentation {
+  param([object]$PowerPoint, [string]$Path, [bool]$ReadOnly, [bool]$Untitled = $false, [bool]$WithWindow = $false)
+  $identity = [IO.Path]::GetFullPath($Path)
+  foreach ($open in $PowerPoint.Presentations) {
+    $openPath = [string](Get-Field $open 'FullName')
+    if ([IO.Path]::IsPathRooted($openPath) -and [IO.Path]::GetFullPath($openPath).Equals($identity, [StringComparison]::OrdinalIgnoreCase)) { throw 'PowerPoint target is already open; save and close the presentation before retrying' }
+  }
+  return ,$PowerPoint.Presentations.Open($Path, $ReadOnly, $Untitled, $WithWindow)
+}
+
+function Set-PowerPointSemanticShape {
+  param([object]$Shape, [object]$Options)
+  foreach ($key in @('left', 'top', 'width', 'height', 'rotation', 'fill_color', 'line_color')) {
+    $value = Get-Field $Options $key; if ($null -eq $value) { continue }
+    switch ($key) {
+      'left' { $Shape.Left = Read-OfficeNumber $value $key -100000 100000 }
+      'top' { $Shape.Top = Read-OfficeNumber $value $key -100000 100000 }
+      'width' { $Shape.Width = Read-OfficeNumber $value $key 1 }
+      'height' { $Shape.Height = Read-OfficeNumber $value $key 1 }
+      'rotation' { $Shape.Rotation = Read-OfficeNumber $value $key -360 360 }
+      'fill_color' { $Shape.Fill.ForeColor.RGB = Read-OfficeInteger $value $key 0 16777215 }
+      'line_color' { $Shape.Line.ForeColor.RGB = Read-OfficeInteger $value $key 0 16777215 }
+    }
+  }
+}
+
+function Invoke-PowerPointExtendedAction {
+  param([object]$PowerPoint, [string]$Action, [object]$OfficeInput)
+  $file = Get-OfficeRequiredText $OfficeInput 'file_path'
+  $readOnly = $Action -in @('get_hyperlinks', 'get_transitions', 'export_images', 'export_video', 'print')
+  $presentation = Open-OfficePowerPointPresentation $PowerPoint $file $readOnly $false $false
+  try {
+    $options = Get-Field $OfficeInput 'parameters'; $slide = $null
+    if ($Action -notin @('set_theme', 'set_slide_size', 'export_video', 'print')) { $index = Read-OfficeInteger (Get-Field $OfficeInput 'slide') 'slide' 1 $presentation.Slides.Count; $slide = $presentation.Slides.Item($index) }
+    $result = [ordered]@{ app = 'powerpoint'; action = $Action; file_path = $file }
+    if ($null -ne $slide) { $result.slide = [int]$slide.SlideIndex }
+    switch ($Action) {
+      'get_hyperlinks' { $rows = @(); foreach ($link in $slide.Hyperlinks) { if ($rows.Count -ge 500) { break }; $rows += [ordered]@{ address = [string]$link.Address; sub_address = [string]$link.SubAddress; type = [int]$link.Type } }; $result.hyperlinks = $rows; $result.total = [int]$slide.Hyperlinks.Count; $result.truncated = $result.total -gt $rows.Count }
+      { $_ -in @('get_transitions', 'set_transition') } {
+        $transition = $slide.SlideShowTransition
+        if ($Action -eq 'set_transition') { $effect = Get-Field $options 'effect'; if ($null -ne $effect) { $transition.EntryEffect = Read-OfficeInteger $effect 'effect' 0 4000 }; $duration = Get-Field $options 'duration'; if ($null -ne $duration) { $transition.Duration = Read-OfficeNumber $duration 'duration' 0 60 }; $advance = Get-Field $options 'advance_time'; if ($null -ne $advance) { $transition.AdvanceOnTime = -1; $transition.AdvanceTime = Read-OfficeNumber $advance 'advance_time' 0 86400 }; $click = Get-Field $options 'advance_on_click'; if ($null -ne $click) { $transition.AdvanceOnClick = if ($click) { -1 } else { 0 } } }
+        $result.transition = [ordered]@{ effect = [int]$transition.EntryEffect; duration = [double]$transition.Duration; advance_on_click = [bool]$transition.AdvanceOnClick; advance_on_time = [bool]$transition.AdvanceOnTime; advance_time = [double]$transition.AdvanceTime }
+      }
+      'change_layout' { $slide.Layout = Read-OfficeInteger (Get-Field $options 'layout') 'layout' 1 36; $result.layout = [int]$slide.Layout }
+      { $_ -in @('edit_textbox', 'edit_shape', 'edit_image', 'remove_textbox', 'remove_shape', 'remove_image', 'crop_image') } {
+        $shape = Resolve-PowerPointSemanticShape $slide $OfficeInput; $result.id = [int]$shape.Id; $result.name = [string]$shape.Name
+        if ($Action -in @('edit_image', 'remove_image', 'crop_image') -and [int]$shape.Type -ne 13) { throw 'Selected shape is not an embedded image' }
+        if ($Action -in @('edit_textbox', 'remove_textbox') -and -not $shape.HasTextFrame) { throw 'Selected shape has no text frame' }
+        if ($Action -in @('remove_textbox', 'remove_shape', 'remove_image')) { $shape.Delete(); $result.deleted = $true }
+        elseif ($Action -eq 'crop_image') { foreach ($key in @('left', 'top', 'right', 'bottom')) { $value = Get-Field $options $key; if ($null -eq $value) { continue }; $crop = Read-OfficeNumber $value $key 0 100000; switch ($key) { 'left' { $shape.PictureFormat.CropLeft = $crop }; 'top' { $shape.PictureFormat.CropTop = $crop }; 'right' { $shape.PictureFormat.CropRight = $crop }; 'bottom' { $shape.PictureFormat.CropBottom = $crop } } }; $result.crop = [ordered]@{ left = [double]$shape.PictureFormat.CropLeft; top = [double]$shape.PictureFormat.CropTop; right = [double]$shape.PictureFormat.CropRight; bottom = [double]$shape.PictureFormat.CropBottom } }
+        else { $image = [string](Get-Field $OfficeInput 'image_path'); if ($Action -eq 'edit_image' -and $image.Length -gt 0) { $replacement = $slide.Shapes.AddPicture($image, 0, -1, $shape.Left, $shape.Top, $shape.Width, $shape.Height); $name = [string]$shape.Name; $shape.Delete(); $shape = $replacement; $shape.Name = $name; $result.id = [int]$shape.Id }; Set-PowerPointSemanticShape $shape $options; $text = Get-Field $OfficeInput 'text'; if ($null -ne $text) { if (-not $shape.HasTextFrame) { throw 'Selected shape has no text frame' }; $shape.TextFrame.TextRange.Text = [string]$text; $result.text = [string]$shape.TextFrame.TextRange.Text }; $result.bounds = [ordered]@{ left = [double]$shape.Left; top = [double]$shape.Top; width = [double]$shape.Width; height = [double]$shape.Height } }
+      }
+      'add_shape' { $type = Read-OfficeInteger (Get-Field $options 'type') 'type' 1 200; $shape = $slide.Shapes.AddShape($type, (Read-OfficeNumber (Get-Field $options 'left') 'left'), (Read-OfficeNumber (Get-Field $options 'top') 'top'), (Read-OfficeNumber (Get-Field $options 'width') 'width' 1), (Read-OfficeNumber (Get-Field $options 'height') 'height' 1)); $text = Get-Field $OfficeInput 'text'; if ($null -ne $text) { $shape.TextFrame.TextRange.Text = [string]$text }; $result.id = [int]$shape.Id; $result.name = [string]$shape.Name }
+      'add_hyperlink' { $shape = Resolve-PowerPointSemanticShape $slide $OfficeInput; $settings = $shape.ActionSettings.Item(1); $settings.Action = 7; $settings.Hyperlink.Address = Get-OfficeRequiredText $options 'address'; $result.address = [string]$settings.Hyperlink.Address; $result.id = [int]$shape.Id }
+      'set_background' { $slide.FollowMasterBackground = 0; $slide.Background.Fill.Solid(); $slide.Background.Fill.ForeColor.RGB = Read-OfficeInteger (Get-Field $options 'color') 'color' 0 16777215; $result.color = [int]$slide.Background.Fill.ForeColor.RGB }
+      'set_theme' { $theme = Get-OfficeRequiredText $OfficeInput 'theme_path'; $presentation.ApplyTheme($theme); $result.theme = $theme }
+      'set_master' { $design = Read-OfficeInteger (Get-Field $options 'design') 'design' 1 $presentation.Designs.Count; $slide.Design = $presentation.Designs.Item($design); $result.design = [string]$slide.Design.Name }
+      'set_slide_size' { $presentation.PageSetup.SlideWidth = Read-OfficeNumber (Get-Field $options 'width') 'width' 1 4032; $presentation.PageSetup.SlideHeight = Read-OfficeNumber (Get-Field $options 'height') 'height' 1 4032; $result.width = [double]$presentation.PageSetup.SlideWidth; $result.height = [double]$presentation.PageSetup.SlideHeight }
+      'export_images' { $target = Get-OfficeRequiredText $OfficeInput 'target_path'; $extension = [IO.Path]::GetExtension($target).ToLowerInvariant(); $format = switch ($extension) { '.png' { 'PNG' }; '.jpg' { 'JPG' }; '.jpeg' { 'JPG' }; default { throw 'export_images target_path must be PNG or JPEG' } }; $slide.Export($target, $format); $result.output = Assert-OfficeOutput $target }
+      'export_video' { $target = Get-OfficeRequiredText $OfficeInput 'target_path'; if ([IO.Path]::GetExtension($target).ToLowerInvariant() -ne '.mp4') { throw 'export_video target_path must be MP4' }; $limit = Read-OfficeNumber (Get-Field $OfficeInput 'timeout_seconds') 'timeout_seconds' 0.1 300; $presentation.CreateVideo($target, $true, 5, 720, 30, 85); $clock = [Diagnostics.Stopwatch]::StartNew()
+        do { $state = [int]$presentation.CreateVideoStatus; if ($state -eq 4) { throw 'PowerPoint video export failed' }; if ($state -eq 3) { break }; if ($clock.Elapsed.TotalSeconds -ge $limit) { throw 'PowerPoint video export timed out; completion is unknown and must be checked before retrying' }; Start-Sleep -Milliseconds 200 } while ($true); $result.output = Assert-OfficeOutput $target }
+      'print' { $presentation.PrintOut(); $result.submitted = $true; $result.completion_verified = $false }
+      default { throw "Unsupported extended powerpoint action: $Action" }
+    }
+    if (-not $readOnly) { $presentation.Save(); $result.saved = $true }
+    return $result
+  } finally { $presentation.Close(); Release-ComObject $presentation }
+}
+
+function Invoke-OutlookExtendedAction {
+  param([object]$Outlook, [object]$Namespace, [string]$Action, [object]$OfficeInput)
+  $options = Get-Field $OfficeInput 'parameters'; $result = [ordered]@{ app = 'outlook'; action = $Action }
+  switch ($Action) {
+    { $_ -in @('reply_draft', 'reply_all_draft', 'forward_draft', 'permanent_delete') } {
+      $id = Get-OfficeRequiredText $OfficeInput 'message_id'; $mail = $Namespace.GetItemFromID($id)
+      if ($mail.Class -ne 43) { throw 'message_id must identify a mail message' }
+      if ($Action -eq 'permanent_delete') { $parent = $mail.Parent; $deleted = $parent.Store.GetDefaultFolder(3); if ($parent.EntryID -eq $deleted.EntryID) { $mail.Delete() } else { $moved = $mail.Move($deleted); try { $moved.Delete() } finally { Release-ComObject $moved } }; $result.message_id = $id; $result.deleted = $true; $result.permanent = $true }
+      else { $draft = switch ($Action) { 'reply_draft' { $mail.Reply() }; 'reply_all_draft' { $mail.ReplyAll() }; 'forward_draft' { $mail.Forward() } }; try { $body = Get-Field $OfficeInput 'body'; if ($null -ne $body) { $draft.Body = [string]$body + "`r`n" + [string]$draft.Body }; Add-OutlookRecipients $draft (Get-Field $OfficeInput 'to') 1; Add-OutlookRecipients $draft (Get-Field $OfficeInput 'cc') 2; Add-OutlookRecipients $draft (Get-Field $OfficeInput 'bcc') 3; $draft.Save(); $result.draft_id = [string]$draft.EntryID; $result.saved = [bool]$draft.Saved; $result.sent = [bool]$draft.Sent } finally { Release-ComObject $draft } }; Release-ComObject $mail
+    }
+    'availability' {
+      $start = [datetime]::Parse((Get-OfficeRequiredText $OfficeInput 'start'), [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind); $end = [datetime]::Parse((Get-OfficeRequiredText $OfficeInput 'end'), [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind)
+      if ($end -le $start -or ($end - $start).TotalDays -gt 31) { throw 'availability requires an increasing interval of at most 31 days' }
+      $step = Get-Field $options 'minutes_per_slot'; if ($null -eq $step) { $step = 30 }; $step = Read-OfficeInteger $step 'minutes_per_slot' 1 1440
+      $addresses = @(Get-Field $OfficeInput 'attendees'); if ($addresses.Count -lt 1 -or $addresses.Count -gt 50) { throw 'availability requires 1-50 attendees' }; $count = [int][Math]::Ceiling(($end - $start).TotalMinutes / $step); $rows = @()
+      foreach ($address in $addresses) { $recipient = $Namespace.CreateRecipient([string]$address); try { if (-not $recipient.Resolve()) { throw 'Availability recipient could not be resolved' }; $busy = [string]$recipient.FreeBusy($start, $step, $true); $rows += [ordered]@{ attendee = [string]$address; slots = $busy.Substring(0, [Math]::Min($busy.Length, $count)); complete = $busy.Length -ge $count } } finally { Release-ComObject $recipient } }; $result.start = $start.ToString('o'); $result.end = $end.ToString('o'); $result.minutes_per_slot = $step; $result.availability = $rows
+    }
+    { $_ -in @('move_event', 'add_attendees', 'remove_attendees', 'set_reminder', 'set_recurrence', 'set_location', 'send_update', 'cancel_event', 'respond') } {
+      $id = Get-OfficeRequiredText $OfficeInput 'event_id'; $event = $Namespace.GetItemFromID($id); $result.event_id = $id
+      try {
+        if ($Action -eq 'respond' -and $event.Class -eq 53) { $associated = $event.GetAssociatedAppointment($true); Release-ComObject $event; $event = $associated }
+        if ($event.Class -ne 26) { throw 'event_id must identify an appointment or meeting request' }
+        switch ($Action) {
+          'move_event' { $folderId = Get-OfficeRequiredText $OfficeInput 'target_calendar'; $folder = $Namespace.GetFolderFromID($folderId); if ($folder.DefaultItemType -ne 1) { throw 'target_calendar is not an appointment folder' }; $moved = $event.Move($folder); $result.event_id = [string]$moved.EntryID; $result.calendar_id = [string]$moved.Parent.EntryID; Release-ComObject $moved }
+          'add_attendees' { Add-OutlookRecipients $event (Get-Field $OfficeInput 'attendees') 1; if (-not $event.Recipients.ResolveAll()) { throw 'An attendee could not be resolved' }; $event.Save(); $result.attendee_count = [int]$event.Recipients.Count; $result.saved = $true }
+          'remove_attendees' { $addresses = @(Get-Field $OfficeInput 'attendees'); for ($i = $event.Recipients.Count; $i -ge 1; $i--) { $recipient = $event.Recipients.Item($i); if ([string]$recipient.Address -in $addresses -or [string]$recipient.Name -in $addresses) { $event.Recipients.Remove($i) } }; $event.Save(); $result.attendee_count = [int]$event.Recipients.Count; $result.saved = $true }
+          'set_reminder' { $enabled = Get-Field $options 'enabled'; if ($null -eq $enabled) { throw 'parameters.enabled is required' }; $event.ReminderSet = [bool]$enabled; if ($enabled) { $event.ReminderMinutesBeforeStart = Read-OfficeInteger (Get-Field $options 'minutes_before_start') 'minutes_before_start' 0 525600 }; $event.Save(); $result.enabled = [bool]$event.ReminderSet; $result.minutes_before_start = [int]$event.ReminderMinutesBeforeStart; $result.saved = $true }
+          'set_recurrence' { $pattern = $event.GetRecurrencePattern(); $type = Read-OfficeInteger (Get-Field $options 'type') 'type' 0 6; if ($type -notin @(0, 1, 2, 3, 5, 6)) { throw 'Unsupported recurrence type' }; $pattern.RecurrenceType = $type; $pattern.Interval = Read-OfficeInteger (Get-Field $options 'interval') 'interval' 1 99
+            foreach ($key in @('day_of_week_mask', 'day_of_month', 'month_of_year', 'instance', 'occurrences')) { $value = Get-Field $options $key; if ($null -eq $value) { continue }; switch ($key) { 'day_of_week_mask' { $pattern.DayOfWeekMask = Read-OfficeInteger $value $key 1 127 }; 'day_of_month' { $pattern.DayOfMonth = Read-OfficeInteger $value $key 1 31 }; 'month_of_year' { $pattern.MonthOfYear = Read-OfficeInteger $value $key 1 12 }; 'instance' { $pattern.Instance = Read-OfficeInteger $value $key 1 5 }; 'occurrences' { $pattern.Occurrences = Read-OfficeInteger $value $key 1 10000; $pattern.NoEndDate = $false } } }; $event.Save(); $result.recurrence = [ordered]@{ type = [int]$pattern.RecurrenceType; interval = [int]$pattern.Interval; no_end_date = [bool]$pattern.NoEndDate }; $result.saved = $true }
+          'set_location' { $event.Location = Get-OfficeRequiredText $options 'location'; $event.Save(); $result.location = [string]$event.Location; $result.saved = $true }
+          'send_update' { if ($event.MeetingStatus -eq 0 -or $event.ResponseStatus -ne 1) { throw 'Only an organized meeting can send an update' }; $event.Send(); $result.submitted = $true; $result.delivery_verified = $false }
+          'cancel_event' { if ($event.MeetingStatus -eq 0 -or $event.ResponseStatus -ne 1) { throw 'Only an organized meeting can send cancellation' }; $event.MeetingStatus = 5; $event.Send(); $event.Delete(); $result.submitted = $true; $result.deleted = $true; $result.delivery_verified = $false }
+          'respond' { $response = Get-OfficeRequiredText $options 'response'; $type = switch ($response) { 'accept' { 3 }; 'tentative' { 2 }; 'decline' { 4 }; default { throw 'response must be accept, tentative, or decline' } }; $reply = $event.Respond($type, $true, $false); Release-ComObject $reply; $result.response = $response; $result.submitted = $true; $result.delivery_verified = $false }
+        }
+      } finally { Release-ComObject $event }
+    }
+    'set_categories' { $id = Get-OfficeRequiredText $OfficeInput 'contact_id'; $contact = $Namespace.GetItemFromID($id); try { if ($contact.Class -ne 40) { throw 'contact_id is not a contact' }; $contact.Categories = (@(Get-Field $OfficeInput 'categories') -join ', '); $contact.Save(); $result.contact_id = [string]$contact.EntryID; $result.categories = [string]$contact.Categories; $result.saved = $true } finally { Release-ComObject $contact } }
+    { $_ -in @('create_group', 'update_group') } {
+      $group = if ($Action -eq 'create_group') { $Outlook.CreateItem(7) } else { $Namespace.GetItemFromID((Get-OfficeRequiredText $OfficeInput 'group_id')) }
+      try { if ($group.Class -ne 69) { throw 'group_id is not a contact group' }; $name = Get-Field $OfficeInput 'name'; if ($null -ne $name) { $group.DLName = [string]$name }; foreach ($address in @(Get-Field $options 'remove_members')) { for ($i = $group.MemberCount; $i -ge 1; $i--) { $member = $group.GetMember($i); if ([string]$member.Address -eq [string]$address -or [string]$member.Name -eq [string]$address) { $group.RemoveMember($member) } } }; foreach ($address in @(Get-Field $OfficeInput 'members')) { $recipient = $Namespace.CreateRecipient([string]$address); try { if (-not $recipient.Resolve()) { throw 'Group member could not be resolved' }; $group.AddMember($recipient) } finally { Release-ComObject $recipient } }; $group.Save(); $result.group_id = [string]$group.EntryID; $result.name = [string]$group.DLName; $result.member_count = [int]$group.MemberCount; $result.saved = $true } finally { Release-ComObject $group }
+    }
+    default { throw "Unsupported extended outlook action: $Action" }
+  }
+  return $result
+}
+
 function Invoke-OfficeAction {
   param([string]$App, [string]$Action, [object]$Parameters)
   if ($Action -eq 'status') {
@@ -865,6 +1376,10 @@ function Invoke-OfficeAction {
       $excel = New-Object -ComObject Excel.Application
       $excel.Visible = $false
       $excel.DisplayAlerts = $false
+      $excel.AutomationSecurity = 3
+      $excel.EnableEvents = $false
+      $excel.AskToUpdateLinks = $false
+      if ($Action -in @('read_named_ranges', 'read_filters', 'read_data_validation', 'read_conditional_formatting', 'connection_metadata', 'copy_sheet', 'move_sheet', 'set_border', 'create_named_range', 'update_named_range', 'delete_named_range', 'set_conditional_formatting', 'delete_conditional_formatting', 'add_hyperlink', 'replace_image', 'refresh_connections', 'print', 'list_macros', 'run_macro')) { return Invoke-ExcelExtendedAction $excel $Action $Parameters }
       $excelAction = $Action
       if ($excelAction -in @('read_range', 'read_values')) { $excelAction = 'read' }
       elseif ($excelAction -eq 'write_values') { $excelAction = 'write' }
@@ -873,14 +1388,16 @@ function Invoke-OfficeAction {
         'read' {
           if ($filePath.Length -eq 0) { throw 'file_path is required' }
           if (-not (Test-Path $filePath -PathType Leaf)) { throw 'Excel file was not found' }
-          $workbook = $excel.Workbooks.Open($filePath)
+          $workbook = (Open-OfficeExcelWorkbook $excel $filePath)
           try {
             $sheetName = Get-Field $Parameters 'sheet'
             $range = [string](Get-Field $Parameters 'range')
             if ($range.Length -eq 0) { throw 'range is required (for example A1:D10)' }
             $worksheet = if ($null -eq $sheetName -or $sheetName.Length -eq 0) { $workbook.Worksheets.Item(1) } else { $workbook.Worksheets.Item($sheetName) }
-            $values = $worksheet.Range($range).Value2
-            return [ordered]@{ app = 'excel'; action = 'read'; file_path = $filePath; range = $range; values = @($values) }
+            $target = $worksheet.Range($range)
+            if ($target.CountLarge -gt 100000) { throw 'Excel range reads are limited to 100000 cells' }
+            $values = ConvertFrom-ExcelRangeValues $target.Value2 $target
+            return [ordered]@{ app = 'excel'; action = 'read'; file_path = $filePath; range = $range; values = $values; rows = [int]$target.Rows.Count; columns = [int]$target.Columns.Count }
           } finally { $workbook.Close($false) }
         }
         'write' {
@@ -888,7 +1405,7 @@ function Invoke-OfficeAction {
           if (-not (Test-Path $filePath -PathType Leaf)) { throw 'Excel file was not found' }
           $range = [string](Get-Field $Parameters 'range'); if ($range.Length -eq 0) { throw 'range is required' }
           $values = Get-Field $Parameters 'values'; if ($null -eq $values) { throw 'values is required' }
-          $workbook = $excel.Workbooks.Open($filePath)
+          $workbook = (Open-OfficeExcelWorkbook $excel $filePath)
           try {
             $sheetName = Get-Field $Parameters 'sheet'
             $worksheet = if ($null -eq $sheetName -or $sheetName.Length -eq 0) { $workbook.Worksheets.Item(1) } else { $workbook.Worksheets.Item($sheetName) }
@@ -902,7 +1419,7 @@ function Invoke-OfficeAction {
         'save_as' {
           if ($filePath.Length -eq 0) { throw 'file_path is required' }
           if (-not (Test-Path $filePath -PathType Leaf)) { throw 'Excel file was not found' }
-          $workbook = $excel.Workbooks.Open($filePath)
+          $workbook = (Open-OfficeExcelWorkbook $excel $filePath)
           try {
             $target = [string](Get-Field $Parameters 'target_path'); if ($target.Length -eq 0) { throw 'target_path is required' }
             $workbook.SaveAs($target)
@@ -912,7 +1429,7 @@ function Invoke-OfficeAction {
         'sheets' {
           if ($filePath.Length -eq 0) { throw 'file_path is required' }
           if (-not (Test-Path $filePath -PathType Leaf)) { throw 'Excel file was not found' }
-          $workbook = $excel.Workbooks.Open($filePath, 0, $true)
+          $workbook = (Open-OfficeExcelWorkbook $excel $filePath $true)
           try {
             $sheets = @()
             foreach ($worksheet in $workbook.Worksheets) {
@@ -939,7 +1456,7 @@ function Invoke-OfficeAction {
         }
         'inspect_workbook' {
           if ($filePath.Length -eq 0 -or -not (Test-Path $filePath -PathType Leaf)) { throw 'Excel file was not found' }
-          $workbook = $excel.Workbooks.Open($filePath, 0, $true)
+          $workbook = (Open-OfficeExcelWorkbook $excel $filePath $true)
           try {
             $sheets = @()
             foreach ($worksheet in $workbook.Worksheets) {
@@ -951,7 +1468,7 @@ function Invoke-OfficeAction {
         }
         'used_range' {
           if ($filePath.Length -eq 0 -or -not (Test-Path $filePath -PathType Leaf)) { throw 'Excel file was not found' }
-          $workbook = $excel.Workbooks.Open($filePath, 0, $true)
+          $workbook = (Open-OfficeExcelWorkbook $excel $filePath $true)
           try {
             $sheetName = [string](Get-Field $Parameters 'sheet')
             $worksheet = if ($sheetName.Length -eq 0) { $workbook.Worksheets.Item(1) } else { $workbook.Worksheets.Item($sheetName) }
@@ -962,18 +1479,20 @@ function Invoke-OfficeAction {
         'read_formulas' {
           if ($filePath.Length -eq 0 -or -not (Test-Path $filePath -PathType Leaf)) { throw 'Excel file was not found' }
           $range = [string](Get-Field $Parameters 'range'); if ($range.Length -eq 0) { throw 'range is required' }
-          $workbook = $excel.Workbooks.Open($filePath, 0, $true)
+          $workbook = (Open-OfficeExcelWorkbook $excel $filePath $true)
           try {
             $sheetName = [string](Get-Field $Parameters 'sheet')
             $worksheet = if ($sheetName.Length -eq 0) { $workbook.Worksheets.Item(1) } else { $workbook.Worksheets.Item($sheetName) }
-            return [ordered]@{ app = 'excel'; action = 'read_formulas'; sheet = [string]$worksheet.Name; range = $range; formulas = @($worksheet.Range($range).Formula) }
+            $target = $worksheet.Range($range)
+            if ($target.CountLarge -gt 100000) { throw 'Excel range reads are limited to 100000 cells' }
+            return [ordered]@{ app = 'excel'; action = 'read_formulas'; sheet = [string]$worksheet.Name; range = $range; formulas = (ConvertFrom-ExcelRangeValues $target.Formula $target); rows = [int]$target.Rows.Count; columns = [int]$target.Columns.Count }
           } finally { $workbook.Close($false) }
         }
         'write_formulas' {
           if ($filePath.Length -eq 0 -or -not (Test-Path $filePath -PathType Leaf)) { throw 'Excel file was not found' }
           $range = [string](Get-Field $Parameters 'range'); if ($range.Length -eq 0) { throw 'range is required' }
           $formulas = Get-Field $Parameters 'formulas'; if ($null -eq $formulas) { throw 'formulas is required' }
-          $workbook = $excel.Workbooks.Open($filePath)
+          $workbook = (Open-OfficeExcelWorkbook $excel $filePath)
           try {
             $sheetName = [string](Get-Field $Parameters 'sheet')
             $worksheet = if ($sheetName.Length -eq 0) { $workbook.Worksheets.Item(1) } else { $workbook.Worksheets.Item($sheetName) }
@@ -986,7 +1505,7 @@ function Invoke-OfficeAction {
         }
         'add_sheet' {
           if ($filePath.Length -eq 0 -or -not (Test-Path $filePath -PathType Leaf)) { throw 'Excel file was not found' }
-          $workbook = $excel.Workbooks.Open($filePath)
+          $workbook = (Open-OfficeExcelWorkbook $excel $filePath)
           try {
             $worksheet = $workbook.Worksheets.Add()
             $name = [string](Get-Field $Parameters 'name'); if ($name.Length -gt 0) { $worksheet.Name = $name }
@@ -997,7 +1516,7 @@ function Invoke-OfficeAction {
         'delete_sheet' {
           if ($filePath.Length -eq 0 -or -not (Test-Path $filePath -PathType Leaf)) { throw 'Excel file was not found' }
           $sheetName = [string](Get-Field $Parameters 'sheet'); if ($sheetName.Length -eq 0) { throw 'sheet is required' }
-          $workbook = $excel.Workbooks.Open($filePath)
+          $workbook = (Open-OfficeExcelWorkbook $excel $filePath)
           try { $workbook.Worksheets.Item($sheetName).Delete(); $workbook.Save(); return [ordered]@{ app = 'excel'; action = 'delete_sheet'; sheet = $sheetName; saved = $true } }
           finally { $workbook.Close($true) }
         }
@@ -1005,13 +1524,13 @@ function Invoke-OfficeAction {
           if ($filePath.Length -eq 0 -or -not (Test-Path $filePath -PathType Leaf)) { throw 'Excel file was not found' }
           $sheetName = [string](Get-Field $Parameters 'sheet'); $newName = [string](Get-Field $Parameters 'new_name')
           if ($sheetName.Length -eq 0 -or $newName.Length -eq 0) { throw 'sheet and new_name are required' }
-          $workbook = $excel.Workbooks.Open($filePath)
+          $workbook = (Open-OfficeExcelWorkbook $excel $filePath)
           try { $workbook.Worksheets.Item($sheetName).Name = $newName; $workbook.Save(); return [ordered]@{ app = 'excel'; action = 'rename_sheet'; sheet = $newName; saved = $true } }
           finally { $workbook.Close($true) }
         }
         'autofit' {
           if ($filePath.Length -eq 0 -or -not (Test-Path $filePath -PathType Leaf)) { throw 'Excel file was not found' }
-          $workbook = $excel.Workbooks.Open($filePath)
+          $workbook = (Open-OfficeExcelWorkbook $excel $filePath)
           try {
             $sheetName = [string](Get-Field $Parameters 'sheet'); $range = [string](Get-Field $Parameters 'range')
             $worksheet = if ($sheetName.Length -eq 0) { $workbook.Worksheets.Item(1) } else { $workbook.Worksheets.Item($sheetName) }
@@ -1024,7 +1543,7 @@ function Invoke-OfficeAction {
           $range = [string](Get-Field $Parameters 'range'); if ($range.Length -eq 0) { throw 'range is required' }
           $parametersValue = Get-Field $Parameters 'parameters'; $format = [string](Get-Field $parametersValue 'format')
           if ($format.Length -eq 0) { throw 'parameters.format is required' }
-          $workbook = $excel.Workbooks.Open($filePath)
+          $workbook = (Open-OfficeExcelWorkbook $excel $filePath)
           try {
             $sheetName = [string](Get-Field $Parameters 'sheet'); $worksheet = if ($sheetName.Length -eq 0) { $workbook.Worksheets.Item(1) } else { $workbook.Worksheets.Item($sheetName) }
             $worksheet.Range($range).NumberFormat = $format; $workbook.Save()
@@ -1033,40 +1552,40 @@ function Invoke-OfficeAction {
         }
         'recalculate' {
           if ($filePath.Length -eq 0 -or -not (Test-Path $filePath -PathType Leaf)) { throw 'Excel file was not found' }
-          $workbook = $excel.Workbooks.Open($filePath)
+          $workbook = (Open-OfficeExcelWorkbook $excel $filePath)
           try { $excel.CalculateFullRebuild(); $workbook.Save(); return [ordered]@{ app = 'excel'; action = 'recalculate'; saved = $true } }
           finally { $workbook.Close($true) }
         }
         'save' {
           if ($filePath.Length -eq 0 -or -not (Test-Path $filePath -PathType Leaf)) { throw 'Excel file was not found' }
-          $workbook = $excel.Workbooks.Open($filePath)
+          $workbook = (Open-OfficeExcelWorkbook $excel $filePath)
           try { $workbook.Save(); return [ordered]@{ app = 'excel'; action = 'save'; file_path = $filePath; saved = $true } }
           finally { $workbook.Close($true) }
         }
         'export_pdf' {
           if ($filePath.Length -eq 0 -or -not (Test-Path $filePath -PathType Leaf)) { throw 'Excel file was not found' }
           $target = [string](Get-Field $Parameters 'target_path'); if ($target.Length -eq 0) { throw 'target_path is required' }
-          $workbook = $excel.Workbooks.Open($filePath, 0, $true)
+          $workbook = (Open-OfficeExcelWorkbook $excel $filePath $true)
           try { $workbook.ExportAsFixedFormat(0, $target); return [ordered]@{ app = 'excel'; action = 'export_pdf'; source = $filePath; target = $target; exported = $true } }
           finally { $workbook.Close($false) }
         }
         'export_csv' {
           if ($filePath.Length -eq 0 -or -not (Test-Path $filePath -PathType Leaf)) { throw 'Excel file was not found' }
           $target = [string](Get-Field $Parameters 'target_path'); if ($target.Length -eq 0) { throw 'target_path is required' }
-          $workbook = $excel.Workbooks.Open($filePath)
+          $workbook = (Open-OfficeExcelWorkbook $excel $filePath)
           try { $workbook.SaveAs($target, 6); return [ordered]@{ app = 'excel'; action = 'export_csv'; source = $filePath; target = $target; exported = $true } }
           finally { $workbook.Close($false) }
         }
         'export_tsv' {
           if ($filePath.Length -eq 0 -or -not (Test-Path $filePath -PathType Leaf)) { throw 'Excel file was not found' }
           $target = [string](Get-Field $Parameters 'target_path'); if ($target.Length -eq 0) { throw 'target_path is required' }
-          $workbook = $excel.Workbooks.Open($filePath)
+          $workbook = (Open-OfficeExcelWorkbook $excel $filePath)
           try { $workbook.SaveAs($target, 20); return [ordered]@{ app = 'excel'; action = 'export_tsv'; source = $filePath; target = $target; exported = $true } }
           finally { $workbook.Close($false) }
         }
         'workbook_properties' {
           if ($filePath.Length -eq 0 -or -not (Test-Path $filePath -PathType Leaf)) { throw 'Excel file was not found' }
-          $workbook = $excel.Workbooks.Open($filePath, 0, $true)
+          $workbook = (Open-OfficeExcelWorkbook $excel $filePath $true)
           try { return [ordered]@{ app = 'excel'; action = 'workbook_properties'; file_path = $filePath; name = [string]$workbook.Name; sheet_count = [int]$workbook.Worksheets.Count; read_only = [bool]$workbook.ReadOnly } }
           finally { $workbook.Close($false) }
         }
@@ -1076,7 +1595,7 @@ function Invoke-OfficeAction {
         { $_ -in @('read_number_formats', 'read_styles') } {
           if ($filePath.Length -eq 0 -or -not (Test-Path $filePath -PathType Leaf)) { throw 'Excel file was not found' }
           $range = [string](Get-Field $Parameters 'range'); if ($range.Length -eq 0) { throw 'range is required' }
-          $workbook = $excel.Workbooks.Open($filePath, 0, $true)
+          $workbook = (Open-OfficeExcelWorkbook $excel $filePath $true)
           try {
             $sheetName = [string](Get-Field $Parameters 'sheet'); $worksheet = if ($sheetName.Length -eq 0) { $workbook.Worksheets.Item(1) } else { $workbook.Worksheets.Item($sheetName) }
             $target = $worksheet.Range($range)
@@ -1086,7 +1605,7 @@ function Invoke-OfficeAction {
         }
         'read_tables' {
           if ($filePath.Length -eq 0 -or -not (Test-Path $filePath -PathType Leaf)) { throw 'Excel file was not found' }
-          $workbook = $excel.Workbooks.Open($filePath, 0, $true)
+          $workbook = (Open-OfficeExcelWorkbook $excel $filePath $true)
           try {
             $tables = @()
             foreach ($worksheet in $workbook.Worksheets) {
@@ -1097,7 +1616,7 @@ function Invoke-OfficeAction {
         }
         'read_charts' {
           if ($filePath.Length -eq 0 -or -not (Test-Path $filePath -PathType Leaf)) { throw 'Excel file was not found' }
-          $workbook = $excel.Workbooks.Open($filePath, 0, $true)
+          $workbook = (Open-OfficeExcelWorkbook $excel $filePath $true)
           try {
             $charts = @()
             foreach ($worksheet in $workbook.Worksheets) {
@@ -1108,7 +1627,7 @@ function Invoke-OfficeAction {
         }
         'read_pivots' {
           if ($filePath.Length -eq 0 -or -not (Test-Path $filePath -PathType Leaf)) { throw 'Excel file was not found' }
-          $workbook = $excel.Workbooks.Open($filePath, 0, $true)
+          $workbook = (Open-OfficeExcelWorkbook $excel $filePath $true)
           try {
             $pivots = @()
             foreach ($worksheet in $workbook.Worksheets) { foreach ($pivot in $worksheet.PivotTables()) { $pivots += [ordered]@{ sheet = [string]$worksheet.Name; name = [string]$pivot.Name; range = [string]$pivot.TableRange2.Address($false,$false) } } }
@@ -1118,7 +1637,7 @@ function Invoke-OfficeAction {
         'search' {
           if ($filePath.Length -eq 0 -or -not (Test-Path $filePath -PathType Leaf)) { throw 'Excel file was not found' }
           $query = [string](Get-Field $Parameters 'name'); if ($query.Length -eq 0) { $query = [string](Get-Field (Get-Field $Parameters 'parameters') 'query') }; if ($query.Length -eq 0) { throw 'name or parameters.query is required' }
-          $workbook = $excel.Workbooks.Open($filePath, 0, $true)
+          $workbook = (Open-OfficeExcelWorkbook $excel $filePath $true)
           try {
             $hits = @()
             foreach ($worksheet in $workbook.Worksheets) {
@@ -1136,7 +1655,7 @@ function Invoke-OfficeAction {
         { $_ -in @('fill_range', 'clear_contents', 'clear_formats', 'merge_cells', 'unmerge_cells') } {
           if ($filePath.Length -eq 0 -or -not (Test-Path $filePath -PathType Leaf)) { throw 'Excel file was not found' }
           $range = [string](Get-Field $Parameters 'range'); if ($range.Length -eq 0) { throw 'range is required' }
-          $workbook = $excel.Workbooks.Open($filePath)
+          $workbook = (Open-OfficeExcelWorkbook $excel $filePath)
           try {
             $sheetName = [string](Get-Field $Parameters 'sheet'); $worksheet = if ($sheetName.Length -eq 0) { $workbook.Worksheets.Item(1) } else { $workbook.Worksheets.Item($sheetName) }; $target = $worksheet.Range($range)
             if ($Action -eq 'fill_range') {
@@ -1155,7 +1674,7 @@ function Invoke-OfficeAction {
           if ($filePath.Length -eq 0 -or -not (Test-Path $filePath -PathType Leaf)) { throw 'Excel file was not found' }
           $range = [string](Get-Field $Parameters 'range'); $options = Get-Field $Parameters 'parameters'; $destination = [string](Get-Field $options 'destination')
           if ($range.Length -eq 0 -or $destination.Length -eq 0) { throw 'range and parameters.destination are required' }
-          $workbook = $excel.Workbooks.Open($filePath)
+          $workbook = (Open-OfficeExcelWorkbook $excel $filePath)
           try {
             $sheetName = [string](Get-Field $Parameters 'sheet'); $worksheet = if ($sheetName.Length -eq 0) { $workbook.Worksheets.Item(1) } else { $workbook.Worksheets.Item($sheetName) }
             $worksheet.Range($range).Copy($worksheet.Range($destination)); $workbook.Save()
@@ -1165,7 +1684,7 @@ function Invoke-OfficeAction {
         { $_ -in @('insert_rows', 'delete_rows', 'insert_columns', 'delete_columns') } {
           if ($filePath.Length -eq 0 -or -not (Test-Path $filePath -PathType Leaf)) { throw 'Excel file was not found' }
           $range = [string](Get-Field $Parameters 'range'); if ($range.Length -eq 0) { throw 'range is required' }
-          $workbook = $excel.Workbooks.Open($filePath)
+          $workbook = (Open-OfficeExcelWorkbook $excel $filePath)
           try {
             $sheetName = [string](Get-Field $Parameters 'sheet'); $worksheet = if ($sheetName.Length -eq 0) { $workbook.Worksheets.Item(1) } else { $workbook.Worksheets.Item($sheetName) }; $target = $worksheet.Range($range)
             if ($Action -eq 'insert_rows') { $target.EntireRow.Insert() | Out-Null }
@@ -1178,7 +1697,7 @@ function Invoke-OfficeAction {
         { $_ -in @('set_row_height', 'set_column_width', 'set_font', 'set_fill', 'set_alignment') } {
           if ($filePath.Length -eq 0 -or -not (Test-Path $filePath -PathType Leaf)) { throw 'Excel file was not found' }
           $range = [string](Get-Field $Parameters 'range'); if ($range.Length -eq 0) { throw 'range is required' }; $options = Get-Field $Parameters 'parameters'
-          $workbook = $excel.Workbooks.Open($filePath)
+          $workbook = (Open-OfficeExcelWorkbook $excel $filePath)
           try {
             $sheetName = [string](Get-Field $Parameters 'sheet'); $worksheet = if ($sheetName.Length -eq 0) { $workbook.Worksheets.Item(1) } else { $workbook.Worksheets.Item($sheetName) }; $target = $worksheet.Range($range)
             if ($Action -eq 'set_row_height') { $target.RowHeight = [double](Get-Field $options 'height') }
@@ -1200,7 +1719,7 @@ function Invoke-OfficeAction {
         }
         { $_ -in @('create_table', 'resize_table', 'style_table') } {
           if ($filePath.Length -eq 0 -or -not (Test-Path $filePath -PathType Leaf)) { throw 'Excel file was not found' }
-          $workbook = $excel.Workbooks.Open($filePath)
+          $workbook = (Open-OfficeExcelWorkbook $excel $filePath)
           try {
             $sheetName = [string](Get-Field $Parameters 'sheet'); $worksheet = if ($sheetName.Length -eq 0) { $workbook.Worksheets.Item(1) } else { $workbook.Worksheets.Item($sheetName) }
             $options = Get-Field $Parameters 'parameters'; $name = [string](Get-Field $Parameters 'name')
@@ -1221,7 +1740,7 @@ function Invoke-OfficeAction {
           if ($filePath.Length -eq 0 -or -not (Test-Path $filePath -PathType Leaf)) { throw 'Excel file was not found' }
           $range = [string](Get-Field $Parameters 'range'); if ($range.Length -eq 0 -and $Action -ne 'clear_filter') { throw 'range is required' }
           $options = Get-Field $Parameters 'parameters'
-          $workbook = $excel.Workbooks.Open($filePath)
+          $workbook = (Open-OfficeExcelWorkbook $excel $filePath)
           try {
             $sheetName = [string](Get-Field $Parameters 'sheet'); $worksheet = if ($sheetName.Length -eq 0) { $workbook.Worksheets.Item(1) } else { $workbook.Worksheets.Item($sheetName) }
             if ($Action -eq 'clear_filter') { if ($worksheet.AutoFilterMode) { $worksheet.AutoFilterMode = $false } }
@@ -1240,7 +1759,7 @@ function Invoke-OfficeAction {
         'freeze_panes' {
           if ($filePath.Length -eq 0 -or -not (Test-Path $filePath -PathType Leaf)) { throw 'Excel file was not found' }
           $options = Get-Field $Parameters 'parameters'; $rows = [int](Get-Field $options 'rows'); $columns = [int](Get-Field $options 'columns')
-          $workbook = $excel.Workbooks.Open($filePath)
+          $workbook = (Open-OfficeExcelWorkbook $excel $filePath)
           try {
             $sheetName = [string](Get-Field $Parameters 'sheet'); $worksheet = if ($sheetName.Length -eq 0) { $workbook.Worksheets.Item(1) } else { $workbook.Worksheets.Item($sheetName) }; $worksheet.Activate()
             $excel.ActiveWindow.FreezePanes = $false; $excel.ActiveWindow.SplitRow = [Math]::Max(0,$rows); $excel.ActiveWindow.SplitColumn = [Math]::Max(0,$columns); $excel.ActiveWindow.FreezePanes = ($rows -gt 0 -or $columns -gt 0)
@@ -1250,7 +1769,7 @@ function Invoke-OfficeAction {
         { $_ -in @('set_data_validation', 'delete_data_validation') } {
           if ($filePath.Length -eq 0 -or -not (Test-Path $filePath -PathType Leaf)) { throw 'Excel file was not found' }
           $range = [string](Get-Field $Parameters 'range'); if ($range.Length -eq 0) { throw 'range is required' }; $options = Get-Field $Parameters 'parameters'
-          $workbook = $excel.Workbooks.Open($filePath)
+          $workbook = (Open-OfficeExcelWorkbook $excel $filePath)
           try {
             $sheetName = [string](Get-Field $Parameters 'sheet'); $worksheet = if ($sheetName.Length -eq 0) { $workbook.Worksheets.Item(1) } else { $workbook.Worksheets.Item($sheetName) }; $target = $worksheet.Range($range)
             $target.Validation.Delete()
@@ -1286,7 +1805,7 @@ function Invoke-OfficeAction {
         'add_comment' {
           if ($filePath.Length -eq 0 -or -not (Test-Path $filePath -PathType Leaf)) { throw 'Excel file was not found' }
           $range = [string](Get-Field $Parameters 'range'); if ($range.Length -eq 0) { throw 'range is required' }; $text = [string](Get-Field (Get-Field $Parameters 'parameters') 'text')
-          $workbook = $excel.Workbooks.Open($filePath)
+          $workbook = (Open-OfficeExcelWorkbook $excel $filePath)
           try { $sheetName = [string](Get-Field $Parameters 'sheet'); $worksheet = if ($sheetName.Length -eq 0) { $workbook.Worksheets.Item(1) } else { $workbook.Worksheets.Item($sheetName) }; $cell = $worksheet.Range($range); if ($null -ne $cell.Comment) { $cell.Comment.Delete() }; [void]$cell.AddComment($text); $workbook.Save(); return [ordered]@{ app = 'excel'; action = $Action; range = $range; saved = $true } }
           finally { $workbook.Close($true) }
         }
@@ -1294,7 +1813,7 @@ function Invoke-OfficeAction {
           if ($filePath.Length -eq 0 -or -not (Test-Path $filePath -PathType Leaf)) { throw 'Excel file was not found' }
           $imagePath = [string](Get-Field $Parameters 'image_path'); if ($imagePath.Length -eq 0 -or -not (Test-Path $imagePath -PathType Leaf)) { throw 'image_path is required and must exist' }
           $range = [string](Get-Field $Parameters 'range'); if ($range.Length -eq 0) { $range = 'A1' }
-          $workbook = $excel.Workbooks.Open($filePath)
+          $workbook = (Open-OfficeExcelWorkbook $excel $filePath)
           try {
             $sheetName = [string](Get-Field $Parameters 'sheet'); $worksheet = if ($sheetName.Length -eq 0) { $workbook.Worksheets.Item(1) } else { $workbook.Worksheets.Item($sheetName) }; $anchor = $worksheet.Range($range)
             $shape = $worksheet.Shapes.AddPicture($imagePath, $false, $true, [double]$anchor.Left, [double]$anchor.Top, -1, -1)
@@ -1304,7 +1823,7 @@ function Invoke-OfficeAction {
         { $_ -in @('create_chart', 'update_chart', 'delete_chart') } {
           if ($filePath.Length -eq 0 -or -not (Test-Path $filePath -PathType Leaf)) { throw 'Excel file was not found' }
           $options = Get-Field $Parameters 'parameters'; $name = [string](Get-Field $Parameters 'name')
-          $workbook = $excel.Workbooks.Open($filePath)
+          $workbook = (Open-OfficeExcelWorkbook $excel $filePath)
           try {
             $sheetName = [string](Get-Field $Parameters 'sheet'); $worksheet = if ($sheetName.Length -eq 0) { $workbook.Worksheets.Item(1) } else { $workbook.Worksheets.Item($sheetName) }
             if ($Action -eq 'create_chart') {
@@ -1329,7 +1848,7 @@ function Invoke-OfficeAction {
         { $_ -in @('create_pivot', 'refresh_pivot', 'update_pivot') } {
           if ($filePath.Length -eq 0 -or -not (Test-Path $filePath -PathType Leaf)) { throw 'Excel file was not found' }
           $options = Get-Field $Parameters 'parameters'; $name = [string](Get-Field $Parameters 'name')
-          $workbook = $excel.Workbooks.Open($filePath)
+          $workbook = (Open-OfficeExcelWorkbook $excel $filePath)
           try {
             if ($Action -eq 'create_pivot') {
               $sheetName = [string](Get-Field $Parameters 'sheet'); $sourceSheet = if ($sheetName.Length -eq 0) { $workbook.Worksheets.Item(1) } else { $workbook.Worksheets.Item($sheetName) }
@@ -1371,7 +1890,7 @@ function Invoke-OfficeAction {
         }
         'formula_errors' {
           if ($filePath.Length -eq 0 -or -not (Test-Path $filePath -PathType Leaf)) { throw 'Excel file was not found' }
-          $workbook = $excel.Workbooks.Open($filePath, 0, $true)
+          $workbook = (Open-OfficeExcelWorkbook $excel $filePath $true)
           try {
             $errors = @()
             foreach ($worksheet in $workbook.Worksheets) {
@@ -1388,7 +1907,7 @@ function Invoke-OfficeAction {
         { $_ -in @('protect', 'unprotect') } {
           if ($filePath.Length -eq 0 -or -not (Test-Path $filePath -PathType Leaf)) { throw 'Excel file was not found' }
           $sheetName = [string](Get-Field $Parameters 'sheet'); $password = [string](Get-Field $Parameters 'password')
-          $workbook = $excel.Workbooks.Open($filePath)
+          $workbook = (Open-OfficeExcelWorkbook $excel $filePath)
           try {
             $worksheet = if ($sheetName.Length -eq 0) { $workbook.Worksheets.Item(1) } else { $workbook.Worksheets.Item($sheetName) }
             if ($Action -eq 'protect') { $worksheet.Protect($password) } else { $worksheet.Unprotect($password) }
@@ -1407,6 +1926,9 @@ function Invoke-OfficeAction {
       $word = New-Object -ComObject Word.Application
       $word.Visible = $false
       $word.DisplayAlerts = 0
+      $word.AutomationSecurity = 3
+      $word.Options.UpdateLinksAtOpen = $false
+      if ($Action -in @('get_runs', 'get_styles', 'get_fields', 'get_footnotes', 'get_endnotes', 'page_setup', 'replace_range', 'delete_range', 'set_character_format', 'set_paragraph_format', 'set_alignment', 'set_spacing', 'create_or_update_style', 'add_heading', 'add_page_break', 'add_section_break', 'merge_cells', 'split_cells', 'set_table_style', 'replace_image', 'add_textbox', 'add_shape', 'add_hyperlink', 'edit_hyperlink', 'add_bookmark', 'remove_bookmark', 'page_numbering', 'set_page_setup', 'add_footnote', 'add_endnote', 'update_toc', 'update_field', 'resolve_comment', 'delete_comment', 'mail_merge_preview', 'mail_merge', 'print')) { return Invoke-WordExtendedAction $word $Action $Parameters }
       $wordAction = $Action
       if ($wordAction -eq 'replace_text') { $wordAction = 'replace' }
       switch ($wordAction) {
@@ -1807,14 +2329,17 @@ function Invoke-OfficeAction {
     }
   }
   if ($App -eq 'powerpoint') {
-    $powerpoint = $null
+    $powerpoint = $null; $powerpointScope = $null
     try {
-      $powerpoint = New-Object -ComObject PowerPoint.Application
+      $powerpointScope = Open-OfficePowerPointApplication $Parameters
+      $powerpoint = $powerpointScope.application
+      $powerpoint.AutomationSecurity = 3
+      if ($Action -in @('get_hyperlinks', 'get_transitions', 'change_layout', 'edit_textbox', 'remove_textbox', 'add_shape', 'edit_shape', 'remove_shape', 'edit_image', 'remove_image', 'crop_image', 'add_hyperlink', 'set_background', 'set_theme', 'set_master', 'set_slide_size', 'set_transition', 'export_images', 'export_video', 'print')) { return Invoke-PowerPointExtendedAction $powerpoint $Action $Parameters }
       switch ($Action) {
         'read' {
           if ($filePath.Length -eq 0) { throw 'file_path is required' }
           if (-not (Test-Path $filePath -PathType Leaf)) { throw 'PowerPoint file was not found' }
-          $presentation = $powerpoint.Presentations.Open($filePath, $true, $false, $false)
+          $presentation = (Open-OfficePowerPointPresentation $powerpoint $filePath $true $false $false)
           try {
             $slides = @()
             $index = 0
@@ -1845,7 +2370,7 @@ function Invoke-OfficeAction {
         { $_ -in @('inspect_presentation', 'list_slides') } {
           if ($filePath.Length -eq 0) { throw 'file_path is required' }
           if (-not (Test-Path $filePath -PathType Leaf)) { throw 'PowerPoint file was not found' }
-          $presentation = $powerpoint.Presentations.Open($filePath, $true, $false, $false)
+          $presentation = (Open-OfficePowerPointPresentation $powerpoint $filePath $true $false $false)
           try {
             $slides = @()
             foreach ($slide in $presentation.Slides) {
@@ -1862,7 +2387,7 @@ function Invoke-OfficeAction {
           if ($filePath.Length -eq 0) { throw 'file_path is required' }
           if (-not (Test-Path $filePath -PathType Leaf)) { throw 'PowerPoint file was not found' }
           $slideIndex = [int](Get-Field $Parameters 'slide'); if ($slideIndex -le 0) { throw 'slide must be a positive integer' }
-          $presentation = $powerpoint.Presentations.Open($filePath, $true, $false, $false)
+          $presentation = (Open-OfficePowerPointPresentation $powerpoint $filePath $true $false $false)
           try {
             if ($slideIndex -gt [int]$presentation.Slides.Count) { throw 'slide is outside the presentation range' }
             $slide = $presentation.Slides.Item($slideIndex)
@@ -1887,7 +2412,7 @@ function Invoke-OfficeAction {
         'presentation_properties' {
           if ($filePath.Length -eq 0) { throw 'file_path is required' }
           if (-not (Test-Path $filePath -PathType Leaf)) { throw 'PowerPoint file was not found' }
-          $presentation = $powerpoint.Presentations.Open($filePath, $true, $false, $false)
+          $presentation = (Open-OfficePowerPointPresentation $powerpoint $filePath $true $false $false)
           try {
             return [ordered]@{ app = 'powerpoint'; action = $Action; file_path = $filePath; name = [string]$presentation.Name; slide_count = [int]$presentation.Slides.Count; width = [double]$presentation.PageSetup.SlideWidth; height = [double]$presentation.PageSetup.SlideHeight }
           } finally { $presentation.Close() }
@@ -1895,14 +2420,14 @@ function Invoke-OfficeAction {
         'slide_size' {
           if ($filePath.Length -eq 0) { throw 'file_path is required' }
           if (-not (Test-Path $filePath -PathType Leaf)) { throw 'PowerPoint file was not found' }
-          $presentation = $powerpoint.Presentations.Open($filePath, $true, $false, $false)
+          $presentation = (Open-OfficePowerPointPresentation $powerpoint $filePath $true $false $false)
           try { return [ordered]@{ app = 'powerpoint'; action = $Action; width = [double]$presentation.PageSetup.SlideWidth; height = [double]$presentation.PageSetup.SlideHeight } }
           finally { $presentation.Close() }
         }
         'add_slide' {
           if ($filePath.Length -eq 0) { throw 'file_path is required' }
           if (-not (Test-Path $filePath -PathType Leaf)) { throw 'PowerPoint file was not found' }
-          $presentation = $powerpoint.Presentations.Open($filePath, $false, $false, $false)
+          $presentation = (Open-OfficePowerPointPresentation $powerpoint $filePath $false $false $false)
           try {
             $requested = [int](Get-Field $Parameters 'slide')
             $position = if ($requested -gt 0) { [Math]::Min($requested, [int]$presentation.Slides.Count + 1) } else { [int]$presentation.Slides.Count + 1 }
@@ -1916,7 +2441,7 @@ function Invoke-OfficeAction {
         'duplicate_slide' {
           if ($filePath.Length -eq 0) { throw 'file_path is required' }
           $slideIndex = [int](Get-Field $Parameters 'slide'); if ($slideIndex -le 0) { throw 'slide must be a positive integer' }
-          $presentation = $powerpoint.Presentations.Open($filePath, $false, $false, $false)
+          $presentation = (Open-OfficePowerPointPresentation $powerpoint $filePath $false $false $false)
           try {
             $range = $presentation.Slides.Item($slideIndex).Duplicate()
             $presentation.Save()
@@ -1926,7 +2451,7 @@ function Invoke-OfficeAction {
         'delete_slide' {
           if ($filePath.Length -eq 0) { throw 'file_path is required' }
           $slideIndex = [int](Get-Field $Parameters 'slide'); if ($slideIndex -le 0) { throw 'slide must be a positive integer' }
-          $presentation = $powerpoint.Presentations.Open($filePath, $false, $false, $false)
+          $presentation = (Open-OfficePowerPointPresentation $powerpoint $filePath $false $false $false)
           try { $presentation.Slides.Item($slideIndex).Delete(); $presentation.Save(); return [ordered]@{ app = 'powerpoint'; action = $Action; deleted = $true; slide = $slideIndex } }
           finally { $presentation.Close() }
         }
@@ -1934,7 +2459,7 @@ function Invoke-OfficeAction {
           if ($filePath.Length -eq 0) { throw 'file_path is required' }
           $slideIndex = [int](Get-Field $Parameters 'slide'); $targetSlide = [int](Get-Field $Parameters 'target_slide')
           if ($slideIndex -le 0 -or $targetSlide -le 0) { throw 'slide and target_slide must be positive integers' }
-          $presentation = $powerpoint.Presentations.Open($filePath, $false, $false, $false)
+          $presentation = (Open-OfficePowerPointPresentation $powerpoint $filePath $false $false $false)
           try { $presentation.Slides.Item($slideIndex).MoveTo($targetSlide); $presentation.Save(); return [ordered]@{ app = 'powerpoint'; action = $Action; slide = $slideIndex; target_slide = $targetSlide; saved = $true } }
           finally { $presentation.Close() }
         }
@@ -1943,7 +2468,7 @@ function Invoke-OfficeAction {
           $slideIndex = [int](Get-Field $Parameters 'slide'); if ($slideIndex -le 0) { throw 'slide must be a positive integer' }
           $shapeId = Get-Field $Parameters 'shape'; if ($null -eq $shapeId) { throw 'shape is required' }
           $text = [string](Get-Field $Parameters 'text')
-          $presentation = $powerpoint.Presentations.Open($filePath, $false, $false, $false)
+          $presentation = (Open-OfficePowerPointPresentation $powerpoint $filePath $false $false $false)
           try {
             $slide = $presentation.Slides.Item($slideIndex)
             $shape = $null
@@ -1967,7 +2492,7 @@ function Invoke-OfficeAction {
               if ($null -ne $value) { Set-Variable -Name $field -Value ([double]$value) }
             }
           }
-          $presentation = $powerpoint.Presentations.Open($filePath, $false, $false, $false)
+          $presentation = (Open-OfficePowerPointPresentation $powerpoint $filePath $false $false $false)
           try {
             $shape = $presentation.Slides.Item($slideIndex).Shapes.AddTextbox(1, $left, $top, $width, $height)
             $shape.TextFrame.TextRange.Text = $text
@@ -1987,7 +2512,7 @@ function Invoke-OfficeAction {
               if ($null -ne $value) { Set-Variable -Name $field -Value ([double]$value) }
             }
           }
-          $presentation = $powerpoint.Presentations.Open($filePath, $false, $false, $false)
+          $presentation = (Open-OfficePowerPointPresentation $powerpoint $filePath $false $false $false)
           try {
             $shape = $presentation.Slides.Item($slideIndex).Shapes.AddPicture($imagePath, $false, $true, $left, $top, $width, $height)
             $presentation.Save()
@@ -1997,7 +2522,7 @@ function Invoke-OfficeAction {
         { $_ -in @('get_images', 'get_tables', 'get_charts') } {
           if ($filePath.Length -eq 0) { throw 'file_path is required' }
           if (-not (Test-Path $filePath -PathType Leaf)) { throw 'PowerPoint file was not found' }
-          $presentation = $powerpoint.Presentations.Open($filePath, $true, $false, $false)
+          $presentation = (Open-OfficePowerPointPresentation $powerpoint $filePath $true $false $false)
           try {
             $items = @()
             foreach ($slide in $presentation.Slides) {
@@ -2026,7 +2551,7 @@ function Invoke-OfficeAction {
           $top = [double](Get-Field $options 'top'); if ($top -eq 0) { $top = 120 }
           $width = [double](Get-Field $options 'width'); if ($width -le 0) { $width = 620 }
           $height = [double](Get-Field $options 'height'); if ($height -le 0) { $height = 280 }
-          $presentation = $powerpoint.Presentations.Open($filePath, $false, $false, $false)
+          $presentation = (Open-OfficePowerPointPresentation $powerpoint $filePath $false $false $false)
           try {
             $shape = $presentation.Slides.Item($slideIndex).Shapes.AddTable($rows, $columns, $left, $top, $width, $height)
             $values = Get-Field $options 'values'
@@ -2051,7 +2576,7 @@ function Invoke-OfficeAction {
           $options = Get-Field $Parameters 'parameters'; $row = [int](Get-Field $options 'row'); $column = [int](Get-Field $options 'column')
           if ($row -le 0 -or $column -le 0) { throw 'parameters.row and parameters.column are required' }
           $text = [string](Get-Field $Parameters 'text')
-          $presentation = $powerpoint.Presentations.Open($filePath, $false, $false, $false)
+          $presentation = (Open-OfficePowerPointPresentation $powerpoint $filePath $false $false $false)
           try {
             $slide = $presentation.Slides.Item($slideIndex); $shape = $null
             try { $shape = $slide.Shapes.Item([string]$shapeId) } catch { try { $shape = $slide.Shapes.Item([int]$shapeId) } catch { } }
@@ -2072,7 +2597,7 @@ function Invoke-OfficeAction {
           $height = [double](Get-Field $options 'height'); if ($height -le 0) { $height = 320 }
           # PowerPoint chart insertion requires an active presentation window on some Office 16 builds;
           # opening WithWindow=$false makes both AddChart2 and AddChart fail with E_FAIL.
-          $presentation = $powerpoint.Presentations.Open($filePath, $false, $false, $true)
+          $presentation = (Open-OfficePowerPointPresentation $powerpoint $filePath $false $false $true)
           try {
             $slide = $presentation.Slides.Item($slideIndex)
             $shape = $null
@@ -2088,7 +2613,7 @@ function Invoke-OfficeAction {
           if ($filePath.Length -eq 0 -or -not (Test-Path $filePath -PathType Leaf)) { throw 'PowerPoint file was not found' }
           $slideIndex = [int](Get-Field $Parameters 'slide'); $shapeId = Get-Field $Parameters 'shape'; if ($slideIndex -le 0 -or $null -eq $shapeId) { throw 'slide and shape are required' }
           $options = Get-Field $Parameters 'parameters'
-          $presentation = $powerpoint.Presentations.Open($filePath, $false, $false, $false)
+          $presentation = (Open-OfficePowerPointPresentation $powerpoint $filePath $false $false $false)
           try {
             $slide = $presentation.Slides.Item($slideIndex); $shape = $null
             try { $shape = $slide.Shapes.Item([string]$shapeId) } catch { try { $shape = $slide.Shapes.Item([int]$shapeId) } catch { } }
@@ -2103,7 +2628,7 @@ function Invoke-OfficeAction {
           if ($filePath.Length -eq 0) { throw 'file_path is required' }
           $slideIndex = [int](Get-Field $Parameters 'slide'); if ($slideIndex -le 0) { throw 'slide must be a positive integer' }
           $text = [string](Get-Field $Parameters 'text')
-          $presentation = $powerpoint.Presentations.Open($filePath, $false, $false, $false)
+          $presentation = (Open-OfficePowerPointPresentation $powerpoint $filePath $false $false $false)
           try {
             $presentation.Slides.Item($slideIndex).NotesPage.Shapes.Placeholders.Item(2).TextFrame.TextRange.Text = $text
             $presentation.Save()
@@ -2112,14 +2637,14 @@ function Invoke-OfficeAction {
         }
         'save' {
           if ($filePath.Length -eq 0) { throw 'file_path is required' }
-          $presentation = $powerpoint.Presentations.Open($filePath, $false, $false, $false)
+          $presentation = (Open-OfficePowerPointPresentation $powerpoint $filePath $false $false $false)
           try { $presentation.Save(); return [ordered]@{ app = 'powerpoint'; action = $Action; file_path = $filePath; saved = $true } }
           finally { $presentation.Close() }
         }
         'save_as' {
           if ($filePath.Length -eq 0) { throw 'file_path is required' }
           if (-not (Test-Path $filePath -PathType Leaf)) { throw 'PowerPoint file was not found' }
-          $presentation = $powerpoint.Presentations.Open($filePath, $true, $false, $false)
+          $presentation = (Open-OfficePowerPointPresentation $powerpoint $filePath $true $false $false)
           try {
             $target = [string](Get-Field $Parameters 'target_path'); if ($target.Length -eq 0) { throw 'target_path is required' }
             $presentation.SaveAs($target)
@@ -2129,14 +2654,14 @@ function Invoke-OfficeAction {
         'export_pdf' {
           if ($filePath.Length -eq 0) { throw 'file_path is required' }
           $target = [string](Get-Field $Parameters 'target_path'); if ($target.Length -eq 0) { throw 'target_path is required' }
-          $presentation = $powerpoint.Presentations.Open($filePath, $true, $false, $false)
+          $presentation = (Open-OfficePowerPointPresentation $powerpoint $filePath $true $false $false)
           try { $presentation.SaveAs($target, 32); return [ordered]@{ app = 'powerpoint'; action = $Action; source = $filePath; target = $target; exported = $true } }
           finally { $presentation.Close() }
         }
         default { throw "Unsupported powerpoint action: $Action" }
       }
     } finally {
-      if ($null -ne $powerpoint) { try { $powerpoint.Quit() } catch { }; Release-ComObject $powerpoint }
+      Close-OfficePowerPointApplication $powerpointScope
     }
   }
   if ($App -eq 'outlook') {
@@ -2148,6 +2673,7 @@ function Invoke-OfficeAction {
     try {
       $outlook = New-Object -ComObject Outlook.Application
       $namespace = $outlook.GetNamespace('MAPI')
+      if ($Action -in @('reply_draft', 'reply_all_draft', 'forward_draft', 'permanent_delete', 'availability', 'move_event', 'add_attendees', 'remove_attendees', 'set_reminder', 'set_recurrence', 'set_location', 'send_update', 'cancel_event', 'respond', 'set_categories', 'create_group', 'update_group')) { return Invoke-OutlookExtendedAction $outlook $namespace $Action $Parameters }
       switch ($Action) {
         'list_folders' {
           $folders = @()

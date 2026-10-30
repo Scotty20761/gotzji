@@ -110,6 +110,7 @@ export function codexInstructionSummary(codexTaskId: string, instruction: string
 
 function redactString(value: string): string {
   return stripVTControlCharacters(value)
+    .replace(/(\b[a-z][a-z0-9+.-]*:\/\/)[^/\\?#]*@/gi, '$1[REDACTED]@')
     .replace(AUTHORIZATION_HEADER, '$1[REDACTED]')
     .replace(BEARER_VALUE, 'Bearer [REDACTED]')
     .replace(ENV_SECRET_ASSIGNMENT, '$1=[REDACTED]')

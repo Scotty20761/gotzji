@@ -5,6 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { describe, expect, it } from 'vitest';
+// @ts-expect-error Standalone release tooling is JavaScript.
+import { buildGotzjiPluginPackage } from '../../scripts/package-gotzji-plugin.mjs';
 
 const execFileAsync = promisify(execFile);
 const repositoryRoot = path.resolve(import.meta.dirname, '..', '..');
@@ -15,7 +17,7 @@ describe('release asset collector', () => {
   it('validates target evidence beside provenance without confusing bundled dependency checksums', async () => {
     // Windows hosted runners may expose TEMP through a DOS short-name alias;
     // the collector intentionally requires canonical staging paths.
-    const temporaryRoot = await realpath(await mkdtemp(path.join(os.tmpdir(), 'lnwjud-release-collector-')));
+    const temporaryRoot = await realpath(await mkdtemp(path.join(os.tmpdir(), 'gotzji-release-collector-')));
     const stagingDirectory = path.join(temporaryRoot, 'staging');
     const assetsDirectory = path.join(temporaryRoot, 'assets');
     try {
@@ -45,14 +47,14 @@ describe('release asset collector', () => {
 
       const assetNames = new Set(await readdir(assetsDirectory));
       for (const name of [
-        `lnwjud-Setup-${version}.exe`,
-        `lnwjud-Portable-${version}.exe`,
-        `lnwjud-${version}-arm64.dmg`,
-        `lnwjud-${version}-arm64.zip`,
-        `lnwjud-${version}-x64.dmg`,
-        `lnwjud-${version}-x64.zip`,
-        `lnwjud-${version}-x64.AppImage`,
-        `lnwjud-${version}-arm64.AppImage`,
+        `gotzji-Setup-${version}.exe`,
+        `gotzji-Portable-${version}.exe`,
+        `gotzji-${version}-arm64.dmg`,
+        `gotzji-${version}-arm64.zip`,
+        `gotzji-${version}-x64.dmg`,
+        `gotzji-${version}-x64.zip`,
+        `gotzji-${version}-x64.AppImage`,
+        `gotzji-${version}-arm64.AppImage`,
         'latest-linux.yml',
         'latest-linux-arm64.yml',
         'latest-mac.yml',
@@ -64,8 +66,8 @@ describe('release asset collector', () => {
         expect(assetNames.has(name), name).toBe(true);
       }
       const macManifest = await readFile(path.join(assetsDirectory, 'latest-mac.yml'), 'utf8');
-      expect(macManifest).toContain(`lnwjud-${version}-arm64.zip`);
-      expect(macManifest).toContain(`lnwjud-${version}-x64.zip`);
+      expect(macManifest).toContain(`gotzji-${version}-arm64.zip`);
+      expect(macManifest).toContain(`gotzji-${version}-x64.zip`);
       for (const name of assetNames) {
         if (!/^SHA256SUMS(?:-.+)?\.txt$/.test(name)) continue;
         const sums = await readFile(path.join(assetsDirectory, name), 'utf8');
@@ -88,8 +90,58 @@ describe('release asset collector', () => {
     }
   });
 
+  it('collects only the qualified Windows candidate without requiring other platform artifacts', async () => {
+    const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'gotzji-windows-collector-')));
+    try {
+      const staging = path.join(root, 'staging'); const assets = path.join(root, 'assets');
+      await writeTargetFixture(staging, { key: 'win32-x64', platform: 'win32', arch: 'x64' });
+      await execFileAsync(process.execPath, [path.join(repositoryRoot, 'scripts/collect-release-assets.mjs'), '--windows-only'], {
+        cwd: repositoryRoot, windowsHide: true,
+        env: { ...process.env, LNWJUD_RELEASE_STAGING_DIRECTORY: staging, LNWJUD_RELEASE_ASSETS_DIRECTORY: assets, LNWJUD_RELEASE_COMMIT: commit },
+      });
+      const manifest = JSON.parse(await readFile(path.join(assets, 'RELEASE_MANIFEST.json'), 'utf8'));
+      expect(manifest.product).toBe('gotzji');
+      expect(manifest.targets).toHaveLength(1);
+      expect(manifest.targets[0]).toMatchObject({ platform: 'win32', arch: 'x64' });
+      expect(await readdir(assets)).not.toContain('latest-mac.yml');
+      expect(await readdir(assets)).not.toContain(`gotzji-plugin-${version}-personal.zip`);
+      expect(await readFile(path.join(assets, `gotzji-Setup-${version}.exe`))).toEqual(await readFile(path.join(staging, 'win32-x64/apps/desktop/dist/installers', `gotzji-Setup-${version}.exe`)));
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+  it.each([
+    {
+      name: 'dirty plugin source provenance',
+      mutate: async (directory: string): Promise<void> => {
+        const provenancePath = path.join(directory, 'PLUGIN_PROVENANCE.json');
+        const provenance = JSON.parse(await readFile(provenancePath, 'utf8')) as { source: { clean: boolean } };
+        provenance.source.clean = false;
+        await writeFile(provenancePath, `${JSON.stringify(provenance, null, 2)}\n`, 'utf8');
+      },
+      expected: /PLUGIN_PROVENANCE_CLEAN_STATE_MISMATCH/,
+    },
+    {
+      name: 'tampered plugin archive bytes',
+      mutate: async (directory: string): Promise<void> => {
+        const archivePath = path.join(directory, `gotzji-plugin-${version}-unbound.zip`);
+        await writeFile(archivePath, Buffer.concat([await readFile(archivePath), Buffer.from('tampered')]));
+      },
+      expected: /EXTERNAL_ARCHIVE_CHECKSUM_MISMATCH/,
+    },
+  ])('rejects $name', async ({ mutate, expected }) => {
+    const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'gotzji-windows-collector-negative-')));
+    try {
+      const staging = path.join(root, 'staging');
+      const installerDirectory = await writeTargetFixture(staging, { key: 'win32-x64', platform: 'win32', arch: 'x64' });
+      await mutate(installerDirectory);
+      await expect(execFileAsync(process.execPath, [path.join(repositoryRoot, 'scripts/collect-release-assets.mjs'), '--windows-only'], {
+        cwd: repositoryRoot,
+        windowsHide: true,
+        env: { ...process.env, LNWJUD_RELEASE_STAGING_DIRECTORY: staging, LNWJUD_RELEASE_ASSETS_DIRECTORY: path.join(root, 'assets'), LNWJUD_RELEASE_COMMIT: commit },
+      })).rejects.toThrow(expected);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
   it('rejects a missing sibling checksum instead of using a nested copy', async () => {
-    const temporaryRoot = await realpath(await mkdtemp(path.join(os.tmpdir(), 'lnwjud-release-collector-')));
+    const temporaryRoot = await realpath(await mkdtemp(path.join(os.tmpdir(), 'gotzji-release-collector-')));
     const stagingDirectory = path.join(temporaryRoot, 'staging');
     try {
       await writeTargetFixture(stagingDirectory, { key: 'win32-x64', platform: 'win32', arch: 'x64' });
@@ -117,21 +169,21 @@ describe('release asset collector', () => {
 async function writeTargetFixture(
   stagingDirectory: string,
   target: { key: string; platform: string; arch: string },
-): Promise<void> {
+): Promise<string> {
   const targetDirectory = path.join(stagingDirectory, target.key, 'apps', 'desktop', 'dist', 'installers');
   await mkdir(targetDirectory, { recursive: true });
   const artifactNames = target.platform === 'win32'
-    ? [`lnwjud-Setup-${version}.exe`, `lnwjud-Setup-${version}.exe.blockmap`, `lnwjud-Portable-${version}.exe`, 'latest.yml', 'portable.yml']
+    ? [`gotzji-Setup-${version}.exe`, `gotzji-Setup-${version}.exe.blockmap`, `gotzji-Portable-${version}.exe`, 'latest.yml', 'portable.yml']
     : target.platform === 'darwin'
-      ? [`lnwjud-${version}-${target.arch}.dmg`, `lnwjud-${version}-${target.arch}.zip`, 'latest-mac.yml']
-      : [`lnwjud-${version}-${target.arch}.AppImage`, `lnwjud-${version}-${target.arch}.deb`, target.arch === 'x64' ? 'latest-linux.yml' : 'latest-linux-arm64.yml'];
+      ? [`gotzji-${version}-${target.arch}.dmg`, `gotzji-${version}-${target.arch}.zip`, 'latest-mac.yml']
+      : [`gotzji-${version}-${target.arch}.AppImage`, `gotzji-${version}-${target.arch}.deb`, target.arch === 'x64' ? 'latest-linux.yml' : 'latest-linux-arm64.yml'];
   const artifactEntries = [];
   for (const name of artifactNames) {
     const contents = name.endsWith('.yml') && target.platform === 'darwin'
       ? [
         `version: ${version}`,
         'files:',
-        `  - url: lnwjud-${version}-${target.arch}.zip`,
+        `  - url: gotzji-${version}-${target.arch}.zip`,
         '    sha512: YmFzZTY0',
         "releaseDate: '2026-09-08T00:00:00.000Z'",
         '',
@@ -142,7 +194,7 @@ async function writeTargetFixture(
   }
   const provenance = {
     schemaVersion: 1,
-    product: 'lnwjud',
+    product: 'gotzji',
     version,
     platform: target.platform,
     arch: target.arch,
@@ -161,6 +213,15 @@ async function writeTargetFixture(
     '',
   ].join('\n');
   await writeFile(path.join(targetDirectory, 'SHA256SUMS.txt'), sums, 'utf8');
+  if (target.platform === 'win32') {
+    await buildGotzjiPluginPackage({ outputDirectory: targetDirectory, sourceCommit: commit, cleanSource: true });
+    await buildGotzjiPluginPackage({
+      personal: true,
+      appId: 'plugin_asdk_app_fixtureonly1234567890',
+      outputDirectory: targetDirectory,
+    });
+  }
+  return targetDirectory;
 }
 
 function sha256(value: string): string {

@@ -892,6 +892,7 @@ describe('TunnelController lifecycle', () => {
       getDataPath: (): string => dataPath,
       getTunnelId: (): string | null => 'tunnel_fixture012345',
       setTunnelId: (): void => undefined,
+      getRuntimeOwnerPath: (): string => clientPath,
       createRuntimeAdapter: (): TunnelRuntimeReconcilerAdapter => adapter,
       isExternalTunnelRunning: async (): Promise<boolean> => false,
     });
@@ -939,7 +940,7 @@ describe('TunnelController lifecycle', () => {
     expect(ownerPath).toBe('');
   });
 
-  it('stops the dedicated lnwjud persistent alias even after the saved Tunnel ID was deleted', async () => {
+  it('refuses to stop a running native alias after saved Tunnel ID was deleted (ownership unknown)', async () => {
     const dataPath = await mkdtemp(path.join(os.tmpdir(), 'lnwjud-tunnel-orphan-stop-'));
     temporaryRoots.push(dataPath);
     isolateTunnelProfile(dataPath);
@@ -973,8 +974,114 @@ describe('TunnelController lifecycle', () => {
       isExternalTunnelRunning: async (): Promise<boolean> => false,
     });
 
+    await expect(controller.stop()).rejects.toThrow('ownership is not proven');
+    expect(stop).not.toHaveBeenCalled();
+  });
+
+  it('reconciles a stopped stale alias while preserving the new Tunnel ID and never stopping the old process', async () => {
+    const dataPath = await mkdtemp(path.join(os.tmpdir(), 'lnwjud-tunnel-stale-alias-'));
+    temporaryRoots.push(dataPath);
+    isolateTunnelProfile(dataPath);
+    const clientPath = path.join(dataPath, 'tunnel-client.exe');
+    await writeFile(clientPath, 'fixture');
+    const capabilities: TunnelRuntimeCapabilities = {
+      clientVersion: 'fixture', nativeRuntimes: true, managedConnect: true, healthProbe: true,
+      pollHealthGate: true, readyBeforeRetire: false, strictZeroDowntime: false, evidence: 'fixture',
+    };
+    const retireStoppedAlias = vi.fn(async (): Promise<void> => undefined);
+    const stop = vi.fn();
+    const adapter: TunnelRuntimeReconcilerAdapter = {
+      runtimeAlias: (): string => 'lnwjud',
+      capabilities: vi.fn(async () => capabilities),
+      status: vi.fn(async () => ({
+        exists: true, running: false, healthy: null, ready: null, pollHealthy: null,
+        tunnelId: 'tunnel_oldalias12345', mcpServerUrl: null, pid: null, uiUrl: null, message: null,
+      })),
+      connect: vi.fn(async () => { throw new Error('connect should not be called'); }),
+      stop,
+      retireStoppedAlias,
+    };
+    let owner = clientPath;
+    const controller = new TunnelController({
+      getClientPath: (): string | null => clientPath, setClientPath: (): void => undefined,
+      getDataPath: (): string => dataPath, getTunnelId: (): string => 'tunnel_newalias12345',
+      setTunnelId: (): void => undefined,
+      getRuntimeOwnerPath: (): string => owner,
+      setRuntimeOwnerPath: (value: string): void => { owner = value; },
+      createRuntimeAdapter: (): TunnelRuntimeReconcilerAdapter => adapter,
+      isExternalTunnelRunning: async (): Promise<boolean> => false,
+    });
     await expect(controller.stop()).resolves.toMatchObject({ state: 'stopped' });
-    expect(stop).toHaveBeenCalledTimes(1);
+    expect(retireStoppedAlias).toHaveBeenCalledExactlyOnceWith('tunnel_oldalias12345');
+    expect(stop).not.toHaveBeenCalled();
+    expect(owner).toBe('');
+  });
+
+  it('prepares a reset only after a stopped old alias is retired and verified absent', async () => {
+    const dataPath = await mkdtemp(path.join(os.tmpdir(), 'lnwjud-reset-reconcile-'));
+    temporaryRoots.push(dataPath);
+    isolateTunnelProfile(dataPath);
+    const clientPath = path.join(dataPath, 'tunnel-client.exe');
+    await writeFile(clientPath, 'fixture');
+    const capabilities: TunnelRuntimeCapabilities = {
+      clientVersion: 'fixture', nativeRuntimes: true, managedConnect: true, healthProbe: true,
+      pollHealthGate: true, readyBeforeRetire: false, strictZeroDowntime: false, evidence: 'fixture',
+    };
+    let exists = true;
+    const retireStoppedAlias = vi.fn(async (): Promise<void> => { exists = false; });
+    const adapter: TunnelRuntimeReconcilerAdapter = {
+      runtimeAlias: (): string => 'lnwjud',
+      capabilities: vi.fn(async () => capabilities),
+      status: vi.fn(async () => ({
+        exists, running: false, healthy: null, ready: null, pollHealthy: null,
+        tunnelId: exists ? 'tunnel_oldalias12345' : null, mcpServerUrl: null, pid: null, uiUrl: null, message: null,
+      })),
+      connect: vi.fn(async () => { throw new Error('Unexpected connect'); }),
+      stop: vi.fn(async () => { throw new Error('Unexpected stop'); }),
+      retireStoppedAlias,
+    };
+    const controller = new TunnelController({
+      getClientPath: (): string => clientPath, setClientPath: (): void => undefined,
+      getDataPath: (): string => dataPath,
+      getTunnelId: (): string => 'tunnel_newalias12345', setTunnelId: (): void => undefined,
+      createRuntimeAdapter: (): TunnelRuntimeReconcilerAdapter => adapter,
+      isExternalTunnelRunning: async (): Promise<boolean> => false,
+    });
+    await expect(controller.prepareFactoryReset()).resolves.toBeUndefined();
+    expect(retireStoppedAlias).toHaveBeenCalledExactlyOnceWith('tunnel_oldalias12345');
+    expect(exists).toBe(false);
+  });
+
+  it('refuses factory reset of an active alias whose Tunnel ID differs from saved configuration', async () => {
+    const dataPath = await mkdtemp(path.join(os.tmpdir(), 'lnwjud-reset-unowned-'));
+    temporaryRoots.push(dataPath);
+    isolateTunnelProfile(dataPath);
+    const clientPath = path.join(dataPath, 'tunnel-client.exe');
+    await writeFile(clientPath, 'fixture');
+    const capabilities: TunnelRuntimeCapabilities = {
+      clientVersion: 'fixture', nativeRuntimes: true, managedConnect: true, healthProbe: true,
+      pollHealthGate: true, readyBeforeRetire: false, strictZeroDowntime: false, evidence: 'fixture',
+    };
+    const retireStoppedAlias = vi.fn();
+    const stop = vi.fn();
+    const adapter: TunnelRuntimeReconcilerAdapter = {
+      runtimeAlias: (): string => 'lnwjud', capabilities: vi.fn(async () => capabilities),
+      status: vi.fn(async () => ({
+        exists: true, running: true, healthy: true, ready: true, pollHealthy: true,
+        tunnelId: 'tunnel_oldalias12345', mcpServerUrl: null, pid: 99991, uiUrl: null, message: null,
+      })),
+      connect: vi.fn(async () => { throw new Error('Unexpected connect'); }), stop, retireStoppedAlias,
+    };
+    const controller = new TunnelController({
+      getClientPath: (): string => clientPath, setClientPath: (): void => undefined,
+      getDataPath: (): string => dataPath,
+      getTunnelId: (): string => 'tunnel_newalias12345', setTunnelId: (): void => undefined,
+      createRuntimeAdapter: (): TunnelRuntimeReconcilerAdapter => adapter,
+      isExternalTunnelRunning: async (): Promise<boolean> => false,
+    });
+    await expect(controller.prepareFactoryReset()).rejects.toThrow('ownership is not verified');
+    expect(stop).not.toHaveBeenCalled();
+    expect(retireStoppedAlias).not.toHaveBeenCalled();
   });
 
   it('refuses to stop a persisted native alias when it reports a different Tunnel ID', async () => {
@@ -1042,8 +1149,8 @@ describe('TunnelController lifecycle', () => {
   });
 
   it.runIf(process.platform === 'win32')('uses the injected Windows graceful-stop bound and retains ownership when no child exit is observed', async () => {
-    vi.useFakeTimers();
     const fixture = await ownedController(() => true, 20);
+    vi.useFakeTimers();
     let stoppedWith: unknown;
     const stopping = fixture.controller.stop().catch((error: unknown) => { stoppedWith = error; });
 
@@ -1172,24 +1279,30 @@ describe('TunnelController lifecycle', () => {
     const dataPath = await mkdtemp(path.join(os.tmpdir(), 'lnwjud-tunnel-secret-failure-'));
     temporaryRoots.push(dataPath);
     isolateTunnelProfile(dataPath);
-    const profileDir = resolveTunnelProfileDirectory();
+    // This lifecycle case must reach the injected secret failure without OS helper startup.
+    vi.stubEnv('PATH', dataPath);
+    const platform = 'linux';
+    const profileDir = resolveTunnelProfileDirectory(process.env, os.homedir(), platform);
     await (await import('node:fs/promises')).mkdir(profileDir, { recursive: true });
     const clientPath = path.join(dataPath, 'tunnel-client.exe');
     await writeFile(clientPath, 'fixture', 'utf8');
     await writeFile(path.join(profileDir, 'lnwjud.yaml'), 'mcp:\n  command: fixture\n', 'utf8');
     await writeFile(path.join(profileDir, 'lnwjud.runtime.secret'), 'encrypted-fixture', 'utf8');
     const currentOwner: TunnelLockOwner = { pid: 8888, processStartedAt: timestamp(1), acquiredAt: timestamp(2) };
+    const decryptSecret = vi.fn(async (): Promise<string> => { throw new Error('secret decrypt failed'); });
     const controller = new TunnelController({
+      platform,
       getClientPath: (): string => clientPath,
       setClientPath: (): void => undefined,
       getDataPath: (): string => dataPath,
       currentLockOwner: async (): Promise<TunnelLockOwner> => currentOwner,
       inspectLockProcess: async (): Promise<ProcessProbeResult> => ({ state: 'gone' }),
       isExternalTunnelRunning: async (): Promise<boolean> => false,
-      decryptSecret: async (): Promise<string> => { throw new Error('secret decrypt failed'); },
+      decryptSecret,
     });
 
     await expect(controller.start()).resolves.toMatchObject({ state: 'error', message: 'secret decrypt failed' });
+    expect(decryptSecret).toHaveBeenCalledOnce();
     expect(await readTunnelLock(profileDir)).toBeNull();
     expect(controllerInternals(controller).tunnelLock).toBeNull();
   });
@@ -1635,6 +1748,7 @@ async function ownedController(kill: () => boolean, stopTimeoutMs = 2_000, shutd
   inspectOwnedProcess?: (pid: number) => Promise<import('@lnwjud/mcp-server').ProcessProbeResult>;
   inspectOwnedProcessTree?: (rootPid: number) => Promise<readonly { readonly pid: number; readonly processStartedAt: string }[]>;
   escalationTimeoutMs?: number;
+  lockPlatform?: NodeJS.Platform;
 } = {}, lockHooks?: NonNullable<Parameters<typeof acquireTunnelLock>[0]['hooks']>): Promise<{
   controller: TunnelController;
   child: FakeChild;
@@ -1651,7 +1765,8 @@ async function ownedController(kill: () => boolean, stopTimeoutMs = 2_000, shutd
     processStartedAt: '2026-08-20T00:00:00.000Z',
     acquiredAt: '2026-08-20T00:00:00.000Z',
   };
-  const claim = await acquireTunnelLock({ profileDirectory: profileDir, owner: lockOwner, inspectProcess: async () => ({ state: 'live', processStartedAt: lockOwner.processStartedAt }), ...(lockHooks === undefined ? {} : { hooks: lockHooks }) });
+  const { lockPlatform = 'linux', ...controllerOptions } = shutdownOptions;
+  const claim = await acquireTunnelLock({ profileDirectory: profileDir, owner: lockOwner, inspectProcess: async () => ({ state: 'live', processStartedAt: lockOwner.processStartedAt }), platform: lockPlatform, ...(lockHooks === undefined ? {} : { hooks: lockHooks }) });
   if (!claim.acquired) throw new Error('test controller could not acquire its lock');
   const controller = new TunnelController({
     getClientPath: (): string | null => null,
@@ -1665,7 +1780,7 @@ async function ownedController(kill: () => boolean, stopTimeoutMs = 2_000, shutd
       terminateOwnedProcessTree: async (): Promise<void> => { child.kill(); },
     }),
     inspectOwnedProcessTree: async (): Promise<readonly { readonly pid: number; readonly processStartedAt: string }[]> => [],
-    ...shutdownOptions,
+    ...controllerOptions,
   });
   const child = new EventEmitter() as FakeChild;
   child.exitCode = null;

@@ -19,6 +19,8 @@ describe('canonical bilingual tool catalog', () => {
   });
 
   it('uses only declared categories and requirement ids', () => {
+    expect(catalogDefinitions.checkpoint_goal_engineering?.category).toBe('agent_goals');
+
     for (const definition of Object.values(catalogDefinitions)) {
       expect(categories.has(definition.category), `${definition.name} category`).toBe(true);
       for (const requirementId of definition.requirementIds) {

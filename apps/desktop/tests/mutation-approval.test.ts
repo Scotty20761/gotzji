@@ -1,6 +1,8 @@
+import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
 import type { HostMutationApprovalRequest } from '@lnwjud/mcp-server';
 import { isMutationApprovalRequestValid, isMutationApprovalResponse, mutationApprovalDialogOptions } from '../src/main/mutation-approval.js';
+import { mutationApprovalWindowSize } from '../src/main/mutation-approval-layout.js';
 
 const request: HostMutationApprovalRequest = {
   toolName: 'shell',
@@ -40,6 +42,21 @@ describe('desktop exact-action mutation approval', () => {
     expect(isMutationApprovalRequestValid({ ...request, summary: 'x'.repeat(8_193) })).toBe(false);
     expect(isMutationApprovalRequestValid({ ...request, toolName: '' })).toBe(false);
     expect(isMutationApprovalRequestValid({ ...request, reason: '' })).toBe(false);
+  });
+
+  it('keeps approval details scrollable inside displays of different sizes', async () => {
+    expect(mutationApprovalWindowSize({ width: 3456, height: 2234 })).toEqual({ width: 760, height: 680 });
+    expect(mutationApprovalWindowSize({ width: 360, height: 300 })).toEqual({ width: 360, height: 300 });
+
+    const [page, styles] = await Promise.all([
+      readFile(new URL('../src/renderer/features/mutation-approval/MutationApprovalPage.tsx', import.meta.url), 'utf8'),
+      readFile(new URL('../src/renderer/styles.css', import.meta.url), 'utf8'),
+    ]);
+    expect(page).toContain('<pre dir="auto">{prompt.detail}</pre>');
+    expect(page).toContain('className="mutation-approval-detail" tabIndex={0}');
+    expect(styles).toMatch(/\.mutation-approval-detail\s*\{[^}]*overflow:\s*auto;/s);
+    expect(styles).toMatch(/\.mutation-approval-detail\s*\{[^}]*min-height:\s*0;/s);
+    expect(styles).toMatch(/\.mutation-approval-detail pre\s*\{[^}]*overflow-wrap:\s*anywhere;/s);
   });
 
   it('refuses to create an approval dialog without a trusted host window or for an invalid request', () => {

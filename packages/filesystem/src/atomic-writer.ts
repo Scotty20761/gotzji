@@ -1,9 +1,9 @@
 import { randomUUID } from 'node:crypto';
-import { unlink, rename, writeFile } from 'node:fs/promises';
+import { unlink, rename, link, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { appError, err, ok, type Result } from '@lnwjud/domain';
 import { ensureParentDirectory } from './ensure-parent.js';
-import { mapNodeFsError } from './fs-error.js';
+import { mapNodeFsError, nodeErrorCode } from './fs-error.js';
 
 export const MAX_FILE_WRITE_BYTES = 4 * 1024 * 1024;
 
@@ -14,6 +14,8 @@ export interface AtomicWriteOptions {
    * after their initial workspace containment check.
    */
   readonly validateDestination?: () => Promise<Result<void>>;
+  /** Publish using an atomic destination-level no-replace operation. */
+  readonly createNew?: boolean;
 }
 
 export class AtomicFileWriter {
@@ -40,9 +42,18 @@ export class AtomicFileWriter {
       const publish = await options.validateDestination?.();
       if (publish !== undefined && !publish.ok) return publish;
 
-      await rename(temporaryPath, filePath);
+      if (options.createNew === true) {
+        // Hard-link publication is atomic on the same volume and fails with EEXIST
+        // even if another client creates the destination after preflight.
+        await link(temporaryPath, filePath);
+      } else {
+        await rename(temporaryPath, filePath);
+      }
       return ok(undefined);
     } catch (error: unknown) {
+      if (options.createNew === true && nodeErrorCode(error) === 'EEXIST') {
+        return err(appError('CONFLICT', 'Destination already exists'));
+      }
       return err(mapNodeFsError(error, 'Atomic file write failed'));
     } finally {
       await unlink(temporaryPath).catch(() => undefined);

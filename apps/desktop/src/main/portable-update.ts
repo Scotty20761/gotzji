@@ -1,10 +1,13 @@
 import { spawn } from 'node:child_process';
-import { access, mkdir, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { access, link, lstat, mkdir, rename, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { GOTZJI_AUTOMATIC_UPDATES_ENABLED, GOTZJI_REPOSITORY_URL } from './gotzji-product-identity.js';
 
-export const PORTABLE_UPDATE_FEED_URL = 'https://github.com/engasnm111/lnwjud/releases/latest/download/';
+export const PORTABLE_UPDATE_FEED_URL = `${GOTZJI_REPOSITORY_URL}/releases/latest/download/`;
 export const PORTABLE_UPDATE_CHANNEL = 'portable';
+export const AUTOMATIC_UPDATES_ENABLED = GOTZJI_AUTOMATIC_UPDATES_ENABLED;
 
 export type WindowsDistribution = 'installer' | 'portable';
 export type UpdaterDistribution = WindowsDistribution | 'macos' | 'linux-appimage' | 'unsupported';
@@ -55,6 +58,7 @@ export function detectUpdaterDistribution(
   platform: NodeJS.Platform = process.platform,
   environment: NodeJS.ProcessEnv = process.env,
 ): UpdaterDistribution {
+  if (!AUTOMATIC_UPDATES_ENABLED) return 'unsupported';
   if (!isPackaged) return 'unsupported';
   if (platform === 'win32') return detectWindowsDistribution(true, environment, platform);
   if (platform === 'darwin') return 'macos';
@@ -63,7 +67,13 @@ export function detectUpdaterDistribution(
 }
 
 /** Use electron-updater's native quit/install path only for formats it owns. */
+/** Native macOS and AppImage installers must accept the update while IPC stays live. */
+export function waitsForNativeInstallAcceptance(distribution: UpdaterDistribution): boolean {
+  return distribution === 'macos' || distribution === 'linux-appimage';
+}
+
 export function usesElectronUpdaterInstall(distribution: UpdaterDistribution): boolean {
+  if (!AUTOMATIC_UPDATES_ENABLED) return false;
   return distribution === 'installer' || distribution === 'macos' || distribution === 'linux-appimage';
 }
 
@@ -81,6 +91,7 @@ export function configureUpdaterForDistribution(
   updater: AutoUpdaterFeedAdapter,
   distribution: WindowsDistribution,
 ): void {
+  if (!AUTOMATIC_UPDATES_ENABLED) return;
   if (distribution !== 'portable') return;
   updater.disableDifferentialDownload = true;
   updater.setFeedURL({
@@ -96,6 +107,7 @@ export function configureUpdaterForPlatform(
   updater: AutoUpdaterFeedAdapter,
   distribution: UpdaterDistribution,
 ): void {
+  if (!AUTOMATIC_UPDATES_ENABLED) return;
   if (distribution === 'portable') {
     configureUpdaterForDistribution(updater, distribution);
     return;
@@ -107,9 +119,44 @@ export function configureUpdaterForPlatform(
   }
 }
 
+/**
+ * electron-updater AppImageUpdater.doInstall() unlinks the running AppImage
+ * BEFORE moving its downloaded replacement into place. Keep a hard-link to the
+ * verified current executable so an unsuccessful move cannot delete the app.
+ * Hard-link creation is mandatory (fail closed on unsupported filesystems).
+ */
+export async function createLinuxAppImageRollback(
+  currentPath: string,
+  downloadedPath: string,
+): Promise<{ currentPath: string; backupPath: string }> {
+  if (!path.isAbsolute(currentPath) || !path.isAbsolute(downloadedPath) || currentPath === downloadedPath) {
+    throw new Error('Linux AppImage update requires distinct absolute current and downloaded paths');
+  }
+  const [current, downloaded] = await Promise.all([lstat(currentPath), lstat(downloadedPath)]);
+  if (!current.isFile() || !downloaded.isFile()) {
+    throw new Error('Linux AppImage update paths must be regular files (not symlinks)');
+  }
+  const backupPath = `${currentPath}.lnwjud-backup-${randomUUID()}`;
+  await link(currentPath, backupPath);
+  return { currentPath, backupPath };
+}
+
+/** Restore an AppImage deleted by a failing native move, without overwriting a new installation. */
+export async function restoreLinuxAppImageIfMissing(currentPath: string, backupPath: string): Promise<boolean> {
+  try {
+    await lstat(currentPath);
+    return false;
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    await rename(backupPath, currentPath);
+    return true;
+  }
+}
+
 export async function preparePortableReplacement(
   options: PreparePortableReplacementOptions,
 ): Promise<PreparedPortableReplacement> {
+  if (!AUTOMATIC_UPDATES_ENABLED) throw new Error('Automatic updates are disabled by the gotzji official-unsigned release policy; use a hash-verified manual update.');
   const sourcePath = path.resolve(options.downloadedFile);
   const targetPath = path.resolve(options.currentExecutablePath);
   if (path.extname(sourcePath).toLowerCase() !== '.exe' || path.extname(targetPath).toLowerCase() !== '.exe') {
@@ -127,7 +174,7 @@ export async function preparePortableReplacement(
   const powershellPath = path.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
   await access(powershellPath);
 
-  const tempDirectory = options.tempDirectory ?? path.join(os.tmpdir(), 'lnwjud-portable-update');
+  const tempDirectory = options.tempDirectory ?? path.join(os.tmpdir(), 'gotzji-portable-update');
   await mkdir(tempDirectory, { recursive: true });
   const processId = options.processId ?? process.pid;
   const scriptPath = path.join(tempDirectory, `replace-${processId}-${Date.now()}.ps1`);
@@ -139,6 +186,7 @@ export function launchPortableReplacement(
   prepared: PreparedPortableReplacement,
   processId: number = process.pid,
 ): void {
+  if (!AUTOMATIC_UPDATES_ENABLED) throw new Error('Automatic updates are disabled by the gotzji official-unsigned release policy; use a hash-verified manual update.');
   const child = spawn(prepared.powershellPath, [
     '-NoProfile',
     '-NonInteractive',
@@ -167,7 +215,7 @@ export function portableReplacementScript(): string {
   [Parameter(Mandatory = $true)][string]$Target
 )
 $ErrorActionPreference = 'Stop'
-$backup = "$Target.lnwjud-update-backup"
+$backup = "$Target.gotzji-update-backup"
 try {
   $deadline = [DateTime]::UtcNow.AddMinutes(2)
   while ([DateTime]::UtcNow -lt $deadline) {
@@ -175,7 +223,7 @@ try {
     Start-Sleep -Milliseconds 250
   }
   if ($null -ne (Get-Process -Id $CurrentPid -ErrorAction SilentlyContinue)) {
-    throw 'Timed out waiting for lnwjud portable process to exit.'
+    throw 'Timed out waiting for gotzji portable process to exit.'
   }
   if (-not (Test-Path -LiteralPath $Source -PathType Leaf)) { throw 'Downloaded portable update is missing.' }
   if (-not (Test-Path -LiteralPath $Target -PathType Leaf)) { throw 'Current portable executable is missing.' }
@@ -183,14 +231,14 @@ try {
   Move-Item -LiteralPath $Target -Destination $backup -Force
   try {
     Move-Item -LiteralPath $Source -Destination $Target -Force
-    Start-Process -FilePath $Target | Out-Null
+    Start-Process -FilePath $Target -WindowStyle Hidden | Out-Null
     Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue
   }
   catch {
     if (Test-Path -LiteralPath $backup -PathType Leaf) {
       Remove-Item -LiteralPath $Target -Force -ErrorAction SilentlyContinue
       Move-Item -LiteralPath $backup -Destination $Target -Force
-      Start-Process -FilePath $Target | Out-Null
+      Start-Process -FilePath $Target -WindowStyle Hidden | Out-Null
     }
     throw
   }

@@ -2,6 +2,31 @@ import { describe, expect, it } from 'vitest';
 import { ActivityTracker, describeStructuredResultDetail, describeToolTarget, summarizeStructuredResultTarget, summarizeToolTarget, type ActivitySinkEvent } from './activity-tracker.js';
 
 describe('ActivityTracker', () => {
+  it('removes invalid URL userinfo before any started event or detail is persisted', async () => {
+    const persisted: unknown[] = [];
+    const tracker = new ActivityTracker(
+      { async record(event): Promise<void> { persisted.push(event); } },
+      undefined,
+      { async record(event, detail): Promise<void> { persisted.push({ event, detail }); } },
+    );
+    await tracker.begin('git_clone_safe', { url: 'https://audit-user:opaque-value@example.test/repo.git' });
+    await tracker.begin('tool_batch', {
+      calls: [{ id: 'nested', tool: 'git_clone_safe', arguments: {
+        url: 'https://nested-user:nested-secret@example.test/repo.git', unexpected: { authorization: 'Bearer nested-bearer-secret' },
+      } }],
+      groups: [{ id: 'batched', calls: [{ tool: 'git_clone_safe', arguments: ['array-secret'] }] }],
+    });
+    const observed = JSON.stringify({ persisted, inflight: tracker.listInFlight() });
+    for (const secret of ['nested-user', 'nested-secret', 'nested-bearer-secret', 'array-secret']) {
+      expect(observed).not.toContain(secret);
+    }
+    expect(observed).toContain('input.unexpectedFields=1');
+    expect(observed).not.toContain('audit-user');
+    expect(observed).not.toContain('opaque-value');
+    expect(observed).toContain('input.fields.url=string');
+    expect(observed).toContain('input.unexpectedFields=0');
+  });
+
   it('tracks in-flight calls and records started/completed sink events', async () => {
     const events: ActivitySinkEvent[] = [];
     const tracker = new ActivityTracker({

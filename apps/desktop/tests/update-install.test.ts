@@ -82,7 +82,7 @@ describe('downloaded update installation', () => {
     active = 0;
     await vi.advanceTimersByTimeAsync(29);
     expect(install).not.toHaveBeenCalled();
-    await vi.advanceTimersByTimeAsync(1);
+    await vi.advanceTimersByTimeAsync(11);
 
     expect(install).toHaveBeenCalledOnce();
   });
@@ -105,7 +105,7 @@ describe('downloaded update installation', () => {
     active = 0;
     await vi.advanceTimersByTimeAsync(39);
     expect(install).not.toHaveBeenCalled();
-    await vi.advanceTimersByTimeAsync(1);
+    await vi.advanceTimersByTimeAsync(11);
 
     expect(install).toHaveBeenCalledOnce();
   });
@@ -126,7 +126,7 @@ describe('downloaded update installation', () => {
     revision += 2;
     await vi.advanceTimersByTimeAsync(39);
     expect(install).not.toHaveBeenCalled();
-    await vi.advanceTimersByTimeAsync(1);
+    await vi.advanceTimersByTimeAsync(11);
     expect(install).toHaveBeenCalledOnce();
   });
 
@@ -151,7 +151,7 @@ describe('downloaded update installation', () => {
     shared = { state: 'available', activeCallCount: 0, revision: 4 };
     await vi.advanceTimersByTimeAsync(29);
     expect(install).not.toHaveBeenCalled();
-    await vi.advanceTimersByTimeAsync(1);
+    await vi.advanceTimersByTimeAsync(11);
     expect(install).toHaveBeenCalledOnce();
   });
 
@@ -171,7 +171,7 @@ describe('downloaded update installation', () => {
     await vi.advanceTimersByTimeAsync(100);
     expect(install).not.toHaveBeenCalled();
     shared = { state: 'available', activeCallCount: 0, revision: 1 };
-    await vi.advanceTimersByTimeAsync(30);
+    await vi.advanceTimersByTimeAsync(40);
     expect(install).toHaveBeenCalledOnce();
   });
 
@@ -193,7 +193,36 @@ describe('downloaded update installation', () => {
     shared = { state: 'available', activeCallCount: 0, revision: 2 };
     await vi.advanceTimersByTimeAsync(39);
     expect(install).not.toHaveBeenCalled();
-    await vi.advanceTimersByTimeAsync(1);
+    await vi.advanceTimersByTimeAsync(11);
+    expect(install).toHaveBeenCalledOnce();
+  });
+
+  it('confirms the shared revision after the quiet deadline before installing', async () => {
+    vi.useFakeTimers();
+    const delayed = deferred<UpdateSharedActivitySnapshot>();
+    let revision = 1;
+    let observations = 0;
+    const install = vi.fn();
+    const coordinator = new UpdateInstallCoordinator({
+      activeCallCount: (): number => 0,
+      tunnelRunning: async (): Promise<boolean> => true,
+      sharedActivitySnapshot: async (): Promise<UpdateSharedActivitySnapshot> => {
+        observations += 1;
+        if (observations === 3) return delayed.promise;
+        return { state: 'available', activeCallCount: 0, revision };
+      },
+      install,
+      pollIntervalMs: 10,
+      quietPeriodMs: 20,
+    });
+    coordinator.requestInstall();
+    await vi.advanceTimersByTimeAsync(20);
+    expect(observations).toBe(3);
+    revision = 2;
+    delayed.resolve({ state: 'available', activeCallCount: 0, revision: 1 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(install).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(40);
     expect(install).toHaveBeenCalledOnce();
   });
 

@@ -11,10 +11,6 @@ enum MacNativeResult {
     case failure(code: String, message: String, recoverable: Bool)
 }
 
-/// The first macOS provider slice deliberately stays small and explicit:
-/// permission probes, window metadata, governed input, screen capture, and
-/// OCR. Operations that need a longer-lived media/Office session remain
-/// dependency-gated until their ownership and restart contracts are complete.
 enum MacNativeProviders {
     private static let maxWindows = 256
     private static let maxMarks = 500
@@ -84,18 +80,8 @@ enum MacNativeProviders {
                     reason: !windowReady ? "dependency_missing" : trusted ? nil : "permission_required",
                     supportedActions: ["status", "list", "get_active", "get_bounds", "get_display", "activate", "close", "minimize", "maximize", "restore", "move", "resize", "set_window_frame"]
                 ),
-                "audio": status(
-                    available: true,
-                    ready: false,
-                    reason: "provider_not_implemented",
-                    supportedActions: ["status", "record", "play", "stop"]
-                ),
-                "screen_record": status(
-                    available: true,
-                    ready: false,
-                    reason: "provider_not_implemented",
-                    supportedActions: ["status", "start", "stop"]
-                ),
+                "audio": MacAudioProvider.status(),
+                "screen_record": MacScreenRecordingProvider.status(),
                 "office": status(
                     available: officeInstalled,
                     ready: false,
@@ -113,8 +99,8 @@ enum MacNativeProviders {
         case "input_event": return inputEvent(action: action, input: input)
         case "vision": return vision(action: action, input: input)
         case "window": return window(action: action, input: input)
-        case "audio": return audio(action: action)
-        case "screen_record": return screenRecord(action: action)
+        case "audio": return MacAudioProvider.execute(action: action, input: input)
+        case "screen_record": return MacScreenRecordingProvider.execute(action: action, input: input)
         case "office": return office(action: action)
         default:
             return .failure(code: "INVALID_INPUT", message: "Native host operation is not supported", recoverable: false)
@@ -471,26 +457,6 @@ enum MacNativeProviders {
             MacInputProvider.post(event)
         }
         return .value(["available": AnyEncodable(true), "ready": AnyEncodable(true), "released": AnyEncodable(true), "scope": AnyEncodable("provider_owned_keys_and_buttons")])
-    }
-
-    private static func audio(action: String) -> MacNativeResult {
-        switch action {
-        case "status":
-            let permission = MacAudioProvider.permissionGranted()
-            return .value(status(available: true, ready: false, reason: permission ? "provider_not_implemented" : "permission_required", supportedActions: ["status", "record", "play", "stop"]))
-        default:
-            return .failure(code: "UNSUPPORTED_PLATFORM", message: "macOS audio provider is dependency-gated until owned recording/playback is implemented", recoverable: true)
-        }
-    }
-
-    private static func screenRecord(action: String) -> MacNativeResult {
-        switch action {
-        case "status":
-            let permission = MacScreenRecordingProvider.permissionGranted()
-            return .value(status(available: true, ready: false, reason: permission ? "provider_not_implemented" : "permission_required", supportedActions: ["status", "start", "stop"]))
-        default:
-            return .failure(code: "UNSUPPORTED_PLATFORM", message: "macOS screen recording provider is dependency-gated until owned start/stop is implemented", recoverable: true)
-        }
     }
 
     private static func office(action: String) -> MacNativeResult {

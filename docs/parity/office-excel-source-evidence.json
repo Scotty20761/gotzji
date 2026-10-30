@@ -1,0 +1,58 @@
+{
+  "schema": "GOTZJI_OFFICE_EXCEL_SOURCE_CENSUS_V1",
+  "observedDate": "2026-10-24",
+  "censusDate": "2026-10-22",
+  "baseline": "1a0453ed0ef1de4cdf9ce1ba9edee8da0de8426b",
+  "comparison": "git show <baseline>:<path> versus current bytes; CRLF normalized to LF only",
+  "coverage": "These six files only; source identity does not establish installed, runtime, native application or account acceptance",
+  "files": [
+    {
+      "path": "packages/mcp-server/src/office-tool-contracts.ts",
+      "baselineBlobSha256": "0b5d2fedae1941ed2840ac8061ab29a5e78215f02133a47a7d95fd9e1a93db01",
+      "workingRawSha256": "cd5f1324ae44706d27cab2501368b1b5d283cda78dd4345bf5595a995903f640",
+      "normalizedSha256": "0b5d2fedae1941ed2840ac8061ab29a5e78215f02133a47a7d95fd9e1a93db01",
+      "rawByteIdentical": false,
+      "contentIdenticalAfterCRLFNormalization": true
+    },
+    {
+      "path": "packages/mcp-server/src/tools/upgrade-tools.ts",
+      "baselineBlobSha256": "9b5fbd0281c421e18501a8356ce6b48c879b5f6f949b8c82c5c0e6cff1f3685b",
+      "workingRawSha256": "b95920e2d46602645a400a5d3c4d7c392e4b456a99a8e750ac2cbe4aff40fc00",
+      "normalizedSha256": "9b5fbd0281c421e18501a8356ce6b48c879b5f6f949b8c82c5c0e6cff1f3685b",
+      "rawByteIdentical": false,
+      "contentIdenticalAfterCRLFNormalization": true
+    },
+    {
+      "path": "packages/mcp-server/src/upgrade-tool-contracts.ts",
+      "baselineBlobSha256": "cf4db779708ec2094a0973cbf7856bf5d1c68c8a42915e65f49511665791e414",
+      "workingRawSha256": "ab83aaaf66aa782e2ed842562bbfa447526f842b1db0c995aff9a75d4a243715",
+      "normalizedSha256": "cf4db779708ec2094a0973cbf7856bf5d1c68c8a42915e65f49511665791e414",
+      "rawByteIdentical": false,
+      "contentIdenticalAfterCRLFNormalization": true
+    },
+    {
+      "path": "packages/mcp-server/src/upgrade-runtime.ts",
+      "baselineBlobSha256": "93fcd50375266c8b4fed0748babcac3f29d9bd0f4f33af3aca84dac83644930b",
+      "workingRawSha256": "77d6848be92b205bb5076d76e249acca6203acb5fad9244128b6c47d3df31fd0",
+      "normalizedSha256": "93fcd50375266c8b4fed0748babcac3f29d9bd0f4f33af3aca84dac83644930b",
+      "rawByteIdentical": false,
+      "contentIdenticalAfterCRLFNormalization": true
+    },
+    {
+      "path": "packages/mcp-server/src/office-runtime.ts",
+      "baselineBlobSha256": "739903b0b204197a7718160b375f78e5d9819a80966e905da0adeb741129a5ea",
+      "workingRawSha256": "abadc71d8c242256e7bddcea580bf9c07655456483ad5b463972a83cbc30054e",
+      "normalizedSha256": "739903b0b204197a7718160b375f78e5d9819a80966e905da0adeb741129a5ea",
+      "rawByteIdentical": false,
+      "contentIdenticalAfterCRLFNormalization": true
+    },
+    {
+      "path": "packages/capabilities/src/windows-capability-bridge.ps1",
+      "baselineBlobSha256": "d5838fe79439a5e78ef294ae2c4f929ca998038a108c98d265fab9e61aa08913",
+      "workingRawSha256": "d5838fe79439a5e78ef294ae2c4f929ca998038a108c98d265fab9e61aa08913",
+      "normalizedSha256": "d5838fe79439a5e78ef294ae2c4f929ca998038a108c98d265fab9e61aa08913",
+      "rawByteIdentical": true,
+      "contentIdenticalAfterCRLFNormalization": true
+    }
+  ]
+}

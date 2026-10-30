@@ -228,7 +228,7 @@ function renderCategory(title, entries) {
 
 export function extractCuratedHighlights(markdown, tag, repository) {
   const version = tag.replace(/^v/, '');
-  const heading = new RegExp(`^###\\s+(?:Historical:\\s*)?What's new in v${version.replaceAll('.', '\\.')}\\s*$`, 'i');
+  const heading = new RegExp(`^###\\s+(?:(?:Historical:\\s*)?What's new|Current source changes) in v${version.replaceAll('.', '\\.')}\\s*(?:\\(development preview; not yet published\\))?\\s*$`, 'i');
   const entries = [];
   let inSection = false;
   let continuingBullet = false;

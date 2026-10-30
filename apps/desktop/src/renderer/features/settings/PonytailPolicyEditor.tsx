@@ -8,6 +8,7 @@ import type {
 } from '@lnwjud/ipc-contracts';
 import { createTranslator, type Translator } from '../../i18n/index.js';
 import { EmptyState, SettingsCardHeading, StatusMessage } from '../ui/UiPrimitives.js';
+import { SettingsSelect as FormSelect } from '../ui/SettingsSelect.js';
 
 interface PonytailPolicyEditorProps {
   readonly locale: UiLocale;
@@ -39,7 +40,7 @@ export function PonytailPolicyEditor(props: PonytailPolicyEditorProps): ReactEle
 
       <div className="setting-field max-field-width">
         <label className="field-label" htmlFor="ponytail-global-mode">{t('settingsPage.ponytailGlobalDefault')}</label>
-        <select
+        <FormSelect
           id="ponytail-global-mode"
           className="settings-select"
           disabled={props.busy}
@@ -49,7 +50,7 @@ export function PonytailPolicyEditor(props: PonytailPolicyEditorProps): ReactEle
           }}
         >
           {MODES.map((mode) => <option key={mode} value={mode}>{modeLabel(t, mode)}</option>)}
-        </select>
+        </FormSelect>
         <p className="hint">{t('userConfig.ponytailHint')}</p>
       </div>
 
@@ -63,7 +64,7 @@ export function PonytailPolicyEditor(props: PonytailPolicyEditorProps): ReactEle
           <>
             <div className="setting-field max-field-width">
               <label className="field-label" htmlFor="ponytail-workspace-mode">{t('settingsPage.ponytailWorkspaceOverride')}</label>
-              <select
+              <FormSelect
                 id="ponytail-workspace-mode"
                 className="settings-select"
                 disabled={props.busy}
@@ -74,7 +75,7 @@ export function PonytailPolicyEditor(props: PonytailPolicyEditorProps): ReactEle
               >
                 <option value="inherit">{t('settingsPage.inheritGlobal')}</option>
                 {MODES.map((mode) => <option key={mode} value={mode}>{modeLabel(t, mode)}</option>)}
-              </select>
+              </FormSelect>
               <p className="hint">
                 {t('settingsPage.ponytailEffective')}: {modeLabel(t, context.effectiveWorkspaceMode)} · {policySourceLabel(t, context.effectiveWorkspaceSource)}
                 {context.workspaceMode === 'inherit' ? ` · ${t('settingsPage.ponytailInherited')}` : ''}
@@ -99,7 +100,7 @@ export function PonytailPolicyEditor(props: PonytailPolicyEditorProps): ReactEle
                       </p>
                       {goal.editBlockedReason === null ? null : <p className="hint">{goalBlockedLabel(t, goal.editBlockedReason)}</p>}
                     </div>
-                    <select
+                    <FormSelect
                       aria-label={t('settingsPage.goalModeAria', { goal: goal.goalKey })}
                       className="settings-select ponytail-goal-select"
                       disabled={props.busy || !goal.editable}
@@ -110,7 +111,7 @@ export function PonytailPolicyEditor(props: PonytailPolicyEditorProps): ReactEle
                     >
                       <option value="inherit">{t('settingsPage.inheritWorkspace')}</option>
                       {MODES.map((mode) => <option key={mode} value={mode}>{modeLabel(t, mode)}</option>)}
-                    </select>
+                    </FormSelect>
                   </div>
                 ))}
               </div>

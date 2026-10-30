@@ -3,6 +3,64 @@ import type { UpgradeToolCatalogEntry } from './upgrade-catalog.js';
 import type { McpToolAnnotations, McpToolExecution } from './tools/tool-types.js';
 import { isOfficeSemanticToolName, officeToolInputSchema } from './office-tool-contracts.js';
 
+const loopbackAddress = z.enum(['127.0.0.1', '::1']);
+const debugPort = z.number().int().min(1).max(65_535);
+const debugInteger = z.number().int().min(0).max(2_147_483_647);
+const debugThread = z.number().int().min(1).max(2_147_483_647);
+const debugWorkspace = z.string().trim().min(1).max(128);
+const debugSession = z.string().uuid();
+const debugCommon = { workspaceId: debugWorkspace, session_id: debugSession, dryRun: z.boolean().optional() };
+const debugStepping = z.object({ threadId: debugThread, singleThread: z.boolean().optional(), granularity: z.enum(['statement', 'line', 'instruction']).optional() }).strict();
+const emptyDebugArguments = z.object({}).strict();
+const debugEventFields = { ...debugCommon, cursor: z.string().regex(/^(0|[1-9]\d*)$/).max(32).optional(), limit: z.number().int().min(1).max(1000).optional(), maxBytes: z.number().int().min(1).max(2_097_152).optional() };
+
+export const debugAttachInputSchema = z.object({
+  workspaceId: debugWorkspace,
+  endpoint: z.string().max(2048).refine((value) => {
+    try {
+      const endpoint = new URL(value);
+      return endpoint.protocol === 'tcp:' && ['127.0.0.1', '[::1]'].includes(endpoint.hostname)
+        && endpoint.username === '' && endpoint.password === '' && endpoint.search === '' && endpoint.hash === ''
+        && ['', '/'].includes(endpoint.pathname) && Number.isInteger(Number(endpoint.port))
+        && Number(endpoint.port) >= 1 && Number(endpoint.port) <= 65_535;
+    } catch { return false; }
+  }, 'DAP endpoint must be an explicit numeric loopback TCP address and port'),
+  adapterId: z.string().trim().min(1).max(128).optional(),
+  configuration: z.object({
+    processId: debugThread.optional(),
+    port: debugPort.optional(),
+    address: loopbackAddress.optional(),
+    connect: z.object({ host: loopbackAddress, port: debugPort }).strict().optional(),
+    justMyCode: z.boolean().optional(),
+    stopOnEntry: z.boolean().optional(),
+    continueOnAttach: z.boolean().optional(),
+  }).strict().optional(),
+  timeoutMs: z.number().int().min(1).max(30_000).optional(),
+  dryRun: z.boolean().optional(),
+}).strict();
+
+export const debugStepInputSchema = z.union([
+  z.object({ ...debugEventFields, action: z.literal('status') }).strict(),
+  z.object({ ...debugEventFields, action: z.literal('events') }).strict(),
+  z.object({ ...debugCommon, action: z.literal('disconnect') }).strict(),
+  z.object({ ...debugCommon, action: z.enum(['next', 'stepIn', 'stepOut']), arguments: debugStepping }).strict(),
+  z.object({ ...debugCommon, action: z.literal('continue'), arguments: z.object({ threadId: debugThread, singleThread: z.boolean().optional() }).strict() }).strict(),
+  z.object({ ...debugCommon, action: z.literal('pause'), arguments: z.object({ threadId: debugThread }).strict() }).strict(),
+  z.object({ ...debugCommon, action: z.literal('threads'), arguments: emptyDebugArguments.optional() }).strict(),
+  z.object({ ...debugCommon, action: z.literal('stackTrace'), arguments: z.object({ threadId: debugThread, startFrame: debugInteger.optional(), levels: debugInteger.optional() }).strict() }).strict(),
+  z.object({ ...debugCommon, action: z.literal('scopes'), arguments: z.object({ frameId: debugInteger }).strict() }).strict(),
+  z.object({ ...debugCommon, action: z.literal('variables'), arguments: z.object({ variablesReference: debugInteger, filter: z.enum(['indexed', 'named']).optional(), start: debugInteger.optional(), count: debugInteger.optional() }).strict() }).strict(),
+  z.object({ ...debugCommon, action: z.literal('evaluate'), arguments: z.object({ expression: z.string().min(1).max(65_536), frameId: debugInteger.optional(), context: z.enum(['watch', 'repl', 'hover', 'clipboard', 'variables']).optional() }).strict() }).strict(),
+]);
+
+export const handoffContextInputSchema = z.object({
+  workspaceId: debugWorkspace,
+  query: z.string().min(1).max(32_768).optional(),
+  limit: z.number().int().min(1).max(100).optional(),
+  trackerPath: z.string().trim().min(1).max(4096).optional(),
+  maxDiffBytes: z.number().int().min(1000).max(100_000).optional(),
+}).strict();
+
 type FieldName = keyof typeof FIELD_SCHEMAS;
 
 const stringField = z.string().min(1).max(32_768).optional();
@@ -102,6 +160,8 @@ const FIELD_SCHEMAS = {
   maxBytes: positiveInt,
   max_rows: positiveInt,
   parameters: z.array(z.unknown()).max(2048).optional(),
+  input: recordField,
+  stepArguments: z.record(z.string().max(128), z.record(z.string(), z.unknown())).refine((value) => Object.keys(value).length <= 16).optional(),
   since: stringField,
   phase: stringField,
   resultCode: stringField,
@@ -162,10 +222,10 @@ const INPUT_FIELDS: Readonly<Record<string, readonly FieldName[]>> = Object.free
   ...mapEntries(['import_graph', 'dependency_graph', 'module_graph', 'dependency_context'], ['workspaceId', 'path', 'maxDepth']),
   trace_symbol: ['workspaceId', 'symbol', 'maxDepth'],
   context_ranking: ['query', 'limit'],
-  ...mapEntries(['debug_context', 'review_context', 'change_context', 'symbol_context', 'test_context', 'git_context', 'frontend_context', 'backend_context', 'dev_context', 'handoff_context'], ['workspaceId', 'query', 'limit']),
+  ...mapEntries(['debug_context', 'review_context', 'change_context', 'symbol_context', 'test_context', 'git_context', 'frontend_context', 'backend_context', 'dev_context'], ['workspaceId', 'query', 'limit']),
   route_intent: ['prompt', 'query'],
   recipe_describe: ['name'],
-  recipe_run: ['prompt', 'name', 'dryRun'],
+  recipe_run: ['prompt', 'name', 'dryRun', 'workspaceId', 'tab_id', 'stepArguments'],
   dry_run: ['prompt', 'query'],
   review_changes: ['workspaceId', 'goalId'],
   changed_symbols: ['workspaceId', 'query', 'limit'],
@@ -200,9 +260,10 @@ const INPUT_FIELDS: Readonly<Record<string, readonly FieldName[]>> = Object.free
   ...mapEntries(['delegate_status', 'delegate_cancel'], ['workspaceId', 'delegateId', 'swarmId']),
   delegate_result: ['workspaceId', 'delegateId', 'swarmId', 'taskId', 'cursor', 'maxBytes'],
   parallel_delegate: ['workspaceId', 'tasks', 'idempotencyKey', 'maxConcurrency'],
-  permission_check: ['action', 'permission'],
+  permission_check: ['action', 'permission', 'tool', 'input'],
   live_logs_query: ['workspaceId', 'limit', 'toolName', 'tool', 'correlationId', 'callId', 'traceId', 'phase', 'resultCode'],
   execution_plan: ['prompt', 'query'],
+  recovery_status: ['workspaceId', 'goalId'],
   repo_map: ['workspaceId', 'path', 'maxDepth'],
   context_expand: ['workspaceId', 'path', 'query'],
   tool_schema_register: ['id', 'name', 'version', 'schema', 'permission', 'streamable', 'parallelSafe'],
@@ -216,13 +277,12 @@ const INPUT_FIELDS: Readonly<Record<string, readonly FieldName[]>> = Object.free
   compare_pdf_pages: ['workspaceId', 'baseline_path', 'actual_path', 'baseline', 'actual', 'left_path', 'right_path'],
   project_profile_get: ['workspaceId'],
   project_profile_set: ['workspaceId', 'profile'],
-  benchmark_run: ['workspaceId', 'name', 'iterations'],
+  benchmark_run: ['workspaceId', 'name', 'iterations', 'dryRun', 'dry_run', 'scenario', 'timeoutMs'],
   regression_report: ['workspaceId'],
   event_watch: ['log_name', 'logName', 'provider', 'since', 'max_events'],
   crash_trace: ['log_name', 'logName', 'provider', 'since', 'hours', 'max_events'],
   lsp_diagnostics: ['workspaceId', 'files', 'file', 'language'],
   lsp_rename: ['workspaceId', 'files', 'file', 'language', 'newName', 'new_name', 'line', 'character'],
-  ...mapEntries(['debug_attach', 'debug_step'], ['workspaceId']),
   git_worktree_spawn: ['workspaceId', 'worktreePath', 'ref', 'dryRun'],
   git_worktree_remove: ['workspaceId', 'worktreePath', 'dryRun'],
   db_inspect: ['workspaceId', 'target', 'path', 'database'],
@@ -250,7 +310,10 @@ const INPUT_FIELDS: Readonly<Record<string, readonly FieldName[]>> = Object.free
 // are rejected instead of being silently ignored. Any tool absent from INPUT_FIELDS
 // therefore accepts only an empty object before the shared approval/goal envelopes
 // are applied by ToolRegistry.
-export function upgradeToolInputSchema(entry: UpgradeToolCatalogEntry): z.ZodObject {
+export function upgradeToolInputSchema(entry: UpgradeToolCatalogEntry): z.ZodObject | typeof debugStepInputSchema {
+  if (entry.name === 'debug_attach') return debugAttachInputSchema;
+  if (entry.name === 'debug_step') return debugStepInputSchema;
+  if (entry.name === 'handoff_context') return handoffContextInputSchema;
   if (isOfficeSemanticToolName(entry.name)) return officeToolInputSchema(entry.name);
   const fields = INPUT_FIELDS[entry.name] ?? [];
   const shape: Record<string, z.ZodType> = {};

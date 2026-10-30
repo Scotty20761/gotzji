@@ -1,13 +1,14 @@
 import { mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { Client, InMemoryTransport } from '@modelcontextprotocol/client';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { SqliteDatabase, SqliteSettingsRepository, SqliteWorkspaceRepository } from '@lnwjud/storage';
 import { permissionProfiles } from '@lnwjud/permissions';
 import { CAPABILITY_TASK_OWNER_METADATA_KEY } from '@lnwjud/capabilities';
 import { STDIO_ALLOWED_ROOTS_SETTING_KEY, STDIO_PERMISSION_PROFILE_SETTING_KEY, STDIO_STRICT_ROOTS_SETTING_KEY, UNRESTRICTED_SETTING_KEY, USER_SETTING_KEYS, serializeToolAvailabilitySnapshot } from '@lnwjud/shared';
 import { createStdioMcpRuntime } from './stdio-mcp-runtime.js';
-import { sharedActivityLeaseDirectoryPath, ToolRegistry } from '@lnwjud/mcp-server';
+import { createMcpServer, sharedActivityLeaseDirectoryPath, ToolRegistry, type WorkspaceScope } from '@lnwjud/mcp-server';
 
 const temporaryRoots: string[] = [];
 const TEST_CHECKPOINT_KEY = Buffer.alloc(32, 0x46).toString('base64');
@@ -110,7 +111,138 @@ describe('stdio MCP runtime', { timeout: STDIO_RUNTIME_TEST_TIMEOUT_MS }, () => 
     }
   });
 
+  it('persists direct checkpoint_goal Engineering fields and leaves storage unchanged after a rejected gate update', async () => {
+    const dataPath = await mkdtemp(path.join(os.tmpdir(), 'lnwjud-stdio-engineering-checkpoint-'));
+    const workspaceRoot = await realpath(await mkdtemp(path.join(os.tmpdir(), 'lnwjud-stdio-engineering-workspace-')));
+    temporaryRoots.push(dataPath, workspaceRoot);
+    const durableWorkspace = {
+      id: 'engineering-checkpoint-workspace',
+      displayName: 'engineering checkpoint',
+      rootPath: workspaceRoot,
+      realRootPath: workspaceRoot,
+      createdAt: '2026-10-13T00:00:00.000Z',
+    };
+    const seed = new SqliteDatabase(path.join(dataPath, 'lnwjud.sqlite'));
+    await new SqliteWorkspaceRepository(seed).insert(durableWorkspace);
+    seed.close();
+
+    const runtime = createStdioMcpRuntime(dataPath, durableWorkspace, true, { fullBypassAll: true });
+    try {
+      const goals = runtime.services.goals;
+      if (goals === undefined) throw new Error('durable goal service was not created');
+      const started = await goals.runGoal(runtime.actor, {
+        workspaceId: durableWorkspace.id,
+        goalKey: 'direct-engineering-checkpoint',
+        objective: 'Verify direct Engineering checkpoint persistence.',
+        plan: { steps: [] },
+        leaseSeconds: 600,
+        engineering: {
+          schemaVersion: 1,
+          primaryTaskKind: 'bugfix',
+          riskTier: 'high',
+          riskReasons: ['The integration test exercises persisted Engineering metadata.'],
+          policyDigest: 'direct-mcp-checkpoint-policy',
+          deliveryScope: 'local',
+          gates: [{
+            id: 'diff', title: 'Diff review', applicability: 'required', status: 'pending',
+            reason: 'Review the direct MCP checkpoint path.', basedOnUserIntentRevision: 0,
+          }],
+        },
+      });
+      if (!started.ok || started.value.leaseToken === undefined) throw new Error('durable goal could not be acquired');
+
+      const server = createMcpServer({
+        services: runtime.services,
+        actor: runtime.actor,
+        authorizationModeProvider: (): 'full_bypass' => 'full_bypass',
+        activeWorkspaceScopeProvider: async (): Promise<WorkspaceScope> => ({ workspaceId: durableWorkspace.id, rootPath: workspaceRoot }),
+      });
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+      const client = new Client({ name: 'stdio-checkpoint-persistence-client', version: '1.0.0' });
+
+      try {
+        await server.connect(serverTransport);
+        await client.connect(clientTransport);
+
+        const listed = await client.listTools();
+        const checkpointTool = listed.tools.find((tool) => tool.name === 'checkpoint_goal');
+        expect(checkpointTool?.inputSchema.properties).toHaveProperty('engineeringGateUpdates');
+        expect(checkpointTool?.inputSchema.properties).toHaveProperty('engineeringReviewFindings');
+
+        const checkpointInput = {
+          goalId: started.value.goalId,
+          leaseToken: started.value.leaseToken,
+          expectedRevision: started.value.revision,
+          expectedUserIntentRevision: started.value.userIntentRevision,
+          currentPhase: 'verify',
+          summary: 'Record direct MCP checkpoint fields.',
+          stepUpdates: [],
+          nextAction: 'Read back the persisted goal.',
+          blockers: [],
+          evidence: [],
+          trackedTasks: [],
+          engineeringGateUpdates: [{ gateId: 'diff', status: 'failed', reason: 'Direct MCP checkpoint reproduced the reported behavior.' }],
+          engineeringReviewFindings: [{
+            id: 'review-198', title: 'MCP checkpoint round trip', severity: 'non_blocking', state: 'open',
+            reason: 'The direct call must retain this review state after storage reload.',
+          }],
+        };
+
+        const checkpointed = await client.callTool({ name: 'checkpoint_goal', arguments: checkpointInput });
+        expect(checkpointed.isError).not.toBe(true);
+        const persisted = await goals.getGoal(runtime.actor, { goalId: started.value.goalId });
+        expect(persisted).toMatchObject({
+          ok: true,
+          value: {
+            revision: 1,
+            engineering: {
+              gates: [{ id: 'diff', status: 'failed', reason: 'Direct MCP checkpoint reproduced the reported behavior.' }],
+              reviewFindings: [{ id: 'review-198', state: 'open', reason: 'The direct call must retain this review state after storage reload.' }],
+            },
+          },
+        });
+
+        const rejected = await client.callTool({
+          name: 'checkpoint_goal',
+          arguments: {
+            ...checkpointInput,
+            expectedRevision: 1,
+            engineeringGateUpdates: [{ gateId: 'unknown-gate', status: 'failed', reason: 'This gate does not exist.' }],
+          },
+        });
+        expect(rejected.isError).toBe(true);
+        const afterRejection = await goals.getGoal(runtime.actor, { goalId: started.value.goalId });
+        expect(afterRejection).toMatchObject({ ok: true, value: { revision: 1 } });
+        if (!persisted.ok || !afterRejection.ok) throw new Error('goal readback failed');
+        expect(afterRejection.value.engineering).toEqual(persisted.value.engineering);
+      } finally {
+        await client.close().catch(() => undefined);
+        await server.close().catch(() => undefined);
+      }
+    } finally {
+      await runtime.close();
+    }
+
+    const replacement = createStdioMcpRuntime(dataPath, durableWorkspace, true, { fullBypassAll: true });
+    try {
+      const restored = await replacement.services.goals?.getGoal(replacement.actor, { goalKey: 'direct-engineering-checkpoint', workspaceId: durableWorkspace.id });
+      expect(restored).toMatchObject({
+        ok: true,
+        value: {
+          revision: 1,
+          engineering: {
+            gates: [{ id: 'diff', status: 'failed', reason: 'Direct MCP checkpoint reproduced the reported behavior.' }],
+            reviewFindings: [{ id: 'review-198', state: 'open', reason: 'The direct call must retain this review state after storage reload.' }],
+          },
+        },
+      });
+    } finally {
+      await replacement.close();
+    }
+  });
+
   it('persists and completes a verified automation run across a STDIO runtime replacement without creating a schedule', async () => {
+    const testDeadline = Date.now() + STDIO_RUNTIME_TEST_TIMEOUT_MS;
     const dataPath = await mkdtemp(path.join(os.tmpdir(), 'lnwjud-stdio-automation-data-'));
     const workspaceRoot = await realpath(await mkdtemp(path.join(os.tmpdir(), 'lnwjud-stdio-automation-workspace-')));
     temporaryRoots.push(dataPath, workspaceRoot);
@@ -214,7 +346,28 @@ describe('stdio MCP runtime', { timeout: STDIO_RUNTIME_TEST_TIMEOUT_MS }, () => 
           expect(stale).toMatchObject({ isError: true, structuredContent: { error: { code: 'CONFLICT' } } });
           staleRevisionRejected = true;
         }
-        await new Promise((resolve) => setTimeout(resolve, 25));
+        if (boundary === 0) {
+          const taskId = (advanced.structuredContent as { taskId?: unknown } | undefined)?.taskId;
+          expect(taskId).toEqual(expect.any(String));
+          if (typeof taskId !== 'string') throw new Error('Automation dispatch omitted its durable task ID');
+          const taskWaitDeadline = testDeadline - 5_000;
+          let task: { isError?: boolean; structuredContent?: unknown } | undefined;
+          while (Date.now() < taskWaitDeadline) {
+            const remainingSeconds = Math.ceil((taskWaitDeadline - Date.now()) / 1_000);
+            task = await registry.invoke('shell', {
+              workspaceId: durableWorkspace.id,
+              operation: 'wait',
+              task_id: taskId,
+              timeout_seconds: Math.min(5, remainingSeconds),
+              goalLease: proof,
+              userConfirmed: true,
+            });
+            expect(task.isError).not.toBe(true);
+            const taskState = (task.structuredContent as { state?: unknown } | undefined)?.state;
+            if (taskState !== 'running') break;
+          }
+          expect(task?.structuredContent).toMatchObject({ task_id: taskId, state: 'completed', exit_code: 0 });
+        }
       }
       expect(staleRevisionRejected).toBe(true);
 

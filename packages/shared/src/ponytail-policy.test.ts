@@ -40,6 +40,15 @@ describe('Ponytail policy', () => {
     });
   });
 
+  it('preserves JSON keys without turning data into inherited policy settings', () => {
+    const profile = { ['__proto__']: { ponytail: { mode: 'ultra' } }, language: 'typescript' };
+    const normalized = normalizeProjectProfile(profile);
+    expect(Object.getPrototypeOf(normalized)).toBe(Object.prototype);
+    expect(Object.hasOwn(normalized, '__proto__')).toBe(true);
+    expect(normalized.ponytail).toBeUndefined();
+    expect(JSON.parse(JSON.stringify(normalized))).toEqual(profile);
+  });
+
   it('rejects malformed Ponytail overrides and secret-bearing project profile fields', () => {
     expect(() => normalizeProjectProfile({ ponytail: { mode: 'maximum' } })).toThrow(/ponytail\.mode/i);
     expect(() => normalizeProjectProfile({ project: { apiKey: 'must-not-persist' } })).toThrow(/secret-bearing field/i);

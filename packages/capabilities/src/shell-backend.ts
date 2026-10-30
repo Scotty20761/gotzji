@@ -179,6 +179,13 @@ export class ShellCapabilityBackend implements CapabilityBackend {
     }
   }
 
+  /** Trusted owner probe. Never equate workspace membership with actual task ownership. */
+  public async isOwnedGoalTask(ownerClientId: string, workspaceId: string, taskId: string): Promise<boolean> {
+    const record = this.tasks.get(taskId);
+    if (record) return record.owner.clientId === ownerClientId && record.owner.workspaceId === workspaceId;
+    return this.durableStore?.isOwnedGoalTask(ownerClientId, workspaceId, taskId) ?? false;
+  }
+
   /** Trusted read-only host probe scoped to the durable goal's workspace. */
   public async statusForGoalLiveness(workspaceId: string, taskId: string): Promise<Result<unknown>> {
     const record = this.tasks.get(taskId);
@@ -189,6 +196,23 @@ export class ShellCapabilityBackend implements CapabilityBackend {
       return ok({ ...this.snapshot(record), command_fingerprint: record.commandFingerprint });
     }
     if (this.durableStore !== undefined) return this.durableStore.snapshotForGoalLiveness(taskId, workspaceId);
+    return err(appError('PROCESS_NOT_FOUND', 'Task was not found'));
+  }
+
+  /** Explicit bounded terminal evidence; frequent liveness probes stay output-free. */
+  public async statusForGoalEvidence(workspaceId: string, taskId: string): Promise<Result<unknown>> {
+    const record = this.tasks.get(taskId);
+    if (record !== undefined) {
+      if (record.owner.workspaceId !== workspaceId) {
+        return err(appError('PERMISSION_DENIED', 'Task belongs to another or unknown workspace'));
+      }
+      const snapshot = this.snapshot(record);
+      if (snapshot.state !== 'completed' || snapshot.exit_code !== 0) {
+        return err(appError('INVALID_INPUT', 'Engineering evidence task is not successfully completed'));
+      }
+      return ok({ ...snapshot, command_fingerprint: record.commandFingerprint });
+    }
+    if (this.durableStore !== undefined) return this.durableStore.snapshotForGoalEvidence(taskId, workspaceId);
     return err(appError('PROCESS_NOT_FOUND', 'Task was not found'));
   }
 
@@ -643,6 +667,7 @@ export class ShellCapabilityBackend implements CapabilityBackend {
     return {
       task_id: record.taskId,
       state: record.state,
+      ...(record.state === 'running' && record.child.pid !== undefined ? { child_pid: record.child.pid } : {}),
       ...(record.exitCode === undefined ? {} : { exit_code: record.exitCode }),
       ...(stdout === undefined ? {} : { stdout }),
       ...(stderr === undefined ? {} : { stderr }),

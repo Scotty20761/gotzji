@@ -1,5 +1,8 @@
 import type { ExecFileOptionsWithStringEncoding } from 'node:child_process';
 import { createServer } from 'node:http';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import {
   TunnelRuntimeAdapter,
@@ -19,6 +22,117 @@ function executor(responses: Readonly<Record<string, { stdout?: string; stderr?:
 }
 
 describe('TunnelRuntimeAdapter', () => {
+  it('retires only a stopped stale alias and restores profile, health, log, and unrelated files', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'lnwjud-stopped-alias-'));
+    try {
+      await mkdir(path.join(root, 'health'), { recursive: true });
+      const profile = 'health:\n  url_file: health/lnwjud.url\n';
+      await writeFile(path.join(root, 'lnwjud.yaml'), profile);
+      await writeFile(path.join(root, 'lnwjud-tunnel.log'), 'original-log');
+      await writeFile(path.join(root, 'health', 'lnwjud.url'), 'http://127.0.0.1:7777');
+      await writeFile(path.join(root, 'other.yaml'), 'must-stay');
+      let removed = false;
+      const commands: string[] = [];
+      const execute: TunnelRuntimeExecutor = async (_executable, args): Promise<{ stdout: string; stderr: string }> => {
+        const command = args.join(' ');
+        commands.push(command);
+        if (command === 'runtimes status lnwjud --json') {
+          if (removed) throw Object.assign(new Error('alias lnwjud is not known'), { stdout: '', stderr: 'alias lnwjud is not known' });
+          return { stdout: JSON.stringify({ exists: true, tunnel_id: 'tunnel_oldalias12345', process_running: false }), stderr: '' };
+        }
+        if (command === 'runtimes rm lnwjud --json') {
+          removed = true;
+          await rm(path.join(root, 'lnwjud.yaml'));
+          await rm(path.join(root, 'lnwjud-tunnel.log'));
+          await rm(path.join(root, 'health', 'lnwjud.url'));
+          return { stdout: '{"removed":true}', stderr: '' };
+        }
+        throw new Error('Unexpected CLI command');
+      };
+      const adapter = new TunnelRuntimeAdapter({ clientPath: 'fixture.exe', profileDirectory: root, environment: {}, execute });
+      await expect(adapter.retireStoppedAlias('tunnel_oldalias12345')).resolves.toBeUndefined();
+      expect(commands).toContain('runtimes rm lnwjud --json');
+      expect(commands).not.toContain('runtimes stop lnwjud --json');
+      await expect(adapter.status(true)).resolves.toMatchObject({ exists: false });
+      await expect(readFile(path.join(root, 'lnwjud.yaml'), 'utf8')).resolves.toBe(profile);
+      await expect(readFile(path.join(root, 'lnwjud-tunnel.log'), 'utf8')).resolves.toBe('original-log');
+      await expect(readFile(path.join(root, 'health', 'lnwjud.url'), 'utf8')).resolves.toBe('http://127.0.0.1:7777');
+      await expect(readFile(path.join(root, 'other.yaml'), 'utf8')).resolves.toBe('must-stay');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('recovers the protected profile when native rm fails after deleting a local artifact', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'lnwjud-rm-failure-'));
+    try {
+      await writeFile(path.join(root, 'lnwjud.yaml'), 'tunnel_id: tunnel_newalias12345\n');
+      await writeFile(path.join(root, 'unrelated.yaml'), 'keep');
+      let rmCalled = false;
+      const adapter = new TunnelRuntimeAdapter({
+        clientPath: 'fixture.exe', profileDirectory: root, environment: {},
+        execute: async (_exe, args): Promise<{ stdout: string; stderr: string }> => {
+          const command = args.join(' ');
+          if (command === 'runtimes status lnwjud --json') {
+            return { stdout: JSON.stringify({ tunnel_id: 'tunnel_oldalias12345', process_running: false }), stderr: '' };
+          }
+          if (command === 'runtimes rm lnwjud --json') {
+            rmCalled = true;
+            await rm(path.join(root, 'lnwjud.yaml'));
+            throw Object.assign(new Error('simulated local cleanup failure'), { stderr: 'simulated local cleanup failure', stdout: '' });
+          }
+          throw new Error('Unexpected command');
+        },
+      });
+      await expect(adapter.retireStoppedAlias('tunnel_oldalias12345')).rejects.toThrow('simulated local cleanup failure');
+      expect(rmCalled).toBe(true);
+      await expect(readFile(path.join(root, 'lnwjud.yaml'), 'utf8')).resolves.toBe('tunnel_id: tunnel_newalias12345\n');
+      await expect(readFile(path.join(root, 'unrelated.yaml'), 'utf8')).resolves.toBe('keep');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('fails closed on a profile health reference outside the owned directory', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'lnwjud-health-escape-'));
+    try {
+      await writeFile(path.join(root, 'lnwjud.yaml'), 'health:\n  url_file: ../other.url\n');
+      const calls: string[] = [];
+      const adapter = new TunnelRuntimeAdapter({
+        clientPath: 'fixture.exe', profileDirectory: root, environment: {},
+        execute: async (_exe, args): Promise<{ stdout: string; stderr: string }> => {
+          const command = args.join(' ');
+          calls.push(command);
+          if (command === 'runtimes status lnwjud --json') {
+            return { stdout: JSON.stringify({ tunnel_id: 'tunnel_oldalias12345', process_running: false }), stderr: '' };
+          }
+          throw new Error('Must not run rm for escaped health artifact');
+        },
+      });
+      await expect(adapter.retireStoppedAlias('tunnel_oldalias12345')).rejects.toThrow('escapes');
+      expect(calls).not.toContain('runtimes rm lnwjud --json');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses a running mismatched alias without any CLI rm or stop side effect', async () => {
+    const calls: string[] = [];
+    const adapter = new TunnelRuntimeAdapter({
+      clientPath: 'fixture.exe', profileDirectory: 'profile', environment: {},
+      execute: async (_exe, args): Promise<{ stdout: string; stderr: string }> => {
+        const command = args.join(' ');
+        calls.push(command);
+        if (command === 'runtimes status lnwjud --json') {
+          return { stdout: JSON.stringify({ tunnel_id: 'tunnel_oldalias12345', process_running: true, pid: 954321 }), stderr: '' };
+        }
+        throw new Error('Unsafe command requested');
+      },
+    });
+    await expect(adapter.retireStoppedAlias('tunnel_oldalias12345')).rejects.toThrow('active or its identity changed');
+    expect(calls).toEqual(['runtimes status lnwjud --json']);
+  });
+
   it('detects official managed runtimes and refuses to infer strict A/B zero downtime', async () => {
     const execute = executor({
       '--version': { stdout: '0.0.11+fixture\n' },
@@ -333,7 +447,7 @@ describe('TunnelRuntimeAdapter', () => {
       stopVerifyAttempts: 3, stopVerifyIntervalMs: 0,
     });
 
-    await expect(adapter.stop()).resolves.toMatchObject({ running: false });
+    await expect(adapter.stop('tunnel_fixture012345')).resolves.toMatchObject({ running: false });
     expect(statusCalls).toBe(2);
   });
 
@@ -349,7 +463,7 @@ describe('TunnelRuntimeAdapter', () => {
       stopVerifyAttempts: 2, stopVerifyIntervalMs: 0,
     });
 
-    await expect(adapter.stop()).rejects.toThrow('still running after stop');
+    await expect(adapter.stop('tunnel_fixture012345')).rejects.toThrow('still running after stop');
   });
 
   it('connects the same tunnel with an environment key reference and no literal secret in argv', async () => {

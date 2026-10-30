@@ -2,6 +2,99 @@
 
 Release highlights are listed newest first. The [README](README.md) shows the three newest versions, and each [GitHub Release](https://github.com/engasnm111/lnwjud/releases) contains its published notes and downloads.
 
+### What's new in v5.8.7
+
+- **Tunnel Reset All Settings / persistent alias (candidate):** Reconcile only the verified stopped `lnwjud` local runtime alias before factory reset, preserving profile, health and logs around the official `tunnel-client runtimes rm` operation. Refuse running, foreign or unverifiable Tunnel ownership; never delete remote tunnels or unrelated aliases. Reset is accepted only after the native alias is verified absent. Crash-interruption and full release gates remain under validation.
+- **External MCP direct invocation:** Fix direct `mcp_call` results from content-only child servers by omitting the outer mandatory structured-output schema. Playwright, Context7 and codebase-memory-mcp were tested through the newly installed v5.8.7 development runtime; direct responses now succeed without falsifying `structuredContent`.
+
+
+- **Issue #208 — guarded Git import:** Added a five-field, exact-commit HTTPS import contract, native Windows create-only staging and no-replace publication, NTFS identity checks and fail-closed ambiguous-state recovery. Security validation and official release acceptance remain pending; the owner authorized solo-development review.
+- **Native stage worktree validation (candidate):** Before re-pinning the NTFS stage identity for no-replace publication, verify trusted Git HEAD against the requested SHA, reject modified tracked or unexpected untracked files, and refuse Git index flags that conceal changes (`assume-unchanged` / `skip-worktree`). A Windows regression first reproduced publication of a concealed modification and then passed after the fix (5/5). Disposable HTTPS exact-commit and standard-mode MCP import also passed on the prior candidate. Concurrent same-user tamper races and official security/release acceptance remain unverified.
+- **Issue #209 — write safety:** Added strict create-only handling, workspace writer leases and path preflight with global managed-writer admission; cross-root native lifecycle acceptance remains pending.
+- **Issue #209 — stale lease recovery (candidate):** An explicitly confirmed `recoverAbandoned` request from another session of the same client may rotate a writer lease after 60 seconds of inactivity, even before expiry. Generation fencing rejects prior credentials; live or unverifiable in-flight and globally managed writers block recovery. Pre-migration unknown activity remains fail-closed. Focused regression checks pass; official release validation is still pending.
+- **Writer process startup safety (candidate):** If a managed process is rejected before spawning (such as a missing executable, invalid input or failed containment preparation), its writer reservation is released because no child exists. Once a child has spawned, the existing native verified-zero-active termination rule remains mandatory. Regression reproduced before the fix; all 35 process tests and package typecheck pass. This is not a claim that every import security finding is resolved.
+- **MCP connector identity and diagnostics:** Preserve a host-supplied exact app mention without assuming one universal plugin name; retain direct-vs-batch child results and distinguish host-approval-adapter denial from unavailable approval. A host rejection before dispatch is outside the connector and is not bypassed.
+- **Scheduled Task truthfulness:** Show the difference between an enabled native hourly task and a verified continuation claim. The previous native task was disabled by the user; no duplicate or hidden worker was created.
+- **ภาษาไทย:** เพิ่ม Git import ที่ระบุ Commit ตรงและตรวจ Native Identity, ป้องกันการเขียนทับและจัดการ Writer Lease, รักษา Connector ID ตามที่ ChatGPT ส่งมาจริง พร้อมแสดงการปฏิเสธสิทธิ์อย่างตรงไปตรงมา ทั้งหมดเป็น Candidate สำหรับทดสอบในเครื่องก่อนผ่าน Security Validation และ Official Release ไม่ได้ทำให้ Scheduled Task ทำงานต่อเนื่องระหว่างรอบ
+
+### What's new in v5.8.6
+
+- **Engineering Gate checkpoint compatibility (Issue #198):** Publish `checkpoint_goal_engineering` as a second public MCP name with the same strict input schema and authenticated Goal handler as `checkpoint_goal`. Preserve lease/revision comparison, authorization, host-receipt verification, and required-gate enforcement. Alias availability follows the canonical tool, so a user-disabled `checkpoint_goal` cannot be called through the alias.
+- **Local wire contract:** The in-memory MCP SDK `tools/list` response contains both names with matching schemas; a direct alias call forwards Engineering Gate updates and review findings to the same Goal service. Existing HTTP inventory-change tests verify notification and refresh behavior.
+- **Issue #194:** The read-only audit classification and active Goal reconciliation fixes remain in v5.8.5. This release adds no bypass for required Gates.
+- **Connector verification:** After the v5.8.6 update, a fresh connector session advertised both checkpoint tools with the Engineering fields. Direct calls to both names and `get_goal` readback confirmed persistence. Connector display names are chosen by each user.
+- **ภาษาไทย:** หลังอัปเดตเป็น v5.8.6 ตรวจใน connector session ใหม่แล้วพบเครื่องมือ checkpoint ทั้งสองชื่อพร้อมฟิลด์ Engineering และเรียกโดยตรงพร้อมอ่านข้อมูลที่บันทึกผ่าน `get_goal` ได้ ชื่อที่แสดงของ connector ขึ้นอยู่กับการตั้งค่าของผู้ใช้แต่ละคน
+
+### What's new in v5.8.5
+
+- **Engineering Harness audit routing (Issue #194):** Classify read-only source audits and reviews of existing deployments or release history as local review work. Detect affirmative delivery actions independently from nearby prohibitions, so explicit requests such as “do not deploy, but publish a release” retain release scope and gates.
+- **Existing Goal metadata recovery:** Reconcile an active Engineering Goal from the lease-acquired snapshot when task classification, gate contracts, or requested source scope change, even if the policy digest stays the same. Preserve compatible findings, tracked tasks and gate evidence; mark scope-dependent checks stale when they were completed against a different source scope.
+- **Modern MCP HTTP tool inventory:** Keep an endpoint-lifetime availability listener and publish `notifications/tools/list_changed` to subscribed modern clients. Verify that the next `tools/list` reflects the current host state and that listener cleanup follows endpoint shutdown.
+- **`checkpoint_goal` schema evidence (Issue #198):** The local SDK `tools/list` response includes the optional strict `engineeringGateUpdates` and `engineeringReviewFindings` fields. `tool_describe` now reports a SHA-256 digest of the schema from the active ToolRegistry and clearly marks the remote connector schema as unavailable. The reported Cloudflare connector transformation/cache remains unverified and is not claimed as fixed by this release.
+- **Local verification:** `@lnwjud/application` passed 315 tests across 42 files. `@lnwjud/mcp-server` passed 1,403 tests across 86 files with 3 skipped. Exact-SHA hosted CI, native release packaging, post-publication updater acceptance and the external Cloudflare connector remain separate release gates.
+- **ภาษาไทย:** แก้การจัดประเภท Full Audit และการตรวจย้อนหลังไม่ให้กลายเป็น delivery โดยไม่มีคำสั่ง, reconcile Goal เดิมจาก acquired snapshot ภายใต้ lease โดยรักษาหลักฐานที่ยังใช้ได้และ stale เฉพาะ gate ที่เปลี่ยน, และแจ้ง tools/list change ให้ modern MCP client; `tool_describe` แสดง SHA-256 ของ schema จาก ToolRegistry และระบุชัดว่าอ่าน schema ของ connector ภายนอกไม่ได้ จึงยังไม่ยืนยันการแปลง schema ของ Cloudflare
+
+### What's new in v5.8.4
+
+- **Durable MCP Shell ownership (Issue #193):** Correct owner propagation across modern HTTP request replacement and legacy MCP reconnection, including provider/store replacement and retained terminal stdout/stderr/exit receipts. Exact client, session and workspace boundaries still deny unauthorized reads and cancellation.
+- **Agent Swarm non-interactive stdin and results:** Close stdin only for Codex CLI executions that receive prompts via argv, keep stdout/stderr piped, and detach running-agent result polling from the start request while preserving explicit swarm cancellation. Local real-process three-agent integration and regression checks pass. Remote Codex model execution remains account/model/quota-dependent and was unavailable during this candidate verification.
+- **Checked recipes and Goal authorization:** Keep preview side-effect-free, dispatch explicit recipe steps through the normal ToolRegistry permissions and current Goal leases, and retain per-step completed, failed, skipped or unavailable receipts.
+- **Workspace indexing, context and recovery:** Serialize index snapshot updates and return explicit partial/stale/provider error observations. Recovery and handoff keep durable Goal/task evidence when supplemental providers fail.
+- **Tool Catalog, native media and Office:** Synchronize the 285 declared built-in tools (273 advertised by default), preserve explicit dependencies and readiness rather than claiming every tool works on every host, improve native ownership, scoped output and terminal-artifact handling subject to platform/provider support.
+- **Verification scope:** Windows unit, HTTP lifecycle, Electron/Playwright, build, packaging-contract and release-gate tests ran successfully before publication. Actual platform-specific binaries, independent review, hosted Codex account availability and exact-SHA CI remain separate release acceptance requirements.
+- **ภาษาไทย:** แก้ Shell อ่านผลหลังเชื่อมต่อใหม่ตามสิทธิ์, แก้ Agent Swarm ค้างรอ stdin, ตรวจ Workflow/Goal Lease ตามขั้นตอนจริง และทำให้ Tool/Doctor รายงานสถานะ Provider อย่างตรงไปตรงมา
+
+### What's new in v5.8.3
+
+- **Ponytail ULTRA scope clarity (Issue #190):** When the bundled skill was loaded with `goalId`, code edits without `goalLease` report the missing context and give actionable alternatives; unbound edits do not inherit goal-scoped authorization. Regression coverage includes the safe impossible-match `edit_file` probe and sequential `tool_batch`.
+- **Doctor history, Results, and Resources:** Present MCP history, Goal Results, and Resource data in readable tables with complete JSON copy actions. Use Gregorian DD/MM/YYYY dates, Asia/Bangkok (UTC+07:00), and a 24-hour clock. Copy ISO evidence timestamps with the Bangkok offset while preserving the instant.
+- **Resource diagnostics and cancellation:** Show all tracked Goal tasks, including tasks without CPU or RAM samples. Keep unavailable measurements unknown instead of zero. Show cancellation only for verified, owned, running blocking jobs and require native authorization.
+- **Guided Workflows:** Derive Sheet and column choices from the selected workspace-bound XLSX or CSV file, Git branches, and package version. Write explicit mapping generation to a new JSON file and append reports below existing template rows. Keep manual fields and unsupported files visible in Advanced mode.
+- **Code Review workflow:** Default `baseRef` to `HEAD` and explain Git branch and commit comparison choices.
+- **Release reliability:** Honor version-specific development-preview README highlights when generating release notes so a verified build is not blocked by its preview heading.
+- **ภาษาไทย:** ทุกหน้าจอแสดงปี ค.ศ. เขตเวลา Asia/Bangkok และเวลา 24 ชั่วโมง รวมทั้ง JSON ที่คัดลอกเป็น timestamp +07:00; ฐานเปรียบเทียบรีวิวโค้ดมีคำอธิบายและค่าเริ่มต้น HEAD
+
+### What's new in v5.8.2
+
+- **macOS update lifecycle:** Keep the Desktop runtime and IPC available while Squirrel.Mac validates a downloaded update. Only shut down for the native updater's accepted quit.
+- **Legacy macOS signing compatibility:** An ad-hoc-signed installation cannot satisfy another version's CDHash-bound designated requirement. Do not attempt an unsafe auto-update. Display Thai/English manual-upgrade instructions; future in-place auto-updates require a stable Developer ID Application signature. See [macOS manual migration guide](docs/INSTALL_MACOS.md).
+- **Linux AppImage failure recovery:** Stage a hard-linked backup before electron-updater's unlink-and-move installation. On failure, attempt to restore the original executable; unsupported/DEB install formats still do not self-update.
+- **Verification:** Targeted updater regression tests for signature eligibility, rollback after native unlink failure, and localized guidance. Native macOS/Linux release packaging and exact-SHA CI remain independent publication gates.
+
+### What's new in v5.8.1
+
+- **Work Log and shared dropdown overlay:** remove the page-padding scroll reservation and automatic scroll-into-view on dropdown opening. Popup menus stay below the trigger and scroll internally without compressing data tables behind them.
+- **What’s New version grouping:** show all installed-or-earlier patch notes within 5.8.x, newest first; switch to 5.9.x at v5.9.0, and group 6.x.x under the same major when v6 arrives. Keep notes scrollable and local.
+- **Live Logs Tunnel:** hide Workspace and Session selectors and scoped-clear actions that do not filter Tunnel output. Text search, pause, clear Tab, and export remain; MCP activity and Processes keep their scoped filters.
+
+### What's new in v5.8.0
+
+This release is a substantial functional expansion over **v5.7.4**, whose main fixes were bounded high-risk approval/native-alert dialogs. The features below are based on the `v5.7.4..v5.8.0` changeset, not on plans alone.
+
+- **Six bilingual, review-first task templates:** Project Check, Code Review, Release Readiness, Connection Check, Data Audit and Template Report. Inputs are validated and drafts can be copied to a connected AI; previewing does not schedule or start a Goal.
+- **Persistent MCP call observability:** SQLite-backed call correlation, bounded keyset paging, tool/Goal filters and server p50/p95 where samples exist. Unmeasured Tunnel spans and transport identity remain unknown, never fabricated. Goal dropdowns omit Goals without attributable calls.
+- **Task Results backed by evidence:** checkpoints, actual completed plan steps, recorded engineering checks, mutation receipts, file hashes and artifact verification. Results dropdowns omit Goals without meaningful evidence; completion does not by itself certify correctness.
+- **Safe Goal mutations:** checkpoint restoration and owned-task cancellation require workspace, identity, revision/hash and explicit confirmation checks. A shared service or unknown PID is not treated as owned.
+- **Resource sampling:** Windows process working-set memory and lifetime-average CPU for verified owned children, with PID/start-time checks. Desktop main-process metrics are labeled separately and not counted as Goal usage; unavailable values remain unavailable, Goal filters hide unmeasured entries, and tab-scoped refresh is bounded.
+- **Context Economy totals:** recorded context bytes and ledger hits are exposed from the running MCP HTTP transport without being presented as per-Goal or per-workspace totals.
+- **CSV/XLSX auditing and reports:** typed data analysis, cell comparison and new template-based reports with readback, preserving sources by default. Native advanced Office actions remain provider/host-specific.
+- **Git explorer improvements:** recursive untracked-file visibility, searchable/collapsible directory tree, working tree/index/HEAD navigation, familiar Prompt-style text, and safe text/image previews with bounded binary-file metadata.
+- **Cross-screen Desktop UI:** consolidate shared fields/buttons/filters, improve Settings select consistency, and anchor searchable dropdowns exclusively **below** their fields (outer scroll room plus bounded internal scroll). Restore preferred font sizing and refine Tools/Doctor spacing, empty results and loading feedback.
+- **Command Prism Agent status and Workflow cards:** replace the generic circle with a faceted prism using real states: gold for ready, blue for working, red for stopped/offline, and a reserved neutral gray state with no fabricated lifecycle; add restrained workflow card icons.
+- **Modal close glyphs:** override the shared action font-size cascade with a more specific selector so What's New and Tool Detail close symbols render at 25px with 44px targets; apply the same close sizing to guided Tunnel setup.
+- **Work Log:** start with all workspaces and improve filtering/search feedback.
+- **Persistent Secure MCP Tunnel startup:** avoid repeated connection attempts while the same managed runtime is still starting; use a bounded 45-second real elapsed-time readiness grace before recovery while retaining owner checks and backoff. Connection speed still depends on the tunnel service/network.
+- **Bundled `tunnel-client` 0.0.16:** native target preparation and package verification with pinned dependency evidence.
+- **Runtime dependency automation:** one managed update PR and conditional branch cleanup instead of duplicate automated updates.
+- **Release safety:** behavior-based regression tests for workflow/IPC/Git/resource/tunnel paths and target-native CI across Windows/macOS/Linux. Preserve SHA-256/provenance and signer-state evidence; Windows community builds remain unsigned without a certificate.
+
+**ภาษาไทย — สรุปความต่างจาก v5.7.4:** v5.8.0 เพิ่ม Workflow 6 แบบ, Doctor ที่กรอง Goal จากหลักฐานจริง, ประวัติ MCP/ผลลัพธ์ตาม Goal, RAM และ CPU ของโปรเซสที่ตรวจสอบเจ้าของได้, Context Economy ระดับ Transport, งาน CSV/XLSX, Git tree/preview, ปรับ UI และปุ่มปิด Modal, Work Log, ป้องกัน Tunnel reconnect ก่อนพร้อม, อัปเดต tunnel-client 0.0.16 และระบบตรวจ Release/Dependency PR ตามหลักฐานจริง ค่าไม่มีข้อมูลยังคงเป็น unknown ไม่ใช่ 0
+
+### What's new in v5.7.4
+
+- **High-risk approval details stay on screen across Windows, macOS, and Linux:** the complete command appears in a bounded lnwjud window with its own scrollable detail area. Cancel is focused by default, and closing the window or pressing Escape cancels the request.
+- **Other native alerts resist oversized error text:** variable Update, Tunnel, and shutdown error messages are bounded before they reach native dialogs.
+
 ### What's new in v5.7.3
 
 - **Engineering Harness verifies real release evidence:** package gates can consume fresh durable-shell artifacts, cross-platform gates bind to the exact commit, and Windows records Authenticode state. Configured production signing must be Valid, while community releases without a certificate may remain unsigned after SHA-256 and provenance checks.
@@ -104,7 +197,7 @@ v5.6.0 adds the read-only runtime side of **[LNWJUD Watcher](https://github.com/
 v5.5.3 fixes the recurring Native ChatGPT Scheduled Task connector-binding path so a scheduled wake can reliably resolve the same connected lnwjud connector before claiming durable work.
 
 - **Exact connector identity is carried into new recurring tasks:** when the current chat exposes an `@connector` mention, callers can pass it through `prepare_scheduled_continuation.connectorMention` and the generated task prompt is prefixed with that exact identity.
-- **No connector name is assumed:** validation is generic and Unicode-aware rather than tied to `@lnwjud_tunnel_pc` or any other installation-specific name.
+- **No connector name is assumed:** validation is generic and Unicode-aware rather than tied to `@connector` or any other installation-specific name.
 - **Prompt injection surface stays bounded:** connector identities must remain a single validated mention token; whitespace/newline injection is rejected.
 - **Claim-before-mutation remains mandatory:** scheduled wakes still call `claim_scheduled_continuation` before user-visible prose or workspace mutation, and transport resolution failure does not terminalize the durable goal.
 - **Cadence/lease semantics are unchanged:** one hourly recurring host task is still reused, with the normal 600-second worker lease and existing stale-worker recovery rules.

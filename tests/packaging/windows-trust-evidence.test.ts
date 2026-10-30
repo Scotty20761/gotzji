@@ -43,9 +43,10 @@ describe('Windows release trust evidence', () => {
     expect(evidenceVerifier).toContain('const releaseArtifactOnly');
     expect(evidenceVerifier).toContain('verifyCapabilityBridgeArtifacts');
     expect(bridgeVerifier).toContain('packaged bridge bytes differ from staged package bytes');
-    for (const name of ['lnwjud-mcp-stdio.cmd', 'windows-capability-bridge.ps1', 'windows-capability-bridge.sha256', 'windows-capability-bridge.integrity.json', 'windows-secret-migrator.exe', 'windows-secret-migrator.sha256', 'rg.exe', 'tunnel-client.exe']) {
+    for (const name of ['gotzji-native-office.ps1', 'gotzji-cad-session-provider.ps1', 'windows-capability-bridge.ps1', 'windows-capability-bridge.sha256', 'windows-capability-bridge.integrity.json', 'windows-secret-migrator.exe', 'windows-secret-migrator.sha256', 'rg.exe', 'tunnel-client.exe']) {
       expect(captureHook).toContain(name);
     }
+    expect(captureHook).not.toContain('gotzji-mcp-stdio');
     expect(captureHook).not.toContain('lnwjud-mcp-stdio.cjs');
     expect(captureHook).not.toContain('lnwjud-node.exe');
     expect(evidenceWriter).toContain('runtimeEvidence.platform');
@@ -86,8 +87,8 @@ describe('Windows release trust evidence', () => {
     expect(evidenceVerifier).toContain('LNWJUD_REQUIRE_WINDOWS_AUTHENTICODE');
     expect(evidenceVerifier).toContain('options.required || options.signingCredentialConfigured');
     expect(evidenceVerifier).toContain('windowsAuthenticode');
-    expect(release).toContain('native-darwin-arm64-$sha');
-    expect(release).toContain('native-linux-arm64-$sha');
+    expect(release).not.toContain('native-darwin-arm64-$sha');
+    expect(release).not.toContain('native-linux-arm64-$sha');
     expect(release).toContain('collect-release-assets.mjs');
     expect(release).not.toContain('LNWJUD_REQUIRE_WINDOWS_AUTHENTICODE');
     expect(release).toContain('LNWJUD_EXPECTED_COMMIT_SHA');

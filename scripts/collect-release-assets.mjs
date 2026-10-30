@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { copyFile, lstat, mkdir, readdir, readFile, realpath, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { verifyGotzjiPluginPackage } from './package-gotzji-plugin.mjs';
 
 const repositoryRoot = path.resolve(import.meta.dirname, '..');
 const packageJson = JSON.parse(await readFile(path.join(repositoryRoot, 'package.json'), 'utf8'));
@@ -17,15 +18,17 @@ if (!/^[0-9a-f]{40}$/i.test(expectedCommit)) throw new Error(`Invalid release co
 await assertRegularDirectory(stagingDirectory, 'Release staging directory');
 await prepareEmptyAssetsDirectory(assetsDirectory);
 
+const windowsOnly = process.argv.includes('--windows-only');
 const targets = [
   { key: 'win32-x64', platform: 'win32', arch: 'x64' },
   { key: 'darwin-arm64', platform: 'darwin', arch: 'arm64' },
   { key: 'darwin-x64', platform: 'darwin', arch: 'x64' },
   { key: 'linux-x64', platform: 'linux', arch: 'x64' },
   { key: 'linux-arm64', platform: 'linux', arch: 'arm64' },
-];
+].filter((target) => !windowsOnly || target.key === 'win32-x64');
 
 const targetEvidence = [];
+let windowsInstallerDirectory;
 const macManifests = [];
 
 for (const target of targets) {
@@ -35,6 +38,7 @@ for (const target of targets) {
   // CI also uploads unpacked apps whose dependencies have their own checksums.
   // Only the files beside the unique release provenance belong to this bundle.
   const installerDirectory = path.dirname(provenancePath);
+  if (target.platform === 'win32') windowsInstallerDirectory = installerDirectory;
   const sumsPath = path.join(installerDirectory, 'SHA256SUMS.txt');
   await assertRegularFile(sumsPath, 'Release checksums');
   const provenance = JSON.parse(await readFile(provenancePath, 'utf8'));
@@ -106,10 +110,23 @@ for (const target of targets) {
   });
 }
 
-if (macManifests.length !== 2) throw new Error('Both macOS arm64 and x64 update manifests are required');
-const mergedMacManifest = mergeMacUpdateManifests(macManifests, version);
-await writeFile(path.join(assetsDirectory, 'latest-mac.yml'), mergedMacManifest, 'utf8');
+if (!windowsOnly) {
+  if (macManifests.length !== 2) throw new Error('Both macOS arm64 and x64 update manifests are required');
+  const mergedMacManifest = mergeMacUpdateManifests(macManifests, version);
+  await writeFile(path.join(assetsDirectory, 'latest-mac.yml'), mergedMacManifest, 'utf8');
+}
 
+if (windowsOnly) {
+  const pluginName = `gotzji-plugin-${version}-unbound.zip`;
+  const verifiedPlugin = await verifyGotzjiPluginPackage({
+    archivePath: path.join(windowsInstallerDirectory, pluginName),
+    expectedSourceCommit: expectedCommit,
+    expectedCleanSource: true,
+  });
+  for (const file of [verifiedPlugin.archivePath, verifiedPlugin.checksumPath, verifiedPlugin.provenancePath]) {
+    await copyFile(file, path.join(assetsDirectory, path.basename(file)));
+  }
+}
 const payloadFiles = (await listDirectRegularFiles(assetsDirectory))
   .filter((name) => name !== 'RELEASE_MANIFEST.json' && name !== 'SHA256SUMS.txt')
   .sort();
@@ -121,7 +138,7 @@ for (const name of payloadFiles) {
 
 const releaseManifest = {
   schemaVersion: 1,
-  product: 'lnwjud',
+  product: 'gotzji',
   version,
   sourceCommit: expectedCommit.toLowerCase(),
   generatedBy: 'scripts/collect-release-assets.mjs',
@@ -152,7 +169,7 @@ for (const name of integrityFiles) {
 }
 await writeFile(path.join(assetsDirectory, 'SHA256SUMS.txt'), `${aggregateSums.join('\n')}\n`, 'utf8');
 
-process.stdout.write(`Collected ${integrityFiles.length} release assets for lnwjud ${version} from ${expectedCommit}\n`);
+process.stdout.write(`Collected ${integrityFiles.length} release assets for gotzji ${version} from ${expectedCommit}\n`);
 
 function requiredValue(name) {
   const value = process.env[name]?.trim();
@@ -229,7 +246,7 @@ async function listDirectRegularFiles(directory) {
 }
 
 function validateProvenance(provenance, target) {
-  if (provenance?.schemaVersion !== 1 || provenance.product !== 'lnwjud') throw new Error(`${target.key} provenance schema/product is invalid`);
+  if (provenance?.schemaVersion !== 1 || provenance.product !== 'gotzji') throw new Error(`${target.key} provenance schema/product is invalid`);
   if (provenance.version !== version) throw new Error(`${target.key} provenance version mismatch`);
   if (provenance.platform !== target.platform || provenance.arch !== target.arch) throw new Error(`${target.key} provenance target mismatch`);
   if (provenance.source?.commit?.toLowerCase() !== expectedCommit.toLowerCase()) throw new Error(`${target.key} provenance commit mismatch`);
@@ -238,14 +255,14 @@ function validateProvenance(provenance, target) {
 
 function expectedArtifactNames(platform, releaseVersion, arch) {
   if (platform === 'win32') return [
-    `lnwjud-Setup-${releaseVersion}.exe`,
-    `lnwjud-Setup-${releaseVersion}.exe.blockmap`,
-    `lnwjud-Portable-${releaseVersion}.exe`,
+    `gotzji-Setup-${releaseVersion}.exe`,
+    `gotzji-Setup-${releaseVersion}.exe.blockmap`,
+    `gotzji-Portable-${releaseVersion}.exe`,
     'latest.yml',
     'portable.yml',
   ];
-  if (platform === 'darwin') return [`lnwjud-${releaseVersion}-${arch}.dmg`, `lnwjud-${releaseVersion}-${arch}.zip`, 'latest-mac.yml'];
-  return [`lnwjud-${releaseVersion}-${arch}.AppImage`, `lnwjud-${releaseVersion}-${arch}.deb`, linuxUpdateMetadataName(arch)];
+  if (platform === 'darwin') return [`gotzji-${releaseVersion}-${arch}.dmg`, `gotzji-${releaseVersion}-${arch}.zip`, 'latest-mac.yml'];
+  return [`gotzji-${releaseVersion}-${arch}.AppImage`, `gotzji-${releaseVersion}-${arch}.deb`, linuxUpdateMetadataName(arch)];
 }
 
 function linuxUpdateMetadataName(arch) {
@@ -280,7 +297,7 @@ function parseMacUpdateManifest(text, fileName, target) {
     if (hashMatch !== null && pending !== null) pending.sha512 = unquoteYamlScalar(hashMatch[1]);
   }
   if (pending !== null) files.push(pending);
-  const expectedZip = `lnwjud-${version}-${target.arch}.zip`;
+  const expectedZip = `gotzji-${version}-${target.arch}.zip`;
   const file = files.find((entry) => entry.url === expectedZip);
   if (files.length === 0 || file === undefined || typeof file.sha512 !== 'string' || !/^[0-9a-z+/=]+$/i.test(file.sha512)) {
     throw new Error(`${target.key} ${fileName} does not contain a valid ${expectedZip} entry`);

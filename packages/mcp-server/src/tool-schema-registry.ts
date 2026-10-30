@@ -4,7 +4,7 @@ export interface ToolSchemaMetadata {
   readonly id: string;
   readonly version: string;
   readonly inputSchema: unknown;
-  readonly outputSchema: unknown;
+  readonly outputSchema?: unknown;
   readonly permissions: readonly McpPermissionLevel[];
   readonly riskClass: McpPermissionLevel;
   readonly annotations: McpToolAnnotations;
@@ -22,7 +22,7 @@ export class ToolSchemaRegistry {
       id: tool.name,
       version: options.version ?? '1.0.0',
       inputSchema: tool.inputSchema,
-      outputSchema: tool.outputSchema,
+      ...(tool.outputSchema === undefined ? {} : { outputSchema: tool.outputSchema }),
       permissions: [tool.permission],
       riskClass: tool.permission,
       annotations: tool.annotations,

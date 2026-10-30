@@ -28,7 +28,7 @@ export const SPECIALIZED_RUNTIME_TOOL_NAMES = new Set([
  * evidence is tool-specific and can grow compatibly without widening inputs.
  */
 export function upgradeTools(context: McpToolContext, incrementalVerifier: IncrementalVerifier, activityTracker?: ActivityTracker): McpToolDefinition[] {
-  const runtime = new UpgradeRuntimeService(context.services, context.actor, context.contextEconomy, context.isToolExposed, incrementalVerifier, activityTracker);
+  const runtime = new UpgradeRuntimeService(context.services, context.actor, context.contextEconomy, context.isToolExposed, incrementalVerifier, activityTracker, context.registryRuntime);
   return UPGRADE_TOOL_CATALOG.filter((entry) => !SPECIALIZED_RUNTIME_TOOL_NAMES.has(entry.name)).map((entry) => defineTool({
     name: entry.name,
     description: entry.description,
@@ -37,6 +37,6 @@ export function upgradeTools(context: McpToolContext, incrementalVerifier: Incre
     inputSchema: upgradeToolInputSchema(entry),
     outputSchema: upgradeToolOutputSchema,
     execution: upgradeToolExecution(entry),
-    handler: async (input, signal, authorization) => runtime.execute(entry.name, input, signal, authorization),
+    handler: async (input, signal, authorization, internal) => runtime.execute(entry.name, input, signal, authorization, internal),
   }));
 }

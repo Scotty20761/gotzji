@@ -21,6 +21,186 @@ export interface ReleaseNote {
 
 const RELEASE_NOTES: readonly ReleaseNote[] = [
   {
+    version: '5.8.7',
+    categories: [
+      {
+        id: 'safety',
+        titleKey: 'whatsNew.category.safety',
+        items: [
+          { id: 'safe-git-import', titleKey: 'whatsNew.587.import.title', descriptionKey: 'whatsNew.587.import.description', badge: 'new', tags: ['Git', 'HTTPS', 'NTFS', 'exact SHA'] },
+          { id: 'workspace-writer-safety', titleKey: 'whatsNew.587.writers.title', descriptionKey: 'whatsNew.587.writers.description', badge: 'improved', tags: ['write safety', 'lease', 'preflight'] },
+        ],
+      },
+      {
+        id: 'experience',
+        titleKey: 'whatsNew.category.experience',
+        items: [
+          { id: 'mcp-connector-identity', titleKey: 'whatsNew.587.connector.title', descriptionKey: 'whatsNew.587.connector.description', badge: 'fixed', tags: ['MCP', 'host approval', 'connector'] },
+          { id: 'scheduled-continuation-truth', titleKey: 'whatsNew.587.scheduled.title', descriptionKey: 'whatsNew.587.scheduled.description', badge: 'improved', tags: ['Scheduled Tasks', 'Goal', 'watcher'] },
+          { id: 'direct-mcp-passthrough', titleKey: 'whatsNew.587.mcpDirect.title', descriptionKey: 'whatsNew.587.mcpDirect.description', badge: 'fixed', tags: ['MCP', 'Playwright', 'Context7', 'structured output'] },
+          { id: 'tunnel-reset-alias', titleKey: 'whatsNew.587.tunnelReset.title', descriptionKey: 'whatsNew.587.tunnelReset.description', badge: 'fixed', tags: ['Tunnel', 'Reset All Settings', 'runtime alias', 'ownership'] },
+        ],
+      },
+    ],
+  },
+  {
+    version: '5.8.6',
+    categories: [
+      {
+        id: 'experience',
+        titleKey: 'whatsNew.category.experience',
+        items: [
+          { id: 'engineering-checkpoint-schema-compatibility', titleKey: 'whatsNew.586.schema.title', descriptionKey: 'whatsNew.586.schema.description', badge: 'improved', tags: ['MCP', 'checkpoint_goal_engineering', 'Engineering Gates', 'schema compatibility'] },
+        ],
+      },
+    ],
+  },
+  {
+    version: '5.8.5',
+    categories: [
+      {
+        id: 'experience',
+        titleKey: 'whatsNew.category.experience',
+        items: [
+          { id: 'engineering-audit-routing', titleKey: 'whatsNew.585.audit.title', descriptionKey: 'whatsNew.585.audit.description', badge: 'fixed', tags: ['Engineering Harness', 'audit', 'delivery scope'] },
+          { id: 'mcp-live-tool-availability', titleKey: 'whatsNew.585.inventory.title', descriptionKey: 'whatsNew.585.inventory.description', badge: 'fixed', tags: ['MCP', 'HTTP', 'tools/list', 'availability'] },
+          { id: 'mcp-checkpoint-schema-evidence', titleKey: 'whatsNew.585.schema.title', descriptionKey: 'whatsNew.585.schema.description', badge: 'improved', tags: ['MCP', 'checkpoint_goal', 'schema digest'] },
+        ],
+      },
+      {
+        id: 'safety',
+        titleKey: 'whatsNew.category.safety',
+        items: [
+          { id: 'engineering-goal-reconciliation', titleKey: 'whatsNew.585.goal.title', descriptionKey: 'whatsNew.585.goal.description', badge: 'fixed', tags: ['Engineering Harness', 'Durable Goal', 'lease', 'evidence'] },
+        ],
+      },
+    ],
+  },
+  {
+    version: '5.8.4',
+    categories: [
+      {
+        id: 'safety',
+        titleKey: 'whatsNew.category.safety',
+        items: [
+          { id: 'durable-shell-ownership', titleKey: 'whatsNew.584.shell.title', descriptionKey: 'whatsNew.584.shell.description', badge: 'fixed', tags: ['Shell', 'HTTP', 'task result', 'ownership'] },
+          { id: 'checked-workflows', titleKey: 'whatsNew.584.workflow.title', descriptionKey: 'whatsNew.584.workflow.description', badge: 'improved', tags: ['Workflows', 'Goal lease', 'permission', 'recovery'] },
+        ],
+      },
+      {
+        id: 'experience',
+        titleKey: 'whatsNew.category.experience',
+        items: [
+          { id: 'agent-swarm-stdin', titleKey: 'whatsNew.584.swarm.title', descriptionKey: 'whatsNew.584.swarm.description', badge: 'fixed', tags: ['Agent Swarm', 'Codex', 'stdin', 'results'] },
+          { id: 'tool-provider-readiness', titleKey: 'whatsNew.584.tools.title', descriptionKey: 'whatsNew.584.tools.description', badge: 'improved', tags: ['Tools', 'Doctor', 'providers', 'availability'] },
+        ],
+      },
+    ],
+  },
+  {
+    version: '5.8.3',
+    categories: [{
+      id: 'experience',
+      titleKey: 'whatsNew.category.experience',
+      items: [
+        { id: 'doctor-tables-copy', titleKey: 'whatsNew.583.tables.title', descriptionKey: 'whatsNew.583.tables.description', badge: 'improved', tags: ['Doctor', 'MCP history', 'Results', 'copy JSON'] },
+        { id: 'doctor-resources-visibility', titleKey: 'whatsNew.583.resources.title', descriptionKey: 'whatsNew.583.resources.description', badge: 'fixed', tags: ['Resources', 'Task', 'ownership', 'cancel'] },
+        { id: 'workflow-guided-choices', titleKey: 'whatsNew.583.workflow.title', descriptionKey: 'whatsNew.583.workflow.description', badge: 'improved', tags: ['Workflows', 'Excel', 'CSV', 'choices', 'mapping'] },
+        { id: 'ponytail-goal-context', titleKey: 'whatsNew.583.ponytail.title', descriptionKey: 'whatsNew.583.ponytail.description', badge: 'fixed', tags: ['Ponytail', 'Goal', 'skill_load', 'goalLease'] },
+      ],
+    }],
+  },
+  {
+    version: '5.8.2',
+    categories: [{
+      id: 'safety',
+      titleKey: 'whatsNew.category.safety',
+      items: [
+        { id: 'macos-signed-update-safety', titleKey: 'whatsNew.582.macos.title', descriptionKey: 'whatsNew.582.macos.description', badge: 'fixed', tags: ['macOS', 'Squirrel.Mac', 'Developer ID', 'manual migration'] },
+        { id: 'linux-appimage-recovery', titleKey: 'whatsNew.582.linux.title', descriptionKey: 'whatsNew.582.linux.description', badge: 'fixed', tags: ['Linux', 'AppImage', 'rollback', 'IPC'] },
+      ],
+    }],
+  },
+  {
+    version: '5.8.1',
+    categories: [{
+      id: 'experience',
+      titleKey: 'whatsNew.category.experience',
+      items: [
+        { id: 'dropdown-overlay', titleKey: 'whatsNew.581.dropdown.title', descriptionKey: 'whatsNew.581.dropdown.description', badge: 'fixed', tags: ['dropdown', 'Work Log', 'overlay', 'scroll'] },
+        { id: 'tunnel-filter', titleKey: 'whatsNew.581.tunnelFilter.title', descriptionKey: 'whatsNew.581.tunnelFilter.description', badge: 'fixed', tags: ['Live Logs', 'Tunnel', 'workspace', 'session'] },
+      ],
+    }],
+  },
+  {
+    version: '5.8.0',
+    categories: [
+      {
+        id: 'experience',
+        titleKey: 'whatsNew.category.experience',
+        items: [
+          { id: 'git-expanded', titleKey: 'whatsNew.580.git.title', descriptionKey: 'whatsNew.580.git.description', badge: 'improved', tags: ['Git', 'untracked files', 'search', 'binary'] },
+          { id: 'ui-controls', titleKey: 'whatsNew.580.ui.title', descriptionKey: 'whatsNew.580.ui.description', badge: 'fixed', tags: ['Prompt', 'Doctor', 'Tools', 'dropdown', 'validation', 'Git tree'] },
+          { id: 'workflow-templates', titleKey: 'whatsNew.580.workflows.title', descriptionKey: 'whatsNew.580.workflows.description', badge: 'new', tags: ['workflows', 'Thai', 'English', 'AI handoff'] },
+          { id: 'dialog-close', titleKey: 'whatsNew.580.dialog.title', descriptionKey: 'whatsNew.580.dialog.description', badge: 'fixed', tags: ['What’s New', 'Tool Detail', 'Tunnel guide', 'modal', 'close'] },
+          { id: 'worklog-filters', titleKey: 'whatsNew.580.worklog.title', descriptionKey: 'whatsNew.580.worklog.description', badge: 'improved', tags: ['Work Log', 'Live Logs', 'workspace', 'filter'] },
+        ],
+      },
+      {
+        id: 'office',
+        titleKey: 'whatsNew.category.office',
+        items: [
+          { id: 'file-audit', titleKey: 'whatsNew.580.office.title', descriptionKey: 'whatsNew.580.office.description', badge: 'new', tags: ['CSV', 'XLSX', 'audit', 'report preview'] },
+        ],
+      },
+      {
+        id: 'safety',
+        titleKey: 'whatsNew.category.safety',
+        items: [
+          { id: 'observability', titleKey: 'whatsNew.580.observability.title', descriptionKey: 'whatsNew.580.observability.description', badge: 'improved', tags: ['MCP', 'Goal', 'resource', 'audit'] },
+          { id: 'history', titleKey: 'whatsNew.580.history.title', descriptionKey: 'whatsNew.580.history.description', badge: 'new', tags: ['MCP', 'history', 'latency', 'Goal filters'] },
+          { id: 'results', titleKey: 'whatsNew.580.results.title', descriptionKey: 'whatsNew.580.results.description', badge: 'new', tags: ['Goal', 'checkpoints', 'artifacts', 'permissions'] },
+          { id: 'resources', titleKey: 'whatsNew.580.resources.title', descriptionKey: 'whatsNew.580.resources.description', badge: 'improved', tags: ['Windows', 'PID', 'CPU', 'memory', 'Context Economy'] },
+          { id: 'tunnel-reconnect', titleKey: 'whatsNew.580.tunnel.title', descriptionKey: 'whatsNew.580.tunnel.description', badge: 'fixed', tags: ['Secure MCP Tunnel', 'readiness', 'reconnect', 'backoff'] },
+          { id: 'runtime-dependencies', titleKey: 'whatsNew.580.dependencies.title', descriptionKey: 'whatsNew.580.dependencies.description', badge: 'improved', tags: ['tunnel-client 0.0.16', 'dependabot', 'CI', 'PR'] },
+          { id: 'release-evidence', titleKey: 'whatsNew.580.release.title', descriptionKey: 'whatsNew.580.release.description', badge: 'improved', tags: ['release', 'SHA256', 'provenance', 'tests'] },
+        ],
+      },
+    ],
+  },
+
+  {
+    version: '5.7.4',
+    categories: [
+      {
+        id: 'safety',
+        titleKey: 'whatsNew.category.safety',
+        items: [
+          {
+            id: 'scrollable-high-risk-approval',
+            titleKey: 'whatsNew.574.mutationApproval.title',
+            descriptionKey: 'whatsNew.574.mutationApproval.description',
+            badge: 'fixed',
+            tags: ['mutation approval', 'scrollable', 'Windows', 'macOS', 'Linux'],
+          },
+        ],
+      },
+      {
+        id: 'experience',
+        titleKey: 'whatsNew.category.experience',
+        items: [
+          {
+            id: 'bounded-native-alert-text',
+            titleKey: 'whatsNew.574.nativeDialogs.title',
+            descriptionKey: 'whatsNew.574.nativeDialogs.description',
+            badge: 'improved',
+            tags: ['native dialogs', 'long errors', 'screen fit'],
+          },
+        ],
+      },
+    ],
+  },
+  {
     version: '5.7.3',
     categories: [
       {
@@ -673,4 +853,37 @@ const RELEASE_NOTES: readonly ReleaseNote[] = [
 
 export function releaseNotesForVersion(version: string): ReleaseNote | undefined {
   return RELEASE_NOTES.find((entry) => entry.version === version.trim());
+}
+
+interface StableVersion {
+  readonly major: number;
+  readonly minor: number;
+  readonly patch: number;
+}
+
+function parseStableVersion(version: string): StableVersion | null {
+  const match = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.exec(version.trim());
+  if (!match) return null;
+  const [major, minor, patch] = match.slice(1).map(Number);
+  if (![major, minor, patch].every(Number.isSafeInteger)) return null;
+  return { major: major!, minor: minor!, patch: patch! };
+}
+
+function compareVersions(a: StableVersion, b: StableVersion): number {
+  return a.major - b.major || a.minor - b.minor || a.patch - b.patch;
+}
+
+/** Show only installed-or-earlier releases in the current train, newest first.
+ * v5 trains reset at every minor (5.8.x, 5.9.x); v6+ trains group by major (6.x.x).
+ */
+export function releaseNotesForSeries(version: string, notes: readonly ReleaseNote[] = RELEASE_NOTES): readonly ReleaseNote[] {
+  const installed = parseStableVersion(version);
+  if (installed === null) return [];
+  return notes.flatMap((note) => {
+    const candidate = parseStableVersion(note.version);
+    if (candidate === null || candidate.major !== installed.major ||
+      (installed.major < 6 && candidate.minor !== installed.minor) ||
+      compareVersions(candidate, installed) > 0) return [];
+    return [{ note, parsed: candidate }];
+  }).sort((a, b) => compareVersions(b.parsed, a.parsed)).map(({ note }) => note);
 }

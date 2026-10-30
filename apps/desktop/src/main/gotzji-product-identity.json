@@ -1,0 +1,8 @@
+{
+  "name": "gotzji",
+  "appId": "com.scotty20761.gotzji",
+  "repositoryUrl": "https://github.com/Scotty20761/gotzji",
+  "publisher": "Scotty20761",
+  "releaseTrustPolicy": "official-unsigned",
+  "automaticUpdatesEnabled": false
+}

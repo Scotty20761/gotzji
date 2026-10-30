@@ -49,7 +49,7 @@ export function fileTools(context: McpToolContext): McpToolDefinition[] {
     }),
     defineTool({
       name: 'write_file',
-      description: 'Create or replace a UTF-8 text file and missing parents. Balanced/Safe refuse existing targets unless overwriteExisting is explicit; Full may replace an existing target without a confirmation prompt and still creates a checkpoint. Prefer edit_file for narrow repairs. Use this instead of shell scripts that call fs.writeFile, writeFileSync, Set-Content, or equivalent when the task is simply to create or replace guarded text. Do not use write_file to persist lnwjud continuation/recovery as USER_INSTRUCTIONS, user-instruction, or generic handoff-history files; use checkpoint_goal/session_handoff for that state.',
+      description: 'Create or replace a UTF-8 text file and missing parents. Balanced/Safe refuse existing targets unless overwriteExisting is explicit; Full may replace an existing target without a confirmation prompt only when strict create-only was not requested; mode=create_new or overwriteExisting=false atomically refuses all existing destinations, regardless of profile. Prefer edit_file for narrow repairs. Use this instead of shell scripts that call fs.writeFile, writeFileSync, Set-Content, or equivalent when the task is simply to create or replace guarded text. Do not use write_file to persist lnwjud continuation/recovery as USER_INSTRUCTIONS, user-instruction, or generic handoff-history files; use checkpoint_goal/session_handoff for that state.',
       permission: 'WRITE',
       annotations: { readOnlyHint: false, destructiveHint: false },
       inputSchema: writeFileSchema,
@@ -59,6 +59,7 @@ export function fileTools(context: McpToolContext): McpToolDefinition[] {
           path: input.path,
           content: input.content,
           ...(input.overwriteExisting === undefined ? {} : { overwriteExisting: input.overwriteExisting }),
+          ...(input.mode === undefined ? {} : { mode: input.mode }),
           ...(input.userConfirmed === undefined ? {} : { userConfirmed: input.userConfirmed }),
         }, signal, authorization),
     }),
@@ -77,7 +78,7 @@ export function fileTools(context: McpToolContext): McpToolDefinition[] {
     }),
     defineTool({
       name: 'edit_file',
-      description: 'First choice for narrow source, config, and text repairs. Replaces exact text only when the expected occurrence count matches, checkpoints the original, and refuses conflicts instead of rewriting an unverified whole file. Exact-match conflicts are recoverable and include structured conflict kind, mismatch hints, candidate context when available, and a re-read/retry suggestion; never fuzzy-edit automatically. Use edit_file instead of shell, node -e, python -c, PowerShell Set-Content, or inline filesystem scripts when a guarded text edit can express the change. Full Access performs ordinary edits without a confirmation prompt; destructive deletion remains separately guarded.',
+      description: 'First choice for narrow source, config, and text repairs. Replaces exact text only when the expected occurrence count matches, checkpoints the original, and refuses conflicts instead of rewriting an unverified whole file. Exact-match conflicts are recoverable and include structured conflict kind, mismatch hints, candidate context when available, and a re-read/retry suggestion; never fuzzy-edit automatically. Use edit_file instead of shell, node -e, python -c, PowerShell Set-Content, or inline filesystem scripts when a guarded text edit can express the change. When skill_load for Ponytail used a goalId, include the matching goalLease on edit_file; otherwise load the skill with workspaceId only for unbound edits. Full Access performs ordinary edits without a confirmation prompt; destructive deletion remains separately guarded.',
       permission: 'WRITE',
       annotations: { readOnlyHint: false, destructiveHint: false },
       inputSchema: editFileSchema,

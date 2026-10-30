@@ -59,6 +59,37 @@ jobs:
         shell: bash
         run: pnpm typecheck
 
+      - name: Install ripgrep for native search acceptance (Windows)
+        if: matrix.name == 'Windows'
+        shell: powershell
+        run: |
+          if (-not (Get-Command rg -ErrorAction SilentlyContinue)) {
+            $rgDir = Join-Path $env:RUNNER_TEMP 'ripgrep-native-contract'
+            New-Item -ItemType Directory -Force -Path $rgDir | Out-Null
+            $zip = Join-Path $rgDir 'ripgrep.zip'
+            Invoke-WebRequest -Uri 'https://github.com/BurntSushi/ripgrep/releases/download/14.1.1/ripgrep-14.1.1-x86_64-pc-windows-msvc.zip' -OutFile $zip -UseBasicParsing
+            Expand-Archive -Path $zip -DestinationPath $rgDir -Force
+            $rgExe = (Get-ChildItem -Path $rgDir -Filter 'rg.exe' -Recurse | Select-Object -First 1).FullName
+            Copy-Item -LiteralPath $rgExe -Destination (Join-Path $rgDir 'rg.exe') -Force
+            $rgDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+            $env:PATH = "$rgDir;$env:PATH"
+          }
+          rg --version
+
+      - name: Install ripgrep for native search acceptance (macOS/Linux)
+        if: matrix.name != 'Windows'
+        shell: bash
+        run: |
+          if ! command -v rg >/dev/null 2>&1; then
+            if [[ "$RUNNER_OS" == "macOS" ]]; then
+              brew install ripgrep
+            else
+              sudo apt-get update
+              sudo apt-get install -y --no-install-recommends ripgrep
+            fi
+          fi
+          rg --version
+
       - name: Run native platform contract tests
         shell: bash
         run: pnpm exec vitest run tests/integration/platform-composition.test.ts tests/integration/cross-platform-release-scenarios.test.ts tests/release/platform-support-contract.test.ts packages/mcp-server/src/tool-runtime-contract.test.ts
@@ -67,7 +98,7 @@ jobs:
         shell: bash
         # The desktop suite runs in isolated shards below. Keep the remaining
         # workspace packages on pnpm's normal bounded recursive pool.
-        run: pnpm -r --filter '!@lnwjud/desktop' --if-present test
+        run: pnpm -r --workspace-concurrency=2 --filter '!@lnwjud/desktop' --if-present test
 
       - name: Test macOS native host protocol
         timeout-minutes: 10
@@ -84,6 +115,36 @@ jobs:
         if: matrix.name == 'Linux'
         shell: bash
         run: bash tests/packaging/linux-release-layout.sh
+
+  cad-guard-tests:
+    name: cad-guard Python Tests (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows
+            os: windows-latest
+          - name: Linux
+            os: ubuntu-24.04
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v7
+
+      # The same minor version as the stock multiCAD venv the guard runs in.
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      # Standard library only: COM, Win32 and stock multiCAD are faked. The Windows-local contract test against the real
+      # stock multiCAD and the CAD-thread test (needs fastmcp) skip here and run on the owner's machine.
+      - name: Run cad-guard unit tests
+        shell: bash
+        run: |
+          python --version
+          python -m unittest discover -s native/windows-cad-guard/tests -t native/windows-cad-guard/tests -v
 
   desktop-test-shards:
     name: Desktop Test Shard (${{ matrix.name }}, ${{ matrix.shard_index }}/${{ matrix.shard_total }})
@@ -152,7 +213,8 @@ jobs:
     # Build target-native artifacts alongside the test matrix on main. The
     # release workflow accepts artifacts only from a successful exact-SHA CI
     # run, so test failures still prevent publication.
-    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'
+    # gotzji v1 qualifies Windows x64; retain upstream jobs for their separate source track.
+    if: github.repository != 'Scotty20761/gotzji' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch')
     strategy:
       fail-fast: false
       matrix:
@@ -209,6 +271,15 @@ jobs:
             libnss3 libasound2t64 libgtk-3-0t64 libgbm1 libxss1 \
             libatk-bridge2.0-0t64 libdrm2 libxkbcommon0
 
+      - name: Install ripgrep for macOS package verification
+        if: matrix.platform == 'darwin'
+        shell: bash
+        run: |
+          if ! command -v rg >/dev/null 2>&1; then
+            brew install ripgrep
+          fi
+          rg --version
+
       - name: Install native ARM64 Debian packager
         if: matrix.platform == 'linux' && matrix.arch == 'arm64'
         shell: bash
@@ -224,8 +295,24 @@ jobs:
           LNWJUD_VERIFY_PLATFORM: ${{ matrix.platform }}
           LNWJUD_VERIFY_ARCH: ${{ matrix.arch }}
           LNWJUD_COSIGN_PATH: cosign
+          MACOS_CSC_LINK: ${{ secrets.MACOS_CSC_LINK }}
+          MACOS_CSC_KEY_PASSWORD: ${{ secrets.MACOS_CSC_KEY_PASSWORD }}
         run: |
           set -euo pipefail
+          # Developer ID signing must be stable across macOS releases. Never
+          # silently fall back to ad-hoc when half a certificate pair is set.
+          if [[ "$LNWJUD_VERIFY_PLATFORM" == darwin ]]; then
+            if [[ -n "$MACOS_CSC_LINK" || -n "$MACOS_CSC_KEY_PASSWORD" ]]; then
+              if [[ -z "$MACOS_CSC_LINK" || -z "$MACOS_CSC_KEY_PASSWORD" ]]; then
+                echo 'macOS signing needs both MACOS_CSC_LINK and MACOS_CSC_KEY_PASSWORD' >&2
+                exit 1
+              fi
+              export CSC_LINK="$MACOS_CSC_LINK"
+              export CSC_KEY_PASSWORD="$MACOS_CSC_KEY_PASSWORD"
+              export LNWJUD_REQUIRE_CODESIGN=1
+              echo 'LNWJUD_REQUIRE_CODESIGN=1' >> "$GITHUB_ENV"
+            fi
+          fi
           # app-builder checks presence, not truthiness: even an empty value
           # selects system FPM, so leave it completely unset on other targets.
           if [[ "$LNWJUD_VERIFY_PLATFORM/$LNWJUD_VERIFY_ARCH" == linux/arm64 ]]; then
@@ -359,7 +446,8 @@ jobs:
 
   macos-26-package-compatibility:
     name: macOS 26 Package Compatibility (${{ matrix.arch }})
-    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'
+    # gotzji v1 qualifies Windows x64; retain upstream jobs for their separate source track.
+    if: github.repository != 'Scotty20761/gotzji' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch')
     needs: native-package-verification
     strategy:
       fail-fast: false
@@ -596,6 +684,22 @@ jobs:
       - name: Build workspace type declarations
         run: pnpm typecheck
 
+      - name: Install ripgrep for workspace search integration
+        shell: powershell
+        run: |
+          if (-not (Get-Command rg -ErrorAction SilentlyContinue)) {
+            $rgDir = Join-Path $env:RUNNER_TEMP 'ripgrep-workspace-tests'
+            New-Item -ItemType Directory -Force -Path $rgDir | Out-Null
+            $zip = Join-Path $rgDir 'ripgrep.zip'
+            Invoke-WebRequest -Uri 'https://github.com/BurntSushi/ripgrep/releases/download/14.1.1/ripgrep-14.1.1-x86_64-pc-windows-msvc.zip' -OutFile $zip -UseBasicParsing
+            Expand-Archive -Path $zip -DestinationPath $rgDir -Force
+            $rgExe = (Get-ChildItem -Path $rgDir -Filter 'rg.exe' -Recurse | Select-Object -First 1).FullName
+            Copy-Item -LiteralPath $rgExe -Destination (Join-Path $rgDir 'rg.exe') -Force
+            $rgDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+            $env:PATH = "$rgDir;$env:PATH"
+          }
+          rg --version
+
       - name: Run complete Windows workspace release suite
         run: pnpm test:release
 
@@ -710,7 +814,7 @@ jobs:
       - name: Verify packaged Windows legacy-profile startup
         if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
         env:
-          LNWJUD_PACKAGED_EXECUTABLE: ${{ github.workspace }}/apps/desktop/dist/installers/win-unpacked/lnwjud.exe
+          LNWJUD_PACKAGED_EXECUTABLE: ${{ github.workspace }}/apps/desktop/dist/installers/win-unpacked/gotzji.exe
         run: pnpm --filter @lnwjud/desktop exec playwright test --config playwright.config.ts --grep "Windows upgrade opens"
 
       - name: Upload Windows E2E diagnostics
@@ -736,6 +840,9 @@ jobs:
             apps/desktop/dist/installers/portable.yml
             apps/desktop/dist/installers/SHA256SUMS.txt
             apps/desktop/dist/installers/PROVENANCE.json
+            apps/desktop/dist/installers/gotzji-plugin-*-unbound.zip
+            apps/desktop/dist/installers/gotzji-plugin-*-unbound.zip.sha256
+            apps/desktop/dist/installers/PLUGIN_PROVENANCE.json
           if-no-files-found: error
           retention-days: 14
           compression-level: 0

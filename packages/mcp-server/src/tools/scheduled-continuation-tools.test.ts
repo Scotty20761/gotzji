@@ -42,6 +42,11 @@ describe('scheduled continuation MCP tools', () => {
       .toMatchObject({ ok: true, value: { connectorMention: '@custom-lnwjud_42' } });
     expect(byName.get('prepare_scheduled_continuation')?.parse({ ...validPrepare, connectorMention: '@ปลั๊กอิน_ทีม' }))
       .toMatchObject({ ok: true, value: { connectorMention: '@ปลั๊กอิน_ทีม' } });
+    const appMention = `[$custom-tools](app://asdk_app_${'a'.repeat(32)})`;
+    expect(byName.get('prepare_scheduled_continuation')?.parse({ ...validPrepare, connectorMention: appMention }))
+      .toMatchObject({ ok: true, value: { connectorMention: appMention } });
+    expect(byName.get('prepare_scheduled_continuation')?.parse({ ...validPrepare, connectorMention: `[$custom-tools](app://asdk_app_${'x'.repeat(32)})` })).toMatchObject({ ok: false });
+    expect(byName.get('prepare_scheduled_continuation')?.parse({ ...validPrepare, connectorMention: '[$custom-tools](https://example.com/)' })).toMatchObject({ ok: false });
     expect(byName.get('prepare_scheduled_continuation')?.parse({ ...validPrepare, connectorMention: 'custom-lnwjud_42' })).toMatchObject({ ok: false });
     expect(byName.get('prepare_scheduled_continuation')?.parse({ ...validPrepare, connectorMention: '@connector name' })).toMatchObject({ ok: false });
     expect(byName.get('prepare_scheduled_continuation')?.parse({

@@ -17,6 +17,7 @@ const LONG_RUNTIME_TEST_TIMEOUT_MS = isWindowsGitHubActions ? 120_000 : 60_000;
 
 beforeEach(() => {
   vi.stubEnv('LNWJUD_UNRESTRICTED', '1');
+  vi.stubEnv('LNWJUD_MCP_PORT', undefined);
 });
 
 afterEach(async () => {
@@ -40,6 +41,24 @@ describe('DesktopRuntime persistence', () => {
       const status = await runtime.autoStartMcp();
       expect(status.running).toBe(true);
       expect(new URL(status.url ?? '').port).not.toBe('0');
+    } finally {
+      await runtime.close();
+    }
+  }, RUNTIME_TEST_TIMEOUT_MS);
+
+  it('reports real Desktop main-process memory even with no attributable Goal tasks', async () => {
+    const rawDataRoot = await mkdtemp(path.join(os.tmpdir(), 'lnwjud-resources-data-'));
+    const rawWorkspaceRoot = await mkdtemp(path.join(os.tmpdir(), 'lnwjud-resources-workspace-'));
+    temporaryRoots.push(rawDataRoot, rawWorkspaceRoot);
+    const runtime = createDesktopRuntime(await realpath(rawDataRoot));
+    try {
+      const workspace = await runtime.services.addWorkspace({ rootPath: await realpath(rawWorkspaceRoot) });
+      const measured = await runtime.services.getResourceSnapshot({ workspaceId: workspace.id });
+      expect(measured.desktopMain?.rssBytes).toBeGreaterThan(0);
+      expect(measured.desktopMain?.cpuAveragePercent === null
+        || (measured.desktopMain?.cpuAveragePercent ?? -1) >= 0).toBe(true);
+      expect(measured.contextScope).toBe('transport');
+      expect(measured.resources).toEqual([]);
     } finally {
       await runtime.close();
     }

@@ -3,7 +3,9 @@ import { randomBytes } from 'node:crypto';
 import path from 'node:path';
 import os from 'node:os';
 import { performance } from 'node:perf_hooks';
-import { access, lstat, readFile } from 'node:fs/promises';
+import { access, lstat, readFile, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { saveNativeSnapshot } from './native-output-save.js';
 import { autoUpdater } from 'electron-updater';
 import {
   APP_NAME,
@@ -24,6 +26,19 @@ import {
   type DestructiveDeletePolicy,
   type DoctorReport,
   type ToolCatalogSnapshot,
+  type WorkflowPrepareRequest,
+  type WorkflowTemplate,
+  type WorkflowDraft,
+  type CallHistoryRequest,
+  type CallHistoryPage,
+  type DoctorGoalOption,
+  type TaskResultSummary,
+  type RestoreTaskCheckpointRequest,
+  type RestoreTaskCheckpointResult,
+  type CancelOwnedGoalTaskRequest,
+  type CancelOwnedGoalTaskResult,
+  type ResourceSnapshotRequest,
+  type ResourceSnapshot,
   type GetToolCatalogRequest,
   type GetGitDiffRequest,
   type GetGitDiffResponse,
@@ -40,6 +55,7 @@ import {
   type LoadLogSessionHistoryResult,
   type LogSnapshot,
   type ManagedBrowserStatus,
+  type MutationApprovalPrompt,
   type PdfProviderInstallResult,
   type McpConnectionStatus,
   type ProcessSummary,
@@ -77,49 +93,61 @@ import {
   type UpdateStatus,
   type WorkspaceSummary,
 } from '@lnwjud/ipc-contracts';
-import { readSharedActivitySnapshot, startMcpStdio, type EccRuntimeOptions, type HostMutationApprovalRequest } from '@lnwjud/mcp-server';
+import { readSharedActivitySnapshot, startMcpStdio, inspectWorkflowFile, inspectWorkflowProjectVersion, inspectWorkflowGitBranches, generateWorkflowReportMapping, type EccRuntimeOptions, type HostMutationApprovalRequest } from '@lnwjud/mcp-server';
 import { createExplicitKeySecretProtector, DEFAULT_DISPLAY_TIME_ZONE, DEFAULT_MCP_POLL_WAIT_SECONDS, DEFAULT_SHELL_SYNCHRONOUS_WAIT_SECONDS, MAX_CONFIGURABLE_WAIT_SECONDS, MIN_CONFIGURABLE_WAIT_SECONDS, formatDisplayDateTime, formatOffsetIsoTimestamp, normalizeMcpAllowedHostname, resolveLnwjudDataPath, type SecretProtector } from '@lnwjud/shared';
 import { applyPendingSqliteRestoreSync, CheckpointKeyStore, type CheckpointPayloadCipher } from '@lnwjud/storage';
 import { createDesktopRuntime, formatCompleteTargetDetail, formatIncompleteLegacyHistory, writeSerializedLogRows, type DesktopRuntime } from './desktop-services.js';
 import { resolveTunnelProfileDirectory, TUNNEL_SECRET_FILE_NAME } from './tunnel-controller.js';
+import { TunnelAliasRetirementJournal, tunnelAliasRecoveryDirectory } from './tunnel-runtime-alias-journal.js';
 import { migrateLegacyWindowsSecrets } from './legacy-secret-migration.js';
 import { installPdfProvider } from './pdf-provider-installer.js';
 import { DesktopShutdownCoordinator } from './desktop-shutdown.js';
 import { DesktopIpcDrainBarrier } from './desktop-ipc-drain.js';
 import { parseOpenExternalSetupPageRequest, resolveExternalSetupUrl } from './external-setup-links.js';
 import { shouldHoldSingleInstanceLock, wantsMcpStdio } from './instance-lock.js';
-import { createLogViewerWindow, createMainWindow, getRendererEntryPath, isAllowedRendererUrl } from './window.js';
+import { createLogViewerWindow, createMainWindow, createMutationApprovalWindow, getRendererEntryPath, isAllowedRendererUrl } from './window.js';
 import { createTrayMenuTemplate, createTrayToolTip, createTrayUpdateLabel, getTrayIconPath, shouldHideMainWindowOnClose } from './tray.js';
 import { confirmTunnelStopForUpdate, UpdateInstallCoordinator, updateInstallNeedsTunnelStopConfirmation, type UpdateSharedActivitySnapshot } from './update-install.js';
 import { UpdateCheckScheduler } from './update-check-scheduler.js';
 import {
   configureUpdaterForDistribution,
   configureUpdaterForPlatform,
+  createLinuxAppImageRollback,
+  restoreLinuxAppImageIfMissing,
   currentPortableExecutablePath,
   detectWindowsDistribution,
   detectUpdaterDistribution,
   launchPortableReplacement,
   preparePortableReplacement,
   usesElectronUpdaterInstall,
+  waitsForNativeInstallAcceptance,
 } from './portable-update.js';
 import { platformCompatibilityProfile, supportedHostPlatform } from './platform-compatibility.js';
 import { atomicWrite, type IncidentDesktopMemory, type IncidentReport } from './incident-report.js';
 import { IncidentSaveCoordinator } from './incident-save.js';
-import { localizedUpdateStatusMessage, nativeMessages } from './native-i18n.js';
+import { gotzjiNativeMessages, localizedUpdateStatusMessage, nativeMessages } from './native-i18n.js';
 import { CrashDiagnosticsRecorder, RendererRecoveryBarrier, RendererRecoveryPolicy } from './crash-recovery.js';
 import { DesktopSessionDiagnostics } from './desktop-session-diagnostics.js';
 import { configureNativeCrashDiagnostics, pruneNativeCrashDumpsForDataPath } from './native-crash-diagnostics.js';
 import { RuntimeDiagnosticsHistoryRecorder, type RuntimeDiagnosticsSample } from './runtime-diagnostics-history.js';
 import { FACTORY_RESET_APPLY_ARG, applyPendingFactoryResetSync, clearFactoryResetBootstrapSync, clearFactoryResetStageSync, factoryResetBootstrapUserDataPath, stageFactoryResetSync } from './factory-reset.js';
 import { decryptV3WindowsSafeStorageSecretIfPresent } from './checkpoint-key-compat.js';
-import { isMutationApprovalResponse, mutationApprovalDialogOptions } from './mutation-approval.js';
+import { mutationApprovalDialogOptions } from './mutation-approval.js';
 import { prependBundledRuntimeToolsToPath } from './runtime-tools.js';
+import { parseWorkflowWorkspace, parseWorkflowPrepare, parseCallHistory, parseDoctorGoalsRequest, parseWorkflowGoal, parseResourceSnapshot, parseRestoreTaskCheckpoint, parseCancelOwnedGoalTask } from './workflow-ipc-parser.js';
 import { COPY_COMMANDS, OFFICIAL_URL_TARGETS } from './tool-catalog/remediation-registry.js';
 import { SafeStorageSecretProtector } from './safe-storage-secret-protector.js';
 import { createUnavailableCheckpointCipher, shouldDegradeUnavailableSecureStorage, shouldUseMacos26E2eSecrets, waitForMacosAsyncSafeStorageStartup } from './safe-storage-startup.js';
 import type { ElectronNativeCapabilityApi, NativeDesktopCaptureRequest, NativeDesktopCaptureResult, NativeDialogOptions, NativeDialogResult, NativeDisplayMetadata } from './electron-native-capability-backend.js';
 import { configureLinuxAutostart } from './linux-autostart.js';
 import { InstallActivityCoordinator } from './install-activity.js';
+import { GOTZJI_APP_ID, GOTZJI_APP_NAME, GOTZJI_PRODUCT_ENABLED } from './gotzji-product-identity.js';
+import { GotzjiHostClient } from './gotzji-host-client.js';
+import { assertGotzjiInheritedChannel } from './gotzji-desktop-boundary.js';
+import { registerGotzjiIpcHandlers } from './gotzji-desktop-ipc.js';
+import { gotzjiStartupController } from './gotzji-startup.js';
+import { ensureGotzjiProductHost } from '@gotzji/execution-core/product-host';
+import { canInstallMacosUpdates } from './macos-update-trust.js';
 
 const ECC_UPSTREAM_VERSION = '2.2.1';
 
@@ -187,6 +215,14 @@ export interface DesktopIpcServices {
   launchManagedBrowser(): Promise<ManagedBrowserStatus>;
   installPdfProvider(): Promise<PdfProviderInstallResult>;
   runDoctor(): Promise<DoctorReport>;
+  listWorkflowTemplates(request: { readonly workspaceId: string }): Promise<readonly WorkflowTemplate[]>;
+  prepareWorkflow(request: WorkflowPrepareRequest): Promise<WorkflowDraft>;
+  getCallHistory(request: CallHistoryRequest): Promise<CallHistoryPage>;
+  getDoctorGoals(request: { readonly workspaceId: string; readonly view?: 'calls' | 'results' }): Promise<readonly DoctorGoalOption[]>;
+  getTaskResult(request: { readonly workspaceId: string; readonly goalId: string }): Promise<TaskResultSummary>;
+  restoreTaskCheckpoint(request: RestoreTaskCheckpointRequest): Promise<RestoreTaskCheckpointResult>;
+  cancelOwnedGoalTask(request: CancelOwnedGoalTaskRequest): Promise<CancelOwnedGoalTaskResult>;
+  getResourceSnapshot(request: ResourceSnapshotRequest): Promise<ResourceSnapshot>;
   getToolCatalog(request: GetToolCatalogRequest): Promise<ToolCatalogSnapshot>;
   recheckToolCatalog(request: RecheckToolCatalogRequest): Promise<{ readonly catalog: ToolCatalogSnapshot; readonly doctor: DoctorReport }>;
   setToolAvailability(request: SetToolAvailabilityRequest): Promise<SetToolAvailabilityResult>;
@@ -204,6 +240,7 @@ export interface DesktopIpcServices {
 export type MainWindowProvider = () => BrowserWindow | null;
 
 export interface DesktopIpcHooks {
+  readonly governedGotzji?: boolean;
   readonly onLocaleChanged?: (locale: UiLocale) => void;
   readonly onUserSettingsChanged?: (settings: UserSettings) => void;
   readonly onFactoryReset?: () => Promise<{ readonly accepted: boolean }>;
@@ -366,6 +403,14 @@ const defaultDesktopServices: DesktopIpcServices = {
   configureTunnelProfile: async (): Promise<{ readonly configured: boolean; readonly profilePath: string }> => ({ configured: false, profilePath: '' }),
   launchManagedBrowser: async (): Promise<ManagedBrowserStatus> => ({ ready: false, port: 9222, launched: false }),
   installPdfProvider: async (): Promise<PdfProviderInstallResult> => { throw new Error('PDF provider installer is not configured'); },
+  listWorkflowTemplates: async () => [],
+  prepareWorkflow: async () => { throw new Error('Workflow service not configured'); },
+  getCallHistory: async () => { throw new Error('Call history service not configured'); },
+  getDoctorGoals: async () => [],
+  getTaskResult: async () => { throw new Error('Goal result service not configured'); },
+  restoreTaskCheckpoint: async () => { throw new Error('Goal checkpoint restore not configured'); },
+  cancelOwnedGoalTask: async () => { throw new Error('Owned Goal task cancellation not configured'); },
+  getResourceSnapshot: async () => { throw new Error('Resource service not configured'); },
   runDoctor: async (): Promise<DoctorReport> => ({
     checks: [{ id: 'desktop', required: true, status: 'fail', title: 'Desktop services', summary: 'Desktop services are not configured', affectedToolNames: [], checkedAt: new Date(0).toISOString(), durationMs: 0, message: 'Desktop services are not configured' }],
     exitCode: 1,
@@ -437,6 +482,10 @@ export function registerIpcHandlers(
     handler: (event: IpcMainInvokeEvent, payload: unknown) => unknown | Promise<unknown>,
   ): void => {
     ipcMain.handle(channel, async (event, payload: unknown) => {
+      if (hooks.governedGotzji === true) {
+        assertTrustedSender(event, getMainWindow());
+        assertGotzjiInheritedChannel(channel);
+      }
       const invoke = (): unknown | Promise<unknown> => handler(event, payload);
       return hooks.ipcDrainBarrier === undefined ? invoke() : hooks.ipcDrainBarrier.run(invoke);
     });
@@ -668,6 +717,50 @@ export function registerIpcHandlers(
     assertTrustedSender(event, getMainWindow());
     return services.setGoalPonytailMode(parseSetGoalPonytailModeRequest(payload));
   });
+  registerHandler(ipcChannels.chooseWorkflowDataFile, async (event, payload: unknown) => {
+    assertTrustedSender(event, getMainWindow());
+    assertNoPayload(payload);
+    const owner = getMainWindow();
+    if (owner === null) return { filePath: null };
+    const result = await dialog.showOpenDialog(owner, {
+      title: 'Select Excel / CSV data file',
+      properties: ['openFile'],
+      filters: [{ name: 'Excel and CSV', extensions: ['xlsx', 'csv'] }, { name: 'JSON mappings', extensions: ['json'] }, { name: 'All files', extensions: ['*'] }],
+    });
+    return { filePath: result.canceled ? null : (result.filePaths[0] ?? null) };
+  });
+  registerHandler(ipcChannels.inspectWorkflowChoices, async (event, payload: unknown) => {
+    assertTrustedSender(event, getMainWindow());
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new Error('Invalid workflow inspection request');
+    const request = payload as Record<string, unknown>;
+    if (typeof request.workspaceId !== 'string' || !request.workspaceId || request.workspaceId.length > 128
+      || Object.keys(request).some((key) => key !== 'workspaceId' && key !== 'filePath')
+      || (request.filePath !== undefined && (typeof request.filePath !== 'string' || request.filePath.length > 4096))) {
+      throw new Error('Invalid workflow inspection request');
+    }
+    const workspace = (await services.listWorkspaces()).find((item) => item.id === request.workspaceId);
+    if (!workspace) throw new Error('Workspace not found');
+    const root = workspace.realRootPath;
+    if (typeof request.filePath === 'string') {
+      return { projectVersion: null, branches: [], file: await inspectWorkflowFile(root, request.filePath) };
+    }
+    const [projectVersion, branches] = await Promise.all([
+      inspectWorkflowProjectVersion(root), inspectWorkflowGitBranches(root),
+    ]);
+    return { projectVersion, branches, file: null };
+  });
+  registerHandler(ipcChannels.generateWorkflowMapping, async (event, payload: unknown) => {
+    assertTrustedSender(event, getMainWindow());
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new Error('Invalid mapping request');
+    const request = payload as Record<string,unknown>;
+    if (typeof request.workspaceId !== 'string' || request.workspaceId.length > 128 || !request.workspaceId
+      || typeof request.templatePath !== 'string' || !request.templatePath || request.templatePath.length > 4096
+      || typeof request.sheet !== 'string' || !request.sheet || request.sheet.length > 31
+      || Object.keys(request).some(key => !['workspaceId','templatePath','sheet'].includes(key))) throw new Error('Invalid mapping request');
+    const workspace = (await services.listWorkspaces()).find(item => item.id === request.workspaceId);
+    if (!workspace) throw new Error('Workspace not found');
+    return {filePath: await generateWorkflowReportMapping(workspace.realRootPath, request.templatePath, request.sheet)};
+  });
   registerHandler(ipcChannels.chooseTunnelClientPath, async (event, payload: unknown) => {
     assertTrustedSender(event, getMainWindow());
     assertNoPayload(payload);
@@ -700,6 +793,38 @@ export function registerIpcHandlers(
     assertTrustedSender(event, getMainWindow());
     assertNoPayload(payload);
     return services.installPdfProvider();
+  });
+  registerHandler(ipcChannels.listWorkflowTemplates, async (event, payload: unknown) => {
+    assertTrustedSender(event, getMainWindow());
+    return services.listWorkflowTemplates(parseWorkflowWorkspace(payload));
+  });
+  registerHandler(ipcChannels.prepareWorkflow, async (event, payload: unknown) => {
+    assertTrustedSender(event, getMainWindow());
+    return services.prepareWorkflow(parseWorkflowPrepare(payload));
+  });
+  registerHandler(ipcChannels.getCallHistory, async (event, payload: unknown) => {
+    assertTrustedSender(event, getMainWindow());
+    return services.getCallHistory(parseCallHistory(payload));
+  });
+  registerHandler(ipcChannels.getDoctorGoals, async (event, payload: unknown) => {
+    assertTrustedSender(event, getMainWindow());
+    return services.getDoctorGoals(parseDoctorGoalsRequest(payload));
+  });
+  registerHandler(ipcChannels.getTaskResult, async (event, payload: unknown) => {
+    assertTrustedSender(event, getMainWindow());
+    return services.getTaskResult(parseWorkflowGoal(payload));
+  });
+  registerHandler(ipcChannels.restoreTaskCheckpoint, async (event, payload: unknown) => {
+    assertTrustedSender(event, getMainWindow());
+    return services.restoreTaskCheckpoint(parseRestoreTaskCheckpoint(payload));
+  });
+  registerHandler(ipcChannels.cancelOwnedGoalTask, async (event, payload: unknown) => {
+    assertTrustedSender(event, getMainWindow());
+    return services.cancelOwnedGoalTask(parseCancelOwnedGoalTask(payload));
+  });
+  registerHandler(ipcChannels.getResourceSnapshot, async (event, payload: unknown) => {
+    assertTrustedSender(event, getMainWindow());
+    return services.getResourceSnapshot(parseResourceSnapshot(payload));
   });
   registerHandler(ipcChannels.runDoctor, async (event, payload: unknown) => {
     assertTrustedSender(event, getMainWindow());
@@ -797,6 +922,19 @@ export function registerIpcHandlers(
     assertTrustedSender(event, getMainWindow());
     assertNoPayload(payload);
     return installActivity.snapshot();
+  });
+  registerHandler(ipcChannels.getMutationApprovalPrompt, (event, payload: unknown) => {
+    if (!isTrustedIpcSender(event, getMainWindow())) throw new Error('IPC sender rejected');
+    assertNoPayload(payload);
+    return pendingMutationApprovals.get(event.sender.id)?.prompt ?? null;
+  });
+  registerHandler(ipcChannels.resolveMutationApprovalPrompt, (event, payload: unknown) => {
+    if (!isTrustedIpcSender(event, getMainWindow())) throw new Error('IPC sender rejected');
+    if (!isRecord(payload) || typeof payload.approved !== 'boolean') throw new Error('Invalid IPC payload');
+    const pending = pendingMutationApprovals.get(event.sender.id);
+    if (pending === undefined) return { accepted: false };
+    pending.complete(payload.approved);
+    return { accepted: true };
   });
   registerHandler(ipcChannels.factoryReset, async (event, payload: unknown) => {
     assertTrustedSender(event, getMainWindow());
@@ -1443,6 +1581,12 @@ function isPermissionProfile(value: unknown): value is PermissionProfileName {
 
 let mainWindow: BrowserWindow | null = null;
 let logViewerWindow: BrowserWindow | null = null;
+interface PendingMutationApproval {
+  readonly prompt: MutationApprovalPrompt;
+  readonly complete: (approved: boolean) => void;
+}
+const pendingMutationApprovals = new Map<number, PendingMutationApproval>();
+let mutationApprovalQueue: Promise<void> = Promise.resolve();
 let desktopRuntime: DesktopRuntime | null = null;
 let tray: Tray | null = null;
 let desktopLocale: UiLocale = 'th';
@@ -1460,6 +1604,7 @@ const windowsDistribution = detectWindowsDistribution(app.isPackaged);
 const updaterDistribution = detectUpdaterDistribution(app.isPackaged, process.platform, process.env);
 const platformCompatibility = platformCompatibilityProfile(process.platform, os.release(), process.arch);
 let pendingPortableUpdate: { readonly version: string; readonly downloadedFile: string } | null = null;
+let pendingLinuxAppImageUpdate: { readonly version: string; readonly downloadedFile: string } | null = null;
 let crashDiagnostics: CrashDiagnosticsRecorder | null = null;
 let desktopSessionDiagnostics: DesktopSessionDiagnostics | null = null;
 let runtimeDiagnosticsHistory: RuntimeDiagnosticsHistoryRecorder | null = null;
@@ -1478,18 +1623,43 @@ let currentUpdateStatus: UpdateStatus = {
   canInstall: false,
 };
 
-async function requestNativeMutationApproval(request: HostMutationApprovalRequest): Promise<boolean> {
+function requestMutationApproval(request: HostMutationApprovalRequest): Promise<boolean> {
+  const queued = mutationApprovalQueue.then(() => showMutationApprovalPrompt(request));
+  mutationApprovalQueue = queued.then(() => undefined, () => undefined);
+  return queued;
+}
+
+function showMutationApprovalPrompt(request: HostMutationApprovalRequest): Promise<boolean> {
   const options = mutationApprovalDialogOptions(desktopLocale, request);
-  const dialogOptions = { ...options, buttons: [...options.buttons] };
   const parent = mainWindow !== null && !mainWindow.isDestroyed()
     ? mainWindow
     : logViewerWindow !== null && !logViewerWindow.isDestroyed()
       ? logViewerWindow
       : null;
-  const result = parent === null
-    ? await dialog.showMessageBox(dialogOptions)
-    : await dialog.showMessageBox(parent, dialogOptions);
-  return isMutationApprovalResponse(result.response);
+  const promptWindow = createMutationApprovalWindow(parent, options.title);
+  const senderId = promptWindow.webContents.id;
+  const prompt: MutationApprovalPrompt = {
+    title: options.title,
+    message: options.message,
+    detail: options.detail,
+    buttons: options.buttons,
+  };
+
+  return new Promise<boolean>((resolve) => {
+    let settled = false;
+    const complete = (approved: boolean, closeWindow = true): void => {
+      if (settled) return;
+      settled = true;
+      pendingMutationApprovals.delete(senderId);
+      resolve(approved);
+      if (closeWindow && !promptWindow.isDestroyed()) promptWindow.close();
+    };
+
+    pendingMutationApprovals.set(senderId, { prompt, complete });
+    promptWindow.once('closed', () => complete(false, false));
+    promptWindow.webContents.once('did-fail-load', () => complete(false));
+    void promptWindow.loadFile(getRendererEntryPath(), { hash: 'mutation-approval' }).catch(() => complete(false));
+  });
 }
 
 function openLogViewerWindow(): BrowserWindow | null {
@@ -1561,6 +1731,14 @@ function patchUpdateStatus(patch: Partial<UpdateStatus>): UpdateStatus {
 
 function refreshDesktopTrayMenu(): void {
   if (tray === null) return;
+  if (GOTZJI_PRODUCT_ENABLED) {
+    tray.setContextMenu(Menu.buildFromTemplate([
+      { label: gotzjiNativeMessages.trayOpen, click: revealMainWindow },
+      { type: 'separator' },
+      { label: gotzjiNativeMessages.trayQuit, click: (): void => app.quit() },
+    ]));
+    return;
+  }
   tray.setContextMenu(Menu.buildFromTemplate(createTrayMenuTemplate({
     locale: desktopLocale,
     openMainWindow: revealMainWindow,
@@ -1585,6 +1763,10 @@ async function requestFactoryReset(dataPath: string): Promise<{ readonly accepte
   });
   if (confirmation.response !== 0) return { accepted: false };
 
+  // Do not claim reset accepted until the owned native runtime alias is gone.
+  // runtimes rm removes its local profile and health/log files, too.
+  if (desktopRuntime === null) throw new Error('Desktop runtime is unavailable for verified Tunnel reset');
+  await desktopRuntime.prepareFactoryReset();
   stageFactoryResetSync(dataPath);
   factoryResetQueued = true;
   setTimeout(() => {
@@ -1617,13 +1799,26 @@ async function requestFactoryReset(dataPath: string): Promise<{ readonly accepte
 }
 
 function requestUpdateCheck(source: 'automatic' | 'tray' | 'renderer'): UpdateStatus {
+  if (GOTZJI_PRODUCT_ENABLED) {
+    return patchUpdateStatus({ phase: 'unavailable', message: gotzjiNativeMessages.manualUpdate, canInstall: false });
+  }
   const messages = nativeMessages(desktopLocale);
   if (!app.isPackaged) {
     const status = patchUpdateStatus({ phase: 'unavailable', message: messages.updaterUnavailable, canInstall: false });
     if (source === 'tray') {
-      void dialog.showMessageBox({ type: 'info', title: messages.updaterCheckTitle, message: status.message ?? messages.updaterUnavailablePackagedOnly, buttons: [messages.ok] });
+      void dialog.showMessageBox({ type: 'info', title: messages.updaterCheckTitle, message: boundedNativeDialogText(status.message ?? messages.updaterUnavailablePackagedOnly), buttons: [messages.ok] });
     }
     return status;
+  }
+  if (!autoUpdaterInitialized && currentUpdateStatus.phase === 'unavailable') {
+    if (source === 'tray') {
+      void dialog.showMessageBox({
+        type: 'info', title: messages.updaterCheckTitle,
+        message: boundedNativeDialogText(currentUpdateStatus.message ?? messages.updaterUnavailable),
+        buttons: [messages.ok],
+      });
+    }
+    return currentUpdateStatus;
   }
   if (currentUpdateStatus.phase === 'available') {
     if (source !== 'automatic' && !desktopUserSettings.updateAutoDownload) {
@@ -1638,7 +1833,7 @@ function requestUpdateCheck(source: 'automatic' | 'tray' | 'renderer'): UpdateSt
         patchUpdateStatus({ phase: 'error', message, canInstall: false });
         if (source === 'tray') {
           const currentMessages = nativeMessages(desktopLocale);
-          void dialog.showMessageBox({ type: 'error', title: currentMessages.updaterCheckTitle, message, buttons: [currentMessages.ok] });
+          void dialog.showMessageBox({ type: 'error', title: currentMessages.updaterCheckTitle, message: boundedNativeDialogText(message), buttons: [currentMessages.ok] });
         }
       });
       return status;
@@ -1662,13 +1857,30 @@ function requestUpdateCheck(source: 'automatic' | 'tray' | 'renderer'): UpdateSt
     patchUpdateStatus({ phase: 'error', lastCheckedAt: new Date().toISOString(), message, canInstall: false });
     if (source === 'tray') {
       const currentMessages = nativeMessages(desktopLocale);
-      void dialog.showMessageBox({ type: 'error', title: currentMessages.updaterCheckTitle, message, buttons: [currentMessages.ok] });
+      void dialog.showMessageBox({ type: 'error', title: currentMessages.updaterCheckTitle, message: boundedNativeDialogText(message), buttons: [currentMessages.ok] });
     }
   });
   return status;
 }
 
+const MAX_NATIVE_DIALOG_TEXT_LENGTH = 640;
+const MAX_NATIVE_DIALOG_LINE_COUNT = 4;
+const MAX_NATIVE_DIALOG_LINE_LENGTH = 120;
+
+function boundedNativeDialogText(text: string): string {
+  const lines = text.split(/\r\n?|\n|\u2028|\u2029/);
+  const boundedLines = lines.slice(0, MAX_NATIVE_DIALOG_LINE_COUNT).map((line) => line.slice(0, MAX_NATIVE_DIALOG_LINE_LENGTH));
+  let bounded = boundedLines.join('\n');
+  const truncated = lines.length > MAX_NATIVE_DIALOG_LINE_COUNT
+    || lines.some((line) => line.length > MAX_NATIVE_DIALOG_LINE_LENGTH)
+    || bounded.length > MAX_NATIVE_DIALOG_TEXT_LENGTH;
+  if (!truncated) return text;
+  bounded = bounded.slice(0, MAX_NATIVE_DIALOG_TEXT_LENGTH - 1).trimEnd();
+  return `${bounded}…`;
+}
+
 async function requestUpdateInstall(): Promise<{ readonly accepted: boolean; readonly status: UpdateStatus }> {
+  if (GOTZJI_PRODUCT_ENABLED) return { accepted: false, status: currentUpdateStatus };
   if (!app.isPackaged || currentUpdateStatus.phase !== 'ready' || updateInstallCoordinator === null || updateInstallConfirmationPending) {
     return { accepted: false, status: currentUpdateStatus };
   }
@@ -1700,8 +1912,12 @@ async function requestUpdateInstall(): Promise<{ readonly accepted: boolean; rea
     });
     if (!approved) return { accepted: false, status: currentUpdateStatus };
 
-    const tunnelStopped = await stopTunnelForUpdateInstall(runtime);
-    if (!tunnelStopped) return { accepted: false, status: currentUpdateStatus };
+    // Native macOS/AppImage must validate/install before runtime shutdown.
+    // before-quit closes the owned tunnel once native installation succeeds.
+    if (!waitsForNativeInstallAcceptance(updaterDistribution)) {
+      const tunnelStopped = await stopTunnelForUpdateInstall(runtime);
+      if (!tunnelStopped) return { accepted: false, status: currentUpdateStatus };
+    }
 
     const status = patchUpdateStatus({
       phase: 'installing',
@@ -1734,7 +1950,7 @@ async function stopTunnelForUpdateInstall(runtime: DesktopRuntime): Promise<bool
       type: 'error',
       title: messages.updaterTunnelStopFailedTitle,
       message: messages.updaterTunnelStopFailedMessage,
-      detail,
+      detail: boundedNativeDialogText(detail),
       buttons: [messages.ok],
     });
     return false;
@@ -1783,7 +1999,7 @@ function createDesktopTray(): void {
   }
   tray?.destroy();
   tray = new Tray(trayImage);
-  tray.setToolTip(createTrayToolTip(desktopLocale));
+  tray.setToolTip(GOTZJI_PRODUCT_ENABLED ? 'gotzji — ChatGPT' : createTrayToolTip(desktopLocale));
   refreshDesktopTrayMenu();
   tray.on('click', revealMainWindow);
 }
@@ -1821,7 +2037,7 @@ function bootstrapMcpStdio(): void {
     const secrets = await resolveDesktopRuntimeSecrets(dataPath);
     const runtime = createDesktopRuntime(dataPath, {
       permissionProfile: 'full',
-      hostMutationApprovalProvider: requestNativeMutationApproval,
+      hostMutationApprovalProvider: requestMutationApproval,
       nativeCapabilityApi: createElectronNativeCapabilityApi(() => null),
       eccRuntimeOptions: resolveDesktopEccRuntimeOptions(),
       ...secrets,
@@ -1844,7 +2060,7 @@ function bootstrapMcpStdio(): void {
       destructivePolicyProvider: () => runtime.getDestructivePolicy(),
       activeWorkspaceScopeProvider: () => runtime.getActiveWorkspaceScope(),
       activeWorkspaceScopesProvider: () => runtime.getActiveWorkspaceScopes(),
-      hostMutationApprovalProvider: requestNativeMutationApproval,
+      hostMutationApprovalProvider: requestMutationApproval,
       codexToolsEnabledProvider: () => runtime.getUserSettings().codexToolsEnabled,
       ponytailModeProvider: () => runtime.getUserSettings().ponytailMode,
       engineeringHarnessEnabledProvider: (): boolean => {
@@ -1931,6 +2147,10 @@ function initAutoUpdater(runtime: DesktopRuntime): void {
     patchUpdateStatus({ phase: 'unavailable', message: nativeMessages(desktopLocale).updaterUnavailablePlatform, canInstall: false });
     return;
   }
+  if (updaterDistribution === 'macos' && !canInstallMacosUpdates(process.execPath)) {
+    patchUpdateStatus({ phase: 'unavailable', message: nativeMessages(desktopLocale).updaterUnavailableMacosUnsigned, canInstall: false });
+    return;
+  }
   try {
     configureUpdaterForDistribution(autoUpdater, windowsDistribution);
     configureUpdaterForPlatform(autoUpdater, updaterDistribution);
@@ -1960,13 +2180,53 @@ function initAutoUpdater(runtime: DesktopRuntime): void {
       },
       maxWaitMs: 5_000,
       install: (): void => {
-        void stopTunnelForUpdateInstall(runtime).then((tunnelStopped) => {
+        const ensureTunnelStopped = waitsForNativeInstallAcceptance(updaterDistribution)
+          ? Promise.resolve(true)
+          : stopTunnelForUpdateInstall(runtime);
+        void ensureTunnelStopped.then((tunnelStopped) => {
           if (!tunnelStopped) return;
           void runtime.createBackup('pre-update').catch((error: unknown) => {
             console.error(`Pre-update backup failed: ${error instanceof Error ? error.message : 'unknown error'}`);
           }).finally(() => {
             if (usesElectronUpdaterInstall(updaterDistribution)) {
-              void desktopShutdownCoordinator?.requestQuit(() => autoUpdater.quitAndInstall(), 'install');
+              if (updaterDistribution === 'macos') {
+                // Squirrel.Mac validates the signature after native checkForUpdates.
+                // Do not enter IPC shutdown before it accepts the replacement.
+                try { autoUpdater.quitAndInstall(); } catch (error: unknown) {
+                  patchUpdateStatus({ phase: 'error', message: error instanceof Error ? error.message : String(error), canInstall: false });
+                }
+              } else if (updaterDistribution === 'linux-appimage') {
+                const downloaded = pendingLinuxAppImageUpdate?.downloadedFile;
+                const installed = process.env.APPIMAGE;
+                if (!downloaded || !installed) {
+                  patchUpdateStatus({ phase: 'error', message: 'Linux AppImage update is missing its current or downloaded file.', canInstall: false });
+                  return;
+                }
+                void createLinuxAppImageRollback(installed, downloaded).then(async ({ currentPath, backupPath }) => {
+                  // electron-updater unlinks the old AppImage before moving the new.
+                  // Its installer is synchronous and emits error for failed moves.
+                  let installError = '';
+                  const onError = (error: Error): void => { installError = error.message; };
+                  autoUpdater.on('error', onError);
+                  try { autoUpdater.quitAndInstall(); } catch (error: unknown) {
+                    installError = error instanceof Error ? error.message : String(error);
+                  } finally {
+                    autoUpdater.off('error', onError);
+                  }
+                  if (installError) {
+                    try {
+                      await restoreLinuxAppImageIfMissing(currentPath, backupPath);
+                    } catch (restoreError: unknown) {
+                      installError += ` (recovery failed: ${restoreError instanceof Error ? restoreError.message : String(restoreError)}; backup: ${backupPath})`;
+                    }
+                    patchUpdateStatus({ phase: 'error', message: installError, canInstall: false });
+                  }
+                }).catch((error: unknown) => {
+                  patchUpdateStatus({ phase: 'error', message: error instanceof Error ? error.message : String(error), canInstall: false });
+                });
+              } else {
+                void desktopShutdownCoordinator?.requestQuit(() => autoUpdater.quitAndInstall(), 'install');
+              }
               return;
             }
             const portableUpdate = pendingPortableUpdate;
@@ -2003,6 +2263,7 @@ function initAutoUpdater(runtime: DesktopRuntime): void {
       const requestedFromTray = pendingUpdateCheckSource === 'tray';
       pendingUpdateCheckSource = null;
       pendingPortableUpdate = null;
+      pendingLinuxAppImageUpdate = null;
       console.log(`[AutoUpdater] Update available: v${info.version}`);
       const messages = nativeMessages(desktopLocale);
       patchUpdateStatus({
@@ -2017,7 +2278,7 @@ function initAutoUpdater(runtime: DesktopRuntime): void {
         void dialog.showMessageBox({
           type: 'info',
           title: messages.updaterAvailableTitle,
-          message: messages.updateAvailableDialog(info.version),
+          message: boundedNativeDialogText(messages.updateAvailableDialog(info.version)),
           buttons: [messages.ok],
         });
       }
@@ -2057,7 +2318,7 @@ function initAutoUpdater(runtime: DesktopRuntime): void {
       void dialog.showMessageBox({
         type: 'info',
         title: messages.updaterCheckTitle,
-        message: messages.updateCurrentDialog(info.version),
+        message: boundedNativeDialogText(messages.updateCurrentDialog(info.version)),
         buttons: [messages.ok],
       });
     });
@@ -2066,6 +2327,9 @@ function initAutoUpdater(runtime: DesktopRuntime): void {
       recordUpdaterDownload(info.version);
       if (windowsDistribution === 'portable') {
         pendingPortableUpdate = { version: info.version, downloadedFile: info.downloadedFile };
+      }
+      if (updaterDistribution === 'linux-appimage') {
+        pendingLinuxAppImageUpdate = { version: info.version, downloadedFile: info.downloadedFile };
       }
       patchUpdateStatus({
         phase: 'ready',
@@ -2101,7 +2365,7 @@ function initAutoUpdater(runtime: DesktopRuntime): void {
       void dialog.showMessageBox({
         type: 'error',
         title: messages.updaterCheckTitle,
-        message,
+        message: boundedNativeDialogText(message),
         buttons: [messages.ok],
       });
     });
@@ -2319,6 +2583,11 @@ function configureRuntimeDiagnosticsHistory(dataPath: string, runtime: DesktopRu
 }
 
 async function createNativeDesktopRuntime(dataPath: string): Promise<DesktopRuntime> {
+  // Recover exact local profile artifacts from an interrupted alias removal
+  // before reading any secrets or starting Tunnel lifecycle operations.
+  await new TunnelAliasRetirementJournal(
+    tunnelAliasRecoveryDirectory(dataPath), resolveTunnelProfileDirectory(),
+  ).recover();
   recordDesktopStartup('runtime-secrets:begin');
   const secrets = await resolveDesktopRuntimeSecrets(dataPath);
   recordDesktopStartup('runtime-secrets:end');
@@ -2334,7 +2603,7 @@ async function createNativeDesktopRuntime(dataPath: string): Promise<DesktopRunt
       logSessionId: desktopLogSession.current.sessionId,
       ...(desktopLogSession.previous === null ? {} : { previousLogSessionStartedAt: desktopLogSession.previous.startedAt }),
     }),
-    hostMutationApprovalProvider: requestNativeMutationApproval,
+    hostMutationApprovalProvider: requestMutationApproval,
     pdfProviderInstaller: (rootPath) => installPdfProvider(rootPath, {
       fetchImpl: (url) => net.fetch(url, { redirect: 'follow' }),
       onProgress: (phase) => installActivity.set({ kind: 'pdf_provider', phase, progressPercent: null, message: null }),
@@ -2526,6 +2795,105 @@ function toElectronSaveDialogOptions(options: NativeDialogOptions): Electron.Sav
   return result;
 }
 
+/** Product entry: inherited providers/SQLite goals/auto-start are not constructed. */
+function bootstrapGotzjiHostOnly(): void {
+  app.setName(GOTZJI_APP_NAME);
+  if (!app.isPackaged || process.platform !== 'win32' || wantsMcpStdio(process.argv) || process.argv.includes(FACTORY_RESET_APPLY_ARG)) { app.exit(1); return; }
+  const productRoot = path.join(process.env.LOCALAPPDATA ?? app.getPath('appData'), GOTZJI_APP_NAME);
+  app.setPath('userData', path.join(productRoot, 'startup-controller'));
+  void app.whenReady().then(async () => {
+    assertSupportedPlatform();
+    // The supervisor inspects retained owner/process/effect identities. This
+    // wrapper neither creates another job engine nor declares old work done.
+    await ensureGotzjiProductHost({ dataPath: path.join(productRoot, 'runtime'), directory: path.join(productRoot, 'runtime'), resourcesPath: process.resourcesPath, packaged: true });
+    app.quit();
+  }).catch(() => app.exit(1));
+}
+
+function bootstrapGotzjiDesktop(): void {
+  app.setName(GOTZJI_APP_NAME);
+  const configuredProductRoot = !app.isPackaged ? process.env.GOTZJI_DATA_PATH : undefined;
+  if (configuredProductRoot && !path.isAbsolute(configuredProductRoot)) throw new Error('GOTZJI_DATA_PATH_INVALID');
+  const productRoot = configuredProductRoot ? path.resolve(configuredProductRoot) : path.join(process.env.LOCALAPPDATA ?? app.getPath('appData'), GOTZJI_APP_NAME);
+  const dataPath = path.join(productRoot, 'ui');
+  app.setPath('userData', dataPath);
+  if (!app.requestSingleInstanceLock()) { app.quit(); return; }
+  configureCrashRecovery(dataPath);
+  app.on('second-instance', revealMainWindow);
+  void app.whenReady().then(async () => {
+    assertSupportedPlatform();
+    app.setAppUserModelId(GOTZJI_APP_ID);
+    // Raw compatibility launch flags cannot activate the inherited work engine.
+    if (wantsMcpStdio(process.argv) || process.argv.includes(FACTORY_RESET_APPLY_ARG)) {
+      throw new Error('GRACE_GOVERNED_ENTRY_REQUIRED');
+    }
+    const developmentHostEntry = app.isPackaged ? undefined : [
+      path.resolve(process.cwd(), 'packages/execution-core/dist/product-server.mjs'),
+      path.resolve(process.cwd(), '../../packages/execution-core/dist/product-server.mjs'),
+      path.resolve(app.getAppPath(), '../../packages/execution-core/dist/product-server.mjs'),
+      path.resolve(app.getAppPath(), '../../../packages/execution-core/dist/product-server.mjs'),
+    ].find((candidate) => existsSync(candidate));
+    const developmentTestMode = !app.isPackaged && process.env.GOTZJI_E2E_MODE === '1';
+    const client = new GotzjiHostClient(() => ensureGotzjiProductHost({
+      dataPath: path.join(productRoot, 'runtime'), directory: path.join(productRoot, 'runtime'), resourcesPath: process.resourcesPath, packaged: app.isPackaged,
+      ...(developmentHostEntry ? { hostEntryPath: developmentHostEntry } : {}),
+      ...(developmentTestMode ? { testOnlyInsecureSecretProtector: true } : {}),
+    }));
+    registerIpcHandlers(() => mainWindow, defaultDesktopServices, { governedGotzji: true });
+    registerGotzjiIpcHandlers(ipcMain, client, (event) => assertTrustedSender(event, mainWindow), {
+      defaults: (): { tunnelId?: string; organizationId?: string } => {
+        if (app.isPackaged) return {};
+        const tunnelId = process.env.GOTZJI_SETUP_TUNNEL_ID; const organizationId = process.env.GOTZJI_SETUP_ORGANIZATION_ID;
+        return { ...(tunnelId && /^tunnel_[a-z0-9]{32}$/u.test(tunnelId) ? { tunnelId } : {}), ...(organizationId && /^org[-_][A-Za-z0-9_-]{1,160}$/u.test(organizationId) ? { organizationId } : {}) };
+      },
+      open: async (page): Promise<void> => {
+        const urls = { tunnels: 'https://platform.openai.com/settings/organization/tunnels', keys: 'https://platform.openai.com/settings/organization/api-keys', connectors: 'https://chatgpt.com/#settings/Connectors' };
+        await shell.openExternal(urls[page]);
+      },
+    }, gotzjiStartupController(app, { packaged: app.isPackaged, platform: process.platform, executable: process.execPath }), {
+      save: async (content): Promise<{ exported: boolean; cancelled: boolean }> => {
+        const options = { title: 'Export gotzji support report', defaultPath: `gotzji-support-report-${new Date().toISOString().replace(/[:.]/gu, '-')}.json`, filters: [{ name: 'JSON', extensions: ['json'] }] };
+        const result = mainWindow ? await dialog.showSaveDialog(mainWindow, options) : await dialog.showSaveDialog(options);
+        if (result.canceled || !result.filePath) return { exported: false, cancelled: true };
+        await writeFile(result.filePath, content, 'utf8');
+        return { exported: true, cancelled: false };
+      },
+    }, {
+      pick: async () => {
+        const options = { title: gotzjiNativeMessages.projectFolderTitle, properties: ['openDirectory'] as Array<'openDirectory'> };
+        const selected = mainWindow ? await dialog.showOpenDialog(mainWindow, options) : await dialog.showOpenDialog(options);
+        if (selected.canceled) return { cancelled: true };
+        if (selected.filePaths.length !== 1 || !path.isAbsolute(selected.filePaths[0]!)) throw new Error('PROJECT_FOLDER_SELECTION_INVALID');
+        return { cancelled: false, path: selected.filePaths[0]! };
+      },
+    }, {
+      save: async (jobId, content): Promise<{ exported: boolean; cancelled: boolean }> => {
+        const options = { title: gotzjiNativeMessages.jobLogsTitle, defaultPath: `gotzji-job-${jobId.slice(0, 12)}.txt`, filters: [{ name: 'Text', extensions: ['txt'] }] };
+        const result = mainWindow ? await dialog.showSaveDialog(mainWindow, options) : await dialog.showSaveDialog(options);
+        if (result.canceled || !result.filePath) return { exported: false, cancelled: true };
+        await writeFile(result.filePath, content, 'utf8');
+        return { exported: true, cancelled: false };
+      },
+    }, {
+      save: async (jobId, filename, content): Promise<{ exported: boolean; cancelled: boolean }> => {
+        const options = { title: `${gotzjiNativeMessages.nativeOutputTitle} · ${jobId}`, defaultPath: filename };
+        const result = mainWindow ? await dialog.showSaveDialog(mainWindow, options) : await dialog.showSaveDialog(options);
+        if (result.canceled || !result.filePath) return { exported: false, cancelled: true };
+        if (!path.isAbsolute(result.filePath)) throw new Error('NATIVE_OUTPUT_DESTINATION_INVALID');
+        await saveNativeSnapshot(result.filePath, content);
+        return { exported: true, cancelled: false };
+      },
+    });
+    configureDesktopSessionDiagnostics(dataPath);
+    createDesktopWindow();
+    createDesktopTray();
+    // Host lifetime is independent: UI close/quit never closes/cancels its jobs.
+    app.on('activate', revealMainWindow);
+  }).catch((error: unknown) => handleDesktopStartupFailure('gotzji', error));
+  app.on('before-quit', handleDesktopBeforeQuit);
+  app.on('window-all-closed', () => handleDesktopWindowsClosed('desktop'));
+}
+
 function bootstrapDesktop(configuredDataPath?: string): void {
   if (platformCompatibility.disableHardwareAcceleration) app.disableHardwareAcceleration();
   const dataPath = configureDataPath(configuredDataPath);
@@ -2618,7 +2986,7 @@ function handleDesktopStartupFailure(scope: string, error: unknown): void {
   recordDesktopStartup(`${scope}:failed`, error);
   console.error('[Startup] ' + scope + ' failed: ' + message);
   try {
-    dialog.showErrorBox('lnwjud failed to start', scope + ' startup failed.\n\n' + message);
+    dialog.showErrorBox(`${GOTZJI_APP_NAME} failed to start`, scope + ' startup failed.\n\n' + message);
   } catch {
     // Console/crash diagnostics remain available if native dialogs cannot be shown.
   }
@@ -2660,7 +3028,7 @@ function configureDesktopShutdown(runtime: DesktopRuntime): void {
         type: 'error',
         title: 'lnwjud is still running',
         message: 'The owned tunnel could not be confirmed stopped. lnwjud will remain open; retry Quit after checking the tunnel status.',
-        detail: error.message,
+        detail: boundedNativeDialogText(error.message),
         buttons: ['OK'],
       });
     },
@@ -2848,7 +3216,9 @@ function configureDataPath(configuredDataPath?: string): string {
 }
 
 const factoryResetApplyRequested = process.argv.includes(FACTORY_RESET_APPLY_ARG);
-if (factoryResetApplyRequested) {
+if (GOTZJI_PRODUCT_ENABLED) {
+  if (process.argv.includes('--gotzji-host-only')) bootstrapGotzjiHostOnly(); else bootstrapGotzjiDesktop();
+} else if (factoryResetApplyRequested) {
   const dataPath = resolveLnwjudDataPath(process.env, app.getPath('appData'), process.platform);
   try {
     if (!applyPendingFactoryResetSync(dataPath, resolveTunnelProfileDirectory())) {

@@ -1,11 +1,12 @@
-import { mkdir } from 'node:fs/promises';
+import { mkdir, readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { appError, err, ok, type Result } from '@lnwjud/domain';
 import { createProcessTreeTerminator, type ProcessTreeTerminator } from '@lnwjud/process';
-import type { BrowserCdpProtocol, BrowserCdpTab } from './browser-cdp-backend.js';
+import type { BrowserCdpEventChannel, BrowserCdpProtocol, BrowserCdpTab } from './browser-cdp-backend.js';
+import { openBrowserCdpEventChannel } from './browser-cdp-event-channel.js';
 
 interface BrowserCdpProtocolOptions {
   readonly platform?: NodeJS.Platform;
@@ -16,6 +17,10 @@ interface BrowserCdpProtocolOptions {
   readonly terminationRetryMs?: number;
   /** Injectable filesystem probe for deterministic platform/readiness tests. */
   readonly executableExists?: (executable: string) => boolean;
+}
+
+export class BrowserCdpUnavailableError extends Error {
+  public constructor() { super('The managed local browser CDP endpoint is unavailable'); }
 }
 
 export class NodeBrowserCdpProtocol implements BrowserCdpProtocol {
@@ -86,6 +91,24 @@ export class NodeBrowserCdpProtocol implements BrowserCdpProtocol {
     return sendWebSocketRequest(socketUrl, method, params, signal);
   }
 
+  /** Internal control for the enrolled profile; never accepts a caller-selected endpoint or method. */
+  public async requestBrowserClose(signal?: AbortSignal): Promise<void> {
+    const contents = await readFile(path.join(this.profileDir, 'DevToolsActivePort'), { encoding: 'utf8', ...(signal === undefined ? {} : { signal }) });
+    const lines = contents.trimEnd().split(/\r?\n/u);
+    if (lines.length !== 2 || !/^\d+$/u.test(lines[0]!) || Number(lines[0]) !== this.port
+      || !/^\/devtools\/browser\/[a-f\d]{8}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{12}$/iu.test(lines[1]!)) throw new Error('Chrome browser coordination was invalid');
+    const response = await sendWebSocketRequest(`ws://127.0.0.1:${this.port}${lines[1]}`, 'Browser.close', {}, signal, true);
+    if (response === closedAfterDispatch) return;
+    if (!isRecord(response) || 'error' in response || !isRecord(response.result)) throw new Error('Chrome browser close was rejected');
+  }
+
+  public async openEventChannel(tabId: string, onEvent: (method: string, params: unknown) => void, onDisconnected: (closureConfirmed: boolean) => void, signal?: AbortSignal): Promise<BrowserCdpEventChannel> {
+    const tabs = await this.listTabs(signal);
+    const tab = tabs.find((candidate) => candidate.id === tabId);
+    if (tab === undefined) throw new Error('Chrome observation tab was not found');
+    return openBrowserCdpEventChannel(validateWebSocketUrl(tab.webSocketDebuggerUrl, this.port), onEvent, onDisconnected, signal);
+  }
+
   public async launch(url: string | undefined, signal?: AbortSignal): Promise<Result<unknown>> {
     if (!isSupportedBrowserPlatform(this.platform)) return err(appError('UNSUPPORTED_PLATFORM', `Browser launch is unsupported on ${this.platform}`, true));
     if (isAborted(signal)) return cancelledBrowserLaunch();
@@ -135,8 +158,9 @@ export class NodeBrowserCdpProtocol implements BrowserCdpProtocol {
   }
 
   private async requestJson(resource: string, signal?: AbortSignal): Promise<unknown> {
-    const response = await fetch(this.endpoint(resource), signal === undefined ? undefined : { signal });
-    if (!response.ok) throw new Error(`Chrome CDP HTTP request failed: ${response.status}`);
+    let response: Response;
+    try { response = await fetch(this.endpoint(resource), signal === undefined ? undefined : { signal }); } catch { throw new BrowserCdpUnavailableError(); }
+    if (!response.ok) throw new BrowserCdpUnavailableError();
     const value: unknown = await response.json();
     return value;
   }
@@ -186,12 +210,15 @@ function toTab(value: unknown): BrowserCdpTab | undefined {
 
 function validateWebSocketUrl(value: string, port: number): string {
   const url = new URL(value);
-  if (url.protocol !== 'ws:' || (url.hostname !== '127.0.0.1' && url.hostname !== 'localhost') || (url.port !== '' && Number(url.port) !== port)) throw new Error('Chrome CDP socket is not local');
+  if (url.protocol !== 'ws:' || (url.hostname !== '127.0.0.1' && url.hostname !== 'localhost') || Number(url.port || 80) !== port || url.username !== '' || url.password !== '') throw new Error('Chrome CDP socket is not local');
   return url.toString();
 }
 
-function sendWebSocketRequest(url: string, method: string, params: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
+const closedAfterDispatch = Symbol('owned-browser-close-dispatched');
+
+function sendWebSocketRequest(url: string, method: string, params: Record<string, unknown>, signal?: AbortSignal, allowCloseAfterDispatch = false): Promise<unknown> {
   return new Promise((resolve, reject) => {
+    if (isAborted(signal)) { reject(new Error('Chrome CDP request was cancelled')); return; }
     if (typeof WebSocket === 'undefined') {
       reject(new Error('WebSocket is not available'));
       return;
@@ -199,10 +226,8 @@ function sendWebSocketRequest(url: string, method: string, params: Record<string
     const socket = new WebSocket(url);
     const id = 1;
     let settled = false;
-    const timer = setTimeout(() => {
-      socket.close();
-      reject(new Error('Chrome CDP request timed out'));
-    }, 30_000);
+    let sent = false;
+    const timer = setTimeout(() => finish(() => reject(new Error('Chrome CDP request timed out'))), 30_000);
     const finish = (callback: () => void): void => {
       if (settled) return;
       settled = true;
@@ -212,13 +237,21 @@ function sendWebSocketRequest(url: string, method: string, params: Record<string
       callback();
     };
     const onAbort = (): void => finish(() => reject(new Error('Chrome CDP request was cancelled')));
-    socket.addEventListener('open', () => socket.send(JSON.stringify({ id, method, params })));
+    socket.addEventListener('open', () => {
+      if (settled) return;
+      try { socket.send(JSON.stringify({ id, method, params })); sent = true; }
+      catch { finish(() => reject(new Error('Chrome CDP socket failed'))); }
+    });
     socket.addEventListener('message', (event: MessageEvent) => {
       const value: unknown = typeof event.data === 'string' ? parseJson(event.data) : undefined;
       if (!isRecord(value) || value.id !== id) return;
       finish(() => resolve(value));
     });
     socket.addEventListener('error', () => finish(() => reject(new Error('Chrome CDP socket failed'))));
+    socket.addEventListener('close', () => finish(() => {
+      if (allowCloseAfterDispatch && sent) resolve(closedAfterDispatch);
+      else reject(new Error('Chrome CDP socket closed before a response'));
+    }));
     signal?.addEventListener('abort', onAbort, { once: true });
     if (signal?.aborted === true) onAbort();
   });

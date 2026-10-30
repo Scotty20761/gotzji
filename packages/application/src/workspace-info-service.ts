@@ -1,4 +1,5 @@
-import { appError, err, ok, type Result } from '@lnwjud/domain';
+import { appError, err, ok, type InvocationAuthorization, type Result } from '@lnwjud/domain';
+import { preflightWorkspacePath, type WorkspacePathPreflightResult } from './workspace-path-preflight.js';
 import {
   hostPathApi,
   isAbsoluteHostPath,
@@ -35,6 +36,11 @@ export class WorkspaceInfoService {
     private readonly unrestricted: boolean = false,
     private readonly platform: NodeJS.Platform = process.platform,
   ) {}
+
+  public preflight(actor: FileActor, request: { readonly path: string; readonly userConfirmed?: boolean }, authorization?: InvocationAuthorization): Promise<Result<WorkspacePathPreflightResult>> {
+    void actor;
+    return preflightWorkspacePath(request.path, request.userConfirmed === true, authorization, this.platform);
+  }
 
   public async list(actor: FileActor): Promise<Result<readonly WorkspaceInfo[]>> {
     void actor;
@@ -96,6 +102,16 @@ export class WorkspaceInfoService {
       if (parentRoot === null || !isHostPathWithin(parentRoot, absolutePath, this.platform)) {
         return err(appError('INVALID_INPUT', 'Registered path must be under its parent machine root'));
       }
+    }
+
+    // Advisory preflight receipts never authorize registration. Independently
+    // inspect each ancestor now; reject reparse/symlink links or missing paths.
+    // Windows ACL uncertainty is kept in the preflight status, and the
+    // WorkspaceService repeats stat/realpath during the subsequent add.
+    const targetCheck = await preflightWorkspacePath(absolutePath, true, undefined, this.platform);
+    if (!targetCheck.ok || !targetCheck.value.exists || targetCheck.value.kind !== 'directory'
+      || targetCheck.value.reparseChain === 'CONFLICT' || targetCheck.value.canonicalPath === undefined) {
+      return err(appError('CONFLICT', 'Workspace path is missing, changed or could not be independently verified for registration', true));
     }
 
     const existing = await this.workspaces.list();

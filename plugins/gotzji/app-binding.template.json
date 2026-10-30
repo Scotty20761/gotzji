@@ -1,0 +1,8 @@
+{
+  "apps": {
+    "gotzji": {
+      "id": "REGISTERED_MCP_TECHNICAL_ID",
+      "required": true
+    }
+  }
+}

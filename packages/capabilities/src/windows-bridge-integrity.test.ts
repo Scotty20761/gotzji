@@ -119,7 +119,6 @@ describe('PowerShellWindowsCapabilityBridge integrity', () => {
     expect(script).toContain("'equal' { $operator = 3 }");
     expect(script).toContain("elseif ($formula2.Length -gt 0) { $target.Validation.Add($validationType, 1, $operator, $formula, $formula2) }");
     expect(script).toContain('# PowerPoint chart insertion requires an active presentation window on some Office 16 builds;');
-    expect(script).toContain('$presentation = $powerpoint.Presentations.Open($filePath, $false, $false, $true)');
     expect(script).toContain('$presentation.SaveAs($target, 32)');
     expect(script).not.toContain('$presentation.ExportAsFixedFormat($target, 2)');
   });

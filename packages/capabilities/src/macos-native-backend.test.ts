@@ -15,13 +15,13 @@ describe('MacosNativeCapabilityBackend', () => {
     expect(result).toMatchObject({ ok: true, value: { available: false, ready: false, reason: 'native_host_missing', backend: 'darwin-native-host' } });
   });
 
-  it('requires authorization for input mutations and forwards health probes', async () => {
+  it('requires authorization for input mutations and forwards provider status', async () => {
     const calls: string[] = [];
     const backend = new MacosNativeCapabilityBackend('input_event', { bridge: bridgeFor(calls) });
-    await expect(backend.execute({ action: 'status' })).resolves.toMatchObject({ ok: true, value: { available: true, ready: false, readinessReason: 'provider_not_implemented' } });
+    await expect(backend.execute({ action: 'status' })).resolves.toMatchObject({ ok: true, value: { available: true, ready: true } });
     await expect(backend.execute({ action: 'click', x: 1, y: 2 })).resolves.toMatchObject({ ok: false, error: { code: 'PERMISSION_REQUIRED' } });
     await expect(backend.execute({ action: 'click', x: 1, y: 2, userConfirmed: true })).resolves.toMatchObject({ ok: true });
-    expect(calls).toEqual(['health', 'input_event']);
+    expect(calls).toEqual(['input_event', 'input_event']);
   });
 
   it('keeps path-bearing media operations inside the active project', async (): Promise<void> => {

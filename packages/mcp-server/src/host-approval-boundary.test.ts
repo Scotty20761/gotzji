@@ -18,7 +18,9 @@ describe('mandatory independent host approval', () => {
     ['mcp_call', 'mcp_call', { server: 'child', tool: 'write', arguments: { path: 'x' }, userConfirmed: true }],
   ] as const)('denies %s when no trusted host approval provider exists', async (_label, tool, input) => {
     const calls: string[] = [];
+    const resultCodes: string[] = [];
     const registry = new ToolRegistry(servicesWithCalls(calls), actor, {
+      activity: { record: async (event): Promise<void> => { if (event.phase === 'completed') resultCodes.push(event.resultCode); } },
       activeWorkspaceScopeProvider: activeScope,
       profileProvider: balancedProfile,
       codexToolsEnabled: true,
@@ -28,8 +30,27 @@ describe('mandatory independent host approval', () => {
 
     expect(response).toMatchObject({
       isError: true,
-      structuredContent: { error: { code: 'PERMISSION_DENIED', message: expect.stringContaining('Host exact-action approval') } },
+      structuredContent: { error: { code: 'PERMISSION_DENIED', message: expect.stringContaining('Host exact-action approval'), details: { denialSource: 'host_approval_adapter', approvalState: 'unavailable' } } },
     });
+    expect(resultCodes).toContain('HOST_APPROVAL_UNAVAILABLE');
+    expect(calls).toEqual([]);
+  });
+
+  it('identifies host approval rejection without dispatching the child tool', async () => {
+    const calls: string[] = [];
+    const resultCodes: string[] = [];
+    const registry = new ToolRegistry(servicesWithCalls(calls), actor, {
+      activity: { record: async (event): Promise<void> => { if (event.phase === 'completed') resultCodes.push(event.resultCode); } },
+      activeWorkspaceScopeProvider: activeScope,
+      profileProvider: balancedProfile,
+      hostMutationApprovalProvider: async (): Promise<boolean> => false,
+    });
+    const response = await registry.invoke('mcp_call', { server: 'child', tool: 'write', arguments: { path: 'x' }, userConfirmed: true });
+    expect(response).toMatchObject({
+      isError: true,
+      structuredContent: { error: { code: 'PERMISSION_DENIED', details: { denialSource: 'host_approval_adapter', approvalState: 'denied_or_unverified' } } },
+    });
+    expect(resultCodes).toContain('HOST_APPROVAL_DENIED_OR_UNVERIFIED');
     expect(calls).toEqual([]);
   });
 
@@ -83,7 +104,7 @@ describe('mandatory independent host approval', () => {
 
     expect(response).toMatchObject({
       isError: true,
-      structuredContent: { error: { code: 'PERMISSION_DENIED', message: expect.stringContaining('Host exact-action approval') } },
+      structuredContent: { error: { code: 'PERMISSION_DENIED', message: expect.stringContaining('Host exact-action approval'), details: { denialSource: 'host_approval_adapter', approvalState: 'unavailable' } } },
     });
     expect(calls).toEqual([]);
   });

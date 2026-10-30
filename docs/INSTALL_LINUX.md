@@ -1,10 +1,10 @@
-# Install lnwjud on Linux
+# Linux source-compatibility notes
 
-The first Linux release target is x64 on Ubuntu 24.04 LTS. GNOME Wayland and
-X11 are acceptance sessions; KDE Wayland is a smoke target. Linux arm64 has a
-separate target-native artifact in the release matrix but remains preview until
-Electron, native host, ripgrep, tunnel-client, optional media dependencies,
-package smoke, and provenance all have matching production evidence.
+The private gotzji v1 product publishes Windows x64 only. This retained guide
+describes Linux source compatibility and a future native target; it is not a
+claim that an installable gotzji Linux artifact is currently published or
+supported. Linux remains deferred until Electron, native host, ripgrep,
+tunnel-client, package smoke, and provenance all have matching target-host evidence.
 
 ## Install and verify
 
@@ -27,9 +27,21 @@ a sandbox error, use the installed DEB; do not disable the Electron sandbox or
 the host-wide AppArmor policy. Native CI tests the installed DEB, while the
 AppImage has a separate extraction/layout check.
 
-The package includes Electron, target-native ripgrep, the official OpenAI
-`tunnel-client`, and the bounded native-host protocol helper. System Node.js is
-not required for the packaged Desktop app or the packaged STDIO launcher.
+A future qualified package includes Electron, target-native ripgrep, the
+official OpenAI `tunnel-client`, and the bounded native-host protocol helper. A
+system Node.js installation is not required for that packaged Desktop app.
+
+## AppImage update recovery
+
+AppImage users can use the built-in update path when launched through a real
+AppImage (`APPIMAGE` must identify a regular file). Before requesting native
+replacement, lnwjud makes a hard-linked backup beside the running AppImage
+(`.lnwjud-backup-<id>`). If the native updater deletes the old file but fails
+to move the downloaded replacement, lnwjud attempts to restore that backup.
+If the filesystem cannot create the backup, installation is refused instead
+of risking loss of the old executable. Successfully completed upgrades may
+leave an old hard-link backup for manual removal after the new build has been
+verified. Package-manager-controlled DEB installs do **not** self-update.
 
 ## Desktop session and permissions
 
@@ -52,18 +64,11 @@ or PipeWire is shown as a dependency state, not as a successful capability.
 
 ## MCP and tunnel setup
 
-Use the packaged launcher path from the app's MCP panel, for example:
+gotzji v1 does not ship a Linux package or a packaged stdio launcher. Do not
+configure Codex or Claude against an `lnwjud-mcp-stdio` path as a gotzji product
+route. Direct stdio remains source-compatibility coverage only.
 
-```text
-/opt/lnwjud/lnwjud-mcp-stdio --workspace /home/user/project
-```
-
-The exact installation path depends on the AppImage/DEB layout. The launcher
-executes the packaged Electron host with `--mcp-stdio`, keeps stdout MCP-clean,
-and sends diagnostics to stderr. Always pass an explicit project path when
-using a new installation.
-
-For ChatGPT Secure MCP Tunnel, configure the Platform tunnel and runtime key
+For a future qualified Linux ChatGPT Secure MCP Tunnel route, configure the Platform tunnel and runtime key
 in Settings, keep the `tunnel-client` override empty, and let lnwjud select the
 verified bundled client. The key is protected by the host secure-storage
 provider and the tunnel targets the Desktop loopback MCP endpoint. The source

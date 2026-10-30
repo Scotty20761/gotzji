@@ -1,6 +1,6 @@
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { ok } from '@lnwjud/domain';
-import type { ToolAvailabilitySnapshot } from '@lnwjud/shared';
+import { APP_NAME, type ToolAvailabilitySnapshot } from '@lnwjud/shared';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ActivityTracker } from './activity-tracker.js';
 import { ToolRegistry, type McpApplicationServices } from './tool-registry.js';
@@ -98,20 +98,66 @@ describe('MCP localhost HTTP transport', () => {
 
     try {
       await client.connect(transport);
-      for (let index = 0; index < 64; index += 1) {
+      const requestCount = 16;
+      for (let index = 0; index < requestCount; index += 1) {
         const tools = await client.listTools();
         expect(tools.tools.length).toBeGreaterThan(0);
       }
 
       await vi.waitFor(() => {
-        expect(listeners.size).toBe(0);
-        expect(closed).toBe(created);
+        expect(listeners.size).toBe(1);
+        expect(closed).toBe(created - 1);
       });
-      expect(created).toBeGreaterThanOrEqual(64);
+      expect(created).toBeGreaterThanOrEqual(requestCount);
+      await handle.close();
+      expect(listeners.size).toBe(0);
+      expect(closed).toBe(created);
     } finally {
       await client.close().catch(() => undefined);
     }
   }, 15_000);
+
+  it('publishes endpoint tool changes to a modern listen stream and refreshes the next tools/list response', async () => {
+    await handle.close();
+    let snapshot: ToolAvailabilitySnapshot = { version: 1, generation: 0, overrides: {} };
+    const listeners = new Set<(next: ToolAvailabilitySnapshot) => void>();
+    handle = await startMcpHttp({
+      port: 0,
+      services: {},
+      actor: { clientId: 'modern-tool-list-change-test', clientName: 'modern-tool-list-change-test' },
+      toolAvailabilitySnapshotProvider: () => snapshot,
+      toolAvailabilitySubscribe(listener): () => void {
+        listeners.add(listener);
+        return () => { listeners.delete(listener); };
+      },
+    });
+
+    const client = new Client(
+      { name: 'modern-tool-list-change-client', version: '0.1.0' },
+      { versionNegotiation: { mode: { pin: '2026-07-28' } } },
+    );
+    const transport = new StreamableHTTPClientTransport(handle.endpoint);
+    let notifications = 0;
+    client.setNotificationHandler('notifications/tools/list_changed', () => { notifications += 1; });
+
+    try {
+      await client.connect(transport);
+      const initial = await client.listTools(undefined, { cacheMode: 'refresh' });
+      expect(initial.tools.map((tool) => tool.name)).toContain('read_file');
+      const subscription = await client.listen({ toolsListChanged: true });
+      expect(subscription.honoredFilter).toMatchObject({ toolsListChanged: true });
+
+      snapshot = { version: 1, generation: 1, overrides: { read_file: 'disabled' } };
+      for (const listener of [...listeners]) listener(snapshot);
+
+      await vi.waitFor(() => { expect(notifications).toBe(1); }, { timeout: 1_000 });
+      const updated = await client.listTools(undefined, { cacheMode: 'refresh' });
+      expect(updated.tools.map((tool) => tool.name)).not.toContain('read_file');
+      await subscription.close();
+    } finally {
+      await client.close().catch(() => undefined);
+    }
+  });
 
   it('preserves one-shot continuation tokens across modern per-request MCP server recreation', async () => {
     await handle.close();
@@ -595,7 +641,7 @@ describe('MCP localhost HTTP transport', () => {
 
     expect(response.status).toBe(200);
     expect(response.headers.get('x-lnwjud-service')).toBe('desktop-mcp');
-    await expect(response.json()).resolves.toMatchObject({ product: 'lnwjud', service: 'desktop-mcp', protocol: 1 });
+    await expect(response.json()).resolves.toMatchObject({ product: APP_NAME, service: 'desktop-mcp', protocol: 1 });
   });
 
   it('does not poison a legacy session after one protocol-level tool error', async () => {

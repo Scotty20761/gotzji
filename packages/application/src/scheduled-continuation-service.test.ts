@@ -408,6 +408,25 @@ describe('ScheduledContinuationService', () => {
     }
   });
 
+  it('preserves the exact host-provided app connector identity in the scheduled wake prompt', async () => {
+    const { database, goals, scheduled } = await fixture();
+    try {
+      const started = await startGoal(goals, 'connector-bound schedule');
+      const appMention = `[$team-lnwjud](app://asdk_app_${'a'.repeat(32)})`;
+      await expect(scheduled.prepareScheduledContinuation(actor, validPrepare(started, {
+        connectorMention: '[$team-lnwjud](https://untrusted.invalid)',
+      }))).resolves.toMatchObject({ ok: false, error: { code: 'INVALID_INPUT' } });
+      const result = await scheduled.prepareScheduledContinuation(actor, validPrepare(started, { connectorMention: appMention }));
+      expect(result.ok).toBe(true);
+      if (!result.ok) throw new Error('prepare failed');
+      expect(result.value.scheduleRequest.prompt.startsWith(`${appMention} `)).toBe(true);
+      expect(result.value.scheduleRequest.prompt).toContain('claim_scheduled_continuation');
+      expect(result.value.scheduleRequest.prompt).not.toContain(started.leaseToken!);
+    } finally {
+      database.close();
+    }
+  });
+
   it('never puts objective, nextAction, summary, evidence, lease token, or arbitrary work text in the native prompt', async () => {
     const { database, goals, scheduled } = await fixture();
     try {

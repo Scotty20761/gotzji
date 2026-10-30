@@ -36,6 +36,8 @@ export function mcpBridgeTools(context: McpToolContext): McpToolDefinition[] {
       description: 'Call a tool on a discovered local MCP server. Child side effects and filesystem/network scope are controlled by that child server, so standard mode treats every mcp_call as opaque mutation and requires explicit chat plus host exact-action approval. Trusted Full Bypass skips lnwjud application approval; the child server still enforces its own policy.',
       ...opaqueChildMutation,
       inputSchema: mcpCallSchema,
+      // Child MCP results may be content-only; never require structuredContent here.
+      outputSchema: null,
       handler: async (input, signal) => context.services.extensions === undefined
         ? missingService()
         : context.services.extensions.callMcpTool({

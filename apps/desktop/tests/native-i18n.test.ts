@@ -2,7 +2,7 @@
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { UpdateStatus } from '@lnwjud/ipc-contracts';
-import { localizedUpdateStatusMessage, nativeMessages } from '../src/main/native-i18n.js';
+import { gotzjiNativeMessages, localizedUpdateStatusMessage, nativeMessages } from '../src/main/native-i18n.js';
 
 const mainRoot = path.resolve(import.meta.dirname, '..', 'src', 'main');
 
@@ -14,12 +14,17 @@ describe('native main-process i18n', () => {
     };
     expect(localizedUpdateStatusMessage(ready, 'th')).toContain('พร้อมติดตั้ง');
     expect(localizedUpdateStatusMessage(ready, 'en')).toContain('is ready');
+    expect(localizedUpdateStatusMessage({
+      ...ready, phase: 'unavailable', canInstall: false, message: nativeMessages('th').updaterUnavailableMacosUnsigned,
+    }, 'en')).toContain('ad-hoc');
     expect(nativeMessages('th').shutdownBlockedTitle).toContain('ยังทำงานอยู่');
     expect(nativeMessages('en').shutdownBlockedTitle).toBe('lnwjud is still running');
     expect(nativeMessages('th').updaterTunnelStopConfirm).toContain('ติดตั้งต่อ');
     expect(nativeMessages('en').updaterTunnelStopConfirm).toBe('Stop Tunnel and Install');
     expect(nativeMessages('th').updaterTunnelStopDetail).toContain('Tunnel ID และ Key เดิม');
     expect(nativeMessages('en').updaterTunnelStopDetail).toContain('same Tunnel ID and key');
+    expect(gotzjiNativeMessages.trayOpen).toContain('gotzji');
+    expect(gotzjiNativeMessages.manualUpdate).toContain('อัปเดต');
   });
 
   it('keeps Thai native UI literals out of main and tray orchestration files', async () => {

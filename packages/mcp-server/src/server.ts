@@ -150,7 +150,7 @@ export function createMcpServer(options: McpServerOptions): McpServer {
     const registeredTool = server.registerTool(tool.name, {
       description: tool.description,
       inputSchema: tool.inputSchema,
-      outputSchema: tool.outputSchema,
+      ...(tool.outputSchema === undefined ? {} : { outputSchema: tool.outputSchema }),
       annotations: tool.annotations,
     }, async (input: unknown, context): Promise<CallToolResult> => {
       const dispatchContext = context as ProgressNotifyContext & RunBudgetContext;

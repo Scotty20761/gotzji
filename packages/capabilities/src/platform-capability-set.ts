@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { appError, err, ok, type Result } from '@lnwjud/domain';
 import { BrowserCdpBackend } from './browser-cdp-backend.js';
 import { NodeBrowserCdpProtocol } from './browser-cdp-protocol.js';
 import { HealthCapabilityBackend } from './health-backend.js';
@@ -47,6 +48,7 @@ export interface PlatformCapabilitySet {
   readonly shell: ShellCapabilityBackend;
   readonly domCdp: BrowserCdpBackend;
   readonly backends: Readonly<Record<string, CapabilityBackend>>;
+  close(): Promise<Result<void>>;
 }
 
 /**
@@ -206,11 +208,26 @@ export function createPlatformCapabilitySet(options: PlatformCapabilitySetOption
     wslExec,
     wslFs,
   });
+  let closing: Promise<Result<void>> | undefined;
+  const close = (): Promise<Result<void>> => {
+    service.close();
+    if (closing !== undefined) return closing;
+    const operation = (async (): Promise<Result<void>> => {
+      const [native, browserResult] = await Promise.allSettled([options.nativeHost?.close() ?? Promise.resolve(ok(undefined)), browser.close()]);
+      if (native.status === 'fulfilled' && !native.value.ok) return native.value;
+      if (native.status === 'rejected' || browserResult.status === 'rejected') return err(appError('INTERNAL_ERROR', 'Owned capability cleanup could not be verified', true));
+      return ok(undefined);
+    })();
+    closing = operation;
+    void operation.finally(() => { if (closing === operation) closing = undefined; });
+    return operation;
+  };
   return {
     service,
     health,
     shell,
     domCdp: browser,
+    close,
     backends: { accessibility, inputEvent, vision, window, systemInfo, notification, fileDialog, clipboard, audio, screenRecord, office, scheduler, wslExec, wslFs },
   };
 }
@@ -220,6 +237,8 @@ function withCaptureFallback(primary: CapabilityBackend, fallback: CapabilityBac
     execute: async (input, signal, authorization): Promise<import('@lnwjud/domain').Result<unknown>> => {
       const action = isRecord(input) && typeof input.action === 'string' ? input.action : 'status';
       const result = await primary.execute(input, signal, authorization);
+      const parameters = isRecord(input) && isRecord(input.parameters) ? input.parameters : {};
+      if (isRecord(input) && (input.handle !== undefined || input.session_id !== undefined || parameters.handle !== undefined || parameters.session_id !== undefined)) return result;
       if (action === 'status') {
         if (result.ok && isRecord(result.value) && result.value.ready === true) return result;
         const alternate = await fallback.execute(input, signal, authorization);

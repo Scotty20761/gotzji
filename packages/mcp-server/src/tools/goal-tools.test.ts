@@ -3,7 +3,7 @@ import { ok } from '@lnwjud/domain';
 import { ContextEconomyRuntime } from '../context-economy.js';
 import { ActivityTracker, type ActivitySinkEvent } from '../activity-tracker.js';
 import { ToolRegistry } from '../tool-registry.js';
-import { goalTools } from './goal-tools.js';
+import { GOAL_TOOL_NAMES, goalTools } from './goal-tools.js';
 import type { McpToolContext, McpToolDefinition } from './tool-types.js';
 
 const actor = { clientId: 'chatgpt-web-client', clientName: 'ChatGPT Web', sessionId: 'session-a' };
@@ -22,8 +22,9 @@ describe('durable goal MCP tools', () => {
       'run_goal', 'get_goal', 'get_goal_plan', 'update_goal_plan', 'update_goal_acceptance', 'revise_goal_intent',
       'create_context_capsule', 'get_context_capsule', 'list_context_capsules', 'context_pressure',
       'record_delivery_receipt', 'list_delivery_receipts', 'advance_goal_iteration',
-      'checkpoint_goal', 'finish_goal', 'cancel_goal', 'reconcile_goals', 'list_goals',
+      'checkpoint_goal', 'checkpoint_goal_engineering', 'finish_goal', 'cancel_goal', 'reconcile_goals', 'list_goals',
     ]);
+    expect([...GOAL_TOOL_NAMES]).toEqual([...byName.keys()]);
     expect(byName.get('run_goal')).toMatchObject({ permission: 'WRITE', annotations: { readOnlyHint: false, destructiveHint: false } });
     expect(byName.get('get_goal')).toMatchObject({ permission: 'READ', annotations: { readOnlyHint: true, destructiveHint: false } });
     expect(byName.get('list_goals')).toMatchObject({ permission: 'READ', annotations: { readOnlyHint: true, destructiveHint: false } });
@@ -84,20 +85,21 @@ describe('durable goal MCP tools', () => {
   });
 
   it('forwards Engineering Harness gate updates and review findings from checkpoint_goal', async () => {
-    let checkpointRequest: unknown;
+    const checkpointRequests: unknown[] = [];
     const context = {
       actor,
       contextEconomy: new ContextEconomyRuntime(),
       services: {
         goals: {
           async checkpointGoal(_actor: unknown, request: unknown) {
-            checkpointRequest = request;
+            checkpointRequests.push(request);
             return ok({});
           },
         },
       },
     } as unknown as McpToolContext;
     const checkpointTool = tool(context, 'checkpoint_goal');
+    const engineeringCheckpointTool = tool(context, 'checkpoint_goal_engineering');
     const engineeringGateUpdates = [
       { gateId: 'diff', status: 'passed', evidence: {
         source: 'host_observed', observedAt: '2026-09-28T00:00:00.000Z', workspaceId: 'workspace-1',
@@ -117,10 +119,23 @@ describe('durable goal MCP tools', () => {
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) throw new Error('checkpoint_goal input was rejected');
 
+    const aliasParsed = engineeringCheckpointTool.parse({
+      goalId: 'goal-1', leaseToken: 'lease-token', expectedRevision: 1,
+      currentPhase: 'verify', summary: 'Ready to finish.', stepUpdates: [], nextAction: 'Finish.',
+      blockers: [], evidence: [], trackedTasks: [], engineeringGateUpdates, engineeringReviewFindings,
+    });
+    expect(aliasParsed.ok).toBe(true);
+    if (!aliasParsed.ok) throw new Error('checkpoint_goal_engineering input was rejected');
+
     const result = await checkpointTool.execute(parsed.value, new AbortController().signal);
+    const aliasResult = await engineeringCheckpointTool.execute(aliasParsed.value, new AbortController().signal);
 
     expect(result.ok).toBe(true);
-    expect(checkpointRequest).toMatchObject({ engineeringGateUpdates, engineeringReviewFindings });
+    expect(aliasResult.ok).toBe(true);
+    expect(checkpointRequests).toHaveLength(2);
+    expect(checkpointRequests[0]).toMatchObject({ engineeringGateUpdates, engineeringReviewFindings });
+    expect(checkpointRequests[1]).toMatchObject({ engineeringGateUpdates, engineeringReviewFindings });
+    expect(engineeringCheckpointTool.inputSchema).toBe(checkpointTool.inputSchema);
   });
 
   it('run_goal returns immediately and never invokes process/capability execution', async () => {
@@ -572,11 +587,17 @@ describe('durable goal MCP tools', () => {
       goalId: 'goal-1', leaseToken, expectedRevision: 0, currentPhase: 'verify', summary: 'token=summary-secret', stepUpdates: [], nextAction: 'continue', blockers: [], evidence: [], activeTaskIds: [],
     });
     expect(checkpointed.isError).not.toBe(true);
+    const aliasCheckpointed = await registry.invoke('checkpoint_goal_engineering', {
+      goalId: 'goal-1', leaseToken, expectedRevision: 1, currentPhase: 'verify', summary: 'token=alias-summary-secret', stepUpdates: [], nextAction: 'continue', blockers: [], evidence: [], activeTaskIds: [],
+    });
+    expect(aliasCheckpointed.isError).not.toBe(true);
     const serialized = JSON.stringify(events);
     expect(serialized).not.toContain(leaseToken);
     expect(serialized).not.toContain('objective-secret');
     expect(serialized).not.toContain('summary-secret');
+    expect(serialized).not.toContain('alias-summary-secret');
     expect(events.find((entry) => entry.toolName === 'checkpoint_goal')?.targetSummary).toContain('goal-1');
+    expect(events.find((entry) => entry.toolName === 'checkpoint_goal_engineering')?.targetSummary).toContain('goal-1');
   });
 
   it('registers the durable goal orchestration tools in the public registry/catalog with typed schemas', () => {
@@ -586,7 +607,7 @@ describe('durable goal MCP tools', () => {
       'run_goal', 'get_goal', 'get_goal_plan', 'update_goal_plan', 'update_goal_acceptance', 'revise_goal_intent',
       'create_context_capsule', 'get_context_capsule', 'list_context_capsules', 'context_pressure',
       'record_delivery_receipt', 'list_delivery_receipts', 'advance_goal_iteration',
-      'checkpoint_goal', 'finish_goal', 'cancel_goal', 'reconcile_goals', 'list_goals',
+      'checkpoint_goal', 'checkpoint_goal_engineering', 'finish_goal', 'cancel_goal', 'reconcile_goals', 'list_goals',
     ]) expect(names).toContain(name);
     const runSchema = registry.describeSchema('run_goal');
     const checkpointSchema = registry.describeSchema('checkpoint_goal');
@@ -599,6 +620,7 @@ describe('durable goal MCP tools', () => {
     expect(JSON.stringify(checkpointSchema)).toContain('expectedRevision');
     expect(JSON.stringify(checkpointSchema)).toContain('expectedUserIntentRevision');
     expect(JSON.stringify(checkpointSchema)).toContain('releaseLease');
+    expect(registry.describeInputJsonSchema('checkpoint_goal_engineering')).toEqual(registry.describeInputJsonSchema('checkpoint_goal'));
     expect(JSON.stringify(planSchema)).toContain('steps');
     expect(JSON.stringify(capsuleSchema)).toContain('expectedUserIntentRevision');
     const context = { actor, contextEconomy: new ContextEconomyRuntime(), services: {} } as McpToolContext;

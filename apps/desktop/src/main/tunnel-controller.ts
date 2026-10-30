@@ -14,6 +14,7 @@ import { formatTunnelExitMessage, tunnelExitHintFromLog } from './tunnel-exit.js
 import { acquireTunnelLock, readTunnelLock, type TunnelLockAcquisition, type TunnelLockOwner } from './tunnel-lock.js';
 import { extractTunnelId, extractTunnelMcpServerUrl, normalizeLoopbackMcpUrl, rewriteTunnelYamlMcpServerUrl, rewriteTunnelYamlRuntimeApiKeyRef } from './tunnel-profile.js';
 import { TunnelRuntimeAdapter, type TunnelRuntimeAdapterOptions } from './tunnel-runtime-adapter.js';
+import { tunnelAliasRecoveryDirectory } from './tunnel-runtime-alias-journal.js';
 import { TunnelRuntimeReconciler, type TunnelRuntimeDesiredState, type TunnelRuntimeReconcilerAdapter } from './tunnel-runtime-reconciler.js';
 import { TunnelRuntimeSupervisor } from './tunnel-runtime-supervisor.js';
 import { maskTunnelId, TUNNEL_RUNTIME_ALIAS, type TunnelRuntimeSnapshot } from './tunnel-runtime-state.js';
@@ -587,6 +588,51 @@ export class TunnelController {
 
   public stopOwned(): Promise<TunnelStatus> {
     return this.requestStop();
+  }
+
+  /** A user-confirmed factory reset must retire the external native alias before deleting app data. */
+  public async prepareFactoryReset(): Promise<void> {
+    const configuredPath = this.resolveClientPath();
+    const clientPath = configuredPath !== null && existsSync(configuredPath)
+      ? configuredPath : this.options.getBundledClientPath?.() ?? null;
+    if (clientPath === null || !existsSync(clientPath)) {
+      throw new Error('Cannot verify the local persistent Tunnel alias: bundled tunnel-client is unavailable. Reset was not started.');
+    }
+    const adapter = this.createRuntimeAdapter(clientPath, '');
+    const capabilities = await adapter.capabilities();
+    if (!capabilities.nativeRuntimes) {
+      throw new Error('Cannot verify persistent Tunnel alias state with this tunnel-client. Reset was not started.');
+    }
+    const initial = await adapter.status();
+    if (initial.exists && initial.running) {
+      const configuredTunnelId = await this.resolvePersistentTunnelId();
+      const savedOwner = this.runtimeOwnerPath();
+      if (initial.pid === null || initial.tunnelId === null || initial.tunnelId !== configuredTunnelId
+        || (this.runtimeMode !== 'native-managed' && (savedOwner === null || savedOwner !== path.resolve(clientPath)))) {
+        throw new Error('Running Tunnel alias identity or process ownership is not verified. Reset did not begin; stop the original owned Tunnel first.');
+      }
+    }
+    await this.stop();
+    const status = await adapter.status();
+    if (!status.exists) {
+      if (await this.probeExternalRunning(true) !== 'gone') {
+        throw new Error('Tunnel process still exists without native alias metadata; reset did not begin.');
+      }
+      return;
+    }
+    if (status.running || status.pid !== null || status.tunnelId === null) {
+      throw new Error('Persistent Tunnel alias is still active or ownership cannot be verified. Stop the owned Tunnel first; reset did not begin.');
+    }
+    if (await this.probeExternalRunning(true) !== 'gone') {
+      throw new Error('Tunnel process liveness is not verified as stopped; reset did not begin.');
+    }
+    if (adapter.retireStoppedAlias === undefined) {
+      throw new Error('The installed tunnel-client cannot safely retire a stopped alias; reset did not begin.');
+    }
+    await adapter.retireStoppedAlias(status.tunnelId);
+    if ((await adapter.status()).exists) {
+      throw new Error('Persistent Tunnel alias remains after local cleanup; reset did not begin.');
+    }
   }
 
   private requestStop(): Promise<TunnelStatus> {
@@ -1166,10 +1212,23 @@ export class TunnelController {
       return false;
     }
     if (storedTunnelId !== null && nativeStatus.tunnelId !== null && nativeStatus.tunnelId !== storedTunnelId) {
-      throw new Error('Persistent tunnel alias lnwjud belongs to a different Tunnel ID; refusing to stop it automatically');
+      if (nativeStatus.running || nativeStatus.pid !== null) {
+        throw new Error('Persistent tunnel alias lnwjud belongs to a different Tunnel ID; refusing to stop it automatically');
+      }
+      if (await this.probeExternalRunning(true) !== 'gone' || adapter.retireStoppedAlias === undefined) {
+        throw new Error('Stopped lnwjud Tunnel alias has a different Tunnel ID, but safe cleanup could not be verified. No other runtime was stopped; explicitly stop the original runtime and retry.');
+      }
+      await adapter.retireStoppedAlias(nativeStatus.tunnelId);
+      this.options.setRuntimeOwnerPath?.('');
+      this.invalidateExternalProbeCache();
+      return true;
     }
     if (nativeStatus.running) {
-      const stopped = await adapter.stop(storedTunnelId ?? nativeStatus.tunnelId ?? undefined);
+      if (storedTunnelId === null || nativeStatus.tunnelId !== storedTunnelId || nativeStatus.pid === null
+        || recordedOwner === null || recordedOwner !== path.resolve(clientPath)) {
+        throw new Error('Running native Tunnel alias ownership is not proven by saved Tunnel ID, owner executable and PID; refusing to stop it automatically');
+      }
+      const stopped = await adapter.stop(storedTunnelId);
       if (stopped.exists && stopped.running) {
         throw new Error('Could not positively verify the recorded Persistent Tunnel Runtime stopped');
       }
@@ -1199,6 +1258,7 @@ export class TunnelController {
     const options: TunnelRuntimeAdapterOptions = {
       clientPath,
       profileDirectory: this.profileDirectory(),
+      recoveryDirectory: tunnelAliasRecoveryDirectory(this.options.getDataPath()),
       environment: tunnelClientEnv(apiKey, this.profileDirectory(), this.options.platform ?? process.platform),
     };
     return this.options.createRuntimeAdapter?.(options) ?? new TunnelRuntimeAdapter(options);

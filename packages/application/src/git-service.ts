@@ -1,4 +1,7 @@
 import { realpath, stat } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { ProcessManager } from '@lnwjud/process';
+import type { ManagedWriterAdmissionPort } from './writer-admission.js';
 import path from 'node:path';
 import {
   appError,
@@ -31,11 +34,18 @@ export interface GitRunRequest {
   readonly userConfirmed?: boolean;
 }
 
+export interface GitManagedWriterOptions {
+  readonly writerAdmission?: ManagedWriterAdmissionPort;
+  readonly nativeContainmentRoot?: string;
+  readonly processManager?: ProcessManager;
+}
+
 export class GitService {
   public constructor(
     private readonly workspaces: WorkspaceRepository,
     private readonly guard: WorkspacePathGuard = new WorkspacePathGuard(),
     private readonly adapter: GitAdapter = new GitAdapter(),
+    private readonly writerOptions: GitManagedWriterOptions = {},
   ) {}
 
   public async status(actor: FileActor, workspaceId: string, signal?: AbortSignal): Promise<Result<GitStatusResult>> {
@@ -105,7 +115,52 @@ export class GitService {
     }
     const cwd = await this.resolveCwd(request.workspaceId, request.cwd, authorization);
     if (!cwd.ok) return cwd;
-    return this.adapter.run(cwd.value, request.args, request.timeoutMs, signal);
+    if (isProvablyReadOnlyGitInvocation(request.args) || this.writerOptions.writerAdmission === undefined) {
+      return this.adapter.run(cwd.value, request.args, request.timeoutMs, signal);
+    }
+    if (process.platform !== 'win32') return this.adapter.run(cwd.value, request.args, request.timeoutMs, signal);
+    if (this.writerOptions.nativeContainmentRoot === undefined) {
+      return err(appError('CONFLICT', 'Windows native Git mutation containment is required while managed writer admission is enabled'));
+    }
+    return this.runContainedMutation(actor, request, cwd.value, signal);
+  }
+
+  private async runContainedMutation(actor: FileActor, request: GitRunRequest, cwd: string, signal?: AbortSignal): Promise<Result<GitCommandResult>> {
+    const containmentId = randomUUID();
+    const nativeRoot = this.writerOptions.nativeContainmentRoot!;
+    const receiptPath = path.join(nativeRoot, containmentId, 'containment.receipt.json');
+    const admission = await this.writerOptions.writerAdmission!.enter({
+      actorClientId: actor.clientId,
+      workspaceId: request.workspaceId ?? 'unscoped-git',
+      kind: 'contained_process',
+      nativeReceiptPath: receiptPath,
+    });
+    if (!admission.ok) return admission;
+    // Only a zero-active native Windows Job receipt authorizes release.
+    const manager = this.writerOptions.processManager ?? new ProcessManager(undefined, undefined, undefined, undefined, nativeRoot);
+    const started = await manager.start({
+      executable: 'git',
+      args: [...request.args],
+      cwd,
+      containmentId,
+      stdinMode: 'ignore',
+      timeoutMs: request.timeoutMs ?? 60_000,
+    }, signal, undefined, () => { void admission.value.releaseAfterVerifiedTermination(); });
+    if (!started.ok) return started;
+    let snapshot = started.value;
+    while (snapshot.state === 'running' || snapshot.state === 'starting') {
+      await new Promise<void>((resolve) => setTimeout(resolve, 80));
+      const state = manager.status(snapshot.processId);
+      if (!state.ok) return state;
+      snapshot = state.value;
+    }
+    if (snapshot.state === 'termination_unverified') return err(appError('CONFLICT', 'Git process descendant termination is unverified', true));
+    const logs = manager.logs(snapshot.processId, {});
+    if (!logs.ok) return logs;
+    if (logs.value.truncated) return err(appError('FILE_TOO_LARGE', 'Git output exceeded managed process log capture limit'));
+    const stdout = logs.value.entries.filter((entry) => entry.stream === 'stdout').map((entry) => entry.text).join('');
+    const stderr = logs.value.entries.filter((entry) => entry.stream === 'stderr').map((entry) => entry.text).join('');
+    return ok({ exitCode: snapshot.exitCode ?? -1, stdout, stderr });
   }
 
   private async resolveCwd(workspaceId: string | undefined, requestedCwd: string | undefined, authorization?: InvocationAuthorization): Promise<Result<string>> {

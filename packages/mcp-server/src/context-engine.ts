@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
-import { err, ok, type AppError, type Result } from '@lnwjud/domain';
-import type { FileActor, GitService, SearchService } from '@lnwjud/application';
+import path from 'node:path';
+import { z } from 'zod';
+import { err, ok, type AppErrorCode, type Result } from '@lnwjud/domain';
+import type { FileActor } from '@lnwjud/application';
 import { classifyContextPath } from '@lnwjud/search';
 import type { McpApplicationServices } from './tools/tool-types.js';
 import { ContextEconomyRuntime, type ContextEconomyStats, type ContextDeliveryKind } from './context-economy.js';
@@ -8,6 +10,50 @@ import { ContinuationStore, scopedContinuationKey } from './continuation-store.j
 
 export type ContextIntent = 'auto' | 'debug' | 'implement' | 'review' | 'trace' | 'explore';
 export type ContextMode = 'optimized' | 'full' | 'exhaustive';
+
+type ContextSource = 'text_search' | 'file_search' | 'git' | 'file_read' | 'workspace' | 'project' | 'index';
+export type ContextSourceObservation = {
+  readonly workspaceId: string;
+  readonly source: ContextSource;
+  readonly path?: string;
+} & (
+  | { readonly state: 'complete' | 'truncated'; readonly observedItems: number }
+  | { readonly state: 'unavailable' | 'unknown'; readonly error: { readonly code: AppErrorCode } }
+);
+
+interface ContextObservationSummary {
+  readonly completeness: 'complete' | 'partial' | 'unavailable' | 'unknown';
+  readonly observations: readonly ContextSourceObservation[];
+}
+
+type ObservedProvider<T> =
+  | { readonly state: 'complete' | 'truncated'; readonly value: T }
+  | { readonly state: 'unavailable' | 'unknown'; readonly code: AppErrorCode };
+
+const errorCodeSchema = z.enum([
+  'INVALID_INPUT', 'CONFLICT', 'ENGINEERING_PREFLIGHT_REQUIRED', 'ENGINEERING_POLICY_CHANGED',
+  'WORKSPACE_NOT_FOUND', 'PATH_OUTSIDE_WORKSPACE', 'SECRET_ACCESS_DENIED', 'PERMISSION_DENIED',
+  'PERMISSION_REQUIRED', 'FILE_NOT_FOUND', 'FILE_TOO_LARGE', 'BINARY_FILE', 'PROCESS_NOT_FOUND',
+  'PROCESS_TIMEOUT', 'EXECUTABLE_NOT_FOUND', 'GIT_NOT_REPOSITORY', 'CODEX_NOT_AVAILABLE',
+  'UNSUPPORTED_PLATFORM', 'INTERNAL_ERROR',
+] satisfies readonly AppErrorCode[]);
+const providerEnvelopeSchema = z.discriminatedUnion('ok', [
+  z.object({ ok: z.literal(true), value: z.unknown() }),
+  z.object({ ok: z.literal(false), error: z.object({ code: errorCodeSchema }) }),
+]);
+const textSearchSchema = z.object({ matches: z.array(z.object({ path: z.string(), line: z.number().int().positive(), text: z.string() }).passthrough()), truncated: z.boolean() }).passthrough();
+const fileSearchSchema = z.object({ paths: z.array(z.string()), truncated: z.boolean() }).passthrough();
+const gitStatusSchema = z.object({ entries: z.array(z.object({ path: z.string() }).passthrough()) }).passthrough();
+const fileReadSchema = z.object({
+  path: z.string(), content: z.string(), startLine: z.number().int().nonnegative(), endLine: z.number().int().nonnegative(),
+  encoding: z.enum(['utf8', 'base64']).optional(), byteLength: z.number().int().nonnegative().optional(),
+}).passthrough();
+const snapshotSchema = z.record(z.string(), z.unknown());
+const workspaceListSchema = z.array(z.object({ id: z.string().min(1).refine((value) => value.trim().length > 0) }).passthrough());
+const indexStatusSchema = z.object({
+  freshness: z.string(),
+  snapshot: z.object({ entries: z.array(z.object({ relativePath: z.string(), kind: z.enum(['file', 'directory', 'symlink']) }).passthrough()) }).passthrough().nullable(),
+}).passthrough();
 
 export interface WorkspaceContextRequest {
   readonly query: string;
@@ -41,8 +87,9 @@ export interface ContextFile {
   readonly symbols: readonly string[];
   readonly gitRelevance: 'changed' | 'related' | 'none';
   readonly testRelevance: 'test' | 'source' | 'unknown';
+  readonly readState: 'complete' | 'unavailable' | 'unknown';
   readonly byteLength?: number;
-  readonly error?: { readonly code: string; readonly message: string };
+  readonly error?: { readonly code: AppErrorCode; readonly message: string };
   readonly delivery?: ContextDeliveryKind;
   readonly fingerprint?: string;
   readonly summary?: {
@@ -57,7 +104,7 @@ export interface ContextFile {
   readonly unchangedSince?: string;
 }
 
-export interface WorkspaceContextResult {
+export interface WorkspaceContextResult extends ContextObservationSummary {
   readonly files: readonly ContextFile[];
   readonly symbols: readonly string[];
   readonly matches: readonly ContextMatch[];
@@ -65,6 +112,7 @@ export interface WorkspaceContextResult {
   readonly matchedFiles: number;
   readonly totalMatches: number;
   readonly hasMore: boolean;
+  readonly searchTruncated: boolean;
   readonly continuationToken?: string;
   readonly economy?: ContextEconomyStats;
 }
@@ -83,7 +131,7 @@ export interface SearchAllRequest {
   readonly includeIgnored?: boolean;
 }
 
-export interface SearchAllResult {
+export interface SearchAllResult extends ContextObservationSummary {
   readonly matches: readonly ContextMatch[];
   readonly paths: readonly { readonly workspaceId: string; readonly path: string }[];
   readonly scannedWorkspaces: number;
@@ -99,11 +147,12 @@ export interface WorkspaceFullScanRequest {
   readonly includeIgnored?: boolean;
 }
 
-export interface WorkspaceFullScanResult {
+export interface WorkspaceFullScanResult extends ContextObservationSummary {
   readonly files: readonly { readonly workspaceId: string; readonly path: string }[];
   readonly scannedWorkspaces: number;
   readonly scannedFiles: number;
   readonly hasMore: boolean;
+  readonly searchTruncated: boolean;
   readonly continuationToken?: string;
 }
 
@@ -119,13 +168,13 @@ export interface ReadManyFileResult {
   readonly error?: { readonly code: string; readonly message: string };
 }
 
-export interface ReadManyFilesResult {
+export interface ReadManyFilesResult extends ContextObservationSummary {
   readonly files: readonly ReadManyFileResult[];
   readonly totalFiles: number;
   readonly failedFiles: number;
 }
 
-export interface WorkspaceSnapshotResult {
+export interface WorkspaceSnapshotResult extends ContextObservationSummary {
   readonly workspace?: unknown;
   readonly project?: unknown;
 }
@@ -145,6 +194,7 @@ interface WorkspaceCollection {
   readonly scannedFiles: number;
   readonly totalMatches: number;
   readonly searchTruncated: boolean;
+  readonly observations: readonly ContextSourceObservation[];
 }
 
 export interface ContextContinuation {
@@ -153,12 +203,15 @@ export interface ContextContinuation {
   readonly scannedFiles: number;
   readonly totalMatches: number;
   readonly searchTruncated: boolean;
+  readonly observations: readonly ContextSourceObservation[];
 }
 
 export interface ScanContinuation {
   readonly files: readonly { readonly workspaceId: string; readonly path: string }[];
   readonly scannedWorkspaces: number;
   readonly scannedFiles: number;
+  readonly searchTruncated: boolean;
+  readonly observations: readonly ContextSourceObservation[];
 }
 
 const DEFAULT_RESPONSE_TARGET_BYTES = 256 * 1024;
@@ -169,6 +222,7 @@ const SEARCH_LIMIT: Record<ContextMode, number> = { optimized: 100, full: 300, e
 
 export class ContextEngine {
   private readonly continuationScope: string;
+  private readonly platform: NodeJS.Platform;
 
   public constructor(
     private readonly services: McpApplicationServices,
@@ -178,6 +232,7 @@ export class ContextEngine {
     private readonly scanContinuations: ContinuationStore<ScanContinuation> = new ContinuationStore<ScanContinuation>(),
   ) {
     this.continuationScope = actor.sessionId?.trim() || actor.clientId;
+    this.platform = services.platform ?? process.platform;
   }
 
   public async collect(request: WorkspaceContextRequest): Promise<Result<WorkspaceContextResult>> {
@@ -188,22 +243,13 @@ export class ContextEngine {
     if (!workspaceIds.ok) return workspaceIds;
     if (workspaceIds.value.length === 0) return err({ code: 'WORKSPACE_NOT_FOUND', message: 'No registered workspace is available', recoverable: false });
 
-    const settled = await Promise.allSettled(workspaceIds.value.map((workspaceId) => this.collectWorkspace(workspaceId, request)));
-    const successful: WorkspaceCollection[] = [];
-    let firstError: AppError | undefined;
-    for (const entry of settled) {
-      if (entry.status === 'fulfilled' && entry.value.ok) successful.push(entry.value.value);
-      else if (entry.status === 'fulfilled' && !entry.value.ok && firstError === undefined) firstError = entry.value.error;
-    }
-    if (successful.length === 0) {
-      return err(firstError ?? { code: 'INTERNAL_ERROR', message: 'Context search failed', recoverable: true });
-    }
-
-    const merged = mergeCollections(successful);
+    const collections = await Promise.all(workspaceIds.value.map((workspaceId) => this.collectWorkspace(workspaceId, request)));
+    const merged = mergeCollections(collections, this.platform);
     return this.materialize(merged.candidates, request, {
       scannedFiles: merged.scannedFiles,
       totalMatches: merged.totalMatches,
       searchTruncated: merged.searchTruncated,
+      observations: merged.observations,
     });
   }
 
@@ -221,9 +267,8 @@ export class ContextEngine {
     if (request.query.trim().length === 0) return err({ code: 'INVALID_INPUT', message: 'Search query is required', recoverable: false });
     const workspaceIds = await this.resolveWorkspaceIds(request.workspaceId);
     if (!workspaceIds.ok) return workspaceIds;
-    if (this.services.search === undefined) return err({ code: 'INTERNAL_ERROR', message: 'Search service is unavailable', recoverable: true });
     const maxResults = Math.max(1, Math.min(500, Math.floor(request.maxResults ?? 500)));
-    const settled = await Promise.allSettled(workspaceIds.value.map(async (workspaceId) => {
+    const results = await Promise.all(workspaceIds.value.map(async (workspaceId) => {
       const [text, files] = await Promise.all([
         this.safeSearchText(workspaceId, { query: request.query, ...(request.includeIgnored === undefined ? {} : { includeIgnored: request.includeIgnored }), ...(request.path === undefined ? {} : { path: request.path }) }, maxResults),
         this.safeSearchFiles(workspaceId, { query: request.query, ...(request.includeIgnored === undefined ? {} : { includeIgnored: request.includeIgnored }), ...(request.path === undefined ? {} : { path: request.path }) }, maxResults, request.glob),
@@ -234,36 +279,39 @@ export class ContextEngine {
     const paths: Array<{ readonly workspaceId: string; readonly path: string }> = [];
     let hasMore = false;
     let successfulWorkspaces = 0;
-    for (const entry of settled) {
-      if (entry.status !== 'fulfilled') continue;
-      successfulWorkspaces += 1;
-      if (entry.value.text.ok) {
-        matches.push(...entry.value.text.value.matches
+    const observations: ContextSourceObservation[] = [];
+    for (const entry of results) {
+      observations.push(sourceObservation(entry.workspaceId, 'text_search', entry.text, 'value' in entry.text ? entry.text.value.matches.length : 0));
+      observations.push(sourceObservation(entry.workspaceId, 'file_search', entry.files, 'value' in entry.files ? entry.files.value.paths.length : 0));
+      if ('value' in entry.text || 'value' in entry.files) successfulWorkspaces += 1;
+      if ('value' in entry.text) {
+        matches.push(...entry.text.value.matches
           .filter((match) => {
             const allowed = request.includeIgnored === true || classifyContextPath(match.path, 'automatic').discoverable;
             if (!allowed) this.economy.recordSkipped(match.path);
             return allowed;
           })
-          .map((match) => ({ workspaceId: entry.value.workspaceId, path: match.path, line: match.line, text: match.text })));
-        hasMore ||= entry.value.text.value.truncated;
+          .map((match) => ({ workspaceId: entry.workspaceId, path: match.path, line: match.line, text: match.text })));
+        hasMore ||= entry.text.value.truncated;
       }
-      if (entry.value.files.ok) {
-        paths.push(...entry.value.files.value.paths
+      if ('value' in entry.files) {
+        paths.push(...entry.files.value.paths
           .filter((path) => {
             const allowed = request.includeIgnored === true || classifyContextPath(path, 'automatic').discoverable;
             if (!allowed) this.economy.recordSkipped(path);
             return allowed;
           })
-          .map((path) => ({ workspaceId: entry.value.workspaceId, path })));
-        hasMore ||= entry.value.files.value.truncated;
+          .map((path) => ({ workspaceId: entry.workspaceId, path })));
+        hasMore ||= entry.files.value.truncated;
       }
     }
     return ok({
       matches,
-      paths: dedupePaths(paths),
+      paths: dedupePaths(paths, this.platform),
       scannedWorkspaces: successfulWorkspaces,
       totalMatches: matches.length,
       hasMore,
+      ...observationSummary(observations),
     });
   }
 
@@ -271,41 +319,43 @@ export class ContextEngine {
     this.economy.beginRequest();
     const workspaceIds = await this.resolveWorkspaceIds(request.workspaceId);
     if (!workspaceIds.ok) return workspaceIds;
-    if (request.includeIgnored === false && request.workspaceId !== undefined && this.services.workspaceIndex !== undefined) {
+    if (request.includeIgnored === false && request.glob === undefined && request.workspaceId !== undefined && this.services.workspaceIndex !== undefined) {
       const indexed = await this.fullScanFromIndex(request.workspaceId, request.path, request.pageSize);
       if (indexed !== null) return indexed;
     }
-    if (this.services.search === undefined) return err({ code: 'INTERNAL_ERROR', message: 'Search service is unavailable', recoverable: true });
     const maxResults = 500;
-    const settled = await Promise.allSettled(workspaceIds.value.map(async (workspaceId) => ({
+    const results = await Promise.all(workspaceIds.value.map(async (workspaceId) => ({
       workspaceId,
       result: await this.safeSearchFiles(workspaceId, { query: '*', includeIgnored: request.includeIgnored !== false, ...(request.path === undefined ? {} : { path: request.path }) }, maxResults, request.glob),
     })));
     const files: Array<{ readonly workspaceId: string; readonly path: string }> = [];
-    let hasMore = false;
+    let searchTruncated = false;
     let scannedWorkspaces = 0;
-    for (const entry of settled) {
-      if (entry.status !== 'fulfilled') continue;
+    const observations: ContextSourceObservation[] = [];
+    for (const entry of results) {
+      observations.push(sourceObservation(entry.workspaceId, 'file_search', entry.result, 'value' in entry.result ? entry.result.value.paths.length : 0));
+      if (!('value' in entry.result)) continue;
       scannedWorkspaces += 1;
-      if (!entry.value.result.ok) continue;
-      files.push(...entry.value.result.value.paths.map((path) => ({ workspaceId: entry.value.workspaceId, path })));
-      hasMore ||= entry.value.result.value.truncated;
+      files.push(...entry.result.value.paths.map((path) => ({ workspaceId: entry.workspaceId, path })));
+      searchTruncated ||= entry.result.value.truncated;
     }
-    const deduped = dedupePaths(files);
+    const deduped = dedupePaths(files, this.platform);
     const pageSize = normalizePageSize(request.pageSize ?? 200);
     const page = deduped.slice(0, pageSize);
     const remaining = deduped.slice(page.length);
-    hasMore ||= remaining.length > 0;
+    const hasMore = remaining.length > 0;
     let continuationToken: string | undefined;
     if (hasMore) {
       continuationToken = randomUUID();
-      this.scanContinuations.set(scopedContinuationKey(this.continuationScope, continuationToken), { files: remaining, scannedWorkspaces, scannedFiles: deduped.length });
+      this.scanContinuations.set(scopedContinuationKey(this.continuationScope, continuationToken), { files: remaining, scannedWorkspaces, scannedFiles: deduped.length, searchTruncated, observations });
     }
     return ok({
       files: page,
       scannedWorkspaces,
       scannedFiles: deduped.length,
       hasMore,
+      searchTruncated,
+      ...observationSummary(observations),
       ...(continuationToken === undefined ? {} : { continuationToken }),
     });
   }
@@ -326,6 +376,8 @@ export class ContextEngine {
       scannedWorkspaces: continuation.scannedWorkspaces,
       scannedFiles: continuation.scannedFiles,
       hasMore: remaining.length > 0,
+      searchTruncated: continuation.searchTruncated,
+      ...observationSummary(continuation.observations),
       ...(nextToken === undefined ? {} : { continuationToken: nextToken }),
     });
   }
@@ -336,84 +388,80 @@ export class ContextEngine {
     if (!workspaceIds.ok) return workspaceIds;
     const workspaceId = request.workspaceId ?? workspaceIds.value[0];
     if (workspaceId === undefined) return err({ code: 'WORKSPACE_NOT_FOUND', message: 'No workspace is available', recoverable: false });
-    const files = await mapInBatches(request.files, MAX_FILE_READ_CONCURRENCY, async (file) => {
-      try {
-        const result = await this.services.file!.readFile(this.actor, workspaceId, file);
-        return result.ok
-          ? { workspaceId, path: file.path, result: result.value }
-          : { workspaceId, path: file.path, error: { code: result.error.code, message: result.error.message } };
-      } catch {
-        return { workspaceId, path: file.path, error: { code: 'INTERNAL_ERROR', message: 'File read failed' } };
-      }
+    const reads = await mapInBatches(request.files, MAX_FILE_READ_CONCURRENCY, async (file) => {
+      const provider = await observeProvider(() => this.services.file!.readFile(this.actor, workspaceId, file), fileReadSchema);
+      const value: ReadManyFileResult = 'value' in provider
+        ? { workspaceId, path: file.path, result: provider.value }
+        : { workspaceId, path: file.path, error: { code: provider.code, message: 'File read failed' } };
+      return { value, observation: sourceObservation(workspaceId, 'file_read', provider, 1, file.path) };
     });
-    return ok({ files, totalFiles: files.length, failedFiles: files.filter((file) => file.error !== undefined).length });
+    const files = reads.map((read) => read.value);
+    return ok({ files, totalFiles: files.length, failedFiles: files.filter((file) => file.error !== undefined).length, ...observationSummary(reads.map((read) => read.observation)) });
   }
 
   public async snapshot(workspaceId: string): Promise<Result<WorkspaceSnapshotResult>> {
-    const workspace = this.services.workspaceInfo === undefined
-      ? undefined
-      : await this.services.workspaceInfo.info(this.actor, workspaceId);
-    if (workspace !== undefined && !workspace.ok) return err(workspace.error);
-    const project = this.services.projectSnapshot === undefined
-      ? undefined
-      : await this.services.projectSnapshot.snapshot(this.actor, workspaceId);
-    if (project !== undefined && !project.ok) return err(project.error);
-    if (workspace === undefined && project === undefined) return err({ code: 'INTERNAL_ERROR', message: 'Workspace snapshot service is unavailable', recoverable: true });
+    const workspaceInfo = this.services.workspaceInfo;
+    const projectSnapshot = this.services.projectSnapshot;
+    const [workspace, project] = await Promise.all([
+      observeProvider(workspaceInfo === undefined ? undefined : (): ReturnType<NonNullable<typeof workspaceInfo>['info']> => workspaceInfo.info(this.actor, workspaceId), snapshotSchema),
+      observeProvider(projectSnapshot === undefined ? undefined : (): ReturnType<NonNullable<typeof projectSnapshot>['snapshot']> => projectSnapshot.snapshot(this.actor, workspaceId), snapshotSchema),
+    ]);
     return ok({
-      ...(workspace?.ok === true ? { workspace: workspace.value } : {}),
-      ...(project?.ok === true ? { project: project.value } : {}),
+      ...('value' in workspace ? { workspace: workspace.value } : {}),
+      ...('value' in project ? { project: project.value } : {}),
+      ...observationSummary([sourceObservation(workspaceId, 'workspace', workspace, 1), sourceObservation(workspaceId, 'project', project, 1)]),
     });
   }
 
   private async fullScanFromIndex(workspaceId: string, requestedPath: string | undefined, pageSize: number | undefined): Promise<Result<WorkspaceFullScanResult> | null> {
-    const status = await this.services.workspaceIndex!.status(workspaceId);
-    if (!status.ok || status.value.snapshot === null) return null;
-    const prefix = requestedPath === undefined ? '' : normalizePath(requestedPath).replace(/^\.\//, '').replace(/\/$/, '');
+    const pathApi = this.platform === 'win32' ? path.win32 : path.posix;
+    if (requestedPath !== undefined && pathApi.parse(requestedPath).root.length > 0) return null;
+    const requested = requestedPath === undefined ? '' : normalizePath(requestedPath, this.platform).replace(/\/$/, '');
+    if (requested === '..' || requested.startsWith('../')) return null;
+    const status = await observeProvider(() => this.services.workspaceIndex!.status(workspaceId), indexStatusSchema);
+    if (!('value' in status) || status.value.snapshot === null || status.value.freshness !== 'watching_clean') return null;
+    const prefix = requested === '.' ? '' : requested;
     const allFiles = status.value.snapshot.entries
       .filter((entry) => entry.kind === 'file' || entry.kind === 'symlink')
       .map((entry) => entry.relativePath)
-      .filter((entry) => prefix.length === 0 || entry === prefix || entry.startsWith(`${prefix}/`))
-      .sort((left, right) => normalizePath(left).localeCompare(normalizePath(right)))
+      .filter((entry) => classifyContextPath(entry, 'automatic').discoverable)
+      .filter((entry) => {
+        const key = normalizePath(entry, this.platform);
+        return prefix.length === 0 || key === prefix || key.startsWith(`${prefix}/`);
+      })
+      .sort((left, right) => normalizePath(left, this.platform).localeCompare(normalizePath(right, this.platform)))
       .map((path) => ({ workspaceId, path }));
+    const observations = [sourceObservation(workspaceId, 'index', status, allFiles.length)];
     const size = normalizePageSize(pageSize ?? 200);
     const files = allFiles.slice(0, size);
     const remaining = allFiles.slice(files.length);
     let continuationToken: string | undefined;
     if (remaining.length > 0) {
       continuationToken = randomUUID();
-      this.scanContinuations.set(scopedContinuationKey(this.continuationScope, continuationToken), { files: remaining, scannedWorkspaces: 1, scannedFiles: allFiles.length });
+      this.scanContinuations.set(scopedContinuationKey(this.continuationScope, continuationToken), { files: remaining, scannedWorkspaces: 1, scannedFiles: allFiles.length, searchTruncated: false, observations });
     }
-    return ok({ files, scannedWorkspaces: 1, scannedFiles: allFiles.length, hasMore: remaining.length > 0, ...(continuationToken === undefined ? {} : { continuationToken }) });
+    return ok({ files, scannedWorkspaces: 1, scannedFiles: allFiles.length, hasMore: remaining.length > 0, searchTruncated: false, ...observationSummary(observations), ...(continuationToken === undefined ? {} : { continuationToken }) });
   }
 
   private async resolveWorkspaceIds(workspaceId: string | undefined): Promise<Result<readonly string[]>> {
     if (workspaceId !== undefined && workspaceId.trim().length > 0) return ok([workspaceId]);
-    const list = this.services.workspaceInfo?.list;
-    if (list === undefined) return err({ code: 'INVALID_INPUT', message: 'workspaceId is required when workspace listing is unavailable', recoverable: false });
-    const result = await list(this.actor);
-    if (!result.ok) return err(result.error);
-    if (!Array.isArray(result.value)) return err({ code: 'INTERNAL_ERROR', message: 'Workspace list has an invalid shape', recoverable: true });
-    const ids = result.value.flatMap((entry) => {
-      if (typeof entry !== 'object' || entry === null || !('id' in entry)) return [];
-      const id = (entry as { id?: unknown }).id;
-      return typeof id === 'string' && id.trim().length > 0 ? [id] : [];
-    });
-    return ok(ids);
+    const workspaceInfo = this.services.workspaceInfo;
+    if (workspaceInfo?.list === undefined) return err({ code: 'INVALID_INPUT', message: 'workspaceId is required when workspace listing is unavailable', recoverable: false });
+    const result = await observeProvider(() => workspaceInfo.list!(this.actor), workspaceListSchema);
+    if (!('value' in result)) return err({ code: result.code, message: 'Workspace listing failed', recoverable: true });
+    return ok([...new Set(result.value.map((entry) => entry.id))]);
   }
 
-  private async collectWorkspace(workspaceId: string, request: WorkspaceContextRequest): Promise<Result<WorkspaceCollection>> {
-    if (this.services.search === undefined) return err({ code: 'INTERNAL_ERROR', message: 'Search service is unavailable', recoverable: true });
+  private async collectWorkspace(workspaceId: string, request: WorkspaceContextRequest): Promise<WorkspaceCollection> {
     const limit = SEARCH_LIMIT[request.mode ?? 'optimized'];
     const searchTextPromise = this.safeSearchText(workspaceId, request, limit);
     const searchFilesPromise = this.safeSearchFiles(workspaceId, request, limit);
     const gitPromise = this.safeGitStatus(workspaceId);
     const [textResult, filesResult, gitResult] = await Promise.all([searchTextPromise, searchFilesPromise, gitPromise]);
-    if (!textResult.ok && !filesResult.ok) return err(textResult.error);
-
-    const changed = new Set<string>();
-    if (gitResult.ok) {
+    const changed = new Map<string, string>();
+    if ('value' in gitResult) {
       for (const entry of gitResult.value.entries) {
-        if (typeof entry.path === 'string') changed.add(normalizePath(entry.path));
+        changed.set(normalizePath(entry.path, this.platform), entry.path);
       }
     }
     const candidates = new Map<string, {
@@ -423,18 +471,18 @@ export class ContextEngine {
       fromFilename: boolean;
     }>();
     const query = request.query.toLowerCase();
-    if (textResult.ok) {
+    if ('value' in textResult) {
       for (const match of textResult.value.matches) {
-        const key = normalizePath(match.path);
+        const key = normalizePath(match.path, this.platform);
         const current = candidates.get(key) ?? { path: match.path, matches: [], score: 0, fromFilename: false };
         current.matches.push({ workspaceId, path: match.path, line: match.line, text: match.text });
         current.score += 12 + (match.text.toLowerCase().includes(query) ? 8 : 0);
         candidates.set(key, current);
       }
     }
-    if (filesResult.ok) {
+    if ('value' in filesResult) {
       for (const pathValue of filesResult.value.paths) {
-        const key = normalizePath(pathValue);
+        const key = normalizePath(pathValue, this.platform);
         const current = candidates.get(key) ?? { path: pathValue, matches: [], score: 0, fromFilename: false };
         current.fromFilename = true;
         if (pathValue.toLowerCase().includes(query)) current.score += 25;
@@ -442,20 +490,20 @@ export class ContextEngine {
       }
     }
 
-    for (const changedPath of changed) {
-      const current = candidates.get(changedPath) ?? { path: changedPath, matches: [], score: 0, fromFilename: false };
+    for (const [changedKey, changedPath] of changed) {
+      const current = candidates.get(changedKey) ?? { path: changedPath, matches: [], score: 0, fromFilename: false };
       current.score += 30;
-      candidates.set(changedPath, current);
+      candidates.set(changedKey, current);
     }
 
     const ranked = [...candidates.values()]
       .filter((candidate) => {
-        const allowed = request.includeIgnored === true || changed.has(normalizePath(candidate.path)) || classifyContextPath(candidate.path, 'automatic').discoverable;
+        const allowed = request.includeIgnored === true || changed.has(normalizePath(candidate.path, this.platform)) || classifyContextPath(candidate.path, 'automatic').discoverable;
         if (!allowed) this.economy.recordSkipped(candidate.path);
         return allowed;
       })
       .map((candidate): Candidate => {
-      const normalized = normalizePath(candidate.path);
+      const normalized = normalizePath(candidate.path, this.platform);
       const gitRelevance: ContextFile['gitRelevance'] = changed.has(normalized)
         ? 'changed'
         : candidate.matches.length > 0 ? 'related' : 'none';
@@ -480,56 +528,50 @@ export class ContextEngine {
         testRelevance,
       };
       });
-    ranked.sort((left, right) => right.score - left.score || normalizePath(left.path).localeCompare(normalizePath(right.path)));
-    return ok({
+    ranked.sort((left, right) => right.score - left.score || normalizePath(left.path, this.platform).localeCompare(normalizePath(right.path, this.platform)));
+    return {
       candidates: ranked,
-      scannedFiles: filesResult.ok ? filesResult.value.paths.length : ranked.length,
-      totalMatches: textResult.ok ? textResult.value.matches.length : 0,
-      searchTruncated: (textResult.ok && textResult.value.truncated) || (filesResult.ok && filesResult.value.truncated),
-    });
+      scannedFiles: 'value' in filesResult ? dedupePaths(filesResult.value.paths.map((path) => ({ workspaceId, path })), this.platform).length : 0,
+      totalMatches: 'value' in textResult ? textResult.value.matches.length : 0,
+      searchTruncated: textResult.state === 'truncated' || filesResult.state === 'truncated',
+      observations: [
+        sourceObservation(workspaceId, 'text_search', textResult, 'value' in textResult ? textResult.value.matches.length : 0),
+        sourceObservation(workspaceId, 'file_search', filesResult, 'value' in filesResult ? filesResult.value.paths.length : 0),
+        sourceObservation(workspaceId, 'git', gitResult, 'value' in gitResult ? gitResult.value.entries.length : 0),
+      ],
+    };
   }
 
-  private async safeSearchText(workspaceId: string, request: WorkspaceContextRequest, maxResults: number): Promise<Awaited<ReturnType<SearchService['searchText']>>> {
-    try {
-      return await this.services.search!.searchText(this.actor, workspaceId, {
+  private async safeSearchText(workspaceId: string, request: WorkspaceContextRequest, maxResults: number): Promise<ObservedProvider<z.infer<typeof textSearchSchema>>> {
+    const search = this.services.search;
+    return observeProvider(search === undefined ? undefined : (): ReturnType<NonNullable<typeof search>['searchText']> => search.searchText(this.actor, workspaceId, {
         query: request.query,
         maxResults,
         discovery: request.includeIgnored === true ? 'explicit' : 'automatic',
         ...(request.path === undefined ? {} : { path: request.path }),
-      });
-    } catch {
-      return err({ code: 'INTERNAL_ERROR', message: 'Context text search failed', recoverable: true });
-    }
+      }), textSearchSchema, (value) => value.truncated);
   }
 
-  private async safeSearchFiles(workspaceId: string, request: WorkspaceContextRequest, maxResults: number, glob?: string): Promise<Awaited<ReturnType<SearchService['searchFiles']>>> {
-    try {
-      return await this.services.search!.searchFiles(this.actor, workspaceId, {
+  private async safeSearchFiles(workspaceId: string, request: WorkspaceContextRequest, maxResults: number, glob?: string): Promise<ObservedProvider<z.infer<typeof fileSearchSchema>>> {
+    const search = this.services.search;
+    return observeProvider(search === undefined ? undefined : (): ReturnType<NonNullable<typeof search>['searchFiles']> => search.searchFiles(this.actor, workspaceId, {
         maxResults,
         discovery: request.includeIgnored === true ? 'explicit' : 'automatic',
         ...(glob === undefined ? {} : { glob }),
         ...(request.path === undefined ? {} : { path: request.path }),
-      });
-    } catch {
-      return err({ code: 'INTERNAL_ERROR', message: 'Context filename search failed', recoverable: true });
-    }
+      }), fileSearchSchema, (value) => value.truncated);
   }
 
-  private async safeGitStatus(workspaceId: string): Promise<Awaited<ReturnType<GitService['status']>>> {
-    if (this.services.git === undefined) return ok({ entries: [] as never[] });
-    try {
-      return await this.services.git.status(this.actor, workspaceId);
-    } catch {
-      return err({ code: 'INTERNAL_ERROR', message: 'Context Git lookup failed', recoverable: true });
-    }
+  private async safeGitStatus(workspaceId: string): Promise<ObservedProvider<z.infer<typeof gitStatusSchema>>> {
+    const git = this.services.git;
+    return observeProvider(git === undefined ? undefined : (): ReturnType<NonNullable<typeof git>['status']> => git.status(this.actor, workspaceId), gitStatusSchema);
   }
 
   private async materialize(
     candidates: readonly Candidate[],
     request: WorkspaceContextRequest,
-    metadata: Pick<ContextContinuation, 'scannedFiles' | 'totalMatches' | 'searchTruncated'>,
+    metadata: Pick<ContextContinuation, 'scannedFiles' | 'totalMatches' | 'searchTruncated' | 'observations'>,
   ): Promise<Result<WorkspaceContextResult>> {
-    if (this.services.file === undefined) return err({ code: 'INTERNAL_ERROR', message: 'File service is unavailable', recoverable: true });
     const mode = request.mode ?? 'optimized';
     const pageSize = normalizePageSize(request.pageSize ?? DEFAULT_PAGE_SIZE[mode]);
     const targetBytes = normalizeResponseTarget(request.responseTargetBytes);
@@ -544,7 +586,10 @@ export class ContextEngine {
       consumed -= 1;
     }
     const remaining = candidates.slice(consumed);
-    const hasMore = remaining.length > 0 || metadata.searchTruncated;
+    const hasMore = remaining.length > 0;
+    const observations: ContextSourceObservation[] = [...metadata.observations, ...selected.map((file): ContextSourceObservation => file.error === undefined
+      ? { workspaceId: file.workspaceId, source: 'file_read', path: file.path, state: 'complete', observedItems: 1 }
+      : { workspaceId: file.workspaceId, source: 'file_read', path: file.path, state: file.readState === 'unknown' ? 'unknown' : 'unavailable', error: { code: file.error.code } })];
     let continuationToken: string | undefined;
     if (hasMore) {
       continuationToken = randomUUID();
@@ -553,7 +598,8 @@ export class ContextEngine {
         request,
         scannedFiles: metadata.scannedFiles,
         totalMatches: metadata.totalMatches,
-        searchTruncated: false,
+        searchTruncated: metadata.searchTruncated,
+        observations,
       });
     }
     const symbols = [...new Set(selected.flatMap((file) => file.symbols))];
@@ -566,6 +612,8 @@ export class ContextEngine {
       matchedFiles: candidates.length,
       totalMatches: metadata.totalMatches,
       hasMore,
+      searchTruncated: metadata.searchTruncated,
+      ...observationSummary(observations),
       ...(continuationToken === undefined ? {} : { continuationToken }),
       economy: this.economy.snapshot(),
     });
@@ -573,8 +621,9 @@ export class ContextEngine {
 
   private async readCandidate(candidate: Candidate, request: WorkspaceContextRequest, contextId: string): Promise<ContextFile> {
     try {
-      const result = await this.services.file!.readFile(this.actor, candidate.workspaceId, { path: candidate.path });
-      if (!result.ok) {
+      const fileService = this.services.file;
+      const result = await observeProvider(fileService === undefined ? undefined : (): ReturnType<NonNullable<typeof fileService>['readFile']> => fileService.readFile(this.actor, candidate.workspaceId, { path: candidate.path }), fileReadSchema);
+      if (!('value' in result)) {
         return {
           workspaceId: candidate.workspaceId,
           path: candidate.path,
@@ -583,7 +632,8 @@ export class ContextEngine {
           symbols: [],
           gitRelevance: candidate.gitRelevance,
           testRelevance: candidate.testRelevance,
-          error: { code: result.error.code, message: result.error.message },
+          readState: result.state,
+          error: { code: result.code, message: 'File read failed' },
         };
       }
       const prepared = this.economy.prepare({
@@ -608,6 +658,7 @@ export class ContextEngine {
           : prepared.summary.symbols.length > 0 ? prepared.summary.symbols : extractSymbols(result.value.content),
         gitRelevance: candidate.gitRelevance,
         testRelevance: candidate.testRelevance,
+        readState: 'complete',
         ...(result.value.byteLength === undefined ? {} : { byteLength: result.value.byteLength }),
         delivery: prepared.delivery,
         fingerprint: prepared.fingerprint,
@@ -627,23 +678,26 @@ export class ContextEngine {
         symbols: [],
         gitRelevance: candidate.gitRelevance,
         testRelevance: candidate.testRelevance,
+        readState: 'unknown',
         error: { code: 'INTERNAL_ERROR', message: 'File read failed' },
       };
     }
   }
 }
 
-function mergeCollections(collections: readonly WorkspaceCollection[]): WorkspaceCollection {
+function mergeCollections(collections: readonly WorkspaceCollection[], platform: NodeJS.Platform): WorkspaceCollection {
   const byKey = new Map<string, Candidate>();
   let scannedFiles = 0;
   let totalMatches = 0;
   let searchTruncated = false;
+  const observations: ContextSourceObservation[] = [];
   for (const collection of collections) {
     scannedFiles += collection.scannedFiles;
     totalMatches += collection.totalMatches;
     searchTruncated ||= collection.searchTruncated;
+    observations.push(...collection.observations);
     for (const candidate of collection.candidates) {
-      const key = `${candidate.workspaceId}\0${normalizePath(candidate.path)}`;
+      const key = `${candidate.workspaceId}\0${normalizePath(candidate.path, platform)}`;
       const existing = byKey.get(key);
       if (existing === undefined) byKey.set(key, candidate);
       else byKey.set(key, {
@@ -655,8 +709,8 @@ function mergeCollections(collections: readonly WorkspaceCollection[]): Workspac
     }
   }
   const candidates = [...byKey.values()];
-  candidates.sort((left, right) => right.score - left.score || `${left.workspaceId}:${normalizePath(left.path)}`.localeCompare(`${right.workspaceId}:${normalizePath(right.path)}`));
-  return { candidates, scannedFiles, totalMatches, searchTruncated };
+  candidates.sort((left, right) => right.score - left.score || `${left.workspaceId}:${normalizePath(left.path, platform)}`.localeCompare(`${right.workspaceId}:${normalizePath(right.path, platform)}`));
+  return { candidates, scannedFiles, totalMatches, searchTruncated, observations };
 }
 
 function validateRequest(request: WorkspaceContextRequest): Result<void> {
@@ -674,6 +728,41 @@ function normalizePageSize(value: number): number {
   return Math.max(1, Math.min(500, Math.floor(value)));
 }
 
+async function observeProvider<T>(
+  read: (() => Promise<unknown>) | undefined,
+  schema: z.ZodType<T>,
+  truncated: (value: T) => boolean = () => false,
+): Promise<ObservedProvider<T>> {
+  if (read === undefined) return { state: 'unavailable', code: 'UNSUPPORTED_PLATFORM' };
+  try {
+    const envelope = providerEnvelopeSchema.safeParse(await read());
+    if (!envelope.success) return { state: 'unknown', code: 'INTERNAL_ERROR' };
+    if (!envelope.data.ok) return { state: 'unavailable', code: envelope.data.error.code };
+    const value = z.custom<T>((input) => schema.safeParse(input).success).safeParse(envelope.data.value);
+    if (!value.success) return { state: 'unknown', code: 'INTERNAL_ERROR' };
+    return { state: truncated(value.data) ? 'truncated' : 'complete', value: value.data };
+  } catch {
+    return { state: 'unknown', code: 'INTERNAL_ERROR' };
+  }
+}
+
+function sourceObservation<T>(workspaceId: string, source: ContextSource, result: ObservedProvider<T>, observedItems: number, path?: string): ContextSourceObservation {
+  const identity = { workspaceId, source, ...(path === undefined ? {} : { path }) };
+  return 'value' in result
+    ? { ...identity, state: result.state, observedItems }
+    : { ...identity, state: result.state, error: { code: result.code } };
+}
+
+function observationSummary(observations: readonly ContextSourceObservation[]): ContextObservationSummary {
+  const available = observations.some((observation) => observation.state === 'complete' || observation.state === 'truncated');
+  const complete = observations.every((observation) => observation.state === 'complete');
+  const unknown = observations.some((observation) => observation.state === 'unknown');
+  return {
+    completeness: complete ? 'complete' : available ? 'partial' : unknown ? 'unknown' : 'unavailable',
+    observations,
+  };
+}
+
 async function mapInBatches<T, R>(values: readonly T[], batchSize: number, mapper: (value: T) => Promise<R>): Promise<R[]> {
   const results: R[] = [];
   for (let offset = 0; offset < values.length; offset += batchSize) {
@@ -686,15 +775,17 @@ function normalizeResponseTarget(value: number | undefined): number {
   return Math.max(1024, Math.min(MAX_RESPONSE_TARGET_BYTES, Math.floor(value ?? DEFAULT_RESPONSE_TARGET_BYTES)));
 }
 
-function normalizePath(value: string): string {
-  return value.replace(/\\/g, '/').toLowerCase();
+function normalizePath(value: string, platform: NodeJS.Platform): string {
+  return platform === 'win32'
+    ? path.win32.normalize(value).replace(/\\/g, '/').toLowerCase()
+    : path.posix.normalize(value);
 }
 
-function dedupePaths(paths: readonly { readonly workspaceId: string; readonly path: string }[]): readonly { readonly workspaceId: string; readonly path: string }[] {
+function dedupePaths(paths: readonly { readonly workspaceId: string; readonly path: string }[], platform: NodeJS.Platform): readonly { readonly workspaceId: string; readonly path: string }[] {
   const seen = new Set<string>();
   const result: Array<{ readonly workspaceId: string; readonly path: string }> = [];
   for (const entry of paths) {
-    const key = `${entry.workspaceId}\0${normalizePath(entry.path)}`;
+    const key = `${entry.workspaceId}\0${normalizePath(entry.path, platform)}`;
     if (seen.has(key)) continue;
     seen.add(key);
     result.push(entry);

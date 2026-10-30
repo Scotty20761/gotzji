@@ -15,10 +15,12 @@ import {
 import type { FileActor } from '@lnwjud/application';
 import { capabilityDescriptors, EventLogCapabilityBackend, type CapabilityDescriptor } from '@lnwjud/capabilities';
 import { createProcessTreeTerminator } from '@lnwjud/process';
-import { normalizeProjectProfile } from '@lnwjud/shared';
+import { APP_VERSION, normalizeProjectProfile } from '@lnwjud/shared';
 import { hostPathApi, isAbsoluteHostPath, normalizeHostPath } from '@lnwjud/workspace';
-import type { McpApplicationServices } from './tools/tool-types.js';
-import { ContextEngine } from './context-engine.js';
+import type { McpApplicationServices, McpInternalInvocationContext } from './tools/tool-types.js';
+import type { McpRegistryRuntimePort } from './registry-runtime-port.js';
+import { describeRecipe, recipeCatalog, runRecipe } from './checked-workflow-runtime.js';
+import { ContextEngine, type WorkspaceContextResult } from './context-engine.js';
 import { EccProviderService, type EccArtifactKind } from './ecc-provider.js';
 import { EccMemoryVaultService, type EccMemoryKind, type EccMemoryScope } from './ecc-memory-vault.js';
 import type { ActivityTelemetrySnapshot, ActivityTracker, ToolTelemetrySnapshot } from './activity-tracker.js';
@@ -31,6 +33,8 @@ import type { OfficeSemanticToolName } from './office-tool-contracts.js';
 import { LspRuntimeService } from './lsp-runtime.js';
 import { withReplacementRecoveryDetails } from './replacement-recovery.js';
 import { withCapabilityOwnerMetadata } from './request-scope.js';
+import { createSessionHandoff } from './tools/session-tools.js';
+import type { DebugOwner } from './dap-session-service.js';
 import { SandboxRuntimeService } from './sandbox-runtime.js';
 import { rankSkillMatches, type SkillMatchCandidate } from './skill-routing.js';
 import { truthfulUnavailable } from './tool-delivery-contract.js';
@@ -40,6 +44,9 @@ import {
   upgradeToolExecution,
   upgradeToolInputJsonSchema,
   upgradeToolOutputJsonSchema,
+  debugAttachInputSchema,
+  debugStepInputSchema,
+  handoffContextInputSchema,
 } from './upgrade-tool-contracts.js';
 import { UpgradeRuntimeStateStore, type UpgradeRuntimeSessionState, type UpgradeRuntimeSharedState } from './upgrade-runtime-state-store.js';
 
@@ -143,12 +150,27 @@ interface WorktreeLedgerEntry {
 
 interface SelfHealFix {
   readonly id: string;
-  readonly kind: 'reindex_workspace' | 'cancel_stale_task';
+  readonly kind: 'reindex_workspace';
   readonly tool: string;
   readonly args: Record<string, unknown>;
   readonly description: string;
   readonly reversible: boolean;
   readonly requiresConfirmation: boolean;
+}
+
+interface SelfHealPlan {
+  readonly tool: 'self_heal_plan';
+  readonly status: 'ready';
+  readonly available: true;
+  readonly applied: false;
+  readonly planId: string;
+  readonly mutationRequired: boolean;
+  readonly safeReversibleFixes: readonly SelfHealFix[];
+  readonly manualIssues: readonly Record<string, unknown>[];
+  readonly observationState: 'complete' | 'partial';
+  readonly automaticDestructiveRetry: false;
+  readonly auditTarget: 'recovery-plan';
+  readonly evidence: Readonly<Record<string, unknown>>;
 }
 
 const PRIMITIVE_SEARCH_ENTRIES: readonly SearchCatalogEntry[] = [
@@ -216,6 +238,39 @@ const ENGINEERING_PRIMITIVE_SCHEMAS: Readonly<Record<string, Record<string, unkn
   },
 };
 
+type ToolInputSchemaDiagnostic =
+  | {
+      readonly status: 'unavailable';
+      readonly toolName: string;
+      readonly schemaSource: 'lnwjud_tool_registry';
+      readonly publicationTarget: 'mcp.tools/list.inputSchema';
+      readonly reason: string;
+      readonly connectorSchema: { readonly status: 'unavailable'; readonly digest: null };
+    }
+  | {
+      readonly status: 'available';
+      readonly appVersion: string;
+      readonly toolName: string;
+      readonly schemaSource: 'lnwjud_tool_registry';
+      readonly publicationTarget: 'mcp.tools/list.inputSchema';
+      readonly digestAlgorithm: 'SHA-256';
+      readonly digestFormatVersion: 1;
+      readonly inputMode: 'sdk_input';
+      readonly transport: null;
+      readonly protocolVersion: null;
+      readonly inputSchemaSha256: string;
+      readonly observedAt: string;
+      readonly fieldPresence: {
+        readonly engineeringGateUpdates: boolean;
+        readonly engineeringReviewFindings: boolean;
+      };
+      readonly connectorSchema: {
+        readonly status: 'unavailable';
+        readonly digest: null;
+        readonly reason: string;
+      };
+    };
+
 export class UpgradeRuntimeService {
   private readonly contextEngine: ContextEngine;
   private readonly actor: FileActor;
@@ -248,6 +303,7 @@ export class UpgradeRuntimeService {
     private readonly isToolExposed: (name: string) => boolean = () => true,
     incrementalVerifier: IncrementalVerifier = new IncrementalVerifier(),
     private readonly activityTracker?: ActivityTracker,
+    private readonly registryRuntime?: McpRegistryRuntimePort,
   ) {
     this.actor = actor;
     this.incrementalVerifier = incrementalVerifier;
@@ -292,7 +348,7 @@ export class UpgradeRuntimeService {
     return ok(truthfulUnavailable(tool, 'disabled', ['enable ECC in host Settings']));
   }
 
-  public async execute(name: string, input: Record<string, unknown>, signal?: AbortSignal, authorization?: InvocationAuthorization): Promise<Result<unknown>> {
+  public async execute(name: string, input: Record<string, unknown>, signal?: AbortSignal, authorization?: InvocationAuthorization, internal?: McpInternalInvocationContext): Promise<Result<unknown>> {
     await this.loadState();
     switch (name) {
       case 'tool_search':
@@ -313,23 +369,27 @@ export class UpgradeRuntimeService {
       case 'recipe_catalog':
         return ok({ recipes: recipeCatalog() });
       case 'recipe_describe':
-        return ok(recipeCatalog().find((recipe) => recipe.name === (readString(input, 'name') ?? 'bugfix')) ?? recipeCatalog()[0]);
+        return describeRecipe(readString(input, 'name') ?? 'bugfix');
       case 'recipe_run':
-        return ok({ ...planFor(readString(input, 'prompt') ?? readString(input, 'name') ?? 'bugfix'), dryRun: input.dryRun !== false, sideEffectsStarted: false });
+        return runRecipe(input, this.registryRuntime, signal, internal?.checkedInvocation, internal?.recipeCancellation);
       case 'dry_run':
         return ok({ ...planFor(readString(input, 'prompt') ?? readString(input, 'query') ?? ''), sideEffects: { writes: [], shell: [], gitMutations: [], network: [] }, sideEffectsStarted: false });
       case 'response_mode':
         return ok({ mode: normalizeMode(readString(input, 'mode')), omittedDetailsRemainFetchable: true, continuationSupported: true });
       case 'permission_check': {
-        const standard = permissionDecision(readString(input, 'action') ?? readString(input, 'permission') ?? 'filesystem.read');
-        return ok(isFullBypassAuthorization(authorization)
-          ? { ...standard, decision: 'allow', standardDecision: standard.decision, authorizationMode: 'full_bypass', bypassApplicationAuthorization: true }
-          : { ...standard, authorizationMode: 'standard', bypassApplicationAuthorization: false });
+        const tool = readString(input, 'tool');
+        if (tool === undefined || !isRecord(input.input)) {
+          return ok({ action: readString(input, 'action') ?? readString(input, 'permission') ?? null,
+            decision: 'unknown', advisory: true, sideEffectsStarted: false,
+            reason: 'An action class does not identify an exact tool invocation. Supply tool and input to observe host admission.' });
+        }
+        if (this.registryRuntime === undefined) return err(appError('INTERNAL_ERROR', 'Host permission observation is unavailable', true));
+        return ok(await this.registryRuntime.preview(tool, input.input, internal?.checkedInvocation));
       }
       case 'permission_profile':
-        return ok(isFullBypassAuthorization(authorization)
-          ? { profile: 'full', authorizationMode: 'full_bypass', contextReads: 'application-scope-bypassed', dangerousActions: 'application-approval-bypassed', hardBlocksRemain: false, operatingSystemAndRemotePolicyRemain: true }
-          : { profile: 'full', authorizationMode: 'standard', contextReads: 'unrestricted-for-allowed-workspaces', dangerousActions: 'policy-gated', hardBlocksRemain: true });
+        return this.registryRuntime === undefined
+          ? err(appError('INTERNAL_ERROR', 'Host permission profile is unavailable', true))
+          : ok(this.registryRuntime.profile());
       case 'cache_stats': {
         const verification = this.incrementalVerifier.stats();
         const contextEconomy = this.contextEconomy.snapshot();
@@ -492,7 +552,7 @@ export class UpgradeRuntimeService {
       case 'execution_plan':
         return ok({ ...planFor(readString(input, 'prompt') ?? readString(input, 'query') ?? ''), reason: 'deterministic rule plan; telemetry can refine cost estimates' });
       case 'recovery_status':
-        return ok({ reconnect: 'enabled-at-transport-boundary', safeReadRetry: true, destructiveRetry: false, staleContinuation: 'detected', indexRecovery: 'rebuildable', workerIsolation: true });
+        return this.recoveryStatus(input, signal, authorization);
       case 'tool_schema_list':
         return ok({ schemas: this.listToolSchemas(), persistence: this.stateStore === undefined ? 'memory_only' : 'session_locked_state' });
       case 'tool_schema_register':
@@ -505,9 +565,9 @@ export class UpgradeRuntimeService {
       case 'mcp_hub':
         return this.externalMcpHub();
       case 'self_heal_plan':
-        return this.selfHealPlan(input, authorization);
+        return this.selfHealPlan(input, signal, authorization);
       case 'self_heal_apply':
-        return this.selfHealApply(input, authorization);
+        return this.selfHealApply(input, signal, authorization);
       case 'git_worktree_spawn':
         return this.gitWorktreeSpawn(input, authorization);
       case 'event_watch':
@@ -561,7 +621,7 @@ export class UpgradeRuntimeService {
       case 'office_ppt':
         return this.officePowerPoint(input, signal, authorization);
       case 'handoff_context':
-        return this.compoundContext(name, input);
+        return this.handoffContext(input, signal);
       case 'benchmark_run':
         return this.benchmarkRun(input, signal, authorization);
       case 'regression_report':
@@ -576,9 +636,9 @@ export class UpgradeRuntimeService {
       case 'compare_pdf_pages':
         return this.documents.comparePdfPages(input, signal, authorization);
       case 'debug_attach':
-        return ok(truthfulUnavailable(name, 'needs_setup', ['running loopback DAP adapter', 'registered workspace']));
+        return this.debugAttach(input, signal);
       case 'debug_step':
-        return ok(truthfulUnavailable(name, 'needs_setup', ['owned debug session created by a configured DAP adapter']));
+        return this.debugStep(input, signal);
       case 'skills_import':
         return this.importSkill(input, signal, authorization);
       case 'agent_swarm_run':
@@ -694,7 +754,20 @@ export class UpgradeRuntimeService {
 
   private describeTool(name: string | undefined): unknown {
     const entry = SEARCH_CATALOG.find((candidate) => candidate.name === name && this.isToolExposed(candidate.name));
-    if (entry === undefined) return { found: false, name: name ?? null };
+    if (entry === undefined) {
+      if (name === undefined || !this.isToolExposed(name)) return { found: false, name: name ?? null };
+      const registrySchema = this.registryRuntime?.describeInputJsonSchema?.(name);
+      if (registrySchema === undefined) return { found: false, name };
+      return {
+        found: true,
+        name,
+        schema: registrySchema,
+        inputSchema: registrySchema,
+        schemaDiagnostic: this.describeInputSchemaDiagnostic(name),
+        contractSource: 'tool-registry',
+        authorizationUnchanged: true,
+      };
+    }
     const upgradeEntry = UPGRADE_TOOL_CATALOG.find((candidate) => candidate.name === entry.name);
     if (upgradeEntry === undefined) {
       const explicitSchema = ENGINEERING_PRIMITIVE_SCHEMAS[entry.name];
@@ -703,6 +776,7 @@ export class UpgradeRuntimeService {
         ...entry,
         schema: explicitSchema ?? { type: 'object', additionalProperties: true },
         ...(explicitSchema === undefined ? {} : { inputSchema: explicitSchema }),
+        schemaDiagnostic: this.describeInputSchemaDiagnostic(entry.name),
         contractSource: 'primitive-registry',
         authorizationUnchanged: true,
       };
@@ -714,11 +788,63 @@ export class UpgradeRuntimeService {
       schema: inputSchema,
       inputSchema,
       outputSchema: upgradeToolOutputJsonSchema(),
+      schemaDiagnostic: this.describeInputSchemaDiagnostic(entry.name),
       annotations: upgradeToolAnnotations(upgradeEntry),
       execution: upgradeToolExecution(upgradeEntry),
       contractSource: 'upgrade-tool-contracts',
       authorizationUnchanged: true,
     };
+  }
+
+  private describeInputSchemaDiagnostic(toolName: string): ToolInputSchemaDiagnostic {
+    const inputSchema = this.registryRuntime?.describeInputJsonSchema?.(toolName);
+    if (inputSchema === undefined) {
+      return {
+        status: 'unavailable',
+        toolName,
+        schemaSource: 'lnwjud_tool_registry',
+        publicationTarget: 'mcp.tools/list.inputSchema',
+        reason: 'The current ToolRegistry input schema is unavailable.',
+        connectorSchema: { status: 'unavailable', digest: null },
+      };
+    }
+
+    const properties = isRecord(inputSchema.properties) ? inputSchema.properties : {};
+    return {
+      status: 'available',
+      appVersion: APP_VERSION,
+      toolName,
+      schemaSource: 'lnwjud_tool_registry',
+      publicationTarget: 'mcp.tools/list.inputSchema',
+      digestAlgorithm: 'SHA-256',
+      digestFormatVersion: 1,
+      inputMode: 'sdk_input',
+      transport: null,
+      protocolVersion: null,
+      inputSchemaSha256: createHash('sha256').update(this.canonicalSchemaJson(inputSchema), 'utf8').digest('hex'),
+      observedAt: new Date().toISOString(),
+      fieldPresence: {
+        engineeringGateUpdates: Object.prototype.hasOwnProperty.call(properties, 'engineeringGateUpdates'),
+        engineeringReviewFindings: Object.prototype.hasOwnProperty.call(properties, 'engineeringReviewFindings'),
+      },
+      connectorSchema: {
+        status: 'unavailable',
+        digest: null,
+        reason: 'The MCP server cannot observe a schema imported by a remote connector.',
+      },
+    };
+  }
+
+  private canonicalSchemaJson(value: unknown): string {
+    if (Array.isArray(value)) return `[${value.map((item) => this.canonicalSchemaJson(item)).join(',')}]`;
+    if (typeof value !== 'object' || value === null) {
+      const serialized = JSON.stringify(value);
+      if (serialized === undefined) throw new Error('MCP input schema contains a non-JSON value');
+      return serialized;
+    }
+    const record = value as Record<string, unknown>;
+    const entries = Object.keys(record).filter((key) => record[key] !== undefined).sort();
+    return `{${entries.map((key) => `${JSON.stringify(key)}:${this.canonicalSchemaJson(record[key])}`).join(',')}}`;
   }
 
   private categories(): { readonly categories: readonly { readonly category: string; readonly tools: number }[] } {
@@ -1247,40 +1373,116 @@ export class UpgradeRuntimeService {
     return ok({ tool: 'mcp_resources', status: 'ready', available: true, ready: true, executed: true, servers });
   }
 
-  private async selfHealPlan(input: Record<string, unknown>, authorization?: InvocationAuthorization): Promise<Result<unknown>> {
+  private async recoveryStatus(input: Record<string, unknown>, signal?: AbortSignal, authorization?: InvocationAuthorization): Promise<Result<unknown>> {
+    const plan = await this.selfHealPlan(input, signal, authorization);
+    if (!plan.ok) return plan;
+    const goalId = readString(input, 'goalId');
     const workspaceId = readString(input, 'workspaceId');
-    const evidence: Record<string, unknown> = {};
+    const observations: Record<string, unknown> = {
+      ...plan.value.evidence,
+      goal: { status: 'unavailable', reason: goalId === undefined ? 'goalId-required' : 'goal-provider-missing' },
+      scheduledContinuation: { status: 'unavailable', reason: goalId === undefined ? 'goalId-required' : 'continuation-provider-missing' },
+      externalMcp: { status: 'unavailable', reason: 'external-provider-missing' },
+    };
+    if (goalId !== undefined && this.services.goals !== undefined) {
+      try {
+        const goal = await this.services.goals.getGoal(this.actor, { goalId });
+        observations.goal = !goal.ok
+          ? { status: 'unknown', errorCode: goal.error.code }
+          : workspaceId !== undefined && workspaceId !== goal.value.workspaceId
+            ? { status: 'unknown', errorCode: 'PERMISSION_DENIED' }
+            : { status: 'observed', goalId: goal.value.goalId, workspaceId: goal.value.workspaceId, state: goal.value.status, revision: goal.value.revision, currentPhase: goal.value.currentPhase, pendingScheduledTaskCleanup: goal.value.pendingScheduledTaskCleanup ?? null };
+      } catch {
+        observations.goal = { status: 'unknown', errorCode: 'INTERNAL_ERROR' };
+      }
+    }
+    const goalObserved = isRecord(observations.goal) && observations.goal.status === 'observed';
+    if (goalId !== undefined && this.services.scheduledContinuations !== undefined && !goalObserved) observations.scheduledContinuation = { status: 'unknown', reason: 'goal-state-unverified' };
+    if (goalId !== undefined && this.services.scheduledContinuations !== undefined && goalObserved) {
+      try {
+        const continuation = await this.services.scheduledContinuations.getScheduledContinuation(this.actor, { goalId, latest: true });
+        observations.scheduledContinuation = continuation.ok
+          ? { status: 'observed', continuationId: continuation.value.continuationId, state: continuation.value.status, nativeTaskId: continuation.value.nativeTaskId ?? null, nativeRunnableState: 'requires-host-confirmation' }
+          : { status: 'unknown', errorCode: continuation.error.code };
+      } catch {
+        observations.scheduledContinuation = { status: 'unknown', errorCode: 'INTERNAL_ERROR' };
+      }
+    }
+    if (this.services.extensions !== undefined) {
+      try {
+        const servers = await this.services.extensions.listMcpServers();
+        observations.externalMcp = servers.ok
+          ? { status: 'observed', servers: servers.value.servers.map((server) => ({ name: server.name, enabled: server.enabled, connected: server.connected, lifecycle: server.lifecycle ?? null, excluded: server.excluded })) }
+          : { status: 'unknown', errorCode: servers.error.code };
+      } catch {
+        observations.externalMcp = { status: 'unknown', errorCode: 'INTERNAL_ERROR' };
+      }
+    }
+    if (signal?.aborted) return err(appError('PROCESS_TIMEOUT', 'Recovery status read was cancelled', true));
+    return ok({
+      policy: { reconnect: 'transport-managed', safeReadRetry: true, destructiveRetry: false, staleContinuationDetection: 'owner-and-liveness-evidence-required', indexRecovery: 'explicit-rebuild', taskOwnership: 'client-session-workspace' },
+      observations,
+      observationState: Object.values(observations).every((value) => isRecord(value) && value.status === 'observed') ? 'complete' : 'partial',
+      automaticDestructiveRetry: false,
+      sideEffectsStarted: false,
+    });
+  }
+
+  private async selfHealPlan(input: Record<string, unknown>, signal?: AbortSignal, authorization?: InvocationAuthorization): Promise<Result<SelfHealPlan>> {
+    const workspaceId = readString(input, 'workspaceId');
+    const evidence: Record<string, unknown> = {
+      index: { status: 'unavailable', reason: workspaceId === undefined ? 'workspaceId-required' : 'index-provider-missing' },
+      durableTasks: { status: 'unavailable', reason: 'task-provider-missing' },
+    };
     const fixes: SelfHealFix[] = [];
+    const manualIssues: Record<string, unknown>[] = [];
+    let indexObserved = false;
+    let tasksObserved = false;
+
+    if (signal?.aborted) return err(appError('PROCESS_TIMEOUT', 'Recovery evidence read was cancelled', true));
 
     if (workspaceId !== undefined && this.services.workspaceIndex !== undefined) {
-      const status = await this.services.workspaceIndex.status(workspaceId);
-      if (status.ok) {
-        evidence.index = { indexed: status.value.indexed, entries: status.value.snapshot?.entries?.length ?? 0 };
-        if (status.value.indexed !== true) {
+      try {
+        const status = await this.services.workspaceIndex.status(workspaceId);
+        if (status.ok) {
+          indexObserved = true;
+          evidence.index = { status: 'observed', indexed: status.value.indexed, entries: status.value.snapshot?.entries.length ?? 0, generation: status.value.generation ?? null, freshness: status.value.freshness ?? 'unknown' };
+        } else {
+          evidence.index = { status: 'unknown', errorCode: status.error.code };
+          manualIssues.push({ provider: 'workspace-index', reason: 'Index state could not be read', errorCode: status.error.code });
+        }
+        if ((status.ok && (!status.value.indexed || status.value.freshness === 'watching_degraded')) || (!status.ok && status.error.code === 'INTERNAL_ERROR')) {
           fixes.push({
-            id: 'reindex-workspace', kind: 'reindex_workspace', tool: 'workspace_index', args: { workspaceId },
+            id: 'reindex-workspace', kind: 'reindex_workspace', tool: 'workspace_index', args: { workspaceId, rebuild: true },
             description: 'Rebuild the persistent workspace index (read-only re-scan)', reversible: true, requiresConfirmation: false,
           });
         }
+      } catch {
+        evidence.index = { status: 'unknown', errorCode: 'INTERNAL_ERROR' };
+        manualIssues.push({ provider: 'workspace-index', reason: 'Index state could not be read' });
       }
     }
 
     if (this.services.capabilities !== undefined) {
-      const list = await this.services.capabilities.execute('shell', { operation: 'list' }, undefined, authorization);
-      if (list.ok && typeof list.value === 'object' && list.value !== null && Array.isArray((list.value as { tasks?: unknown }).tasks)) {
-        const tasks = (list.value as { tasks: Record<string, unknown>[] }).tasks;
-        const cutoff = Date.now() - 24 * 60 * 60 * 1_000;
-        const stale = tasks.filter((task) => task.durable === true && task.state === 'running' && typeof task.started_at === 'string' && Date.parse(task.started_at) < cutoff);
-        evidence.durableTasks = { total: tasks.length, staleOlderThan24h: stale.length };
-        for (const task of stale.slice(0, 10)) {
-          fixes.push({
-            id: `cancel-stale-task-${String(task.task_id)}`, kind: 'cancel_stale_task', tool: 'shell',
-            args: { operation: 'cancel', task_id: task.task_id },
-            description: `Cancel durable task ${String(task.task_id)} that has been running for over 24 hours`, reversible: false, requiresConfirmation: true,
-          });
+      try {
+        const list = await this.services.capabilities.execute('shell', withCapabilityOwnerMetadata({ operation: 'list', ...(workspaceId === undefined ? {} : { workspaceId }) }, this.actor), signal, authorization);
+        if (list.ok && isRecord(list.value) && Array.isArray(list.value.tasks) && list.value.tasks.every(isRecord)) {
+          const tasks = list.value.tasks;
+          const running = tasks.filter((task) => task.state === 'running');
+          tasksObserved = true;
+          evidence.durableTasks = { status: 'observed', total: tasks.length, running: running.length, cancellationEligibility: 'requires-explicit-liveness-and-owner-review' };
+          for (const task of running.slice(0, 10)) {
+            manualIssues.push({ taskId: typeof task.task_id === 'string' ? task.task_id : null, state: 'running', reason: 'Running duration does not prove abandonment', action: 'Inspect the owned task and explicitly cancel only after liveness review' });
+          }
+        } else {
+          evidence.durableTasks = { status: 'unknown', errorCode: list.ok ? 'INVALID_OUTPUT' : list.error.code };
         }
+      } catch {
+        evidence.durableTasks = { status: 'unknown', errorCode: 'INTERNAL_ERROR' };
       }
     }
+
+    if (signal?.aborted) return err(appError('PROCESS_TIMEOUT', 'Recovery evidence read was cancelled', true));
 
     const planId = digest({ workspaceId: workspaceId ?? null, evidence, fixes: fixes.map((fix) => ({ id: fix.id, kind: fix.kind, args: fix.args })) });
     return ok({
@@ -1288,17 +1490,21 @@ export class UpgradeRuntimeService {
       planId,
       mutationRequired: fixes.some((fix) => fix.requiresConfirmation),
       safeReversibleFixes: fixes,
+      manualIssues,
+      observationState: indexObserved && tasksObserved ? 'complete' : 'partial',
       automaticDestructiveRetry: false,
       auditTarget: 'recovery-plan',
       evidence,
     });
   }
 
-  private async selfHealApply(input: Record<string, unknown>, authorization?: InvocationAuthorization): Promise<Result<unknown>> {
-    const plan = await this.selfHealPlan(input, authorization);
+  private async selfHealApply(input: Record<string, unknown>, signal?: AbortSignal, authorization?: InvocationAuthorization): Promise<Result<unknown>> {
+    const plan = await this.selfHealPlan(input, signal, authorization);
     if (!plan.ok) return plan;
-    const planValue = plan.value as { planId: string; safeReversibleFixes: SelfHealFix[] };
-    const requested = Array.isArray(input.fixIds) ? input.fixIds.map(String) : undefined;
+    const planValue = plan.value;
+    if (input.fixIds !== undefined && (!Array.isArray(input.fixIds) || !input.fixIds.every((id): id is string => typeof id === 'string'))) return err(appError('INVALID_INPUT', 'Recovery fixIds must be an array of known fix identities'));
+    const requested: readonly string[] | undefined = input.fixIds;
+    if (requested?.some((id) => !planValue.safeReversibleFixes.some((fix) => fix.id === id))) return err(appError('INVALID_INPUT', 'Recovery plan contains an unknown or no-longer-available fix identity'));
     const selected = planValue.safeReversibleFixes.filter((fix) => requested === undefined || requested.includes(fix.id));
     const preview = {
       tool: 'self_heal_apply',
@@ -1321,11 +1527,9 @@ export class UpgradeRuntimeService {
 
     const applied: Record<string, unknown>[] = [];
     for (const fix of selected) {
+      if (signal?.aborted) return ok({ ...preview, dryRun: false, applied, status: 'cancelled', complete: false });
       if (fix.kind === 'reindex_workspace' && this.services.workspaceIndex !== undefined) {
-        const result = await this.services.workspaceIndex.indexWorkspace(String(fix.args.workspaceId));
-        applied.push({ id: fix.id, kind: fix.kind, ok: result.ok, ...(result.ok ? {} : { error: result.error.message }) });
-      } else if (fix.kind === 'cancel_stale_task' && this.services.capabilities !== undefined) {
-        const result = await this.services.capabilities.execute('shell', fix.args, undefined, authorization);
+        const result = await this.services.workspaceIndex.indexWorkspace(String(fix.args.workspaceId), { rebuild: true, ...(signal === undefined ? {} : { signal }) });
         applied.push({ id: fix.id, kind: fix.kind, ok: result.ok, ...(result.ok ? {} : { error: result.error.message }) });
       } else {
         applied.push({ id: fix.id, kind: fix.kind, ok: false, error: 'unsupported-fix-kind' });
@@ -1653,7 +1857,9 @@ export class UpgradeRuntimeService {
       try {
         const profile: unknown = JSON.parse(content);
         if (!isRecord(profile)) return err(appError('INVALID_INPUT', 'Project profile must contain a JSON object'));
-        return ok({ tool: name, status: 'ready', available: true, ready: true, executed: true, workspaceId, source: profilePath, profile });
+        const normalized = validateProjectProfile(profile);
+        if (!normalized.ok) return normalized;
+        return ok({ tool: name, status: 'ready', available: true, ready: true, executed: true, workspaceId, source: profilePath, profile: normalized.value });
       } catch {
         return err(appError('INVALID_INPUT', 'Project profile contains invalid JSON'));
       }
@@ -1671,13 +1877,101 @@ export class UpgradeRuntimeService {
       : saved;
   }
 
+  private async debugOwner(workspaceId: string): Promise<Result<DebugOwner>> {
+    const workspaceInfo = this.services.workspaceInfo;
+    if (workspaceInfo === undefined) return err(appError('INTERNAL_ERROR', 'Registered workspace observation is unavailable', true));
+    const workspace = await workspaceInfo.info(this.actor, workspaceId);
+    if (!workspace.ok) return workspace;
+    if (!isRecord(workspace.value) || workspace.value.id !== workspaceId) return err(appError('INTERNAL_ERROR', 'Registered workspace observation has an invalid identity', true));
+    if (this.actor.sessionId === undefined || this.actor.sessionId.trim().length === 0) return err(appError('INVALID_INPUT', 'DAP sessions require the actual MCP session identity'));
+    return ok({ clientId: this.actor.clientId, sessionId: this.actor.sessionId, workspaceId });
+  }
+
+  private async debugAttach(input: Record<string, unknown>, signal?: AbortSignal): Promise<Result<unknown>> {
+    const request = { ...input };
+    delete request.userConfirmed;
+    const parsed = debugAttachInputSchema.safeParse(request);
+    if (!parsed.success) return err(appError('INVALID_INPUT', 'DAP attach input is invalid'));
+    const service = this.services.debugSessions;
+    if (service === undefined || this.services.workspaceInfo === undefined) return ok(truthfulUnavailable('debug_attach', 'needs_setup', ['host-owned DAP session service', 'registered workspace observation']));
+    const owner = await this.debugOwner(parsed.data.workspaceId);
+    if (!owner.ok) return owner;
+    if (signal?.aborted) return err(appError('PROCESS_TIMEOUT', 'DAP attach was cancelled before connection', true));
+    const { workspaceId, dryRun, ...attach } = parsed.data;
+    if (dryRun === true) return ok({ tool: 'debug_attach', status: 'planned', dryRun: true, sideEffectsStarted: false, workspaceId, attach });
+    const attached = await service.attach(owner.value, {
+      endpoint: attach.endpoint,
+      ...(attach.adapterId === undefined ? {} : { adapterId: attach.adapterId }),
+      ...(attach.configuration === undefined ? {} : { configuration: attach.configuration }),
+      ...(attach.timeoutMs === undefined ? {} : { timeoutMs: attach.timeoutMs }),
+    }, signal);
+    return attached.ok ? ok({ tool: 'debug_attach', status: 'ready', available: true, ready: true, executed: true, sideEffectsStarted: true, session: attached.value }) : attached;
+  }
+
+  private async debugStep(input: Record<string, unknown>, signal?: AbortSignal): Promise<Result<unknown>> {
+    const request = { ...input };
+    delete request.userConfirmed;
+    const parsed = debugStepInputSchema.safeParse(request);
+    if (!parsed.success) return err(appError('INVALID_INPUT', 'DAP command input is invalid'));
+    const service = this.services.debugSessions;
+    if (service === undefined || this.services.workspaceInfo === undefined) return ok(truthfulUnavailable('debug_step', 'needs_setup', ['host-owned DAP session service', 'registered workspace observation']));
+    const command = parsed.data;
+    const owner = await this.debugOwner(command.workspaceId);
+    if (!owner.ok) return owner;
+    if (signal?.aborted) return err(appError('PROCESS_TIMEOUT', 'DAP command was cancelled before dispatch', true));
+    if (command.action === 'status' || command.action === 'events') {
+      const observed = service.status(owner.value, command.session_id, command.cursor, command.limit, command.maxBytes);
+      return observed.ok ? ok({ tool: 'debug_step', status: observed.value.session.state, ...observed.value, executed: true, sideEffectsStarted: false }) : observed;
+    }
+    if (command.dryRun === true) {
+      const owned = service.status(owner.value, command.session_id, '0', 1, 1);
+      if (!owned.ok) return owned;
+      return ok({ tool: 'debug_step', status: 'planned', dryRun: true, sideEffectsStarted: false, session: owned.value.session, command });
+    }
+    if (command.action === 'disconnect') {
+      const disconnected = await service.disconnect(owner.value, command.session_id, signal);
+      return disconnected.ok ? ok({ tool: 'debug_step', status: 'disconnected', session: disconnected.value, executed: true, sideEffectsStarted: true }) : disconnected;
+    }
+    const response = await service.request(owner.value, command.session_id, command.action, command.arguments ?? {}, signal);
+    return response.ok ? ok({ tool: 'debug_step', status: response.value.session.state, ...response.value, executed: true, sideEffectsStarted: true }) : response;
+  }
+
+  private async handoffContext(input: Record<string, unknown>, signal?: AbortSignal): Promise<Result<unknown>> {
+    const request = { ...input };
+    delete request.userConfirmed;
+    const parsed = handoffContextInputSchema.safeParse(request);
+    if (!parsed.success) return err(appError('INVALID_INPUT', 'Handoff context input is invalid'));
+    const { workspaceId, query = 'handoff', limit, trackerPath, maxDiffBytes } = parsed.data;
+    const recovery = await createSessionHandoff({ actor: this.actor, services: this.services, contextEconomy: this.contextEconomy }, {
+      workspaceId,
+      ...(trackerPath === undefined ? {} : { trackerPath }),
+      ...(maxDiffBytes === undefined ? {} : { maxDiffBytes }),
+    }, signal ?? new AbortController().signal);
+    if (!recovery.ok) return recovery;
+    const requirements = [
+      ...(this.services.search === undefined ? ['workspace search service'] : []),
+      ...(this.services.file === undefined ? ['workspace file service'] : []),
+    ];
+    if (requirements.length > 0 || signal?.aborted) return ok({ ...recovery.value, tool: 'handoff_context', query, context: null,
+      context_observation: { status: signal?.aborted ? 'cancelled' : 'unavailable', requirements, errors: [] }, rawToolsRemainAvailable: true });
+    try {
+      const context = await this.contextEngine.collect({ workspaceId, query, intent: 'auto', mode: 'full', ...(limit === undefined ? {} : { pageSize: limit }) });
+      const observedContext = context.ok ? { ...context.value, files: context.value.files.map((file) => file.error === undefined ? file
+        : { ...file, error: { code: file.error.code, message: 'Optional context file observation failed' } }) } : null;
+      return ok({ ...recovery.value, tool: 'handoff_context', query, context: observedContext,
+        context_observation: context.ok ? describeContextObservation(context.value) : { status: 'unavailable', errors: [{ code: context.error.code }] }, rawToolsRemainAvailable: true });
+    } catch {
+      return ok({ ...recovery.value, tool: 'handoff_context', query, context: null,
+        context_observation: { status: 'unavailable', errors: [{ code: 'PROVIDER_REJECTED' }] }, rawToolsRemainAvailable: true });
+    }
+  }
+
   private async compoundContext(name: string, input: Record<string, unknown>): Promise<Result<unknown>> {
     const workspaceId = readString(input, 'workspaceId');
     const requirements = [
       ...(workspaceId === undefined ? ['registered workspace'] : []),
       ...(this.services.search === undefined ? ['workspace search service'] : []),
       ...(this.services.file === undefined ? ['workspace file service'] : []),
-      ...(this.services.git === undefined ? ['configured Git service'] : []),
     ];
     if (requirements.length > 0) return ok(truthfulUnavailable(name, 'needs_setup', requirements));
     const query = readString(input, 'query') ?? readString(input, 'prompt') ?? name;
@@ -1688,13 +1982,34 @@ export class UpgradeRuntimeService {
       mode: 'full',
     });
     if (!context.ok) return context;
-    const git = await this.services.git!.status(this.actorForOperation(), workspaceId!);
-    if (!git.ok) return git;
+    const contextObservation = describeContextObservation(context.value);
+    let git: unknown = null;
+    let gitObservation: { status: 'ready' | 'unavailable' | 'unknown'; errors: readonly { code: string }[] } = { status: 'unavailable', errors: [] };
+    if (this.services.git !== undefined) {
+      try {
+        const result: unknown = await this.services.git.status(this.actorForOperation(), workspaceId!);
+        if (isRecord(result) && result.ok === true && isRecord(result.value) && Array.isArray(result.value.entries)
+          && result.value.entries.every((entry: unknown) => isRecord(entry) && typeof entry.path === 'string')) {
+          git = result.value;
+          gitObservation = { status: 'ready', errors: [] };
+        } else if (isRecord(result) && result.ok === false) {
+          const observedErrors = context.value.observations.flatMap((observation) => observation.source === 'git' && 'error' in observation ? [observation.error] : []);
+          gitObservation = { status: 'unavailable', errors: observedErrors.length === 0 ? [{ code: 'INTERNAL_ERROR' }] : observedErrors };
+        } else gitObservation = { status: 'unknown', errors: [{ code: 'INTERNAL_ERROR' }] };
+      } catch {
+        gitObservation = { status: 'unknown', errors: [{ code: 'INTERNAL_ERROR' }] };
+      }
+    }
+    const ready = contextObservation.status === 'ready' && gitObservation.status === 'ready';
     return ok({
       tool: name,
       query,
       context: context.value,
-      git: git.value,
+      status: ready ? 'ready' : contextObservation.status === 'ready' ? 'partial' : contextObservation.status,
+      ready,
+      context_observation: contextObservation,
+      git,
+      git_observation: gitObservation,
       internalOperations: ['workspace search', 'indexed symbol lookup', 'git status', 'test relevance'],
       rawToolsRemainAvailable: true,
     });
@@ -2451,6 +2766,11 @@ export class UpgradeRuntimeService {
 
 }
 
+function describeContextObservation(context: WorkspaceContextResult): { status: 'ready' | WorkspaceContextResult['completeness']; errors: Array<{ code: string }> } {
+  const codes = new Set(context.observations.flatMap((observation) => 'error' in observation ? [observation.error.code] : []));
+  return { status: context.completeness === 'complete' ? 'ready' as const : context.completeness, errors: [...codes].map((code) => ({ code })) };
+}
+
 function runBoundedProcess(
   executable: string,
   args: readonly string[],
@@ -3103,15 +3423,6 @@ function routeIntent(prompt: string): {
   };
 }
 
-function recipeCatalog(): readonly { readonly name: string; readonly steps: readonly string[]; readonly optional: boolean }[] {
-  return [
-    { name: 'bugfix', steps: ['workspace_context', 'git_context', 'test_context', 'live_logs_query'], optional: false },
-    { name: 'code-review', steps: ['review_context', 'changed_symbols', 'discover_tests'], optional: false },
-    { name: 'frontend-debug', steps: ['debug_ui', 'console_context', 'network_context', 'capture_ui_state'], optional: true },
-    { name: 'release-check', steps: ['git_context', 'regression_report', 'benchmark_run'], optional: false },
-  ];
-}
-
 function planFor(prompt: string): { readonly route: string; readonly operations: readonly string[]; readonly permissions: readonly string[] } {
   const route = routeIntent(prompt);
   const operations = route.route === 'debug'
@@ -3133,12 +3444,6 @@ function decodeBase64Artifact(value: string, label: string): Result<Buffer> {
     return err(appError('INVALID_INPUT', `compare_screenshot ${label}_base64 must decode to a non-empty canonical artifact`));
   }
   return ok(decoded);
-}
-
-function permissionDecision(action: string): { readonly action: string; readonly decision: 'allow' | 'ask'; readonly class: string; readonly contextAccess: 'unrestricted' } {
-  const normalized = action.toLowerCase();
-  const dangerousAction = /(delete|destructive|admin|system\.admin|shell\.destructive|git\.destructive)/.test(normalized);
-  return { action, decision: dangerousAction ? 'ask' : 'allow', class: dangerousAction ? 'dangerous' : 'read-or-safe', contextAccess: 'unrestricted' };
 }
 
 function actorSessionId(actor: FileActor): string {

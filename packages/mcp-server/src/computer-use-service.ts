@@ -75,6 +75,7 @@ export class ComputerUseService {
     if (signal?.aborted === true) return cancelledResult();
 
     const fallback = await this.executeCapability('vision', compact({
+      workspaceId: request.workspaceId,
       action: `capture_${String(request.capture ?? 'display')}`,
       region: request.region,
       app: request.app,
@@ -92,6 +93,7 @@ export class ComputerUseService {
 
   private async inspect(request: ComputerUseInput, signal?: AbortSignal, authorization?: InvocationAuthorization): Promise<Result<unknown>> {
     return this.executeCapability('accessibility', {
+      workspaceId: request.workspaceId,
       action: 'observe',
       parameters: compact({
         ...asRecord(request.app),
@@ -118,6 +120,7 @@ export class ComputerUseService {
     }
     if (hasSemanticTarget(target)) {
       const semantic = await this.executeCapability('accessibility', {
+        workspaceId: request.workspaceId,
         action: 'click',
         parameters: { ...asRecord(request.app), ...target },
         userConfirmed: request.userConfirmed,
@@ -146,6 +149,7 @@ export class ComputerUseService {
         }), signal, authorization);
       } else if (hasSemanticTarget(target)) {
         focused = await this.executeCapability('accessibility', {
+          workspaceId: request.workspaceId,
           action: 'focus',
           parameters: { ...asRecord(request.app), ...target },
           userConfirmed: request.userConfirmed,
@@ -197,6 +201,7 @@ export class ComputerUseService {
     }
     if (hasSemanticTarget(target)) {
       const found = await this.executeCapability('accessibility', {
+        workspaceId: request.workspaceId,
         action: 'find_element',
         parameters: { ...asRecord(request.app), ...target },
       }, signal, authorization);
@@ -229,6 +234,7 @@ export class ComputerUseService {
 
   private async inputEvent(operation: string, parameters: Readonly<Record<string, unknown>>, request: ComputerUseInput, signal?: AbortSignal, authorization?: InvocationAuthorization): Promise<Result<unknown>> {
     return this.executeCapability('input_event', {
+      workspaceId: request.workspaceId,
       operation,
       parameters,
       userConfirmed: request.userConfirmed,
@@ -240,6 +246,7 @@ export class ComputerUseService {
     const parameters = compact({ ...asRecord(request.app), window_index: request.window_index });
     if (!hasWindowSelector(parameters)) return err(appError('INVALID_INPUT', 'computer_use activate_window requires app selector or window_index'));
     return this.executeCapability('window', {
+      workspaceId: request.workspaceId,
       operation: 'activate',
       parameters,
       userConfirmed: request.userConfirmed,
