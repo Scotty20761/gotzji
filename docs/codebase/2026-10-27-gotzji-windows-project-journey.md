@@ -377,7 +377,7 @@ Desktop multi-workspace diagnosis (resolved cause, fix pending owner decision):
 - Every other PowerShell -File launch in the repository (six call sites) already passes -ExecutionPolicy Bypass; windows-contained-launch.ts is the only one that does not. windows-contained-launch.test.ts now forces PSExecutionPolicyPreference=Restricted on the child and is RED (.local-artifacts/round1-containment-policy-red-20261030.log), uncommitted.
 - The one-argument fix was refused by the Claude Code auto-mode safety check because it bypasses a security policy, so it waits for the owner. Production impact to confirm: managed processes and contained Git operations on a Restricted Windows client would fail the same way.
 
-Round-1 commits B 489e0b7e, C 03e05f43, E1 24adb9a1, A 114f9ed4 and this ledger ec6a3469 were pushed to dev once. Exact-SHA CI: the push run 40941796628 completed with success; the pull_request run 40941804204 was still in progress when this section was written.
+Round-1 commits B 489e0b7e, C 03e05f43, E1 24adb9a1, A 114f9ed4 and this ledger ec6a3469 were pushed to dev once. Exact-SHA CI: push run 40941796628 and pull_request run 40941804204 both completed with success; the pull_request run is the Windows Workspace Release Tests suite that failed on 4371e443.
 
 Proof-gated predecessor tunnel reclaim (plan step 6, owner decision 2026-10-29):
 - restore() now runs reclaimProvenPredecessor() and startNow() in one serialized step, after re-reading desiredActive so an owner Stop during startup stands. A predecessor client is ended automatically only when all six proofs hold: the host proved machine ownership with a real OS identity (product-server passes `host` only then, never in unpackaged E2E mode); the recorded creating host is observed gone (null or a different identity; 'unknown' or an absent observation refuses); the creator is not this host; the recorded pid+birth+executable match; the recorded and on-disk client SHA-256 and path match the pinned client; and termination is proved before any successor starts.
@@ -391,10 +391,11 @@ Proof-gated predecessor tunnel reclaim (plan step 6, owner decision 2026-10-29):
   - the notice can appear during the short window before the startup reclaim decides;
   - restore() still reports CONNECTION_RECONCILIATION_REQUIRED instead of a more specific start error;
   - an unchanged gap: startNow spawns before its first record write, and an identity-probe failure after spawn cannot be stopped from the app.
-- Verification on these bytes: Core, renderer and main typecheck and ESLint exit 0; Core 28/28 (reclaim, connection, product-http); Electron connection tests passed; Desktop boundary 22/22.
+- Verification on these bytes: Core, renderer and main typecheck and ESLint exit 0; Core 28/28 (reclaim, connection, product-http); Electron connection tests passed; Desktop boundary 22/22. Pushed as d05c223e with this ledger in 2a50e2d7; exact-SHA CI push run 40946360941 and pull_request run 40946369009 both completed with success.
+- Not done on the reclaim bytes: a full local Core and Electron rerun (CI covers them), and installing the new build, which needs owner approval and must first settle the installed uncertain jobs, or the new build opens control-only.
 
 Next on resume:
 1. Owner decision on the Windows containment launcher fix (-ExecutionPolicy Bypass), then apply it, take windows-contained-launch.test.ts and the multi-workspace test GREEN, and rerun Desktop.
-2. Confirm the pull_request CI run 40941804204, then push the reclaim and watch its exact CI run.
+2. With owner approval, install the build that carries the reclaim; settle the installed uncertain jobs first.
 3. Rerun the C0 inventory workflow at lower effort; the 2026-10-28 run produced nothing because the weekly usage limit was hit.
 4. Follow-ups listed above, including Packet A's mixed snapshot and the library-channel recovery.
