@@ -1,5 +1,9 @@
 # lnwjud source integration and historical installed evidence
 
+## C0 parity inventory — 2026-10-30
+
+[`gotzji-c0-parity.md`](gotzji-c0-parity.md) summarizes, and [`gotzji-c0-parity.json`](gotzji-c0-parity.json) holds, one row per lnwjud 5.8.7 tool (294), per upstream screen action (77) and per lnwjud failure class (9), each with its gotzji mapping and evidence state at `f791b383`. Every cited `path:line` was checked against that head; the states are agent claims, not an independent review.
+
 ## Current source baseline — 2026-10-22
 
 Upstream v5.8.7 is pinned to `1a0453ed0ef1de4cdf9ce1ba9edee8da0de8426b` and integrated into the existing gotzji dev tree. The original MIT and dependency notices remain. gotzji product identity, separate storage, manual updates, host-direct ChatGPT controller and one job/effect authority remain in force.
