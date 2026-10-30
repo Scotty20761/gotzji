@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
-import { cleanupProductHostStartup, completeProductHostStartup, ensureGotzjiProductHost, observeProductHostAuthorityPersistence, PRODUCT_PROVIDER_SHA256, productRuntimeIdentity, productRuntimeRequiresManifest, readProductConfiguration, reconcileProviderPins, shippedProvider, windowsProductSecretProtector, writeProductConfiguration, type ProductHostConfiguration } from './product-host.js';
+import { cleanupProductHostStartup, completeProductHostStartup, ensureGotzjiProductHost, observeProductHostAuthorityPersistence, PRODUCT_PROVIDER_SHA256, productRuntimeIdentity, productRuntimeRequiresManifest, readProductConfiguration, reconcileProviderPins, reconcileTunnelPin, shippedProvider, windowsProductSecretProtector, writeProductConfiguration, type ProductHostConfiguration } from './product-host.js';
 import { ensureProductControlDocuments } from './product-control-policy.js';
 import { productGraceProfile } from './grace-profile.js';
 import { canonicalTemporaryDirectorySync } from './test-fixtures.js';
@@ -67,6 +67,24 @@ describe('private product enrollment storage', () => {
     expect(incident).not.toContain(config.daemonSecret); expect(incident).not.toContain(config.mcpPathSecret); expect(incident).not.toContain(config.credential);
     expect(incident).toContain('NODE_OPTIONS=absent'); expect(incident).toContain('REDACTED');
     expect(incident).toContain('UV_THREADPOOL_SIZE=16');
+  });
+  it('re-pins the shipped tunnel client when a new build qualifies other bytes', () => {
+    const directory = canonicalTemporaryDirectorySync('gotzji-tunnel-pin-');
+    try {
+      const client = path.join(directory, 'tunnel-client.exe'); writeFileSync(client, 'client v2');
+      const sha = (text: string): string => createHash('sha256').update(text).digest('hex');
+      const base: ProductHostConfiguration = { schemaVersion: 1, directory, ownerId: 'owner', daemonSecret: 'a'.repeat(64), mcpPathSecret: 'b'.repeat(64), libraryRoot: directory };
+      const earlier = { ...base, tunnel: { executable: client, executableSha256: sha('client v1') } };
+      // A pin sealed by the previous build is replaced, so the connection checks the bytes this build ships.
+      const upgraded = reconcileTunnelPin(earlier, shippedProvider([client], sha('client v2')));
+      expect(upgraded.tunnel).toEqual({ executable: client, executableSha256: sha('client v2') });
+      expect(reconcileTunnelPin(upgraded, shippedProvider([client], sha('client v2')))).toBe(upgraded);
+      // Unqualified bytes never become the pin: a first start refuses them and an existing pin is kept.
+      expect(() => reconcileTunnelPin(base, shippedProvider([client], sha('client v3')))).toThrow('CONNECTION_CLIENT_UNQUALIFIED');
+      expect(reconcileTunnelPin(upgraded, shippedProvider([client], sha('client v3')))).toBe(upgraded);
+      // An absent client leaves the configuration as it was.
+      expect(reconcileTunnelPin(base, shippedProvider([path.join(directory, 'absent.exe')], sha('x')))).toBe(base);
+    } finally { rmSync(directory, { recursive: true, force: true }); }
   });
   it('re-pins shipped provider scripts on every start and drops only a script present with other bytes (incident I6)', () => {
     const directory = canonicalTemporaryDirectorySync('gotzji-provider-pins-');

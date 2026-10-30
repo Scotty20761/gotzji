@@ -7,7 +7,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { afterEach, describe, expect, it } from 'vitest';
 import { GotzjiConnectionService, productTunnelProfile, startProductTunnelBridge } from './product-connection.js';
-import { testOnlyProductSecretProtector, windowsProductSecretProtector } from './product-host.js';
+import { PRODUCT_TUNNEL_CLIENT_SHA256, testOnlyProductSecretProtector, windowsProductSecretProtector } from './product-host.js';
 import { processIdentities, sameProcessIdentity } from './process-identity.mjs';
 
 const exec = promisify(execFile);
@@ -92,7 +92,7 @@ describe('owned Secure MCP Tunnel transport', () => {
   }, 20000);
   const client = path.resolve('..', '..', 'apps', 'desktop', 'build', 'tunnel-client', 'tunnel-client.exe');
   it.runIf(process.platform === 'win32' && existsSync(client))('proves the official pinned client forwards both MCP and discovery auth from env references', async () => {
-    expect(createHash('sha256').update(readFileSync(client)).digest('hex')).toBe('1946de55a038313a9b9b2458d05fe1719fa9cf1f20a94dd5f38fc26a98bfdd42');
+    expect(createHash('sha256').update(readFileSync(client)).digest('hex')).toBe(PRODUCT_TUNNEL_CLIENT_SHA256);
     const observed: { pathname: string; method: string; authorized: boolean; headerKind: string }[] = [];
     const mcpPort = await serve((request, response) => {
       observed.push({ pathname: request.url ?? '', method: request.method ?? '', authorized: request.headers.authorization === `Bearer ${secret}`, headerKind: request.headers.authorization === undefined ? 'absent' : request.headers.authorization.startsWith('env:') ? 'unresolved-reference' : 'present' });

@@ -88,6 +88,8 @@ export function productRuntimeRequiresManifest(entry: string, argv: readonly str
 const MAX_SECRET_BYTES = 64 * 1024;
 /** SHA-256 of the provider scripts this build ships (LF line ends, see .gitattributes); a test pins them to the files. */
 export const PRODUCT_PROVIDER_SHA256 = { office: '0ecb9206e22fd9e76f93566b792057014163258104fcbdfe980040d78178a006', cad: '41bd36c742f20480649cb057ca1fa52d6147089012e7f995bf2dc75fedd5a19f' } as const;
+/** SHA-256 of the qualified tunnel-client.exe this build ships (OpenAI tunnel-client 0.0.16, provenance verified when packaged). */
+export const PRODUCT_TUNNEL_CLIENT_SHA256 = '4226bb74a72388147882881f29f79801b95e285d731a138071812e3aa6766571';
 const SECRET_PROVIDER_CODES: Readonly<Record<string, string>> = { POWERSHELL_SESSION_TIMEOUT: 'SECRET_PROVIDER_TIMEOUT', POWERSHELL_SESSION_UNAVAILABLE: 'SECRET_PROVIDER_UNAVAILABLE', POWERSHELL_SESSION_OUTPUT_LIMIT: 'SECRET_PROVIDER_OUTPUT_LIMIT', POWERSHELL_SESSION_INPUT_FAILED: 'SECRET_PROVIDER_INPUT_FAILED' };
 /** Uses CurrentUser DPAPI without placing plaintext on a command line; one owned Windows PowerShell session serves every call. */
 export function windowsProductSecretProtector(session?: WindowsPowerShellSession): ProductSecretProtector {
@@ -216,15 +218,8 @@ async function bootGotzjiProductHost(options: ProductHostOptions, directory: str
     shippedProvider(officeCandidates, options.nativeScriptPath ? undefined : PRODUCT_PROVIDER_SHA256.office),
     shippedProvider(cadCandidates, options.cadScriptPath ? undefined : PRODUCT_PROVIDER_SHA256.cad),
     discoverProductCadExecutable);
-  if (!config.tunnel) {
-    const candidates = options.tunnelClientPath ? [options.tunnelClientPath] : options.packaged ? [path.join(options.resourcesPath, 'tunnel-client', 'tunnel-client.exe')] : [path.resolve(process.cwd(), 'apps/desktop/build/tunnel-client/tunnel-client.exe'), path.resolve(process.cwd(), 'build/tunnel-client/tunnel-client.exe')];
-    const filename = candidates.find((candidate) => existsSync(candidate));
-    if (filename) {
-      const pin = pinnedProductFile(filename);
-      if (pin.scriptSha256 !== '1946de55a038313a9b9b2458d05fe1719fa9cf1f20a94dd5f38fc26a98bfdd42') throw new CoreError('CONNECTION_CLIENT_UNQUALIFIED');
-      config = { ...config, tunnel: { executable: pin.scriptPath, executableSha256: pin.scriptSha256 } };
-    }
-  }
+  const tunnelCandidates = options.tunnelClientPath ? [options.tunnelClientPath] : options.packaged ? [path.join(options.resourcesPath, 'tunnel-client', 'tunnel-client.exe')] : [path.resolve(process.cwd(), 'apps/desktop/build/tunnel-client/tunnel-client.exe'), path.resolve(process.cwd(), 'build/tunnel-client/tunnel-client.exe')];
+  config = reconcileTunnelPin(config, shippedProvider(tunnelCandidates, PRODUCT_TUNNEL_CLIENT_SHA256));
   if (!config.browser) {
     const executable = discoverRegisteredProductExecutable('chrome');
     if (executable) { const pin = pinnedProductFile(executable); config = { ...config, browser: { executable: pin.scriptPath, executableSha256: pin.scriptSha256 } }; }
@@ -310,6 +305,16 @@ export function shippedProvider(candidates: readonly string[], expected: string 
   let pin: ProviderPin;
   try { pin = pinnedProductFile(scriptPath); } catch { return undefined; }
   return expected === undefined || pin.scriptSha256 === expected ? pin : null;
+}
+/**
+ * Re-pin the shipped tunnel client on every start, so a build that ships a newer qualified client does not keep the
+ * previous build's sealed pin and refuse its own client. Unqualified bytes refuse a first pin and keep an existing one.
+ */
+export function reconcileTunnelPin(config: ProductHostConfiguration, shipped: ProviderPin | null | undefined): ProductHostConfiguration {
+  if (shipped === undefined) return config;
+  if (shipped === null) { if (!config.tunnel) throw new CoreError('CONNECTION_CLIENT_UNQUALIFIED'); return config; }
+  if (config.tunnel?.executable === shipped.scriptPath && config.tunnel.executableSha256 === shipped.scriptSha256) return config;
+  return { ...config, tunnel: { executable: shipped.scriptPath, executableSha256: shipped.scriptSha256 } };
 }
 /**
  * Re-pin the provider scripts on every start, so a new build does not strand its own providers (incident I6). A
