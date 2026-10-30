@@ -14,7 +14,8 @@ describe.skipIf(process.platform !== 'win32')('contained launch receipt', () => 
         directory: root, executable: process.execPath, cwd: root, timeoutMs: 10000,
         args: ['-e', outcome === 'completed' ? 'console.log("CHILD_OUTPUT")' : 'console.log("CHILD_OUTPUT");setInterval(()=>{},1000)'],
       });
-      const child = spawn(invocation.executable, [...invocation.args], { windowsHide: true });
+      // A Windows client defaults to the Restricted policy; the launcher must run its own script anyway.
+      const child = spawn(invocation.executable, [...invocation.args], { windowsHide: true, env: { ...process.env, PSExecutionPolicyPreference: 'Restricted' } });
       const closed = once(child, 'close');
       let stdout = '';
       child.stdout.on('data', (data: Buffer) => { stdout += data.toString(); });

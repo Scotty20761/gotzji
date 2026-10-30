@@ -39,7 +39,7 @@ export async function prepareWindowsContainedLaunch(input: {
   if (systemRoot === undefined || !path.isAbsolute(systemRoot)) throw new Error('WINDOWS_CONTAINMENT_HOST_UNAVAILABLE');
   return {
     executable: path.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
-    args: ['-NoProfile', '-NonInteractive', '-File', scriptPath, input.directory],
+    args: ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', scriptPath, input.directory],
     receiptPath,
     cancelPath,
   };
